@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Arlet</title>
+    <link rel="stylesheet" href="./styles/tokens.css" />
+    <link rel="stylesheet" href="./styles/base.css" />
+    <script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js" data-web-components async></script>
+  </head>
+  <body>
+    <div id="app">
+      <header id="titlebar" data-tauri-drag-region>
+        <h1 data-tauri-drag-region>Arlet</h1>
+        <span id="auth-status">Not signed in</span>
+      </header>
+      <main id="content">
+        <section id="phase0-controls">
+          <h2>Phase 0 — MusicKit Feasibility</h2>
+          <div id="init-status">MusicKit: loading…</div>
+          <div class="controls">
+            <button id="btn-authorize" disabled>Sign In</button>
+            <button id="btn-unauthorize" disabled>Sign Out</button>
+          </div>
+          <div class="controls">
+            <input id="search-input" type="text" placeholder="Search for a song…" disabled />
+            <button id="btn-search" disabled>Search</button>
+          </div>
+          <div id="search-results"></div>
+          <div id="now-playing">
+            <div id="np-artwork"></div>
+            <div id="np-info">
+              <div id="np-title">—</div>
+              <div id="np-artist">—</div>
+            </div>
+          </div>
+          <div class="controls">
+            <button id="btn-prev" disabled>⏮</button>
+            <button id="btn-play" disabled>▶</button>
+            <button id="btn-next" disabled>⏭</button>
+          </div>
+          <div class="controls">
+            <label>Seek: <input id="seek-slider" type="range" min="0" max="100" value="0" disabled /></label>
+            <label>Volume: <input id="volume-slider" type="range" min="0" max="100" value="50" /></label>
+          </div>
+          <div id="playback-state">Idle</div>
+          <div id="track-counter">Tracks played: 0</div>
+          <div id="error-display"></div>
+          <div id="diagnostics">
+            <h3>Diagnostics</h3>
+            <pre id="diag-output"></pre>
+          </div>
+        </section>
+      </main>
+    </div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
