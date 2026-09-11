@@ -8,8 +8,7 @@ export interface AppState {
 }
 
 export type AuthState =
-  | { status: "unauthorized" }
-  | { status: "authorized"; musicUserToken: string };
+  { status: "unauthorized" } | { status: "authorized"; musicUserToken: string };
 
 const initialPlaybackState: PlaybackState = {
   status: "idle",
@@ -36,9 +35,7 @@ export function setAuthState(auth: AuthState): void {
   state = { ...state, auth };
 }
 
-export function setPlaybackStatus(
-  status: PlaybackState["status"],
-): void {
+export function setPlaybackStatus(status: PlaybackState["status"]): void {
   state = {
     ...state,
     playback: { ...state.playback, status },
@@ -72,10 +69,7 @@ export function setVolume(volume: number): void {
   };
 }
 
-export function setPlaybackError(
-  code: AppErrorCode,
-  message: string,
-): void {
+export function setPlaybackError(code: AppErrorCode, message: string): void {
   state = {
     ...state,
     playback: {

@@ -12,66 +12,54 @@
   },
   "scripts": {
     "prepare": "node scripts/install-git-hooks.js",
-
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-
     "test": "vitest run",
     "test:watch": "vitest",
     "test:cov": "npm run licenses && vitest run --coverage",
     "test:rust": "cargo test --locked --manifest-path src-tauri/Cargo.toml --all-targets",
     "test:e2e": "node scripts/test-e2e.js",
     "test:all": "node scripts/test-all.js",
-
+    "test:scripts": "node --test scripts/*.test.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/ scripts/ && npm run lint:comments",
     "lint:comments": "node scripts/lint-comments.mjs src src-tauri/src scripts",
     "lint:fix": "eslint src/ scripts/ --fix",
     "format": "prettier --write \"src/**/*.{ts,css,html,json}\" \"scripts/**/*.{js,mjs,cjs,ts,json}\" \"*.{json,md,ts}\"",
     "format:check": "prettier --check \"src/**/*.{ts,css,html,json}\" \"scripts/**/*.{js,mjs,cjs,ts,json}\" \"*.{json,md,ts}\"",
-
     "start": "npm run tauri:dev",
     "tauri": "tauri",
     "tauri:dev": "npm run sync-version && npm run licenses && tauri dev",
     "tauri:build": "npm run sync-version && npm run licenses && tauri build -- --locked",
-
     "sync-version": "node scripts/sync-version.js",
-
+    "icons:normalize": "node scripts/normalize-icons.js",
     "licenses": "npm run licenses:npm && npm run licenses:cargo",
     "licenses:npm": "node scripts/generate-npm-licenses.js",
     "licenses:cargo": "node scripts/generate-cargo-licenses.js",
     "release:licenses": "npm run licenses",
-
     "dist:clean": "node scripts/dist-tools.js clean",
     "dist:clean-release-artifacts": "node scripts/dist-tools.js clean-release-artifacts",
     "dist:list": "node scripts/dist-tools.js list",
-
     "wc": "npm run win-compiler:x64",
     "vi": "node scripts/vi.js",
     "b": "git fetch origin && git switch -C beta origin/beta && npm run vi",
     "r": "git fetch origin && git switch -C main origin/main && npm run vi && npm run gitprune:force",
     "u": "node scripts/npm-safe-update.mjs && node scripts/cargo-safe-update.mjs --manifest-path src-tauri/Cargo.toml && node scripts/sync-version.js",
     "u2": "node scripts/npm-safe-update.mjs && node scripts/cargo-safe-update.mjs --manifest-path src-tauri/Cargo.toml && node scripts/sync-version.js",
-
     "win-compiler:x64": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/launch-vs-devshell.ps1 -Arch x64",
     "win-compiler:arm64": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/launch-vs-devshell.ps1 -Arch arm64",
-
     "setup:win:artifact-signing": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-windows-artifact-signing.ps1",
-
     "build:win:x64:prepared": "dotenv -e .env -- node scripts/tauri-windows-build.js --target x86_64-pc-windows-msvc --bundles nsis",
     "build:win:arm64:prepared": "dotenv -e .env -- node scripts/tauri-windows-build.js --target aarch64-pc-windows-msvc --bundles nsis",
     "build:win:prepared": "npm run build:win:x64:prepared && npm run build:win:arm64:prepared",
     "build:win:x64": "npm run sync-version && npm run licenses && npm run build:win:x64:prepared",
     "build:win:arm64": "npm run sync-version && npm run licenses && npm run build:win:arm64:prepared",
     "build:win": "npm run sync-version && npm run licenses && npm run build:win:prepared",
-
     "rust:update": "rustup toolchain install stable --profile minimal --component cargo,clippy,rustfmt",
     "rust:targets:win": "rustup target add --toolchain stable x86_64-pc-windows-msvc aarch64-pc-windows-msvc",
-
     "workspace:bootstrap": "npm run rust:update && npm ci --ignore-scripts && npm run sync-version",
     "workspace:prepare": "npm run workspace:bootstrap && npm run test:all -- --require-clean-proof",
-
     "release:prepare": "npm run workspace:bootstrap && npm run test:all -- --require-clean-proof --skip-e2e && npm run dist:clean-release-artifacts",
     "release:session:verify": "node scripts/release-session.js",
     "release:draft": "dotenv -e .env -- node scripts/ensure-draft-release.cjs",
@@ -79,15 +67,16 @@
     "release:wait-draft": "dotenv -e .env -- node scripts/wait-for-draft-release.cjs",
     "release:preflight": "node scripts/release-preflight.js",
     "prerelease:prepare": "node scripts/release-warning.js && npm run release:preflight && npm run release:licenses",
-
     "release:sign:gpg": "dotenv -e .env -- node scripts/gpg-sign.js",
+    "release:mirror": "dotenv -e .env -- node scripts/finalize-release-assets.js",
+    "release:finalize": "npm run release:mirror && git fetch origin && git reset --hard @{u} && git clean -fd",
+    "release:updater-manifests": "dotenv -e .env -- node scripts/generate-updater-manifests.js",
+    "validate:updater": "node scripts/validate-updater-manifest.js",
     "release:verify:draft": "dotenv -e .env -- node scripts/verify-release-draft.js",
     "release:verify:published": "dotenv -e .env -- node scripts/verify-release-published.js",
-
-    "release:win:continue": "npm run release:session:verify && npm run release:licenses && npm run release:draft && npm run rust:targets:win && npm run build:win:prepared && npm run release:sign:gpg && npm run release:verify:draft",
+    "release:win:continue": "npm run release:session:verify && npm run release:licenses && npm run release:draft && npm run rust:targets:win && npm run build:win:prepared && npm run release:updater-manifests && npm run release:sign:gpg && npm run release:finalize && npm run release:verify:draft",
     "release:win:resume": "node scripts/run-release.js win --resume",
     "release:win": "node scripts/run-release.js win",
-
     "gitprune": "git remote prune origin",
     "gitprune:force": "git fetch --prune origin"
   },

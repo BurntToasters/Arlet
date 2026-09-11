@@ -1,3 +1,8 @@
+import {
+  createEnvTokenProvider,
+  type DeveloperTokenProvider,
+} from "./token.ts";
+
 export async function waitForMusicKit(timeoutMs = 10000): Promise<void> {
   if (window.MusicKit) return;
   return new Promise((resolve, reject) => {
@@ -24,14 +29,10 @@ export function configureMusicKit(
   });
 }
 
-export async function initializeMusicKit(): Promise<MusicKit.MusicKitInstance> {
-  const token = import.meta.env.VITE_MUSICKIT_DEVELOPER_TOKEN;
-  if (!token) {
-    throw new Error(
-      "VITE_MUSICKIT_DEVELOPER_TOKEN is not set. " +
-        "Create a .env.local file with your developer token.",
-    );
-  }
+export async function initializeMusicKit(
+  provider: DeveloperTokenProvider = createEnvTokenProvider(),
+): Promise<MusicKit.MusicKitInstance> {
+  const { token } = await provider.getToken();
   await waitForMusicKit();
   return configureMusicKit(token);
 }

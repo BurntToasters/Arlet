@@ -1,9 +1,18 @@
+import { invoke } from "@tauri-apps/api/core";
 import { initializeMusicKit } from "./musickit/bootstrap.ts";
 import { authorize, unauthorize, isAuthorized } from "./musickit/auth.ts";
-import { playSong, toggle, seekToTime, skipToNext, skipToPrevious, setVolume } from "./musickit/player.ts";
+import {
+  playSong,
+  toggle,
+  seekToTime,
+  skipToNext,
+  skipToPrevious,
+  setVolume,
+} from "./musickit/player.ts";
 import { registerMusicKitEvents } from "./musickit/events.ts";
 import { normalizeTrack } from "./musickit/normalize.ts";
 import { getState, setAuthState, resetState } from "./state.ts";
+import { redactSensitive } from "./platform/redact.ts";
 
 let music: MusicKit.MusicKitInstance | null = null;
 
@@ -14,7 +23,7 @@ function $(id: string): HTMLElement {
 function log(message: string): void {
   const output = $("diag-output");
   const timestamp = new Date().toISOString();
-  output.textContent += `[${timestamp}] ${message}\n`;
+  output.textContent += `[${timestamp}] ${redactSensitive(message)}\n`;
   output.scrollTop = output.scrollHeight;
 }
 
@@ -56,8 +65,31 @@ function updateUI(): void {
   }
 }
 
+interface NativeDiagnostics {
+  version: string;
+  tauri_version: string;
+  os: string;
+  arch: string;
+  webview_version: string | null;
+  debug: boolean;
+}
+
+async function logDiagnostics(): Promise<void> {
+  try {
+    const info = await invoke<NativeDiagnostics>("get_app_info");
+    log(
+      `App ${info.version} / Tauri ${info.tauri_version} / ` +
+        `${info.os}-${info.arch} / WebView2 ${info.webview_version ?? "unknown"} / ` +
+        `${info.debug ? "debug" : "release"}`,
+    );
+  } catch {
+    log("Running outside the Tauri shell; native diagnostics unavailable.");
+  }
+}
+
 export async function initializeApplication(): Promise<void> {
   const initStatus = $("init-status");
+  await logDiagnostics();
   log("Initializing MusicKit…");
 
   try {
@@ -75,15 +107,24 @@ export async function initializeApplication(): Promise<void> {
 
   // Enable controls
   const enableIds = [
-    "btn-authorize", "btn-unauthorize", "search-input",
-    "btn-search", "btn-prev", "btn-play", "btn-next", "seek-slider",
+    "btn-authorize",
+    "btn-unauthorize",
+    "search-input",
+    "btn-search",
+    "btn-prev",
+    "btn-play",
+    "btn-next",
+    "seek-slider",
   ];
   for (const id of enableIds) {
     ($(id) as HTMLButtonElement | HTMLInputElement).disabled = false;
   }
 
   if (isAuthorized(music)) {
-    setAuthState({ status: "authorized", musicUserToken: music.musicUserToken });
+    setAuthState({
+      status: "authorized",
+      musicUserToken: music.musicUserToken,
+    });
     log("Already authorized from previous session.");
     updateUI();
   }
@@ -97,7 +138,9 @@ export async function initializeApplication(): Promise<void> {
       log("Authorization successful.");
       updateUI();
     } catch (error) {
-      log(`Authorization failed: ${error instanceof Error ? error.message : String(error)}`);
+      log(
+        `Authorization failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   });
 
@@ -109,7 +152,9 @@ export async function initializeApplication(): Promise<void> {
       log("Signed out.");
       updateUI();
     } catch (error) {
-      log(`Sign out failed: ${error instanceof Error ? error.message : String(error)}`);
+      log(
+        `Sign out failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   });
 
@@ -120,7 +165,10 @@ export async function initializeApplication(): Promise<void> {
     if (!term) return;
     log(`Searching: "${term}"`);
     try {
-      const response = await music.api.search(term, { types: "songs", limit: 10 });
+      const response = await music.api.search(term, {
+        types: "songs",
+        limit: 10,
+      });
       const songs = response.songs?.data ?? [];
       const resultsEl = $("search-results");
       resultsEl.innerHTML = "";
@@ -139,14 +187,18 @@ export async function initializeApplication(): Promise<void> {
           try {
             await playSong(music, track.id);
           } catch (error) {
-            log(`Play failed: ${error instanceof Error ? error.message : String(error)}`);
+            log(
+              `Play failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
           }
         });
         resultsEl.appendChild(btn);
       }
       log(`Found ${songs.length} results.`);
     } catch (error) {
-      log(`Search failed: ${error instanceof Error ? error.message : String(error)}`);
+      log(
+        `Search failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   });
 
@@ -155,7 +207,9 @@ export async function initializeApplication(): Promise<void> {
     try {
       await toggle(music);
     } catch (error) {
-      log(`Toggle failed: ${error instanceof Error ? error.message : String(error)}`);
+      log(
+        `Toggle failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   });
 
@@ -164,7 +218,9 @@ export async function initializeApplication(): Promise<void> {
     try {
       await skipToPrevious(music);
     } catch (error) {
-      log(`Previous failed: ${error instanceof Error ? error.message : String(error)}`);
+      log(
+        `Previous failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   });
 
@@ -173,7 +229,9 @@ export async function initializeApplication(): Promise<void> {
     try {
       await skipToNext(music);
     } catch (error) {
-      log(`Next failed: ${error instanceof Error ? error.message : String(error)}`);
+      log(
+        `Next failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   });
 
@@ -184,7 +242,9 @@ export async function initializeApplication(): Promise<void> {
     try {
       await seekToTime(music, seconds);
     } catch (error) {
-      log(`Seek failed: ${error instanceof Error ? error.message : String(error)}`);
+      log(
+        `Seek failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
   });
 

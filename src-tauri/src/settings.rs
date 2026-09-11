@@ -21,10 +21,7 @@ fn backup_path(path: &std::path::Path) -> std::path::PathBuf {
     path.with_extension("json.bak")
 }
 
-pub fn atomic_write_text(
-    path: &std::path::Path,
-    content: &str,
-) -> Result<(), String> {
+pub fn atomic_write_text(path: &std::path::Path, content: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }

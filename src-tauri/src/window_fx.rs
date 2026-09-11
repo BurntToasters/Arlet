@@ -31,18 +31,16 @@ pub fn apply_mica(window: &WebviewWindow, dark: bool) -> Result<(), String> {
         use window_vibrancy::{apply_acrylic, apply_mica};
         paint_transparent_background(window);
         match apply_mica(window, Some(dark)) {
-            Ok(()) => return Ok(()),
-            Err(mica_error) => {
-                match apply_acrylic(window, Some(acrylic_tint(dark))) {
-                    Ok(()) => return Ok(()),
-                    Err(acrylic_error) => {
-                        paint_opaque_background(window, dark);
-                        return Err(format!(
-                            "Mica unavailable ({mica_error}); Acrylic failed: {acrylic_error}"
-                        ));
-                    }
+            Ok(()) => Ok(()),
+            Err(mica_error) => match apply_acrylic(window, Some(acrylic_tint(dark))) {
+                Ok(()) => Ok(()),
+                Err(acrylic_error) => {
+                    paint_opaque_background(window, dark);
+                    Err(format!(
+                        "Mica unavailable ({mica_error}); Acrylic failed: {acrylic_error}"
+                    ))
                 }
-            }
+            },
         }
     }
     #[cfg(not(target_os = "windows"))]
@@ -76,11 +74,7 @@ pub fn clear_effects(window: &WebviewWindow, dark: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn set_window_fx(
-    window: WebviewWindow,
-    enabled: bool,
-    dark: bool,
-) -> Result<(), String> {
+pub fn set_window_fx(window: WebviewWindow, enabled: bool, dark: bool) -> Result<(), String> {
     if !supports_native_fx() {
         paint_opaque_background(&window, dark);
         let _ = enabled;

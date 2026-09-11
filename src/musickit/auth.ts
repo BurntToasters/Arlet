@@ -10,8 +10,6 @@ export async function unauthorize(
   return instance.unauthorize();
 }
 
-export function isAuthorized(
-  instance: MusicKit.MusicKitInstance,
-): boolean {
+export function isAuthorized(instance: MusicKit.MusicKitInstance): boolean {
   return instance.isAuthorized;
 }

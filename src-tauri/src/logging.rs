@@ -33,11 +33,12 @@ fn truncate_entry(entry: &str) -> String {
 
 fn redact_sensitive(text: &str) -> String {
     let patterns = [
-        "eyJ",  // JWT prefix (base64 of `{"` )
+        "eyJ", // JWT prefix (base64 of `{"` )
     ];
     let mut result = text.to_string();
     for pattern in patterns {
-        if let Some(start) = result.find(pattern) {
+        // Loop: one entry can carry several tokens (dev token + user token).
+        while let Some(start) = result.find(pattern) {
             let end = result[start..]
                 .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ',')
                 .map(|i| start + i)
@@ -51,7 +52,10 @@ fn redact_sensitive(text: &str) -> String {
 #[tauri::command]
 pub fn append_local_log(app: tauri::AppHandle, entry: String) -> Result<(), String> {
     let state = app.state::<LogFileLock>();
-    let _guard = state.0.lock().map_err(|_| "Log lock poisoned".to_string())?;
+    let _guard = state
+        .0
+        .lock()
+        .map_err(|_| "Log lock poisoned".to_string())?;
     let path = log_path(&app)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -79,7 +83,10 @@ pub fn get_log_dir(app: tauri::AppHandle) -> Result<String, String> {
 #[tauri::command]
 pub fn clear_logs(app: tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<LogFileLock>();
-    let _guard = state.0.lock().map_err(|_| "Log lock poisoned".to_string())?;
+    let _guard = state
+        .0
+        .lock()
+        .map_err(|_| "Log lock poisoned".to_string())?;
     let path = log_path(&app)?;
     if path.exists() {
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
@@ -111,6 +118,14 @@ mod tests {
         let result = redact_sensitive(text);
         assert!(result.contains("[REDACTED]"));
         assert!(!result.contains("eyJ"));
+    }
+
+    #[test]
+    fn redact_all_jwt_tokens_in_entry() {
+        let text = "dev=eyJkZXYtdG9rZW4 user=eyJ1c2VyLXRva2Vu";
+        let result = redact_sensitive(text);
+        assert!(!result.contains("eyJ"));
+        assert_eq!(result.matches("[REDACTED]").count(), 2);
     }
 
     #[test]

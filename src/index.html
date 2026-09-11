@@ -6,7 +6,11 @@
     <title>Arlet</title>
     <link rel="stylesheet" href="./styles/tokens.css" />
     <link rel="stylesheet" href="./styles/base.css" />
-    <script src="https://js-cdn.music.apple.com/musickit/v3/musickit.js" data-web-components async></script>
+    <script
+      src="https://js-cdn.music.apple.com/musickit/v3/musickit.js"
+      data-web-components
+      async
+    ></script>
   </head>
   <body>
     <div id="app">
@@ -23,7 +27,12 @@
             <button id="btn-unauthorize" disabled>Sign Out</button>
           </div>
           <div class="controls">
-            <input id="search-input" type="text" placeholder="Search for a song…" disabled />
+            <input
+              id="search-input"
+              type="text"
+              placeholder="Search for a song…"
+              disabled
+            />
             <button id="btn-search" disabled>Search</button>
           </div>
           <div id="search-results"></div>
@@ -40,8 +49,25 @@
             <button id="btn-next" disabled>⏭</button>
           </div>
           <div class="controls">
-            <label>Seek: <input id="seek-slider" type="range" min="0" max="100" value="0" disabled /></label>
-            <label>Volume: <input id="volume-slider" type="range" min="0" max="100" value="50" /></label>
+            <label
+              >Seek:
+              <input
+                id="seek-slider"
+                type="range"
+                min="0"
+                max="100"
+                value="0"
+                disabled
+            /></label>
+            <label
+              >Volume:
+              <input
+                id="volume-slider"
+                type="range"
+                min="0"
+                max="100"
+                value="50"
+            /></label>
           </div>
           <div id="playback-state">Idle</div>
           <div id="track-counter">Tracks played: 0</div>

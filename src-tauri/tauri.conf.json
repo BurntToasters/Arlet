@@ -25,16 +25,12 @@
     ],
     "security": {
       "csp": "default-src 'self'; script-src 'self' https://js-cdn.music.apple.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.mzstatic.com https://*.apple.com; font-src 'self' data:; connect-src 'self' https://*.apple.com https://*.mzstatic.com; media-src 'self' blob: https://*.apple.com https://*.mzstatic.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; frame-src https://authorize.music.apple.com; worker-src 'self' blob:",
-      "capabilities": [
-        "default"
-      ]
+      "capabilities": ["default"]
     }
   },
   "bundle": {
     "active": true,
-    "targets": [
-      "nsis"
-    ],
+    "targets": ["nsis"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -44,6 +40,19 @@
     ],
     "createUpdaterArtifacts": true,
     "windows": {
+      "signCommand": {
+        "cmd": "powershell.exe",
+        "args": [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "../scripts/windows-artifact-sign.ps1",
+          "-FilePath",
+          "%1"
+        ]
+      },
       "nsis": {
         "installMode": "currentUser",
         "installerIcon": "icons/icon.ico"
@@ -58,7 +67,7 @@
         "https://github.com/BurntToasters/Arlet/releases/download/v{{current_version}}/latest-{{target}}-{{arch}}.json",
         "https://github.com/BurntToasters/Arlet/releases/download/v{{current_version}}/latest-{{target}}.json"
       ],
-      "pubkey": ""
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY1RTNFOTE4NzJGNjk2ODcKUldTSGx2WnlHT25qOWY0a2V3YjdvSENXaEJ4WHhsQUd0VTRMOGJ1aHJSNkVDb3YyNG1wMW5ZWUgK"
     }
   }
 }

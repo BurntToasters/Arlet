@@ -166,21 +166,21 @@ Use the normal **Evergreen WebView2** runtime first. Do not switch to a bundled 
 
 At minimum:
 
-| Case | Required |
-|---|---|
-| Windows 11 x64 | Yes |
-| Full protected Apple Music track | Yes |
-| 20+ consecutive tracks | Yes |
-| Seek within protected track | Yes |
-| Pause/resume repeatedly | Yes |
-| App minimize/restore | Yes |
-| Lock/unlock Windows | Yes |
-| Change default output device | Yes |
-| Restart app | Yes |
-| Logout/login again | Yes |
-| Two-hour session | Yes |
-| Error recovery after network interruption | Yes |
-| ARM64 native build | Before public beta, not required on day one |
+| Case                                      | Required                                    |
+| ----------------------------------------- | ------------------------------------------- |
+| Windows 11 x64                            | Yes                                         |
+| Full protected Apple Music track          | Yes                                         |
+| 20+ consecutive tracks                    | Yes                                         |
+| Seek within protected track               | Yes                                         |
+| Pause/resume repeatedly                   | Yes                                         |
+| App minimize/restore                      | Yes                                         |
+| Lock/unlock Windows                       | Yes                                         |
+| Change default output device              | Yes                                         |
+| Restart app                               | Yes                                         |
+| Logout/login again                        | Yes                                         |
+| Two-hour session                          | Yes                                         |
+| Error recovery after network interruption | Yes                                         |
+| ARM64 native build                        | Before public beta, not required on day one |
 
 Do not automate Apple credentials or store account secrets in test fixtures.
 
@@ -779,8 +779,7 @@ Suggested initial layout:
 │   │       ├── media_controls.rs
 │   │       └── taskbar.rs
 │   ├── Cargo.toml
-│   ├── tauri.conf.json
-│   └── tauri.windows.conf.json
+│   ├── tauri.conf.json (incl. bundle.windows.signCommand)
 ├── .env.example
 ├── AGENTS.md
 ├── ARCHITECTURE.md
@@ -1145,32 +1144,32 @@ Every privileged plugin increases security surface.
 
 Use this table when bringing over release tooling.
 
-| Zinnia concept/script | Action here |
-|---|---|
-| `install-git-hooks.js` | Port/reuse |
-| `sync-version.js` | Port and adapt manifest paths/names |
-| npm/cargo license generators | Port/reuse |
-| `test-all.js` | Port and adapt required suites |
-| `test-e2e.js` | Port after UI shell exists |
-| `npm-safe-update.mjs` | Port/reuse |
-| `cargo-safe-update.mjs` | Port/reuse |
-| `launch-vs-devshell.ps1` | Port/reuse |
-| `windows-vs-toolchain.js` | Port/reuse |
-| `tauri-windows-build.js` | Port and remove 7-Zip/shell-extension assumptions |
-| Windows Artifact Signing setup | Port/reuse architecture |
-| Windows artifact signer/verifier | Port/reuse architecture |
-| `release-preflight.js` | Port and add MusicKit credential leak checks |
-| `release-session.js` | Port/reuse exact-commit/toolchain concept |
-| `run-release.js` | Port, Windows only initially |
-| draft release helpers | Port/reuse |
-| updater manifest validation | Port/reuse |
-| updater live validation | Port/reuse |
-| GPG detached signature script | Port/reuse if release policy keeps GPG |
-| beta/stable manifest sync | Port if beta channel is retained |
-| 7-Zip download/update scripts | Drop |
-| archive/context-menu scripts | Drop |
-| macOS/Linux release scripts | Defer |
-| sparse shell MSIX integration | Drop unless future feature requires it |
+| Zinnia concept/script            | Action here                                       |
+| -------------------------------- | ------------------------------------------------- |
+| `install-git-hooks.js`           | Port/reuse                                        |
+| `sync-version.js`                | Port and adapt manifest paths/names               |
+| npm/cargo license generators     | Port/reuse                                        |
+| `test-all.js`                    | Port and adapt required suites                    |
+| `test-e2e.js`                    | Port after UI shell exists                        |
+| `npm-safe-update.mjs`            | Port/reuse                                        |
+| `cargo-safe-update.mjs`          | Port/reuse                                        |
+| `launch-vs-devshell.ps1`         | Port/reuse                                        |
+| `windows-vs-toolchain.js`        | Port/reuse                                        |
+| `tauri-windows-build.js`         | Port and remove 7-Zip/shell-extension assumptions |
+| Windows Artifact Signing setup   | Port/reuse architecture                           |
+| Windows artifact signer/verifier | Port/reuse architecture                           |
+| `release-preflight.js`           | Port and add MusicKit credential leak checks      |
+| `release-session.js`             | Port/reuse exact-commit/toolchain concept         |
+| `run-release.js`                 | Port, Windows only initially                      |
+| draft release helpers            | Port/reuse                                        |
+| updater manifest validation      | Port/reuse                                        |
+| updater live validation          | Port/reuse                                        |
+| GPG detached signature script    | Port/reuse if release policy keeps GPG            |
+| beta/stable manifest sync        | Port if beta channel is retained                  |
+| 7-Zip download/update scripts    | Drop                                              |
+| archive/context-menu scripts     | Drop                                              |
+| macOS/Linux release scripts      | Defer                                             |
+| sparse shell MSIX integration    | Drop unless future feature requires it            |
 
 Do not add a script name to `package.json` before its backing script exists and at least has a smoke test. Avoid a package file full of dead aliases.
 
@@ -1771,4 +1770,3 @@ It should be:
 > Create a minimal Tauri v2 Windows-only MusicKit feasibility prototype following this repository's conventions. Prove or disprove reliable full Apple Music subscriber playback in Evergreen WebView2. Keep the UI intentionally minimal. Add no undocumented DRM workaround. Record the exact environment, authorization flow, playback results, failures, WebView2 version, Windows build, and recommendation in `docs/MUSICKIT_TAURI_FEASIBILITY.md`. Only after the gate passes should the agent begin Milestone 1.
 
 A successful first milestone gives the rest of the project permission to exist.
-

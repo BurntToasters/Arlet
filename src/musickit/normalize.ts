@@ -1,12 +1,7 @@
 import type { Track, Artwork } from "../domain/music.ts";
 
-export function normalizeArtworkUrl(
-  url: string,
-  size: number,
-): string {
-  return url
-    .replace("{w}", String(size))
-    .replace("{h}", String(size));
+export function normalizeArtworkUrl(url: string, size: number): string {
+  return url.replace("{w}", String(size)).replace("{h}", String(size));
 }
 
 export function normalizeArtwork(
@@ -22,9 +17,7 @@ export function normalizeArtwork(
   };
 }
 
-export function normalizeTrack(
-  item: MusicKit.MediaItem,
-): Track {
+export function normalizeTrack(item: MusicKit.MediaItem): Track {
   return {
     id: item.id,
     title: item.title || "Unknown Title",

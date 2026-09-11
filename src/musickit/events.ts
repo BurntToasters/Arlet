@@ -5,6 +5,8 @@ import {
   setPlaybackError,
 } from "../state.ts";
 import { normalizeTrack } from "./normalize.ts";
+import { mapErrorToCode } from "./errors.ts";
+import { redactSensitive } from "../platform/redact.ts";
 import type { PlaybackState } from "../domain/music.ts";
 
 function mapPlaybackState(state: number): PlaybackState["status"] {
@@ -70,7 +72,7 @@ export function registerMusicKitEvents(
       const message = String(
         (event as Record<string, unknown>).message ?? "Playback error",
       );
-      setPlaybackError("PLAYBACK_FAILED", message);
+      setPlaybackError(mapErrorToCode(message), redactSensitive(message));
       onStateChange?.();
     },
   );

@@ -23,7 +23,11 @@ declare namespace MusicKit {
     unauthorize(): Promise<void>;
     isAuthorized: boolean;
     musicUserToken: string;
-    setQueue(options: { songs?: string[]; album?: string; url?: string }): Promise<void>;
+    setQueue(options: {
+      songs?: string[];
+      album?: string;
+      url?: string;
+    }): Promise<void>;
     play(): Promise<void>;
     pause(): void;
     stop(): void;
@@ -35,10 +39,19 @@ declare namespace MusicKit {
     currentPlaybackDuration: number;
     nowPlayingItem: MediaItem | null;
     playbackState: number;
-    addEventListener(name: string, callback: (event: Record<string, unknown>) => void): void;
-    removeEventListener(name: string, callback: (event: Record<string, unknown>) => void): void;
+    addEventListener(
+      name: string,
+      callback: (event: Record<string, unknown>) => void,
+    ): void;
+    removeEventListener(
+      name: string,
+      callback: (event: Record<string, unknown>) => void,
+    ): void;
     api: {
-      search(term: string, options?: { types?: string; limit?: number }): Promise<SearchResponse>;
+      search(
+        term: string,
+        options?: { types?: string; limit?: number },
+      ): Promise<SearchResponse>;
     };
   }
 

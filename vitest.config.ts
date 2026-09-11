@@ -12,10 +12,7 @@ export default defineConfig({
       reporter: ["text", "json-summary", "html"],
       reportsDirectory: "coverage",
       include: ["src/**/*.ts"],
-      exclude: [
-        "src/__tests__/**",
-        "src/vite-env.d.ts",
-      ],
+      exclude: ["src/__tests__/**", "src/vite-env.d.ts"],
     },
   },
 });

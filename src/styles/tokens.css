@@ -1,4 +1,9 @@
+/* Arlet design tokens (plan section 7.3). Small token system; components use
+   these instead of ad hoc values. Phase 0 only: Milestone 1 grows this. */
+
 :root {
+  color-scheme: light dark;
+
   --font-ui: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
 
   --space-1: 4px;
@@ -15,23 +20,18 @@
   --duration-fast: 100ms;
   --duration-normal: 180ms;
 
-  --color-bg: #f5f5f5;
-  --color-surface: #ffffff;
-  --color-text: #1a1a1a;
-  --color-text-secondary: #666666;
-  --color-accent: #0078d4;
-  --color-error: #d13438;
-  --color-border: #e0e0e0;
+  --surface: canvas;
+  --surface-raised: color-mix(in srgb, canvas 92%, GrayText);
+  --text: canvastext;
+  --text-dim: GrayText;
+  --accent: AccentColor;
+  --accent-text: AccentColorText;
+  --danger: #c42b1c;
+  --border: color-mix(in srgb, currentcolor 20%, transparent);
 }
 
-@media (prefers-color-scheme: dark) {
+@media (prefers-contrast: more) {
   :root {
-    --color-bg: #1e1e1e;
-    --color-surface: #2d2d2d;
-    --color-text: #f0f0f0;
-    --color-text-secondary: #a0a0a0;
-    --color-accent: #60cdff;
-    --color-error: #ff6b6b;
-    --color-border: #404040;
+    --border: currentcolor;
   }
 }
