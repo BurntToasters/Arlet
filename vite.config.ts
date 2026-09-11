@@ -37,9 +37,10 @@ export default defineConfig({
     __BUILD_NODE_VERSION__: JSON.stringify(process.version),
     __BUILD_NPM_VERSION__: JSON.stringify(readNpmVersion()),
   },
-  // Vite `root` is `src/`; keep dotenv files at the repository root so
-  // `.env.local` matches the Phase 0 instructions in tasklist.md.
+  // Vite `root` is `src/`; keep envDir at the repo root like postal-snap.
+  // MusicKit developer tokens are NOT Vite env vars; Rust reads them from `.env`.
   envDir: resolve(import.meta.dirname),
+  envPrefix: "VITE_",
   root: "src",
   publicDir: "../public",
   build: {

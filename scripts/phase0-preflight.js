@@ -9,7 +9,10 @@ import { fileURLToPath } from "node:url";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 export const repoRoot = path.resolve(scriptDir, "..");
-const TOKEN_KEY = "VITE_MUSICKIT_DEVELOPER_TOKEN";
+const TOKEN_KEYS = [
+  "MUSICKIT_DEVELOPER_TOKEN",
+  "VITE_MUSICKIT_DEVELOPER_TOKEN",
+];
 
 export function parseEnvFile(filePath) {
   if (!fs.existsSync(filePath)) return {};
@@ -33,15 +36,21 @@ export function parseEnvFile(filePath) {
 }
 
 export function resolveDeveloperTokenEnv(root = repoRoot) {
-  return {
-    ...parseEnvFile(path.join(root, ".env")),
-    ...parseEnvFile(path.join(root, ".env.local")),
-  };
+  return parseEnvFile(path.join(root, ".env"));
+}
+
+export function developerTokenValue(env) {
+  for (const key of TOKEN_KEYS) {
+    const token = env[key];
+    if (typeof token === "string" && token.trim().length > 0) {
+      return token.trim();
+    }
+  }
+  return null;
 }
 
 export function hasDeveloperToken(root = repoRoot) {
-  const token = resolveDeveloperTokenEnv(root)[TOKEN_KEY];
-  return typeof token === "string" && token.trim().length > 0;
+  return developerTokenValue(resolveDeveloperTokenEnv(root)) !== null;
 }
 
 export function readRustToolchainChannel(root = repoRoot) {
@@ -158,7 +167,7 @@ export function formatPhase0PreflightReport(env) {
   const lines = [
     "Phase 0 manual gate preflight",
     "",
-    `Developer token configured: ${env.developerTokenConfigured ? "yes" : "NO — add VITE_MUSICKIT_DEVELOPER_TOKEN to .env.local"}`,
+    `Developer token configured: ${env.developerTokenConfigured ? "yes" : "NO — add MUSICKIT_DEVELOPER_TOKEN to .env (or npm run phase0:mint-token)"}`,
     `Node: ${env.nodeVersion}`,
     `npm: ${env.npmVersion ?? "(npm not on PATH)"}`,
     `Rust toolchain channel: ${env.rustToolchain}`,
@@ -167,22 +176,29 @@ export function formatPhase0PreflightReport(env) {
     `WebView2 (registry): ${env.webview2Version ?? "(not on Windows or unreadable)"}`,
     "",
     "Next:",
-    "  1. npm run tauri:dev",
-    "  2. Sign in, search, play full tracks (not previews)",
-    "  3. Complete the Feasibility Matrix checklist in the app",
-    "  4. Copy feasibility report -> docs/MUSICKIT_TAURI_FEASIBILITY.md",
-    "  5. Copy network surface -> docs/MUSICKIT_NETWORK_SURFACE.md",
+    "  1. If the token is missing: set MUSICKIT_TEAM_ID, MUSICKIT_KEY_ID, MUSICKIT_P8_PATH (p8 outside the repo) then npm run phase0:mint-token",
+    "  2. npm run tauri:dev",
+    "  3. Sign in, search, play full tracks (not previews)",
+    "  4. Complete the Feasibility Matrix checklist in the app",
+    "  5. Copy feasibility report -> docs/MUSICKIT_TAURI_FEASIBILITY.md",
+    "  6. Copy network surface -> docs/MUSICKIT_NETWORK_SURFACE.md",
   ];
   return lines.join("\n");
 }
 
 export function runPhase0Preflight(options = {}) {
   const { root = repoRoot, requireToken = false } = options;
+  const envLocal = path.join(root, ".env.local");
+  if (fs.existsSync(envLocal)) {
+    console.warn(
+      "phase0-preflight: warning: .env.local is ignored. House style is `.env` (postal-snap).",
+    );
+  }
   const env = collectPhase0Environment(root);
   const report = formatPhase0PreflightReport(env);
   if (requireToken && !env.developerTokenConfigured) {
     throw new Error(
-      "VITE_MUSICKIT_DEVELOPER_TOKEN is missing. Create .env.local with your Apple Music developer token.",
+      "MUSICKIT_DEVELOPER_TOKEN is missing. Copy .env.example to .env and set your Apple Music developer token.",
     );
   }
   return { env, report };

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-open-music-diagnostic"
+description = "Enables the open_music_diagnostic command without any pre-configured scope."
+commands.allow = ["open_music_diagnostic"]
+
+[[permission]]
+identifier = "deny-open-music-diagnostic"
+description = "Denies the open_music_diagnostic command without any pre-configured scope."
+commands.deny = ["open_music_diagnostic"]

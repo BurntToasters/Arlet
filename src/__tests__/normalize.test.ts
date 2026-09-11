@@ -36,6 +36,20 @@ describe("normalizeTrack", () => {
     expect(track.artwork?.url).toContain("300x300");
   });
 
+  it("prefers catalog durationInMillis over playbackDuration", () => {
+    const item = {
+      id: "1",
+      title: "Long Song",
+      artistName: "Artist",
+      albumName: "Album",
+      artworkURL: "",
+      playbackDuration: 30,
+      attributes: { durationInMillis: 240000 },
+    } as MusicKit.MediaItem;
+
+    expect(normalizeTrack(item).durationMs).toBe(240000);
+  });
+
   it("handles missing fields gracefully", () => {
     const item = {
       id: "99999",

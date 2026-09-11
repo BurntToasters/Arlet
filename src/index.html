@@ -25,7 +25,14 @@
           <div class="controls">
             <button id="btn-authorize" disabled>Sign In</button>
             <button id="btn-unauthorize" disabled>Sign Out</button>
+            <button id="btn-music-diagnostic" type="button">
+              Open music.apple.com diagnostic
+            </button>
           </div>
+          <p id="diagnostic-hint">
+            Diagnostic webview needs an Apple Music subscription, not a
+            developer token. Zero Tauri privileges.
+          </p>
           <div class="controls">
             <input
               id="search-input"
@@ -44,6 +51,7 @@
             <div id="np-info">
               <div id="np-title">—</div>
               <div id="np-artist">—</div>
+              <div id="np-kind">Playback kind: —</div>
             </div>
           </div>
           <div class="controls">

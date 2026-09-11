@@ -37,6 +37,38 @@ pub fn get_app_info(app: tauri::AppHandle) -> Result<AppInfo, String> {
     })
 }
 
+const TOKEN_ENV_KEYS: [&str; 2] = ["MUSICKIT_DEVELOPER_TOKEN", "VITE_MUSICKIT_DEVELOPER_TOKEN"];
+
+pub fn developer_token_from_lookup<F>(lookup: F) -> Result<String, String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    if !cfg!(debug_assertions) {
+        return Err("MusicKit developer tokens are not served in release builds.".to_string());
+    }
+    for key in TOKEN_ENV_KEYS {
+        if let Some(value) = lookup(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Ok(trimmed.to_string());
+            }
+        }
+    }
+    Err(
+        "MUSICKIT_DEVELOPER_TOKEN is not set. Copy .env.example to .env and run npm run tauri:dev."
+            .to_string(),
+    )
+}
+
+pub fn developer_token_from_env() -> Result<String, String> {
+    developer_token_from_lookup(|key| std::env::var(key).ok())
+}
+
+#[tauri::command]
+pub fn get_developer_token() -> Result<String, String> {
+    developer_token_from_env()
+}
+
 #[cfg(windows)]
 fn windows_display_build() -> Option<String> {
     use std::process::Command;
@@ -80,5 +112,30 @@ mod tests {
         assert!(json.contains("webview_version"));
         assert!(json.contains("rustc_version"));
         assert!(json.contains("windows_build"));
+    }
+
+    #[test]
+    fn debug_reads_musickit_developer_token() {
+        let token = super::developer_token_from_lookup(|key| {
+            (key == "MUSICKIT_DEVELOPER_TOKEN").then(|| " jwt-from-env ".to_string())
+        })
+        .expect("token");
+        assert_eq!(token, "jwt-from-env");
+    }
+
+    #[test]
+    fn debug_accepts_legacy_vite_token_alias() {
+        let token = super::developer_token_from_lookup(|key| {
+            (key == "VITE_MUSICKIT_DEVELOPER_TOKEN").then(|| "legacy-jwt".to_string())
+        })
+        .expect("token");
+        assert_eq!(token, "legacy-jwt");
+    }
+
+    #[test]
+    fn missing_token_does_not_echo_secrets() {
+        let err = super::developer_token_from_lookup(|_| None).unwrap_err();
+        assert!(err.contains("MUSICKIT_DEVELOPER_TOKEN"));
+        assert!(!err.contains("jwt"));
     }
 }

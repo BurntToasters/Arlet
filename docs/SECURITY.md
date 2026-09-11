@@ -5,8 +5,15 @@
 Tauri capabilities are a real boundary, not documentation. Permissions are
 granted per window label in `src-tauri/capabilities/`; the default set covers
 only version, window management, updater, restart, notifications, settings,
-logging, and window effects. There is no `shell` plugin, no arbitrary command
-execution, and remote Apple origins get no filesystem/shell/updater access.
+logging, window effects, and opening the diagnostic window. There is no
+`shell` plugin, no arbitrary command execution, and remote Apple origins get
+no filesystem/shell/updater access.
+
+The Phase 0 `music-diagnostic` window loads `https://music.apple.com/` with an
+empty permission list, `local: false`, and remote URL scope limited to that
+origin. It has zero Tauri commands. Do not scrape Apple's DOM, inject scripts
+into that page, or add privileges to that capability unless a later gate
+failure documents a narrowly scoped need.
 
 Content Security Policy in `src-tauri/tauri.conf.json` allows only the exact
 Apple domains MusicKit needs (see `docs/MUSICKIT_NETWORK_SURFACE.md`) plus
@@ -22,10 +29,14 @@ make a bug disappear; document the required origin first.
   binary, or CI log. Production obtains short-lived developer tokens from a
   small HTTPS token service (`DeveloperTokenProvider`; see
   `src/musickit/token.ts`).
-- Local development tokens live only in `.env.local` (gitignored).
-  `release:preflight` refuses a production release if a `.p8` file exists in
-  the worktree, if a dev-token variable is set, or if credential files are
-  staged.
+- Local Phase 0 reads `MUSICKIT_DEVELOPER_TOKEN` from `.env` (gitignored;
+  copy `.env.example` → `.env`, same as postal-snap). `npm run
+  phase0:mint-token` can mint that JWT from `MUSICKIT_TEAM_ID`,
+  `MUSICKIT_KEY_ID`, and an absolute `MUSICKIT_P8_PATH` **outside** the
+  repo; it never prints the JWT or `.p8`. `dotenv -e .env -- tauri
+  dev` loads it into the Rust process. A debug-only `get_developer_token`
+  command hands it to MusicKit. Release builds refuse that command. Production
+  obtains short-lived tokens from a small HTTPS token service.
 
 ## Logging
 

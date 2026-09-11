@@ -34,3 +34,6 @@
 
 - CSP in `tauri.conf.json` must be updated to match the actual observed domains.
 - Do not use broad wildcards like `https:` as a shortcut.
+- The Phase 0 diagnostic webview loads `https://music.apple.com/` in a separate
+  unprivileged window. That origin is not granted Tauri IPC. MusicKit JS in the
+  main window still uses the table above.

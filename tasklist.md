@@ -9,11 +9,14 @@ This document tracks our progress through the Arlet `plan.md` architecture brief
       release proof.
 - [ ] **Back up `.env` offline:** updater private key + password live only
       there (gitignored). Required on the release VM.
-- [ ] **Set `AFTER_PACK_LOC`:** archive dir outside the repo, or stable
-      releases refuse to finalize.
-- [ ] **Manual gate next:** `.env.local` token → `npm run tauri:dev` →
+- [x] **Set `AFTER_PACK_LOC`:** this machine uses
+      `C:/Users/Burnt/Documents/Arlet-release-archive` (outside the repo).
+      Copy the same key to the release VM when cutting a stable release.
+- [ ] **Manual gate next:** `.env` token → `npm run tauri:dev` →
       playback matrix → paste copied reports into feasibility docs (checklist
-      below). Phase 0 UI now includes matrix checklist + clipboard export.
+      below). Phase 0 UI includes matrix checklist, clipboard export,
+      preview-vs-full label, and an unprivileged music.apple.com diagnostic
+      (Apple ID only; no developer token).
 - [ ] **Then:** gate PASS → Milestone 1 shell; gate FAIL → CastLabs spike,
       keep portable layers (plan §4.5/§25).
 
@@ -160,23 +163,45 @@ This document tracks our progress through the Arlet `plan.md` architecture brief
 - [x] Tests: `gate-session.test.ts`, `lifecycle.test.ts`, `player.test.ts`,
       `phase0-preflight.test.js`; `get_app_info` includes `rustc_version` +
       `windows_build`.
-- [x] Vite `envDir` is the repo root so `.env.local` actually loads (Vite
-      `root` is `src/`).
+- [x] Vite `envDir` is the repo root. MusicKit token is `MUSICKIT_DEVELOPER_TOKEN`
+      in `.env`, served by a debug-only Tauri command (not a `VITE_` var).
 - [x] Consecutive 20-track queue: search limit 25, **Queue 20 consecutive**,
       skip next/prev over the queued results.
 - [x] Lifecycle diagnostics: visibility, focus, online/offline, audio device
       change logged into the Phase 0 console.
 
+## ✅ Phase 0 Diagnostic Webview + Preview Detection (Completed 2026-09-11)
+
+- [x] Unprivileged `music.apple.com` webview (`music_diagnostic.rs`, plan §4.3):
+      zero permissions, `local: false`, remote URL scoped to Apple Music.
+      Opens from the Phase 0 UI even if MusicKit init fails. No DOM scrape,
+      no script injection.
+- [x] Preview vs full: `classifyPlaybackKind` + now-playing **Playback kind**
+      label. `normalizeTrack` prefers catalog `durationInMillis` over the
+      30s preview `playbackDuration`.
+- [x] Tests: `preview.test.ts`, extra `normalize.test.ts` case, capability
+      JSON asserts in `music_diagnostic.rs`.
+
+## ✅ Phase 0 Token Mint Helper (Completed 2026-09-11)
+
+- [x] `scripts/mint-musickit-token.js` (`phase0:mint-token`): ES256 JWT from
+      `MUSICKIT_TEAM_ID` / `MUSICKIT_KEY_ID` / `MUSICKIT_P8_PATH`. `.p8` must
+      be outside the repo. Writes `MUSICKIT_DEVELOPER_TOKEN` into `.env`;
+      never prints the JWT or private key.
+
 ## ⏳ Phase 0 Manual Feasibility Gate (Next Steps — needs owner)
 
 > **Goal:** Prove or disprove reliable full Apple Music subscriber playback in Evergreen WebView2 before investing in the full UI.
 
-- [ ] Create a `.env.local` file at the repository root and add your developer token:
-  ```env
-  VITE_MUSICKIT_DEVELOPER_TOKEN=your_token_here
-  ```
+- [ ] Copy `.env.example` keys into `.env` and either paste a developer JWT
+      as `MUSICKIT_DEVELOPER_TOKEN`, or set `MUSICKIT_TEAM_ID`,
+      `MUSICKIT_KEY_ID`, and `MUSICKIT_P8_PATH` (absolute path **outside**
+      the repo) then `npm run phase0:mint-token`.
 - [ ] Run `npm run phase0:preflight` (or `npm run phase0:gate` to preflight then launch).
 - [ ] Launch the app via `npm run tauri:dev` if not using `phase0:gate`.
+- [x] Optional without a developer token: **Open music.apple.com diagnostic**
+      — verified 2026-09-11: unprivileged window loads Apple Music web UI.
+      Still needs owner Apple ID sign-in to test full tracks.
 - [ ] Click "Sign In" to authorize your Apple Music account.
 - [ ] Search a catalog term with at least 20 songs, then **Queue 20 consecutive**.
       Clicking a result queues from that index so skip next/prev can be tested.

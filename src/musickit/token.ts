@@ -1,10 +1,12 @@
+import { invoke } from "@tauri-apps/api/core";
 import type { AppErrorCode } from "../domain/errors.ts";
 import { mapErrorToCode } from "./errors.ts";
 
-// Developer-token sourcing (plan section 5.2/5.3). Production must obtain a
-// short-lived token from a small HTTPS token service; only local development
-// may use a manually generated token from `.env.local`. The `.p8` private key
-// is never shipped, bundled, or committed.
+// Developer-token sourcing (plan section 5.2/5.3). Production obtains a
+// short-lived token from a small HTTPS token service. Local Phase 0 reads
+// `MUSICKIT_DEVELOPER_TOKEN` from `.env` via a debug-only Tauri command so
+// the JWT is never a Vite/VITE_ frontend env var. The `.p8` private key is
+// never shipped, bundled, or committed.
 
 export interface DeveloperToken {
   token: string;
@@ -15,17 +17,35 @@ export interface DeveloperTokenProvider {
   getToken(): Promise<DeveloperToken>;
 }
 
-export function createEnvTokenProvider(
-  env: Record<string, string | undefined> = import.meta.env,
+export type InvokeFn = <T>(
+  cmd: string,
+  args?: Record<string, unknown>,
+) => Promise<T>;
+
+export function createNativeTokenProvider(
+  invokeFn: InvokeFn = invoke as InvokeFn,
 ): DeveloperTokenProvider {
   return {
     async getToken(): Promise<DeveloperToken> {
-      const token = env.VITE_MUSICKIT_DEVELOPER_TOKEN;
-      if (!token) {
+      let token: string;
+      try {
+        token = await invokeFn<string>("get_developer_token");
+      } catch (error) {
         throw Object.assign(
           new Error(
-            "VITE_MUSICKIT_DEVELOPER_TOKEN is not set. " +
-              "Create a .env.local file with your developer token.",
+            error instanceof Error
+              ? error.message
+              : "MUSICKIT_DEVELOPER_TOKEN is not available. " +
+                  "Copy .env.example to .env and run npm run tauri:dev.",
+          ),
+          { code: "TOKEN_EXPIRED" satisfies AppErrorCode },
+        );
+      }
+      if (typeof token !== "string" || !token.trim()) {
+        throw Object.assign(
+          new Error(
+            "MUSICKIT_DEVELOPER_TOKEN is not set. " +
+              "Copy .env.example to .env and set your Apple Music developer token.",
           ),
           { code: "TOKEN_EXPIRED" satisfies AppErrorCode },
         );

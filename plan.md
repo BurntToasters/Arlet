@@ -291,11 +291,11 @@ The token service is intentionally tiny. It should not become a general backend.
 
 For local Phase 0, a manually generated developer token may be used.
 
-If a Vite-exposed development token is used:
+If a local development token is used:
 
-- keep it only in `.env.local`;
-- ensure `.env.local` is gitignored;
-- add a release preflight check that refuses production release if a development-token environment variable is present;
+- keep it only in `.env` as `MUSICKIT_DEVELOPER_TOKEN` (copy `.env.example` → `.env`; postal-snap house style);
+- ensure `.env` is gitignored;
+- do not prefix it `VITE_`; Rust serves it to MusicKit in debug builds only;
 - never embed the private signing key.
 
 Prefer a local development token endpoint once the initial spike works.
@@ -1033,7 +1033,7 @@ Before implementing, compare this against Zinnia's current `main` branch and use
 
     "start": "npm run tauri:dev",
     "tauri": "tauri",
-    "tauri:dev": "npm run sync-version && npm run licenses && tauri dev",
+    "tauri:dev": "npm run sync-version && tauri dev",
     "tauri:build": "npm run sync-version && npm run licenses && tauri build -- --locked",
 
     "sync-version": "node scripts/sync-version.js",
@@ -1268,7 +1268,7 @@ Add checks that fail a release if:
 - `.p8` files exist under the repository/worktree;
 - a known developer private-key marker is detected;
 - a development MusicKit token variable is configured for the production build;
-- unexpected `.env.local`/credential files are staged;
+- unexpected `.env`/credential files are staged;
 - the worktree is dirty;
 - version fields disagree;
 - updater public key is missing;

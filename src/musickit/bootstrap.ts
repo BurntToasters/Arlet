@@ -1,5 +1,5 @@
 import {
-  createEnvTokenProvider,
+  createNativeTokenProvider,
   type DeveloperTokenProvider,
 } from "./token.ts";
 
@@ -30,7 +30,7 @@ export function configureMusicKit(
 }
 
 export async function initializeMusicKit(
-  provider: DeveloperTokenProvider = createEnvTokenProvider(),
+  provider: DeveloperTokenProvider = createNativeTokenProvider(),
 ): Promise<MusicKit.MusicKitInstance> {
   const { token } = await provider.getToken();
   await waitForMusicKit();

@@ -2,6 +2,7 @@
 
 mod commands;
 mod logging;
+mod music_diagnostic;
 mod settings;
 mod window_fx;
 
@@ -33,10 +34,20 @@ fn main() {
             if let Some(ref win) = window {
                 let _ = window_fx::apply_mica(win, true);
             }
+            #[cfg(debug_assertions)]
+            if music_diagnostic::should_auto_open_music_diagnostic(
+                std::env::var(music_diagnostic::AUTO_OPEN_ENV)
+                    .ok()
+                    .as_deref(),
+            ) {
+                let _ = music_diagnostic::open_music_diagnostic(app.handle().clone());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_app_info,
+            commands::get_developer_token,
+            music_diagnostic::open_music_diagnostic,
             settings::load_settings,
             settings::save_settings,
             settings::reset_settings,

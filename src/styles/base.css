@@ -91,6 +91,22 @@ button:disabled {
   text-align: left;
 }
 
+#np-kind {
+  font-size: 0.8125rem;
+  color: var(--text-dim);
+}
+
+#np-kind.is-preview {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+#diagnostic-hint {
+  color: var(--text-dim);
+  font-size: 0.8125rem;
+  margin: 0 0 var(--space-3);
+}
+
 #now-playing {
   display: flex;
   gap: var(--space-3);

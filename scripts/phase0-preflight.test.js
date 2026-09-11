@@ -8,39 +8,45 @@ import {
   formatPhase0PreflightReport,
   hasDeveloperToken,
   parseEnvFile,
-  resolveDeveloperTokenEnv,
   runPhase0Preflight,
 } from "./phase0-preflight.js";
 
 test("parseEnvFile ignores comments and quoted values", () => {
   const root = mkdtempSync(path.join(tmpdir(), "arlet-phase0-"));
-  const filePath = path.join(root, ".env.local");
+  const filePath = path.join(root, ".env");
   writeFileSync(
     filePath,
-    '# comment\nVITE_MUSICKIT_DEVELOPER_TOKEN="secret-token"\n',
+    '# comment\nMUSICKIT_DEVELOPER_TOKEN="secret-token"\n',
     "utf8",
   );
   assert.deepEqual(parseEnvFile(filePath), {
-    VITE_MUSICKIT_DEVELOPER_TOKEN: "secret-token",
+    MUSICKIT_DEVELOPER_TOKEN: "secret-token",
   });
   rmSync(root, { recursive: true, force: true });
 });
 
-test(".env.local overrides .env for developer token", () => {
+test("developer token is read from .env only, not .env.local", () => {
   const root = mkdtempSync(path.join(tmpdir(), "arlet-phase0-"));
   writeFileSync(
     path.join(root, ".env"),
-    "VITE_MUSICKIT_DEVELOPER_TOKEN=from-env\n",
+    "MUSICKIT_DEVELOPER_TOKEN=from-env\n",
     "utf8",
   );
   writeFileSync(
     path.join(root, ".env.local"),
-    "VITE_MUSICKIT_DEVELOPER_TOKEN=from-local\n",
+    "MUSICKIT_DEVELOPER_TOKEN=from-local\n",
     "utf8",
   );
-  assert.equal(
-    resolveDeveloperTokenEnv(root).VITE_MUSICKIT_DEVELOPER_TOKEN,
-    "from-local",
+  assert.equal(hasDeveloperToken(root), true);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("legacy VITE_MUSICKIT_DEVELOPER_TOKEN in .env still counts", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "arlet-phase0-"));
+  writeFileSync(
+    path.join(root, ".env"),
+    "VITE_MUSICKIT_DEVELOPER_TOKEN=legacy\n",
+    "utf8",
   );
   assert.equal(hasDeveloperToken(root), true);
   rmSync(root, { recursive: true, force: true });
@@ -50,7 +56,7 @@ test("require-token mode fails when developer token missing", () => {
   const root = mkdtempSync(path.join(tmpdir(), "arlet-phase0-"));
   assert.throws(
     () => runPhase0Preflight({ root, requireToken: true }),
-    /VITE_MUSICKIT_DEVELOPER_TOKEN is missing/,
+    /MUSICKIT_DEVELOPER_TOKEN is missing/,
   );
   rmSync(root, { recursive: true, force: true });
 });
@@ -82,6 +88,10 @@ test("phase0 scripts are explicit-only aliases", () => {
     ),
   ).scripts;
   assert.equal(scripts["phase0:preflight"], "node scripts/phase0-preflight.js");
+  assert.equal(
+    scripts["phase0:mint-token"],
+    "node scripts/mint-musickit-token.js",
+  );
   assert.match(scripts["phase0:gate"], /phase0-preflight\.js --require-token/);
 });
 
@@ -96,6 +106,35 @@ test("vite loads MusicKit env files from the repo root", () => {
   );
   assert.match(config, /envDir:\s*resolve\(import\.meta\.dirname\)/);
   assert.match(config, /root:\s*"src"/);
+  assert.doesNotMatch(config, /VITE_MUSICKIT_DEVELOPER_TOKEN/);
+  assert.doesNotMatch(config, /envPrefix:\s*\[[^\]]*TAURI_/);
+});
+
+test("dotenv-backed scripts load .env, never .env.local", () => {
+  const scripts = JSON.parse(
+    readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "package.json",
+      ),
+      "utf8",
+    ),
+  ).scripts;
+  for (const [name, command] of Object.entries(scripts)) {
+    assert.doesNotMatch(
+      String(command),
+      /\.env\.local/,
+      `${name} must not use .env.local`,
+    );
+    if (String(command).includes("dotenv")) {
+      assert.match(
+        String(command),
+        /dotenv -e \.env --/,
+        `${name} must use dotenv -e .env --`,
+      );
+    }
+  }
 });
 
 test("WebView2 lookup uses the Evergreen Runtime client GUID", () => {

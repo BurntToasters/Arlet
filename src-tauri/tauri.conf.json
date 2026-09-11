@@ -25,7 +25,7 @@
     ],
     "security": {
       "csp": "default-src 'self'; script-src 'self' https://js-cdn.music.apple.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://*.mzstatic.com https://*.apple.com; font-src 'self' data:; connect-src 'self' https://*.apple.com https://*.mzstatic.com; media-src 'self' blob: https://*.apple.com https://*.mzstatic.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'; frame-src https://authorize.music.apple.com; worker-src 'self' blob:",
-      "capabilities": ["default"]
+      "capabilities": ["default", "music-diagnostic"]
     }
   },
   "bundle": {

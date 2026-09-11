@@ -195,6 +195,12 @@
           "markdownDescription": "Enables the get_app_info command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_developer_token command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-developer-token",
+          "markdownDescription": "Enables the get_developer_token command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_log_dir command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-log-dir",
@@ -205,6 +211,12 @@
           "type": "string",
           "const": "allow-load-settings",
           "markdownDescription": "Enables the load_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the open_music_diagnostic command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-music-diagnostic",
+          "markdownDescription": "Enables the open_music_diagnostic command without any pre-configured scope."
         },
         {
           "description": "Enables the reset_settings command without any pre-configured scope.",
@@ -249,6 +261,12 @@
           "markdownDescription": "Denies the get_app_info command without any pre-configured scope."
         },
         {
+          "description": "Denies the get_developer_token command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-developer-token",
+          "markdownDescription": "Denies the get_developer_token command without any pre-configured scope."
+        },
+        {
           "description": "Denies the get_log_dir command without any pre-configured scope.",
           "type": "string",
           "const": "deny-get-log-dir",
@@ -259,6 +277,12 @@
           "type": "string",
           "const": "deny-load-settings",
           "markdownDescription": "Denies the load_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_music_diagnostic command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-music-diagnostic",
+          "markdownDescription": "Denies the open_music_diagnostic command without any pre-configured scope."
         },
         {
           "description": "Denies the reset_settings command without any pre-configured scope.",

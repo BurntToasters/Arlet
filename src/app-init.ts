@@ -11,6 +11,7 @@ import {
   setVolume,
 } from "./musickit/player.ts";
 import { registerMusicKitEvents } from "./musickit/events.ts";
+import { classifyPlaybackKind } from "./musickit/preview.ts";
 import { normalizeTrack } from "./musickit/normalize.ts";
 import { getState, setAuthState, resetState, setQueue } from "./state.ts";
 import { redactSensitive } from "./platform/redact.ts";
@@ -115,6 +116,7 @@ function updateUI(): void {
   const playbackState = $("playback-state");
   const npTitle = $("np-title");
   const npArtist = $("np-artist");
+  const npKind = $("np-kind");
   const trackCounter = $("track-counter");
   const errorDisplay = $("error-display");
 
@@ -126,9 +128,28 @@ function updateUI(): void {
   if (state.playback.current) {
     npTitle.textContent = state.playback.current.title;
     npArtist.textContent = state.playback.current.artistName;
+    const catalogSeconds = state.playback.current.durationMs
+      ? state.playback.current.durationMs / 1000
+      : undefined;
+    const kind = classifyPlaybackKind({
+      catalogDurationSeconds: catalogSeconds,
+      playbackDurationSeconds: state.playback.durationSeconds,
+    });
+    if (kind === "preview") {
+      npKind.textContent = `Playback kind: PREVIEW (${Math.round(state.playback.durationSeconds)}s stream vs catalog ${Math.round(catalogSeconds ?? 0)}s)`;
+      npKind.classList.add("is-preview");
+    } else if (kind === "full") {
+      npKind.textContent = `Playback kind: full (${Math.round(state.playback.durationSeconds)}s)`;
+      npKind.classList.remove("is-preview");
+    } else {
+      npKind.textContent = "Playback kind: —";
+      npKind.classList.remove("is-preview");
+    }
   } else {
     npTitle.textContent = "—";
     npArtist.textContent = "—";
+    npKind.textContent = "Playback kind: —";
+    npKind.classList.remove("is-preview");
   }
 
   trackCounter.textContent = `Tracks played: ${state.tracksPlayed}`;
@@ -194,6 +215,7 @@ function wireGateControls(): void {
     "btn-copy-feasibility",
     "btn-copy-network",
     "btn-reset-checklist",
+    "btn-music-diagnostic",
   ];
   for (const id of enableIds) {
     ($(id) as HTMLButtonElement).disabled = false;
@@ -230,6 +252,20 @@ function wireGateControls(): void {
     saveChecklistState(checklistState);
     renderGateChecklist();
     log("Feasibility checklist reset.");
+  });
+
+  $("btn-music-diagnostic").addEventListener("click", async () => {
+    try {
+      log("Opening unprivileged music.apple.com diagnostic webview…");
+      const result = await invoke<string>("open_music_diagnostic");
+      log(
+        `Diagnostic window ${result}. Sign in on music.apple.com — no developer token on this path.`,
+      );
+    } catch (error) {
+      log(
+        `Diagnostic window failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   });
 }
 

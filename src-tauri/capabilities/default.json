@@ -28,6 +28,8 @@
     "notification:allow-request-permission",
     "notification:allow-notify",
     "allow-get-app-info",
+    "allow-get-developer-token",
+    "allow-open-music-diagnostic",
     "allow-load-settings",
     "allow-save-settings",
     "allow-reset-settings",

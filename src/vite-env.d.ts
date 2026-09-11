@@ -3,14 +3,6 @@
 declare const __BUILD_NODE_VERSION__: string;
 declare const __BUILD_NPM_VERSION__: string;
 
-interface ImportMetaEnv {
-  readonly VITE_MUSICKIT_DEVELOPER_TOKEN?: string;
-}
-
-interface ImportMeta {
-  readonly env: ImportMetaEnv;
-}
-
 // MusicKit JS global types (minimal for Phase 0)
 declare namespace MusicKit {
   interface Config {
@@ -65,7 +57,10 @@ declare namespace MusicKit {
     albumName: string;
     artworkURL: string;
     playbackDuration: number;
-    attributes?: Record<string, unknown>;
+    attributes?: {
+      durationInMillis?: number;
+      [key: string]: unknown;
+    };
     artwork?: { url: string; width: number; height: number };
   }
 

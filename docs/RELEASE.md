@@ -1,9 +1,10 @@
 # Release Process
 
 Arlet releases are built on a Windows release VM and orchestrated by Node.js
-scripts (`scripts/`), following the same architecture as Zinnia. The pipeline
-is an explicit state machine: preflight → version sync → licenses → quality
-gate → session → builds → signing → draft → verify → publish → verify.
+scripts (`scripts/`), following the same architecture as postal-snap (Windows
+scope only). The pipeline is an explicit state machine: preflight → version
+sync → licenses → quality gate → session → builds → signing → draft → verify
+→ publish → verify.
 
 ## One-time setup (owner)
 
@@ -36,8 +37,8 @@ gate → session → builds → signing → draft → verify → publish → ver
 - `release:preflight` enforces the branch, a clean tree pushed to its
   upstream, synchronized versions (`package.json`, `tauri.conf.json`,
   `Cargo.toml`), updater pubkey presence, NSIS target config, and credential
-  hygiene (no `.p8` in the worktree, no dev MusicKit token configured,
-  no staged `.env.local`).
+  hygiene (no `.p8` in the worktree, `.env` never staged, no Vite-exposed
+  MusicKit developer token).
 
 ## Standard flow (Windows release VM)
 

@@ -101,21 +101,26 @@ function checkCredentialLeaks() {
       `Media Services private key file(s) in worktree (never ship .p8): ${found.join(", ")}`,
     );
   }
-  // A dev MusicKit token must not be configured for the production build.
-  if (process.env.VITE_MUSICKIT_DEVELOPER_TOKEN?.trim()) {
+  // MusicKit tokens live in `.env` like postal-snap secrets. They must not
+  // be Vite-prefixed; Rust serves them only in debug builds.
+  const viteConfig = fs.readFileSync(path.join(root, "vite.config.ts"), "utf8");
+  if (viteConfig.includes("VITE_MUSICKIT_DEVELOPER_TOKEN")) {
     throw new Error(
-      "VITE_MUSICKIT_DEVELOPER_TOKEN is set; unset it before a production release build.",
+      "vite.config.ts must not expose VITE_MUSICKIT_DEVELOPER_TOKEN. Use MUSICKIT_DEVELOPER_TOKEN in .env.",
     );
   }
-  const envLocal = path.join(root, ".env.local");
-  if (fs.existsSync(envLocal)) {
-    const staged = git(["status", "--porcelain=v1", "--untracked-files=all"]);
-    const paths = porcelainPaths(staged);
-    if (paths.some((p) => p === ".env.local" || p.startsWith(".env.local"))) {
-      throw new Error(".env.local must never be staged in a release.");
-    }
+  const envExample = fs.readFileSync(path.join(root, ".env.example"), "utf8");
+  if (!envExample.includes("MUSICKIT_DEVELOPER_TOKEN=")) {
+    throw new Error(".env.example must document MUSICKIT_DEVELOPER_TOKEN.");
+  }
+  const staged = git(["status", "--porcelain=v1", "--untracked-files=all"]);
+  const paths = porcelainPaths(staged);
+  if (paths.some((p) => p === ".env" || p.startsWith(".env."))) {
+    throw new Error(".env must never be staged in a release.");
+  }
+  if (fs.existsSync(path.join(root, ".env.local"))) {
     console.warn(
-      "release-preflight: warning: .env.local exists locally; ensure production builds do not embed it.",
+      "release-preflight: warning: .env.local is ignored. House style is `.env`.",
     );
   }
   // Private-key markers must not be staged.

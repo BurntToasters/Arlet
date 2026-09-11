@@ -17,6 +17,17 @@ export function normalizeArtwork(
   };
 }
 
+function catalogDurationMs(item: MusicKit.MediaItem): number | undefined {
+  const fromAttributes = item.attributes?.durationInMillis;
+  if (typeof fromAttributes === "number" && fromAttributes > 0) {
+    return fromAttributes;
+  }
+  if (item.playbackDuration > 0) {
+    return item.playbackDuration * 1000;
+  }
+  return undefined;
+}
+
 export function normalizeTrack(item: MusicKit.MediaItem): Track {
   return {
     id: item.id,
@@ -24,8 +35,6 @@ export function normalizeTrack(item: MusicKit.MediaItem): Track {
     artistName: item.artistName || "Unknown Artist",
     albumTitle: item.albumName,
     artwork: normalizeArtwork(item),
-    durationMs: item.playbackDuration
-      ? item.playbackDuration * 1000
-      : undefined,
+    durationMs: catalogDurationMs(item),
   };
 }

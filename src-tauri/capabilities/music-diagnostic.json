@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/capabilities/2",
+  "identifier": "music-diagnostic",
+  "description": "Unprivileged remote music.apple.com diagnostic. Zero Tauri commands, no filesystem/shell/updater/dialog.",
+  "windows": ["music-diagnostic"],
+  "local": false,
+  "remote": {
+    "urls": ["https://music.apple.com/*"]
+  },
+  "permissions": []
+}
