@@ -2,7 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { initializeMusicKit } from "./musickit/bootstrap.ts";
 import { authorize, unauthorize, isAuthorized } from "./musickit/auth.ts";
 import {
-  playSong,
+  CONSECUTIVE_TRACK_TARGET,
+  playQueue,
   toggle,
   seekToTime,
   skipToNext,
@@ -11,10 +12,30 @@ import {
 } from "./musickit/player.ts";
 import { registerMusicKitEvents } from "./musickit/events.ts";
 import { normalizeTrack } from "./musickit/normalize.ts";
-import { getState, setAuthState, resetState } from "./state.ts";
+import { getState, setAuthState, resetState, setQueue } from "./state.ts";
 import { redactSensitive } from "./platform/redact.ts";
+import {
+  GATE_CHECKLIST,
+  copyTextToClipboard,
+  formatFeasibilityReport,
+  formatNetworkSurfaceMarkdown,
+  formatSessionDuration,
+  getObservedHosts,
+  getSessionStartedAt,
+  loadChecklistState,
+  saveChecklistState,
+  startNetworkObserver,
+  toggleChecklistItem,
+  type GateEnvironment,
+} from "./phase0/gate-session.ts";
+import { registerLifecycleDiagnostics } from "./phase0/lifecycle.ts";
 
 let music: MusicKit.MusicKitInstance | null = null;
+let gateEnvironment: GateEnvironment | null = null;
+let sessionStartedAt = getSessionStartedAt();
+let checklistState = loadChecklistState();
+let lastSearchTracks: ReturnType<typeof normalizeTrack>[] = [];
+const recordedFailures: string[] = [];
 
 function $(id: string): HTMLElement {
   return document.getElementById(id) as HTMLElement;
@@ -23,8 +44,69 @@ function $(id: string): HTMLElement {
 function log(message: string): void {
   const output = $("diag-output");
   const timestamp = new Date().toISOString();
-  output.textContent += `[${timestamp}] ${redactSensitive(message)}\n`;
+  const line = `[${timestamp}] ${redactSensitive(message)}`;
+  output.textContent += `${line}\n`;
   output.scrollTop = output.scrollHeight;
+  if (/failed|error|drm|denied|unavailable/i.test(message)) {
+    recordedFailures.push(line);
+  }
+}
+
+function updateGateProgress(): void {
+  const checked = Object.values(checklistState).filter(Boolean).length;
+  $("gate-progress").textContent =
+    `${checked} / ${GATE_CHECKLIST.length} checklist items complete`;
+}
+
+function renderGateChecklist(): void {
+  const container = $("gate-checklist");
+  container.innerHTML = "";
+  for (const item of GATE_CHECKLIST) {
+    const label = document.createElement("label");
+    label.className = "gate-check";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = checklistState[item.id] ?? false;
+    input.addEventListener("change", () => {
+      checklistState = toggleChecklistItem(checklistState, item.id);
+      updateGateProgress();
+    });
+    const text = document.createElement("span");
+    text.textContent = item.label;
+    label.append(input, text);
+    container.appendChild(label);
+  }
+  updateGateProgress();
+}
+
+function updateSessionTimer(): void {
+  $("session-timer").textContent =
+    `Session: ${formatSessionDuration(sessionStartedAt)}`;
+}
+
+function buildFeasibilityReport(): string {
+  const env = gateEnvironment ?? {
+    version: "unknown",
+    tauriVersion: "unknown",
+    os: "unknown",
+    arch: "unknown",
+    webviewVersion: null,
+    windowsBuild: null,
+    debug: true,
+    nodeVersion: __BUILD_NODE_VERSION__,
+    npmVersion: __BUILD_NPM_VERSION__,
+    rustToolchain: "stable",
+    rustcVersion: null,
+  };
+  return formatFeasibilityReport({
+    environment: env,
+    appState: getState(),
+    sessionStartedAt,
+    diagLog: ($("diag-output").textContent ?? "").trim(),
+    checklist: checklistState,
+    observedHosts: getObservedHosts(),
+    failures: recordedFailures,
+  });
 }
 
 function updateUI(): void {
@@ -71,15 +153,31 @@ interface NativeDiagnostics {
   os: string;
   arch: string;
   webview_version: string | null;
+  rustc_version: string | null;
+  windows_build: string | null;
   debug: boolean;
 }
 
 async function logDiagnostics(): Promise<void> {
   try {
     const info = await invoke<NativeDiagnostics>("get_app_info");
+    gateEnvironment = {
+      version: info.version,
+      tauriVersion: info.tauri_version,
+      os: info.os,
+      arch: info.arch,
+      webviewVersion: info.webview_version,
+      windowsBuild: info.windows_build,
+      debug: info.debug,
+      nodeVersion: __BUILD_NODE_VERSION__,
+      npmVersion: __BUILD_NPM_VERSION__,
+      rustToolchain: "stable",
+      rustcVersion: info.rustc_version,
+    };
     log(
       `App ${info.version} / Tauri ${info.tauri_version} / ` +
         `${info.os}-${info.arch} / WebView2 ${info.webview_version ?? "unknown"} / ` +
+        `Windows ${info.windows_build ?? "unknown"} / ` +
         `${info.debug ? "debug" : "release"}`,
     );
   } catch {
@@ -87,8 +185,59 @@ async function logDiagnostics(): Promise<void> {
   }
 }
 
+function wireGateControls(): void {
+  renderGateChecklist();
+  updateSessionTimer();
+  window.setInterval(updateSessionTimer, 1000);
+
+  const enableIds = [
+    "btn-copy-feasibility",
+    "btn-copy-network",
+    "btn-reset-checklist",
+  ];
+  for (const id of enableIds) {
+    ($(id) as HTMLButtonElement).disabled = false;
+  }
+
+  $("btn-copy-feasibility").addEventListener("click", async () => {
+    try {
+      await copyTextToClipboard(buildFeasibilityReport());
+      log("Feasibility report copied to clipboard.");
+    } catch (error) {
+      log(
+        `Copy failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  });
+
+  $("btn-copy-network").addEventListener("click", async () => {
+    try {
+      await copyTextToClipboard(
+        formatNetworkSurfaceMarkdown(getObservedHosts()),
+      );
+      log("Network surface copied to clipboard.");
+    } catch (error) {
+      log(
+        `Copy failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  });
+
+  $("btn-reset-checklist").addEventListener("click", () => {
+    checklistState = Object.fromEntries(
+      GATE_CHECKLIST.map((item) => [item.id, false]),
+    );
+    saveChecklistState(checklistState);
+    renderGateChecklist();
+    log("Feasibility checklist reset.");
+  });
+}
+
 export async function initializeApplication(): Promise<void> {
   const initStatus = $("init-status");
+  startNetworkObserver();
+  registerLifecycleDiagnostics(log);
+  wireGateControls();
   await logDiagnostics();
   log("Initializing MusicKit…");
 
@@ -167,25 +316,35 @@ export async function initializeApplication(): Promise<void> {
     try {
       const response = await music.api.search(term, {
         types: "songs",
-        limit: 10,
+        limit: 25,
       });
       const songs = response.songs?.data ?? [];
       const resultsEl = $("search-results");
       resultsEl.innerHTML = "";
+      lastSearchTracks = songs.map((song) => normalizeTrack(song));
+      const consecutiveButton = $("btn-play-consecutive") as HTMLButtonElement;
+      consecutiveButton.disabled =
+        lastSearchTracks.length < CONSECUTIVE_TRACK_TARGET;
       if (songs.length === 0) {
         resultsEl.textContent = "No results found.";
         return;
       }
-      for (const song of songs) {
-        const track = normalizeTrack(song);
+      lastSearchTracks.forEach((track, index) => {
         const btn = document.createElement("button");
         btn.className = "search-result";
         btn.textContent = `${track.title} — ${track.artistName}`;
         btn.addEventListener("click", async () => {
           if (!music) return;
-          log(`Playing: ${track.title} by ${track.artistName}`);
+          log(
+            `Playing queue from "${track.title}" (${lastSearchTracks.length} results)`,
+          );
           try {
-            await playSong(music, track.id);
+            setQueue(lastSearchTracks, index);
+            await playQueue(
+              music,
+              lastSearchTracks.map((item) => item.id),
+              index,
+            );
           } catch (error) {
             log(
               `Play failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -193,8 +352,13 @@ export async function initializeApplication(): Promise<void> {
           }
         });
         resultsEl.appendChild(btn);
-      }
-      log(`Found ${songs.length} results.`);
+      });
+      log(
+        `Found ${songs.length} results.` +
+          (songs.length >= CONSECUTIVE_TRACK_TARGET
+            ? ` Consecutive ${CONSECUTIVE_TRACK_TARGET}-track queue is ready.`
+            : ` Search a catalog term with at least ${CONSECUTIVE_TRACK_TARGET} songs for the consecutive-track matrix.`),
+      );
     } catch (error) {
       log(
         `Search failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -235,6 +399,29 @@ export async function initializeApplication(): Promise<void> {
     }
   });
 
+  $("btn-play-consecutive").addEventListener("click", async () => {
+    if (!music) return;
+    if (lastSearchTracks.length < CONSECUTIVE_TRACK_TARGET) {
+      log(
+        `Need at least ${CONSECUTIVE_TRACK_TARGET} search results for the consecutive-track matrix.`,
+      );
+      return;
+    }
+    const queue = lastSearchTracks.slice(0, CONSECUTIVE_TRACK_TARGET);
+    log(`Queuing ${queue.length} consecutive tracks.`);
+    try {
+      setQueue(queue, 0);
+      await playQueue(
+        music,
+        queue.map((track) => track.id),
+      );
+    } catch (error) {
+      log(
+        `Consecutive play failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  });
+
   const seekSlider = $("seek-slider") as HTMLInputElement;
   seekSlider.addEventListener("change", async () => {
     if (!music) return;
@@ -261,4 +448,7 @@ export async function initializeApplication(): Promise<void> {
   });
 
   log("Phase 0 UI ready. Sign in to begin testing.");
+  log(
+    "Use the feasibility matrix checklist, then copy reports into docs/MUSICKIT_TAURI_FEASIBILITY.md and docs/MUSICKIT_NETWORK_SURFACE.md.",
+  );
 }

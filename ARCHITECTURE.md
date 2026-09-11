@@ -29,17 +29,19 @@ communicate via direct calls.
 
 ### Module layout
 
-| Path                 | Responsibility                                                  |
-| -------------------- | --------------------------------------------------------------- |
-| `main.ts`            | Thin entry; boot lives in `app-init.ts`                         |
-| `app-init.ts`        | Initialization, MusicKit setup, UI wiring                       |
-| `state.ts`           | Centralized application state                                   |
-| `domain/`            | Internal types: `Track`, `Album`, `PlaybackState`               |
-| `musickit/`          | MusicKit integration: bootstrap, auth, player                   |
-| `musickit/token.ts`  | Developer-token providers (env for dev, HTTPS service for prod) |
-| `musickit/errors.ts` | Map failures to typed `AppErrorCode` values                     |
-| `platform/redact.ts` | Frontend sensitive-value redaction (mirrors `logging.rs`)       |
-| `styles/`            | CSS tokens and base styles                                      |
+| Path                     | Responsibility                                                  |
+| ------------------------ | --------------------------------------------------------------- |
+| `main.ts`                | Thin entry; boot lives in `app-init.ts`                         |
+| `app-init.ts`            | Initialization, MusicKit setup, UI wiring                       |
+| `state.ts`               | Centralized application state                                   |
+| `domain/`                | Internal types: `Track`, `Album`, `PlaybackState`               |
+| `musickit/`              | MusicKit integration: bootstrap, auth, player                   |
+| `musickit/token.ts`      | Developer-token providers (env for dev, HTTPS service for prod) |
+| `musickit/errors.ts`     | Map failures to typed `AppErrorCode` values                     |
+| `platform/redact.ts`     | Frontend sensitive-value redaction (mirrors `logging.rs`)       |
+| `phase0/gate-session.ts` | Phase 0 feasibility matrix, network capture, report export      |
+| `phase0/lifecycle.ts`    | Window/network/audio-device diagnostic logging for the matrix   |
+| `styles/`                | CSS tokens and base styles                                      |
 
 ### Apple Music Integration
 
@@ -72,6 +74,7 @@ Node. Arlet-native scripts inspired by Zinnia's architecture (Windows-only):
 | Windows build/sign | `tauri-windows-build.js`, `launch-vs-devshell.ps1`, `setup-windows-artifact-signing.ps1`, `windows-artifact-sign.ps1`, `verify-windows-authenticode.ps1`                                                                                                                                                                                                                                                                                      |
 | Release flow       | `release-preflight.js` (+ `.p8`/dev-token leak gates), `release-warning.js`, `ensure-draft-release.cjs`, `wait-for-draft-release.cjs`, `publish-release.cjs`, `gpg-sign.js`, `generate-updater-manifests.js` (`latest-windows-*.json`), `validate-updater-manifest.js`, `verify-release-draft.js`, `verify-release-published.js`, `post-release-assets.js` + `finalize-release-assets.js` (`AFTER_PACK_LOC` archive mirror), `run-release.js` |
 | Maintenance        | `vi.js`, `npm-safe-update.mjs`, `cargo-safe-update.mjs`, `sync-version.js`                                                                                                                                                                                                                                                                                                                                                                    |
+| Phase 0 gate       | `phase0-preflight.js` (`phase0:preflight`, `phase0:gate`; token check without printing secrets)                                                                                                                                                                                                                                                                                                                                               |
 | Icons              | `normalize-icons.js` (`icons:normalize`, tested by `normalize-icons.test.js` via `test:scripts`)                                                                                                                                                                                                                                                                                                                                              |
 
 In-build Authenticode signing runs via `bundle.windows.signCommand` in

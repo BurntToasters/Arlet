@@ -1,4 +1,11 @@
 fn main() {
+    if let Ok(output) = std::process::Command::new("rustc").arg("-V").output() {
+        if output.status.success() {
+            let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            println!("cargo:rustc-env=ARLET_RUSTC_VERSION={version}");
+        }
+    }
+
     const COMMANDS: &[&str] = &[
         "get_app_info",
         "load_settings",

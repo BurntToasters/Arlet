@@ -4,14 +4,16 @@ This document tracks our progress through the Arlet `plan.md` architecture brief
 
 ## 📌 Status (2026-09-11 — read first)
 
-- [ ] **Commit review:** all work below is UNCOMMITTED (new scripts, configs,
-      docs, styles, icon move). Review `git status`, then commit.
+- [ ] **Commit review:** gate-session + phase0-preflight work is UNCOMMITTED.
+      `npm run test:all --skip-e2e` green on dirty tree; commit then re-run for
+      release proof.
 - [ ] **Back up `.env` offline:** updater private key + password live only
       there (gitignored). Required on the release VM.
 - [ ] **Set `AFTER_PACK_LOC`:** archive dir outside the repo, or stable
       releases refuse to finalize.
 - [ ] **Manual gate next:** `.env.local` token → `npm run tauri:dev` →
-      playback matrix → feasibility docs (checklist below).
+      playback matrix → paste copied reports into feasibility docs (checklist
+      below). Phase 0 UI now includes matrix checklist + clipboard export.
 - [ ] **Then:** gate PASS → Milestone 1 shell; gate FAIL → CastLabs spike,
       keep portable layers (plan §4.5/§25).
 
@@ -145,6 +147,26 @@ This document tracks our progress through the Arlet `plan.md` architecture brief
 - [x] **Warts:** RELEASE.md flow no longer double-runs preflight, added
       `validate:updater` script name, ARCHITECTURE.md scripts table current.
 
+## ✅ Phase 0 Gate Session Tooling (Completed 2026-09-11)
+
+- [x] `src/phase0/gate-session.ts`: plan §4.2 checklist (23 items), session
+      timer, fetch + PerformanceObserver host capture, feasibility +
+      network-surface markdown export, clipboard helper.
+- [x] Phase 0 UI wired: matrix checkboxes (sessionStorage), copy buttons,
+      session duration + failure capture in diagnostics.
+- [x] `scripts/phase0-preflight.js` (`phase0:preflight`, `phase0:gate`):
+      token presence check (never prints value), toolchain + Windows/WebView2
+      versions for the feasibility report.
+- [x] Tests: `gate-session.test.ts`, `lifecycle.test.ts`, `player.test.ts`,
+      `phase0-preflight.test.js`; `get_app_info` includes `rustc_version` +
+      `windows_build`.
+- [x] Vite `envDir` is the repo root so `.env.local` actually loads (Vite
+      `root` is `src/`).
+- [x] Consecutive 20-track queue: search limit 25, **Queue 20 consecutive**,
+      skip next/prev over the queued results.
+- [x] Lifecycle diagnostics: visibility, focus, online/offline, audio device
+      change logged into the Phase 0 console.
+
 ## ⏳ Phase 0 Manual Feasibility Gate (Next Steps — needs owner)
 
 > **Goal:** Prove or disprove reliable full Apple Music subscriber playback in Evergreen WebView2 before investing in the full UI.
@@ -153,16 +175,24 @@ This document tracks our progress through the Arlet `plan.md` architecture brief
   ```env
   VITE_MUSICKIT_DEVELOPER_TOKEN=your_token_here
   ```
-- [ ] Launch the app via `npm run tauri:dev`.
+- [ ] Run `npm run phase0:preflight` (or `npm run phase0:gate` to preflight then launch).
+- [ ] Launch the app via `npm run tauri:dev` if not using `phase0:gate`.
 - [ ] Click "Sign In" to authorize your Apple Music account.
-- [ ] Search for a track and attempt playback.
+- [ ] Search a catalog term with at least 20 songs, then **Queue 20 consecutive**.
+      Clicking a result queues from that index so skip next/prev can be tested.
+- [ ] Work through the **Feasibility Matrix** checklist in the app UI as you
+      verify each case (session timer + track counter help the 20-track / 2-hour
+      cases).
 - [ ] Verify the following functionality:
   - Full playback (not just 30-second previews).
   - Seeking, volume control, and skipping.
   - 20+ consecutive tracks without DRM/Media errors.
-- [ ] Record the precise testing environment, network calls, and pass/fail status in:
-  - `docs/MUSICKIT_TAURI_FEASIBILITY.md`
-  - `docs/MUSICKIT_NETWORK_SURFACE.md`
+- [ ] Click **Copy feasibility report** and paste into
+      `docs/MUSICKIT_TAURI_FEASIBILITY.md` (fill Windows build + Node/Rust
+      lines if blank).
+- [ ] Click **Copy network surface** and paste into
+      `docs/MUSICKIT_NETWORK_SURFACE.md`; tighten CSP in `tauri.conf.json` if
+      new hosts appear.
 
 ## 🚀 Future Milestones (Pending Feasibility Gate)
 

@@ -1,9 +1,23 @@
+export const CONSECUTIVE_TRACK_TARGET = 20;
+
+export async function playQueue(
+  instance: MusicKit.MusicKitInstance,
+  songIds: readonly string[],
+  startIndex = 0,
+): Promise<void> {
+  if (songIds.length === 0) {
+    throw new Error("Queue is empty");
+  }
+  const start = Math.max(0, Math.min(startIndex, songIds.length - 1));
+  await instance.setQueue({ songs: [...songIds.slice(start)] });
+  await instance.play();
+}
+
 export async function playSong(
   instance: MusicKit.MusicKitInstance,
   songId: string,
 ): Promise<void> {
-  await instance.setQueue({ songs: [songId] });
-  await instance.play();
+  await playQueue(instance, [songId]);
 }
 
 export async function pause(

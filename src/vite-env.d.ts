@@ -1,5 +1,8 @@
 /// <reference types="vite/client" />
 
+declare const __BUILD_NODE_VERSION__: string;
+declare const __BUILD_NPM_VERSION__: string;
+
 interface ImportMetaEnv {
   readonly VITE_MUSICKIT_DEVELOPER_TOKEN?: string;
 }

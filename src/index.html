@@ -34,6 +34,9 @@
               disabled
             />
             <button id="btn-search" disabled>Search</button>
+            <button id="btn-play-consecutive" disabled>
+              Queue 20 consecutive
+            </button>
           </div>
           <div id="search-results"></div>
           <div id="now-playing">
@@ -71,7 +74,24 @@
           </div>
           <div id="playback-state">Idle</div>
           <div id="track-counter">Tracks played: 0</div>
+          <div id="session-timer">Session: 0s</div>
           <div id="error-display"></div>
+          <section id="gate-matrix">
+            <h3>Feasibility Matrix</h3>
+            <p id="gate-progress">0 / 0 checklist items complete</p>
+            <div id="gate-checklist"></div>
+            <div class="controls">
+              <button id="btn-copy-feasibility" type="button" disabled>
+                Copy feasibility report
+              </button>
+              <button id="btn-copy-network" type="button" disabled>
+                Copy network surface
+              </button>
+              <button id="btn-reset-checklist" type="button" disabled>
+                Reset checklist
+              </button>
+            </div>
+          </section>
           <div id="diagnostics">
             <h3>Diagnostics</h3>
             <pre id="diag-output"></pre>

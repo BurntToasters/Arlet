@@ -1,18 +1,22 @@
 # MusicKit + Tauri v2 Feasibility Report
 
-> **Status:** PENDING — Phase 0 testing not yet started
+> **Status:** PENDING — protected-playback matrix not yet run (no developer token on this machine)
+> Environment lines below captured 2026-09-11 from `npm run phase0:preflight` / this Windows host. Authorization, playback, lifecycle, and recovery checkboxes stay unchecked until a subscriber run.
 
 ## Environment
 
-| Property              | Value             |
-|-----------------------|-------------------|
-| Windows Build         | (fill after test) |
-| Architecture          | x64               |
-| WebView2 Version      | (fill after test) |
-| Tauri Version         | (fill after test) |
-| MusicKit JS Version   | v3                |
-| Node Version          | (fill after test) |
-| Rust Toolchain        | (fill after test) |
+| Property              | Value |
+|-----------------------|-------|
+| Windows Build         | 25H2 build 26200.9445 |
+| Architecture          | x64 (fill native `get_app_info.arch` from the app log if ARM64) |
+| WebView2 Version      | 152.0.4191.66 (Evergreen registry) |
+| Tauri Version         | (fill from Phase 0 diagnostics log: `Tauri …`) |
+| App Version           | 0.1.0 |
+| MusicKit JS Version   | v3 |
+| Node Version          | v24.20.0 |
+| npm Version           | 12.0.2 |
+| Rust Toolchain        | stable (`rust-toolchain.toml`) |
+| rustc                 | rustc 1.98.1 (48a229cea 2026-09-01) |
 
 ## Authorization
 

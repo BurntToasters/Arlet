@@ -31,6 +31,8 @@
     "start": "npm run tauri:dev",
     "tauri": "tauri",
     "tauri:dev": "npm run sync-version && npm run licenses && tauri dev",
+    "phase0:preflight": "node scripts/phase0-preflight.js",
+    "phase0:gate": "node scripts/phase0-preflight.js --require-token && npm run tauri:dev",
     "tauri:build": "npm run sync-version && npm run licenses && tauri build -- --locked",
     "sync-version": "node scripts/sync-version.js",
     "icons:normalize": "node scripts/normalize-icons.js",

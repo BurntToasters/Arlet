@@ -69,6 +69,13 @@ export function setVolume(volume: number): void {
   };
 }
 
+export function setQueue(queue: Track[], queueIndex = 0): void {
+  state = {
+    ...state,
+    playback: { ...state.playback, queue, queueIndex },
+  };
+}
+
 export function setPlaybackError(code: AppErrorCode, message: string): void {
   state = {
     ...state,

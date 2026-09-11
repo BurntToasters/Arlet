@@ -7,6 +7,7 @@ import {
   setPlaybackPosition,
   setVolume,
   setPlaybackError,
+  setQueue,
   resetState,
 } from "../state.ts";
 
@@ -56,6 +57,19 @@ describe("state", () => {
   it("tracks volume", () => {
     setVolume(0.75);
     expect(getState().playback.volume).toBe(0.75);
+  });
+
+  it("stores a consecutive playback queue", () => {
+    setQueue(
+      [
+        { id: "1", title: "A", artistName: "X" },
+        { id: "2", title: "B", artistName: "Y" },
+      ],
+      1,
+    );
+    const state = getState();
+    expect(state.playback.queue).toHaveLength(2);
+    expect(state.playback.queueIndex).toBe(1);
   });
 
   it("records errors", () => {
