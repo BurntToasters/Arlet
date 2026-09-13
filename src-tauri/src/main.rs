@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod auth_popup;
 mod commands;
 mod logging;
 mod music_diagnostic;
@@ -30,10 +31,8 @@ fn main() {
     builder
         .manage(LogFileLock(Mutex::new(())))
         .setup(|app| {
-            let window = app.get_webview_window("main");
-            if let Some(ref win) = window {
-                let _ = window_fx::apply_mica(win, true);
-            }
+            let window = auth_popup::create_main_window(app)?;
+            let _ = window_fx::apply_mica(&window, true);
             #[cfg(debug_assertions)]
             if music_diagnostic::should_auto_open_music_diagnostic(
                 std::env::var(music_diagnostic::AUTO_OPEN_ENV)

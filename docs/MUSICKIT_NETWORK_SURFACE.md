@@ -5,30 +5,32 @@
 
 ## Script Sources
 
-| Domain                          | Purpose           |
-|---------------------------------|-------------------|
-| `js-cdn.music.apple.com`        | MusicKit JS CDN   |
+| Domain                   | Purpose         |
+| ------------------------ | --------------- |
+| `js-cdn.music.apple.com` | MusicKit JS CDN |
 
 ## Connect/API Endpoints
 
-| Domain                          | Purpose           |
-|---------------------------------|-------------------|
-| `api.music.apple.com`           | Apple Music API   |
-| (add observed domains here)     |                   |
+| Domain                      | Purpose         |
+| --------------------------- | --------------- |
+| `api.music.apple.com`       | Apple Music API |
+| (add observed domains here) |                 |
 
 ## Authorization
 
-| Domain                          | Purpose           |
-|---------------------------------|-------------------|
-| `authorize.music.apple.com`     | OAuth popup       |
-| (add observed domains here)     |                   |
+| Domain                      | Purpose                               |
+| --------------------------- | ------------------------------------- |
+| `authorize.music.apple.com` | MusicKit `window.open` auth sheet     |
+| `appleid.apple.com`         | Apple ID sign-in (if a further popup) |
+| `idmsa.apple.com`           | Apple ID auth (if a further popup)    |
+| (add observed domains here) |                                       |
 
 ## Media/Artwork CDN
 
-| Domain                          | Purpose           |
-|---------------------------------|-------------------|
-| `*.mzstatic.com`                | Artwork/media     |
-| (add observed domains here)     |                   |
+| Domain                      | Purpose       |
+| --------------------------- | ------------- |
+| `*.mzstatic.com`            | Artwork/media |
+| (add observed domains here) |               |
 
 ## Notes
 

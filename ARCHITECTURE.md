@@ -19,6 +19,7 @@ split into focused modules:
 | --------------------- | ------------------------------------------------------------ |
 | `commands.rs`         | General app commands (version info, diagnostics)             |
 | `music_diagnostic.rs` | Unprivileged `music.apple.com` webview (plan §4.3 DRM probe) |
+| `auth_popup.rs`       | Allow MusicKit `window.open` to Apple auth hosts only        |
 | `settings.rs`         | Atomic settings load/save with backup                        |
 | `logging.rs`          | Rolling local diagnostics log with sensitive-value redaction |
 | `window_fx.rs`        | Windows Mica / Acrylic effects with opaque fallback          |

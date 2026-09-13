@@ -1,6 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { initializeMusicKit } from "./musickit/bootstrap.ts";
-import { authorize, unauthorize, isAuthorized } from "./musickit/auth.ts";
+import {
+  authorize,
+  unauthorize,
+  isAuthorized,
+  installAuthPopupProbe,
+} from "./musickit/auth.ts";
 import {
   CONSECUTIVE_TRACK_TARGET,
   playQueue,
@@ -289,6 +294,7 @@ export async function initializeApplication(): Promise<void> {
   }
 
   registerMusicKitEvents(music, updateUI);
+  installAuthPopupProbe(log);
 
   // Enable controls
   const enableIds = [
@@ -314,10 +320,14 @@ export async function initializeApplication(): Promise<void> {
     updateUI();
   }
 
+  let authorizing = false;
   $("btn-authorize").addEventListener("click", async () => {
-    if (!music) return;
+    if (!music || authorizing) return;
+    authorizing = true;
+    const button = $("btn-authorize") as HTMLButtonElement;
+    button.disabled = true;
     try {
-      log("Authorizing…");
+      log("Authorizing… waiting for Apple Music sign-in window.");
       const token = await authorize(music);
       setAuthState({ status: "authorized", musicUserToken: token });
       log("Authorization successful.");
@@ -326,6 +336,9 @@ export async function initializeApplication(): Promise<void> {
       log(
         `Authorization failed: ${error instanceof Error ? error.message : String(error)}`,
       );
+    } finally {
+      authorizing = false;
+      button.disabled = false;
     }
   });
 

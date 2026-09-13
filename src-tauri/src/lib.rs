@@ -1,3 +1,4 @@
+pub mod auth_popup;
 pub mod commands;
 pub mod logging;
 pub mod music_diagnostic;

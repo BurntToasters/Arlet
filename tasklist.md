@@ -202,6 +202,9 @@ This document tracks our progress through the Arlet `plan.md` architecture brief
 - [x] Optional without a developer token: **Open music.apple.com diagnostic**
       — verified 2026-09-11: unprivileged window loads Apple Music web UI.
       Still needs owner Apple ID sign-in to test full tracks.
+- [x] MusicKit Sign In popup: Tauri 2 was swallowing `window.open`. Main
+      window is now created from Rust with `on_new_window` allowing only Apple
+      auth hosts. Restart `npm start` and Sign In should show Apple's sheet.
 - [ ] Click "Sign In" to authorize your Apple Music account.
 - [ ] Search a catalog term with at least 20 songs, then **Queue 20 consecutive**.
       Clicking a result queues from that index so skip next/prev can be tested.

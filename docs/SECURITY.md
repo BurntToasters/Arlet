@@ -15,6 +15,12 @@ origin. It has zero Tauri commands. Do not scrape Apple's DOM, inject scripts
 into that page, or add privileges to that capability unless a later gate
 failure documents a narrowly scoped need.
 
+MusicKit `authorize()` uses `window.open` to `authorize.music.apple.com`. Tauri
+2 denies webview popups unless `on_new_window` allows them. The main window is
+created from Rust (`create: false`) so that handler can allow only Apple auth
+hosts and `about:blank`. Allowed popups use WebView2's default window (no Tauri
+IPC). Never log the authorize URL; the query string is the developer JWT.
+
 Content Security Policy in `src-tauri/tauri.conf.json` allows only the exact
 Apple domains MusicKit needs (see `docs/MUSICKIT_NETWORK_SURFACE.md`) plus
 the configured token-service origin. Never broaden CSP or capabilities to
@@ -31,10 +37,10 @@ make a bug disappear; document the required origin first.
   `src/musickit/token.ts`).
 - Local Phase 0 reads `MUSICKIT_DEVELOPER_TOKEN` from `.env` (gitignored;
   copy `.env.example` → `.env`, same as postal-snap). `npm run
-  phase0:mint-token` can mint that JWT from `MUSICKIT_TEAM_ID`,
+phase0:mint-token` can mint that JWT from `MUSICKIT_TEAM_ID`,
   `MUSICKIT_KEY_ID`, and an absolute `MUSICKIT_P8_PATH` **outside** the
   repo; it never prints the JWT or `.p8`. `dotenv -e .env -- tauri
-  dev` loads it into the Rust process. A debug-only `get_developer_token`
+dev` loads it into the Rust process. A debug-only `get_developer_token`
   command hands it to MusicKit. Release builds refuse that command. Production
   obtains short-lived tokens from a small HTTPS token service.
 
