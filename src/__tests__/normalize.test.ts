@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { normalizeTrack, normalizeArtworkUrl } from "../musickit/normalize.ts";
+import {
+  normalizeTrack,
+  normalizeArtworkUrl,
+  normalizeCatalogSong,
+} from "../musickit/normalize.ts";
 
 describe("normalizeArtworkUrl", () => {
   it("replaces width and height placeholders", () => {
@@ -65,5 +69,36 @@ describe("normalizeTrack", () => {
     expect(track.title).toBe("Unknown Title");
     expect(track.artistName).toBe("Unknown Artist");
     expect(track.artwork).toBeUndefined();
+  });
+});
+
+describe("normalizeCatalogSong", () => {
+  it("maps Apple Music API song resources to Track", () => {
+    const track = normalizeCatalogSong({
+      id: "song-1",
+      attributes: {
+        name: "Hello",
+        artistName: "Adele",
+        albumName: "25",
+        durationInMillis: 295000,
+        artwork: {
+          url: "https://example.com/{w}x{h}bb.jpg",
+          width: 1000,
+          height: 1000,
+        },
+      },
+    });
+    expect(track).toEqual({
+      id: "song-1",
+      title: "Hello",
+      artistName: "Adele",
+      albumTitle: "25",
+      durationMs: 295000,
+      artwork: {
+        url: "https://example.com/300x300bb.jpg",
+        width: 300,
+        height: 300,
+      },
+    });
   });
 });

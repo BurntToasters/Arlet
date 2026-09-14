@@ -34,6 +34,7 @@ declare namespace MusicKit {
     currentPlaybackDuration: number;
     nowPlayingItem: MediaItem | null;
     playbackState: number;
+    storefrontId: string;
     addEventListener(
       name: string,
       callback: (event: Record<string, unknown>) => void,
@@ -43,10 +44,10 @@ declare namespace MusicKit {
       callback: (event: Record<string, unknown>) => void,
     ): void;
     api: {
-      search(
-        term: string,
-        options?: { types?: string; limit?: number },
-      ): Promise<SearchResponse>;
+      music?(path: string, query?: Record<string, unknown>): Promise<unknown>;
+      v3?: {
+        music(path: string, query?: Record<string, unknown>): Promise<unknown>;
+      };
     };
   }
 
@@ -62,11 +63,6 @@ declare namespace MusicKit {
       [key: string]: unknown;
     };
     artwork?: { url: string; width: number; height: number };
-  }
-
-  interface SearchResponse {
-    songs?: { data: MediaItem[] };
-    albums?: { data: MediaItem[] };
   }
 
   const PlaybackStates: {

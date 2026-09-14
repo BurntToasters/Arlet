@@ -37,7 +37,8 @@ communicate via direct calls.
 | `app-init.ts`            | Initialization, MusicKit setup, UI wiring                     |
 | `state.ts`               | Centralized application state                                 |
 | `domain/`                | Internal types: `Track`, `Album`, `PlaybackState`             |
-| `musickit/`              | MusicKit integration: bootstrap, auth, player                 |
+| `musickit/`              | MusicKit integration: bootstrap, auth, catalog, player        |
+| `musickit/catalog.ts`    | MusicKit JS v3 `api.music` catalog search                     |
 | `musickit/token.ts`      | Debug Tauri env token + HTTPS service provider; never `VITE_` |
 | `musickit/preview.ts`    | Preview vs full-track classification from durations           |
 | `musickit/errors.ts`     | Map failures to typed `AppErrorCode` values                   |

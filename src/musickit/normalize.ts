@@ -38,3 +38,39 @@ export function normalizeTrack(item: MusicKit.MediaItem): Track {
     durationMs: catalogDurationMs(item),
   };
 }
+
+export interface CatalogSongResource {
+  id: string;
+  attributes?: {
+    name?: string;
+    artistName?: string;
+    albumName?: string;
+    durationInMillis?: number;
+    artwork?: { url: string; width: number; height: number };
+  };
+}
+
+export function normalizeCatalogSong(resource: CatalogSongResource): Track {
+  const attributes = resource.attributes ?? {};
+  const artworkUrl = attributes.artwork?.url;
+  const title = attributes.name?.trim() ?? "";
+  const artistName = attributes.artistName?.trim() ?? "";
+  return {
+    id: resource.id,
+    title: title.length > 0 ? title : "Unknown Title",
+    artistName: artistName.length > 0 ? artistName : "Unknown Artist",
+    albumTitle: attributes.albumName,
+    artwork: artworkUrl
+      ? {
+          url: normalizeArtworkUrl(artworkUrl, 300),
+          width: 300,
+          height: 300,
+        }
+      : undefined,
+    durationMs:
+      typeof attributes.durationInMillis === "number" &&
+      attributes.durationInMillis > 0
+        ? attributes.durationInMillis
+        : undefined,
+  };
+}

@@ -16,6 +16,7 @@ import {
   setVolume,
 } from "./musickit/player.ts";
 import { registerMusicKitEvents } from "./musickit/events.ts";
+import { searchCatalogSongs } from "./musickit/catalog.ts";
 import { classifyPlaybackKind } from "./musickit/preview.ts";
 import { normalizeTrack } from "./musickit/normalize.ts";
 import { getState, setAuthState, resetState, setQueue } from "./state.ts";
@@ -363,18 +364,13 @@ export async function initializeApplication(): Promise<void> {
     if (!term) return;
     log(`Searching: "${term}"`);
     try {
-      const response = await music.api.search(term, {
-        types: "songs",
-        limit: 25,
-      });
-      const songs = response.songs?.data ?? [];
+      lastSearchTracks = await searchCatalogSongs(music, term, { limit: 25 });
       const resultsEl = $("search-results");
       resultsEl.innerHTML = "";
-      lastSearchTracks = songs.map((song) => normalizeTrack(song));
       const consecutiveButton = $("btn-play-consecutive") as HTMLButtonElement;
       consecutiveButton.disabled =
         lastSearchTracks.length < CONSECUTIVE_TRACK_TARGET;
-      if (songs.length === 0) {
+      if (lastSearchTracks.length === 0) {
         resultsEl.textContent = "No results found.";
         return;
       }
@@ -403,8 +399,8 @@ export async function initializeApplication(): Promise<void> {
         resultsEl.appendChild(btn);
       });
       log(
-        `Found ${songs.length} results.` +
-          (songs.length >= CONSECUTIVE_TRACK_TARGET
+        `Found ${lastSearchTracks.length} results.` +
+          (lastSearchTracks.length >= CONSECUTIVE_TRACK_TARGET
             ? ` Consecutive ${CONSECUTIVE_TRACK_TARGET}-track queue is ready.`
             : ` Search a catalog term with at least ${CONSECUTIVE_TRACK_TARGET} songs for the consecutive-track matrix.`),
       );
