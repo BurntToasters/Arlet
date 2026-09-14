@@ -1,4 +1,4 @@
-import { ArrowRight, Headphones, Search, Sparkles } from "lucide-preact";
+import { ArrowRight, Headphones, Search } from "lucide-preact";
 import type { JSX } from "preact";
 import {
   useAppController,
@@ -86,7 +86,6 @@ export function HomeView(): JSX.Element {
           <span className="orb orb-one" />
           <span className="orb orb-two" />
           <span className="orb orb-three" />
-          <Sparkles className="welcome-sparkle" size={30} strokeWidth={1.4} />
         </div>
       </section>
 

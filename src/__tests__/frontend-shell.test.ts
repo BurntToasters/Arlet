@@ -138,8 +138,26 @@ describe("settings", () => {
     expect(styles).toContain(':root[data-window-effect="acrylic"] body');
     expect(styles).toContain(':root[data-window-effect="mica"] #app');
     expect(styles).toContain(':root[data-window-effect="solid"] .app-shell');
+    const acrylicRule =
+      styles.match(
+        /:root\[data-window-effect="acrylic"\] \.app-shell::before\s*\{([\s\S]*?)\n\}/u,
+      )?.[1] ?? "";
+    expect(acrylicRule).toContain("feTurbulence");
+    expect(acrylicRule).toContain("background-blend-mode: soft-light");
+    const micaRule =
+      styles.match(
+        /:root\[data-window-effect="mica"\] \.app-shell::before\s*\{([\s\S]*?)\n\}/u,
+      )?.[1] ?? "";
+    expect(micaRule).not.toContain("feTurbulence");
     const playerRule = styles.match(/\.player-bar\s*\{([^}]*)\}/u)?.[1] ?? "";
     expect(playerRule).toContain("position: relative;");
+
+    const homeView = readFileSync(
+      resolve(process.cwd(), "src/views/HomeView.tsx"),
+      "utf8",
+    );
+    expect(homeView).not.toContain("welcome-sparkle");
+    expect(homeView).not.toContain("Sparkles");
   });
 });
 
