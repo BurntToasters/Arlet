@@ -1,36 +1,36 @@
 # MusicKit + Tauri v2 Feasibility Report
 
-> **Status:** PENDING — MusicKit matrix not run (no developer token). Diagnostic webview **did** load Apple's site in Evergreen WebView2 (2026-09-11 screenshot). Subscriber playback still unproven.
+> **Status:** PENDING — MusicKit initialized and audible playback was reported in the 2026-09-13 debug run, but protected-track duration, seek, consecutive-track stability, and recovery cases remain unverified.
 
 ## Environment
 
-| Property              | Value |
-|-----------------------|-------|
-| Windows Build         | 25H2 build 26200.9445 |
-| Architecture          | x64 (fill native `get_app_info.arch` from the app log if ARM64) |
-| WebView2 Version      | 152.0.4191.66 (Evergreen registry) |
-| Tauri Version         | 2.11.5 (Cargo.lock) |
-| App Version           | 0.1.0 |
-| MusicKit JS Version   | v3 |
-| Node Version          | v24.20.0 |
-| npm Version           | 12.0.2 |
-| Rust Toolchain        | stable (`rust-toolchain.toml`) |
-| rustc                 | rustc 1.98.1 (48a229cea 2026-09-01) |
+| Property            | Value                                                           |
+| ------------------- | --------------------------------------------------------------- |
+| Windows Build       | 25H2 build 26200.9445                                           |
+| Architecture        | x64 (fill native `get_app_info.arch` from the app log if ARM64) |
+| WebView2 Version    | 152.0.4191.66 (Evergreen registry)                              |
+| Tauri Version       | 2.11.5 (Cargo.lock)                                             |
+| App Version         | 0.1.0                                                           |
+| MusicKit JS Version | v3                                                              |
+| Node Version        | v24.20.0                                                        |
+| npm Version         | 12.0.2                                                          |
+| Rust Toolchain      | stable (`rust-toolchain.toml`)                                  |
+| rustc               | rustc 1.98.1 (48a229cea 2026-09-01)                             |
 
 ## Authorization
 
-- [ ] MusicKit initializes without errors
+- [x] MusicKit initializes without errors (2026-09-13 log)
 - [ ] Apple authorization popup appears
-- [ ] Authorization completes successfully
+- [x] Authorization completes successfully (already restored from a previous session; 2026-09-13 log)
 - [ ] Music User Token is obtained
-- [ ] Session persists across page reload
+- [x] Session persists across page reload (authorization restored from a previous session; 2026-09-13 log)
 - [ ] Logout clears session
 - [ ] Re-login after logout works
 
 ## Playback
 
 - [ ] Full protected track plays (not just 30s preview)
-- [ ] Audio output is correct
+- [x] Audio output is audible (user report after 2026-09-13 playback run)
 - [ ] Seek within track works
 - [ ] Pause/resume works
 - [ ] Skip to next track works
@@ -54,7 +54,15 @@
 
 ## Observed Failures
 
-- **Main window / MusicKit JS (2026-09-11):** `MusicKit: failed — MUSICKIT_DEVELOPER_TOKEN is not available. Copy .env.example to .env and run npm run tauri:dev.` Expected until a developer JWT is in `.env`. This is not a DRM result.
+- None reported in the supplied 2026-09-13 run.
+
+## Supplied 2026-09-13 Run Evidence
+
+- MusicKit initialized successfully on Windows x64 / Tauri 2.11.5 / WebView2 152.0.4191.66 / Windows 25H2 build 26200.9445.
+- Authorization was already present from a previous session.
+- Searches for `hello` and `dont let me down` each returned 25 results and reported a consecutive 20-track queue ready.
+- Playback was started from `Don't Let Me Down`; the user reported that audio playback was working.
+- This evidence does not establish full protected-track duration, seek, 20-track continuity, two-hour stability, or lifecycle/recovery behavior.
 
 ## Diagnostic webview (`music.apple.com`)
 

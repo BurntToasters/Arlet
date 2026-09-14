@@ -16,6 +16,7 @@
     "core:window:allow-minimize",
     "core:window:allow-maximize",
     "core:window:allow-unmaximize",
+    "core:window:allow-toggle-maximize",
     "core:window:allow-is-maximized",
     "core:window:allow-start-resize-dragging",
     "dialog:allow-message",
@@ -37,6 +38,7 @@
     "allow-get-log-dir",
     "allow-clear-logs",
     "allow-set-window-fx",
-    "allow-supports-window-fx"
+    "allow-supports-window-fx",
+    "allow-set-snap-overlay-bounds"
   ]
 }

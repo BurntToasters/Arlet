@@ -18,6 +18,7 @@ fn main() {
         "clear_logs",
         "set_window_fx",
         "supports_window_fx",
+        "set_snap_overlay_bounds",
     ];
     tauri_build::try_build(
         tauri_build::Attributes::new()

@@ -8,6 +8,18 @@
 > **Important:** Tauri is the preferred shell, but **Apple Music protected playback is a Phase 0 go/no-go gate**. Do not build the full product until that gate passes.
 > **Project Name:** Arlet | BundleID: run.rosie.arlet
 
+> **Owner-approved implementation decisions (2026-09-13):** The current
+> implementation slice intentionally uses a Preact component shell; Acrylic is
+> the default window material with Mica/Solid fallback and a user selector; the
+> player is persistent at the bottom; the titlebar is custom and frameless with
+> native Snap Layout support; diagnostics are a development-only drawer; and no
+> WebDriver E2E harness is being added yet because native validation remains
+> manual. These decisions supersede the earlier vanilla-frontend, Mica-default,
+> and immediate-E2E guidance where it conflicts with the current implementation
+> slice. The historical rationale below remains preserved. The production HTTPS
+> developer-token service is still a pre-release prerequisite and release-mode
+> MusicKit is intentionally not wired yet.
+
 ---
 
 ## 1. Mission

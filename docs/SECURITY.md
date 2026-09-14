@@ -21,10 +21,14 @@ created from Rust (`create: false`) so that handler can allow only Apple auth
 hosts and `about:blank`. Allowed popups use WebView2's default window (no Tauri
 IPC). Never log the authorize URL; the query string is the developer JWT.
 
-Content Security Policy in `src-tauri/tauri.conf.json` allows only the exact
-Apple domains MusicKit needs (see `docs/MUSICKIT_NETWORK_SURFACE.md`) plus
-the configured token-service origin. Never broaden CSP or capabilities to
-make a bug disappear; document the required origin first.
+Content Security Policy in `src-tauri/tauri.conf.json` currently uses exact
+hosts for the MusicKit CDN and authorization frame, plus provisional
+`https://*.apple.com` and `https://*.mzstatic.com` subdomain wildcards for
+image, connect, and media traffic. The observed host list is still pending;
+`docs/MUSICKIT_NETWORK_SURFACE.md` records that status and the provisional
+surface. Reconcile those entries after a fresh Phase 0 export. Never broaden
+CSP or capabilities to make a bug disappear; document the required origin
+first.
 
 ## Apple Music credentials
 
@@ -42,7 +46,12 @@ phase0:mint-token` can mint that JWT from `MUSICKIT_TEAM_ID`,
   repo; it never prints the JWT or `.p8`. `dotenv -e .env -- tauri
 dev` loads it into the Rust process. A debug-only `get_developer_token`
   command hands it to MusicKit. Release builds refuse that command. Production
-  obtains short-lived tokens from a small HTTPS token service.
+  obtains short-lived tokens from a small HTTPS token service. The service
+  provider exists in `src/musickit/token.ts` but is not wired into
+  `src/musickit/bootstrap.ts` yet; release-mode MusicKit intentionally refuses
+  the debug token command. Hosting/configuring that service and adding its
+  exact origin to the release CSP are pre-release prerequisites. Do not publish
+  a release until this production path is wired and smoke-tested.
 
 ## Logging
 

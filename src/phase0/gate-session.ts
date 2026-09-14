@@ -153,7 +153,8 @@ export interface GateEnvironment {
 
 export interface GateReportInput {
   environment: GateEnvironment;
-  appState: Readonly<AppState>;
+  /** Only this aggregate is written to reports; auth tokens never belong in a report input. */
+  appState: Pick<Readonly<AppState>, "tracksPlayed">;
   sessionStartedAt: Date;
   diagLog: string;
   checklist: Record<string, boolean>;
@@ -222,7 +223,11 @@ export function formatSessionDuration(
 
 const observedHosts = new Set<string>();
 
-function recordHost(url: string | URL): void {
+function recordHost(
+  url: string | URL,
+  onHostsChanged?: (hosts: readonly string[]) => void,
+): void {
+  const sizeBefore = observedHosts.size;
   try {
     const parsed =
       typeof url === "string" ? new URL(url, window.location.href) : url;
@@ -232,19 +237,28 @@ function recordHost(url: string | URL): void {
   } catch {
     // Ignore invalid URLs from relative paths or malformed requests.
   }
+  if (observedHosts.size !== sizeBefore) {
+    try {
+      onHostsChanged?.([...observedHosts].sort((a, b) => a.localeCompare(b)));
+    } catch {
+      // A diagnostics subscriber must not change fetch/performance behavior.
+    }
+  }
 }
 
-export function startNetworkObserver(): () => void {
+export function startNetworkObserver(
+  onHostsChanged?: (hosts: readonly string[]) => void,
+): () => void {
   observedHosts.clear();
 
   const originalFetch = window.fetch.bind(window);
   window.fetch = (input, init) => {
     if (typeof input === "string") {
-      recordHost(input);
+      recordHost(input, onHostsChanged);
     } else if (input instanceof URL) {
-      recordHost(input);
+      recordHost(input, onHostsChanged);
     } else if (input instanceof Request) {
-      recordHost(input.url);
+      recordHost(input.url, onHostsChanged);
     }
     return originalFetch(input, init);
   };
@@ -254,7 +268,7 @@ export function startNetworkObserver(): () => void {
     try {
       observer = new PerformanceObserver((list) => {
         for (const entry of list.getEntriesByType("resource")) {
-          recordHost(entry.name);
+          recordHost(entry.name, onHostsChanged);
         }
       });
       observer.observe({ type: "resource", buffered: true });

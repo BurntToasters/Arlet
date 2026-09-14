@@ -43,6 +43,9 @@ pub fn create_main_window(app: &App) -> Result<WebviewWindow, Box<dyn std::error
         .cloned()
         .ok_or("tauri.conf.json is missing a window with label \"main\"")?;
     Ok(WebviewWindowBuilder::from_config(app.handle(), &config)?
+        // Keep the window hidden through webview creation. Startup applies the
+        // saved native material and custom chrome before the first show.
+        .visible(false)
         .on_new_window(|url, _features| decide_new_window(url))
         .build()?)
 }
@@ -97,5 +100,6 @@ mod tests {
         let window = &value["app"]["windows"][0];
         assert_eq!(window["label"], MAIN_WINDOW_LABEL);
         assert_eq!(window["create"], false);
+        assert_eq!(window["visible"], false);
     }
 }

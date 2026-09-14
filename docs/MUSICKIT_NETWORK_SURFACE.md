@@ -1,7 +1,8 @@
 # MusicKit Network Surface
 
-> Observed Apple domains required by MusicKit during Phase 0 testing.
-> Update this document as new endpoints are discovered.
+> **Status:** PENDING — the 2026-09-13 run has not yet exported its observed host list.
+> The table below remains the provisional Phase 0 surface from earlier testing;
+> update it after copying a fresh report from the diagnostics drawer.
 
 ## Script Sources
 

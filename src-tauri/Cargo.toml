@@ -17,15 +17,25 @@ serde_json = "1"
 tauri-plugin-dialog = "2"
 tauri-plugin-process = "2"
 tauri-plugin-notification = "2"
-tokio = { version = "1", features = ["time"] }
-window-vibrancy = "0.6"
+tokio = { version = "1", features = ["sync", "time"] }
+window-vibrancy = "0.8"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = "2"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", features = [] }
+raw-window-handle = "0.6"
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_Storage_FileSystem",
+    "Win32_UI_Controls",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [features]
 default = []

@@ -1,3 +1,2 @@
-import { initializeApplication } from "./app-init.ts";
-
-void initializeApplication();
+// Compatibility entry for tooling that still imports the pre-Preact path.
+import "./main.tsx";

@@ -33,47 +33,69 @@ function mapPlaybackState(state: number): PlaybackState["status"] {
 export function registerMusicKitEvents(
   instance: MusicKit.MusicKitInstance,
   onStateChange?: () => void,
-): void {
-  instance.addEventListener(
-    MusicKit.Events.playbackStateDidChange,
-    (event: Record<string, unknown>) => {
-      const state = (event.state ?? event.oldState ?? 0) as number;
-      setPlaybackStatus(mapPlaybackState(state));
-      onStateChange?.();
-    },
-  );
+  onPlaybackError?: (message: string) => void,
+): () => void {
+  const onPlaybackStateChange = (event: Record<string, unknown>): void => {
+    const state = (event.state ?? event.oldState ?? 0) as number;
+    setPlaybackStatus(mapPlaybackState(state));
+    onStateChange?.();
+  };
+  const onNowPlayingItemChange = (event: Record<string, unknown>): void => {
+    const item = (event.item ?? null) as MusicKit.MediaItem | null;
+    if (item) {
+      setCurrentTrack(normalizeTrack(item));
+    } else {
+      setCurrentTrack(undefined);
+    }
+    onStateChange?.();
+  };
+  const onPlaybackTimeChange = (event: Record<string, unknown>): void => {
+    const position = (event.currentPlaybackTime ?? 0) as number;
+    const duration = (event.currentPlaybackDuration ?? 0) as number;
+    setPlaybackPosition(position, duration);
+    onStateChange?.();
+  };
+  const onMediaPlaybackError = (event: Record<string, unknown>): void => {
+    const message = String(event.message ?? "Playback error");
+    const safeMessage = redactSensitive(message);
+    setPlaybackError(mapErrorToCode(message), safeMessage);
+    onPlaybackError?.(safeMessage);
+    onStateChange?.();
+  };
 
-  instance.addEventListener(
-    MusicKit.Events.nowPlayingItemDidChange,
-    (event: Record<string, unknown>) => {
-      const item = (event.item ?? null) as MusicKit.MediaItem | null;
-      if (item) {
-        setCurrentTrack(normalizeTrack(item));
-      } else {
-        setCurrentTrack(undefined);
-      }
-      onStateChange?.();
+  const listeners: Array<{
+    name: string;
+    callback: (event: Record<string, unknown>) => void;
+  }> = [
+    {
+      name: MusicKit.Events.playbackStateDidChange,
+      callback: onPlaybackStateChange,
     },
-  );
+    {
+      name: MusicKit.Events.nowPlayingItemDidChange,
+      callback: onNowPlayingItemChange,
+    },
+    {
+      name: MusicKit.Events.playbackTimeDidChange,
+      callback: onPlaybackTimeChange,
+    },
+    {
+      name: MusicKit.Events.mediaPlaybackError,
+      callback: onMediaPlaybackError,
+    },
+  ];
 
-  instance.addEventListener(
-    MusicKit.Events.playbackTimeDidChange,
-    (event: Record<string, unknown>) => {
-      const position = (event.currentPlaybackTime ?? 0) as number;
-      const duration = (event.currentPlaybackDuration ?? 0) as number;
-      setPlaybackPosition(position, duration);
-      onStateChange?.();
-    },
-  );
+  for (const listener of listeners) {
+    instance.addEventListener(listener.name, listener.callback);
+  }
 
-  instance.addEventListener(
-    MusicKit.Events.mediaPlaybackError,
-    (event: Record<string, unknown>) => {
-      const message = String(
-        (event as Record<string, unknown>).message ?? "Playback error",
-      );
-      setPlaybackError(mapErrorToCode(message), redactSensitive(message));
-      onStateChange?.();
-    },
-  );
+  let active = true;
+  return () => {
+    if (!active) return;
+    active = false;
+    if (typeof instance.removeEventListener !== "function") return;
+    for (const listener of listeners) {
+      instance.removeEventListener(listener.name, listener.callback);
+    }
+  };
 }

@@ -231,6 +231,12 @@
           "markdownDescription": "Enables the save_settings command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_snap_overlay_bounds command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-snap-overlay-bounds",
+          "markdownDescription": "Enables the set_snap_overlay_bounds command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_window_fx command without any pre-configured scope.",
           "type": "string",
           "const": "allow-set-window-fx",
@@ -295,6 +301,12 @@
           "type": "string",
           "const": "deny-save-settings",
           "markdownDescription": "Denies the save_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_snap_overlay_bounds command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-snap-overlay-bounds",
+          "markdownDescription": "Denies the set_snap_overlay_bounds command without any pre-configured scope."
         },
         {
           "description": "Denies the set_window_fx command without any pre-configured scope.",

@@ -3,9 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#151618" />
     <title>Arlet</title>
-    <link rel="stylesheet" href="./styles/tokens.css" />
-    <link rel="stylesheet" href="./styles/base.css" />
     <script
       src="https://js-cdn.music.apple.com/musickit/v3/musickit.js"
       data-web-components
@@ -13,100 +12,7 @@
     ></script>
   </head>
   <body>
-    <div id="app">
-      <header id="titlebar" data-tauri-drag-region>
-        <h1 data-tauri-drag-region>Arlet</h1>
-        <span id="auth-status">Not signed in</span>
-      </header>
-      <main id="content">
-        <section id="phase0-controls">
-          <h2>Phase 0 — MusicKit Feasibility</h2>
-          <div id="init-status">MusicKit: loading…</div>
-          <div class="controls">
-            <button id="btn-authorize" disabled>Sign In</button>
-            <button id="btn-unauthorize" disabled>Sign Out</button>
-            <button id="btn-music-diagnostic" type="button">
-              Open music.apple.com diagnostic
-            </button>
-          </div>
-          <p id="diagnostic-hint">
-            Diagnostic webview needs an Apple Music subscription, not a
-            developer token. Zero Tauri privileges.
-          </p>
-          <div class="controls">
-            <input
-              id="search-input"
-              type="text"
-              placeholder="Search for a song…"
-              disabled
-            />
-            <button id="btn-search" disabled>Search</button>
-            <button id="btn-play-consecutive" disabled>
-              Queue 20 consecutive
-            </button>
-          </div>
-          <div id="search-results"></div>
-          <div id="now-playing">
-            <div id="np-artwork"></div>
-            <div id="np-info">
-              <div id="np-title">—</div>
-              <div id="np-artist">—</div>
-              <div id="np-kind">Playback kind: —</div>
-            </div>
-          </div>
-          <div class="controls">
-            <button id="btn-prev" disabled>⏮</button>
-            <button id="btn-play" disabled>▶</button>
-            <button id="btn-next" disabled>⏭</button>
-          </div>
-          <div class="controls">
-            <label
-              >Seek:
-              <input
-                id="seek-slider"
-                type="range"
-                min="0"
-                max="100"
-                value="0"
-                disabled
-            /></label>
-            <label
-              >Volume:
-              <input
-                id="volume-slider"
-                type="range"
-                min="0"
-                max="100"
-                value="50"
-            /></label>
-          </div>
-          <div id="playback-state">Idle</div>
-          <div id="track-counter">Tracks played: 0</div>
-          <div id="session-timer">Session: 0s</div>
-          <div id="error-display"></div>
-          <section id="gate-matrix">
-            <h3>Feasibility Matrix</h3>
-            <p id="gate-progress">0 / 0 checklist items complete</p>
-            <div id="gate-checklist"></div>
-            <div class="controls">
-              <button id="btn-copy-feasibility" type="button" disabled>
-                Copy feasibility report
-              </button>
-              <button id="btn-copy-network" type="button" disabled>
-                Copy network surface
-              </button>
-              <button id="btn-reset-checklist" type="button" disabled>
-                Reset checklist
-              </button>
-            </div>
-          </section>
-          <div id="diagnostics">
-            <h3>Diagnostics</h3>
-            <pre id="diag-output"></pre>
-          </div>
-        </section>
-      </main>
-    </div>
-    <script type="module" src="./main.ts"></script>
+    <div id="app"></div>
+    <script type="module" src="./main.tsx"></script>
   </body>
 </html>

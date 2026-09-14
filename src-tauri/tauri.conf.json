@@ -17,10 +17,11 @@
         "title": "Arlet",
         "width": 1000,
         "height": 700,
-        "minWidth": 640,
+        "minWidth": 500,
         "minHeight": 480,
         "resizable": true,
-        "visible": true,
+        "decorations": false,
+        "visible": false,
         "transparent": true,
         "titleBarStyle": "Overlay"
       }
