@@ -1,27 +1,87 @@
-// Arlet release publisher. Arlet-native implementation; workflow inspired by
-// Zinnia. Verifies the draft first, then flips it from draft to published.
-// Usage: npm run release:publish (after every platform job has signed)
+// Publish the fully verified exact-version draft. The draft verifier runs
+// before the final API patch so a partial/mis-tagged release cannot become a
+// channel feed. Stable releases remain the GitHub /releases/latest target;
+// beta releases keep prerelease=true and their beta manifests are synced by
+// gpg-sign.js.
 
-const path = require("path");
-const { execFileSync, spawnSync } = require("child_process");
+const path = require("node:path");
+const { execFileSync, spawnSync } = require("node:child_process");
+const { assertGitHubCliAuthenticated, githubApi } = require("./github-cli.cjs");
 
 try {
   require("dotenv").config();
 } catch {
-  // dotenv-cli usually loads .env already.
+  // dotenv-cli normally loads .env before this script runs.
 }
 
 const REPO_ROOT = path.resolve(__dirname, "..");
 const REPO_OWNER = process.env.GH_REPO_OWNER || "BurntToasters";
 const REPO_NAME = process.env.GH_REPO_NAME || "Arlet";
+const REPO = `${REPO_OWNER}/${REPO_NAME}`;
 const packageJson = require("../package.json");
-const VERSION = packageJson.version;
+const VERSION = String(packageJson.version || "").trim();
 const TAG_NAME = `v${VERSION}`;
+const EXPECTED_PRERELEASE = /-beta\.\d+$/.test(VERSION);
+const FORCE_UPLOAD = /^(1|true|yes|on)$/i.test(
+  String(process.env.FORCE_UPLOAD || "").trim(),
+);
+
+function currentReleaseCommit() {
+  const commit = execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+  if (!/^[0-9a-f]{40}$/i.test(commit)) {
+    throw new Error("Could not resolve an exact release commit from git HEAD.");
+  }
+  return commit;
+}
+
+function assertReleaseTargetsCommit(release, commit) {
+  if (release?.target_commitish === commit) return;
+  if (FORCE_UPLOAD) {
+    console.warn(
+      `[release:publish] WARNING: ${TAG_NAME} targets ${release?.target_commitish || "an unknown commit"}, not HEAD ${commit}; FORCE_UPLOAD=1 bypassing commit fence.`,
+    );
+    return;
+  }
+  throw new Error(
+    `Release ${TAG_NAME} targets ${release?.target_commitish || "an unknown commit"}, not HEAD ${commit}. Refusing to publish stale artifacts.`,
+  );
+}
+
+function getDraftRelease() {
+  try {
+    return githubApi(
+      "GET",
+      `/repos/${REPO}/releases/tags/${encodeURIComponent(TAG_NAME)}`,
+    );
+  } catch (error) {
+    if (error?.statusCode !== 404) throw error;
+    for (let page = 1; page <= 20; page += 1) {
+      const releases = githubApi(
+        "GET",
+        `/repos/${REPO}/releases?per_page=100&page=${page}`,
+      );
+      if (!Array.isArray(releases)) break;
+      const placeholder = releases.find(
+        (release) =>
+          release?.draft &&
+          release.name === VERSION &&
+          /^untagged-[0-9a-f]{20}$/i.test(String(release.tag_name || "")),
+      );
+      if (placeholder) return placeholder;
+      if (releases.length < 100) break;
+    }
+    throw error;
+  }
+}
 
 function runVerifyDraft() {
   const result = spawnSync(
     process.execPath,
-    [path.join(__dirname, "verify-release-draft.js")],
+    [path.join(__dirname, "verify-release-draft.js"), "--verify-artifacts"],
     { stdio: "inherit", cwd: REPO_ROOT },
   );
   if (result.error) throw result.error;
@@ -33,30 +93,47 @@ function runVerifyDraft() {
 }
 
 function main() {
+  assertGitHubCliAuthenticated();
+  const commit = currentReleaseCommit();
   runVerifyDraft();
-  console.log(`[release:publish] Publishing ${TAG_NAME}...`);
-  execFileSync(
-    "gh",
-    [
-      "release",
-      "edit",
-      TAG_NAME,
-      "--repo",
-      `${REPO_OWNER}/${REPO_NAME}`,
-      "--draft=false",
-    ],
-    { cwd: REPO_ROOT, stdio: "inherit" },
-  );
+  const draft = getDraftRelease();
+  if (!draft?.draft) throw new Error(`No draft exists for ${TAG_NAME}.`);
+  if (Boolean(draft.prerelease) !== EXPECTED_PRERELEASE) {
+    throw new Error(
+      `Draft ${TAG_NAME} prerelease=${draft.prerelease}, expected ${EXPECTED_PRERELEASE}; re-run npm run release:draft.`,
+    );
+  }
+  assertReleaseTargetsCommit(draft, commit);
+  const published = githubApi("PATCH", `/repos/${REPO}/releases/${draft.id}`, {
+    tag_name: TAG_NAME,
+    target_commitish: commit,
+    draft: false,
+    prerelease: EXPECTED_PRERELEASE,
+  });
+  if (
+    published?.tag_name !== TAG_NAME ||
+    published.draft ||
+    Boolean(published.prerelease) !== EXPECTED_PRERELEASE
+  ) {
+    throw new Error(
+      `GitHub returned an invalid published release for ${TAG_NAME}.`,
+    );
+  }
   console.log(
-    `[release:publish] Published ${TAG_NAME}. Run release:verify:published next.`,
+    `[release:publish] Published ${TAG_NAME}: ${published.html_url || "ok"}`,
   );
+  console.log("[release:publish] Run npm run release:verify:published next.");
 }
 
-try {
-  main();
-} catch (error) {
-  console.error(
-    `[release:publish] FAILED: ${error instanceof Error ? error.message : String(error)}`,
-  );
-  process.exit(1);
+if (require.main === module) {
+  try {
+    main();
+  } catch (error) {
+    console.error(
+      `[release:publish] FAILED: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exit(1);
+  }
 }
+
+module.exports = { assertReleaseTargetsCommit, currentReleaseCommit, main };

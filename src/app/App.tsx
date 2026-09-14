@@ -15,6 +15,7 @@ import { PlayerBar } from "../components/PlayerBar.tsx";
 import { Titlebar } from "../components/Titlebar.tsx";
 import { RouteView } from "../views/RouteView.tsx";
 import { DiagnosticsDrawer } from "../components/diagnostics/DiagnosticsDrawer.tsx";
+import { UpdateReadyModal } from "../components/UpdateReadyModal.tsx";
 import type { DiagnosticsDrawerController } from "../diagnostics/types.ts";
 import type { DiagnosticsStore } from "../diagnostics/store.ts";
 
@@ -96,6 +97,7 @@ function AppLayout({
         />
       ) : null}
       <PlayerBar />
+      <UpdateReadyModal />
     </div>
   );
 }

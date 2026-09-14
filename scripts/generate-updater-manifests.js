@@ -26,15 +26,51 @@ const REPO_OWNER = process.env.GH_REPO_OWNER || "BurntToasters";
 const REPO_NAME = process.env.GH_REPO_NAME || "Arlet";
 
 const ARCH_FROM_INSTALLER = [
-  { pattern: /_x64-/i, platform: "windows-x86_64" },
-  { pattern: /_arm64-/i, platform: "windows-aarch64" },
+  { pattern: /_x64-/i, arch: "x86_64" },
+  { pattern: /_arm64-/i, arch: "aarch64" },
+];
+
+export const REQUIRED_STABLE_MANIFEST_NAMES = [
+  "latest-windows-x86_64.json",
+  "latest-windows-aarch64.json",
+];
+
+export const REQUIRED_BETA_MANIFEST_NAMES = [
+  "latest-windows-beta-x86_64.json",
+  "latest-windows-beta-x86_64-nsis.json",
+  "latest-windows-beta-aarch64.json",
+  "latest-windows-beta-aarch64-nsis.json",
+];
+
+export const REQUIRED_MANIFEST_NAMES = [
+  ...REQUIRED_STABLE_MANIFEST_NAMES,
+  ...REQUIRED_BETA_MANIFEST_NAMES,
 ];
 
 export function platformForInstaller(fileName) {
-  for (const { pattern, platform } of ARCH_FROM_INSTALLER) {
-    if (pattern.test(fileName)) return platform;
+  for (const { pattern, arch } of ARCH_FROM_INSTALLER) {
+    if (pattern.test(fileName)) return `windows-${arch}`;
   }
   return null;
+}
+
+export function archForInstaller(fileName) {
+  for (const { pattern, arch } of ARCH_FROM_INSTALLER) {
+    if (pattern.test(fileName)) return arch;
+  }
+  return null;
+}
+
+// `tauri signer sign` normally writes the minisign envelope as a base64
+// string, but older release VMs can leave the four-line envelope unencoded.
+// Tauri's updater JSON always carries the outer base64 form; normalize at the
+// generator boundary so either sidecar representation produces the same feed.
+export function normalizeUpdaterSignature(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) return "";
+  return trimmed.includes("untrusted comment:")
+    ? Buffer.from(trimmed, "utf8").toString("base64")
+    : trimmed;
 }
 
 export function findSignedInstallers(
@@ -43,7 +79,19 @@ export function findSignedInstallers(
   isFile = (p) => fs.statSync(p).isFile(),
 ) {
   const results = [];
-  const bundleRoots = [path.join(rootDir, "src-tauri", "target")];
+  const targetRoot = path.join(rootDir, "src-tauri", "target");
+  const bundleRoots = [path.join(targetRoot, "release", "bundle")];
+  try {
+    for (const entry of readDir(targetRoot, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        bundleRoots.push(
+          path.join(targetRoot, entry.name, "release", "bundle"),
+        );
+      }
+    }
+  } catch {
+    // The walkers below turn an absent target/build into an empty result.
+  }
   const walk = (dir) => {
     let entries;
     try {
@@ -69,7 +117,7 @@ export function findSignedInstallers(
       }
     }
   };
-  for (const rel of bundleRoots) walk(rel);
+  for (const bundleRoot of bundleRoots) walk(bundleRoot);
   return results;
 }
 
@@ -81,31 +129,69 @@ export function buildManifests(
     owner = REPO_OWNER,
     repo = REPO_NAME,
     notes = `Arlet ${TAG_NAME}`,
-    pubdate = new Date().toISOString(),
+    pubDate,
+    // Keep accepting the old option for callers outside the repository while
+    // never emitting the obsolete `pubdate` key.
+    pubdate,
     readSig = (p) => fs.readFileSync(p, "utf8").trim(),
   } = {},
 ) {
-  const platforms = {};
+  const installersByArch = new Map();
   for (const { exe, sig } of installers) {
-    const platform = platformForInstaller(path.basename(exe));
-    if (!platform) {
+    const arch = archForInstaller(path.basename(exe));
+    if (!arch) {
       throw new Error(`Cannot map installer to a platform: ${exe}`);
     }
-    if (platforms[platform]) {
-      throw new Error(`Duplicate installer for platform ${platform}: ${exe}`);
+    if (installersByArch.has(arch)) {
+      throw new Error(`Duplicate installer for architecture ${arch}: ${exe}`);
     }
-    platforms[platform] = {
+    installersByArch.set(arch, {
       url: `https://github.com/${owner}/${repo}/releases/download/${tag}/${path.basename(exe)}`,
-      signature: readSig(sig),
-    };
+      signature: normalizeUpdaterSignature(readSig(sig)),
+    });
   }
-  if (Object.keys(platforms).length === 0) {
+  if (installersByArch.size === 0) {
     throw new Error("No signed installers found; build both arches first.");
   }
+
+  const missingArchitectures = ["x86_64", "aarch64"].filter(
+    (arch) => !installersByArch.has(arch),
+  );
+  if (missingArchitectures.length > 0) {
+    throw new Error(
+      `Missing signed installer architecture(s): ${missingArchitectures.join(", ")}. Build both arches first.`,
+    );
+  }
+
+  const publicationDate =
+    pubDate ??
+    pubdate ??
+    process.env.RELEASE_PUB_DATE ??
+    new Date().toISOString();
   const manifests = {};
-  for (const platform of Object.keys(platforms)) {
-    const name = `latest-${platform}.json`;
-    manifests[name] = { version, notes, pubdate, platforms };
+  for (const arch of ["x86_64", "aarch64"]) {
+    const artifact = installersByArch.get(arch);
+    const stableTarget = `windows-${arch}`;
+    const betaTarget = `windows-beta-${arch}`;
+    const stablePlatforms = {
+      [`${stableTarget}-nsis`]: artifact,
+      [stableTarget]: artifact,
+    };
+    const betaPlatforms = {
+      [`${betaTarget}-nsis`]: artifact,
+      [betaTarget]: artifact,
+    };
+    const createManifest = (platforms) => ({
+      version,
+      pub_date: publicationDate,
+      notes,
+      platforms,
+    });
+    manifests[`latest-${stableTarget}.json`] = createManifest(stablePlatforms);
+    manifests[`latest-${betaTarget}.json`] = createManifest(betaPlatforms);
+    manifests[`latest-${betaTarget}-nsis.json`] = createManifest({
+      [`${betaTarget}-nsis`]: artifact,
+    });
   }
   return manifests;
 }

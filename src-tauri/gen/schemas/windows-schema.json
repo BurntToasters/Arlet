@@ -195,6 +195,12 @@
           "markdownDescription": "Enables the get_app_info command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_beta_updater_target command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-beta-updater-target",
+          "markdownDescription": "Enables the get_beta_updater_target command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_developer_token command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-developer-token",
@@ -265,6 +271,12 @@
           "type": "string",
           "const": "deny-get-app-info",
           "markdownDescription": "Denies the get_app_info command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_beta_updater_target command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-beta-updater-target",
+          "markdownDescription": "Denies the get_beta_updater_target command without any pre-configured scope."
         },
         {
           "description": "Denies the get_developer_token command without any pre-configured scope.",

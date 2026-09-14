@@ -43,22 +43,23 @@ function git(args) {
   }).trimEnd();
 }
 
-function checkVersionSync(version) {
-  const tauriConf = JSON.parse(
-    fs.readFileSync(path.join(root, "src-tauri", "tauri.conf.json"), "utf8"),
-  );
-  if (tauriConf.version !== version) {
-    throw new Error(
-      `src-tauri/tauri.conf.json version ${tauriConf.version} != package.json ${version}. Run sync-version.`,
+function checkVersionSync() {
+  try {
+    execFileSync(
+      process.execPath,
+      [path.join(root, "scripts", "sync-version.js"), "--check"],
+      {
+        cwd: root,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
     );
-  }
-  const cargo = fs.readFileSync(
-    path.join(root, "src-tauri", "Cargo.toml"),
-    "utf8",
-  );
-  if (!cargo.includes(`version = "${version}"`)) {
+  } catch (error) {
+    const stdout = error?.stdout ? String(error.stdout).trim() : "";
+    const stderr = error?.stderr ? String(error.stderr).trim() : "";
+    const detail = [stderr, stdout].filter(Boolean).join("\n");
     throw new Error(
-      `src-tauri/Cargo.toml does not contain version "${version}". Run sync-version.`,
+      `Version files are not synchronized with package.json. Run npm run sync-version.\n${detail}`.trim(),
     );
   }
 }
@@ -181,7 +182,7 @@ function runPreflight() {
       `HEAD ${head.slice(0, 12)} does not match pushed ${expectedUpstream} ${upstreamHead.slice(0, 12)}.`,
     );
   }
-  checkVersionSync(version);
+  checkVersionSync();
   checkUpdaterPubkey();
   checkWindowsTargets();
   checkCredentialLeaks();

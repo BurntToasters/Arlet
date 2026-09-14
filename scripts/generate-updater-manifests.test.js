@@ -24,11 +24,13 @@ const repoRoot = path.resolve(
 );
 
 function fixtureEnvelope() {
+  const packet = Buffer.concat([Buffer.from([0x45, 0x64]), Buffer.alloc(72)]);
+  const global = Buffer.alloc(64);
   const inner = [
     "untrusted comment: test signature",
-    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+    packet.toString("base64"),
     "trusted comment: timestamp:1",
-    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB==",
+    global.toString("base64"),
   ].join("\n");
   return Buffer.from(inner, "utf8").toString("base64");
 }
@@ -92,23 +94,25 @@ test("manifests carry deterministic URLs and valid shape", () => {
       owner: "BurntToasters",
       repo: "Arlet",
       notes: "notes",
-      pubdate: "2026-01-01T00:00:00.000Z",
+      pubDate: "2026-01-01T00:00:00.000Z",
     });
     assert.deepEqual(Object.keys(manifests).sort(), [
       "latest-windows-aarch64.json",
+      "latest-windows-beta-aarch64-nsis.json",
+      "latest-windows-beta-aarch64.json",
+      "latest-windows-beta-x86_64-nsis.json",
+      "latest-windows-beta-x86_64.json",
       "latest-windows-x86_64.json",
     ]);
     for (const manifest of Object.values(manifests)) {
       assert.equal(manifest.version, "0.1.0");
-      assert.deepEqual(Object.keys(manifest.platforms).sort(), [
-        "windows-aarch64",
-        "windows-x86_64",
-      ]);
-      assert.match(
-        manifest.platforms["windows-x86_64"].url,
-        /releases\/download\/v0\.1\.0\/Arlet_0\.1\.0_x64-setup\.exe$/,
-      );
+      assert.equal(manifest.pub_date, "2026-01-01T00:00:00.000Z");
+      assert.ok(!Object.hasOwn(manifest, "pubdate"));
     }
+    assert.match(
+      manifests["latest-windows-x86_64.json"].platforms["windows-x86_64"].url,
+      /releases\/download\/v0\.1\.0\/Arlet_0\.1\.0_x64-setup\.exe$/,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -145,6 +149,10 @@ test("script wiring is consistent", () => {
   assert.equal(
     scripts["release:updater-manifests"],
     "dotenv -e .env -- node scripts/generate-updater-manifests.js",
+  );
+  assert.equal(
+    scripts["release:sync-beta-manifests"],
+    "dotenv -e .env -- node scripts/gpg-sign.js --sync-beta-manifests",
   );
   assert.ok(
     String(scripts["release:win:continue"]).includes(

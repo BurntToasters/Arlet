@@ -30,6 +30,7 @@
     "notification:allow-notify",
     "allow-get-app-info",
     "allow-get-developer-token",
+    "allow-get-beta-updater-target",
     "allow-open-music-diagnostic",
     "allow-load-settings",
     "allow-save-settings",

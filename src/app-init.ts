@@ -73,6 +73,16 @@ export async function initializeApplication(
   controller.log(
     "Developer diagnostics: Ctrl+Shift+D (development builds only).",
   );
+  // Updates are deliberately kicked off only after both persisted settings and
+  // MusicKit are ready. The updater service no-ops in development builds and
+  // coalesces this startup check with a user-triggered Settings check.
+  if (!import.meta.env.DEV) {
+    void controller.startupUpdateCheck().catch((error: unknown) => {
+      controller.log(
+        `Startup update check failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+  }
   return controller;
 }
 

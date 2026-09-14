@@ -50,9 +50,10 @@ npm run release:win              # warning + preflight + full win run (or releas
 `release:win:continue` runs: session verify → licenses → draft (single
 creator) → Rust targets → x64 + ARM64 NSIS builds (in-build Authenticode via
 `bundle.windows.signCommand`, then a skip-if-signed safety pass) → updater
-manifest generation (`latest-windows-*.json`) → GPG sign + upload → mirror
-cleaned artifacts to `AFTER_PACK_LOC` + reset the checkout (`release:finalize`)
-→ draft verification (installers, checksums, signatures, updater manifests).
+manifest generation → GPG sign + upload → beta-feed synchronization when the
+version is a beta → mirror cleaned artifacts to `AFTER_PACK_LOC` + reset the
+checkout (`release:finalize`) → draft verification (installers, checksums,
+signatures, updater manifests, and manifest-to-sidecar references).
 
 After every platform job finishes:
 
@@ -61,12 +62,52 @@ npm run release:publish          # re-verifies the draft, then flips draft → p
 npm run release:verify:published # downloads live updater metadata and validates it
 ```
 
+## Updater channels and manifest assets
+
+Arlet uses three application choices: **Auto** (the default), **Stable**, and
+**Beta**. Auto follows the installed build: stable builds poll stable feeds and
+`-beta.N` builds poll beta feeds. Stable and Beta explicitly select their
+corresponding feed regardless of the installed version.
+
+Each release generates six target-specific manifests:
+
+```text
+latest-windows-x86_64.json             latest-windows-aarch64.json
+latest-windows-beta-x86_64.json        latest-windows-beta-x86_64-nsis.json
+latest-windows-beta-aarch64.json       latest-windows-beta-aarch64-nsis.json
+```
+
+The stable generic files contain both the generic and NSIS target keys. The
+beta generic files do the same, while the `-nsis` files contain only the exact
+installer target used by the beta target command. All manifests use Tauri's
+`pub_date` field and reference the signed installer asset on the exact release
+tag.
+
+Stable releases upload all six files to the published stable release, which
+is GitHub's `/releases/latest` alias. Beta releases upload all six files to
+their prerelease tag, then transactionally copy only the four beta manifests
+onto the latest stable release. A GitHub asset lock, staging names, adjacent
+rename swap, rollback, and orphan cleanup protect the live beta feed while
+multiple release VMs are active. If a beta VM loses connectivity after
+publication, run:
+
+```text
+npm run release:sync-beta-manifests
+```
+
+The recovery command requires the beta tag to be published, verifies every
+beta manifest and its updater sidecar, and refuses to run until a published
+stable `/releases/latest` exists. This stable-first gate prevents a beta from
+becoming the stable feed by accident.
+
 ## Rules
 
 - Never trust "upload succeeded": every publish is followed by a live
   download-and-validate step.
 - A valid updater signature is not an Authenticode signature and vice versa;
-  the pipeline checks both.
+  the pipeline checks both. Draft/live verification also checks that every
+  manifest signature matches the corresponding `.sig` sidecar and that every
+  referenced installer is downloadable.
 - Never put `.p8` keys, Apple credentials, Authenticode credentials, or the
   updater private key in routine CI. CI builds unsigned smoke artifacts only.
 - Release sessions expire after 24h and are bound to the exact

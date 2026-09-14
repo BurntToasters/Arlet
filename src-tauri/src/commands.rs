@@ -69,6 +69,20 @@ pub fn get_developer_token() -> Result<String, String> {
     developer_token_from_env()
 }
 
+pub fn beta_updater_target_for_arch(arch: &str) -> Result<String, String> {
+    match arch {
+        "x86_64" | "aarch64" => Ok(format!("windows-beta-{arch}-nsis")),
+        other => Err(format!(
+            "Beta updater is not published for architecture {other}."
+        )),
+    }
+}
+
+#[tauri::command]
+pub fn get_beta_updater_target() -> Result<String, String> {
+    beta_updater_target_for_arch(std::env::consts::ARCH)
+}
+
 #[cfg(windows)]
 fn windows_display_build() -> Option<String> {
     use std::process::Command;
@@ -137,5 +151,22 @@ mod tests {
         let err = super::developer_token_from_lookup(|_| None).unwrap_err();
         assert!(err.contains("MUSICKIT_DEVELOPER_TOKEN"));
         assert!(!err.contains("jwt"));
+    }
+
+    #[test]
+    fn beta_target_matches_published_windows_architectures() {
+        assert_eq!(
+            super::beta_updater_target_for_arch("x86_64").unwrap(),
+            "windows-beta-x86_64-nsis"
+        );
+        assert_eq!(
+            super::beta_updater_target_for_arch("aarch64").unwrap(),
+            "windows-beta-aarch64-nsis"
+        );
+    }
+
+    #[test]
+    fn beta_target_rejects_unpublished_architectures() {
+        assert!(super::beta_updater_target_for_arch("x86").is_err());
     }
 }

@@ -1,12 +1,4 @@
 #requires -Version 5.1
-<#
-.SYNOPSIS
-  Verify Authenticode signatures on Arlet Windows artifacts.
-.DESCRIPTION
-  Arlet-native implementation; workflow inspired by Zinnia. Checks every
-  .exe/.msi under the target release dir (plus extras) for a valid signature
-  matching the expected publisher subject.
-#>
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)][string]$TargetReleaseDir,
@@ -14,38 +6,71 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-if ($env:SKIP_WIN_CODESIGN -eq '1') { Write-Host 'SKIP_WIN_CODESIGN=1; skipping Authenticode verification.'; exit 0 }
-if ($env:OS -ne 'Windows_NT') { throw 'Authenticode verification must run on Windows.' }
-if ([string]::IsNullOrWhiteSpace($env:AZURE_ARTIFACT_SIGNING_PUBLISHER)) { throw 'AZURE_ARTIFACT_SIGNING_PUBLISHER is required for Authenticode verification.' }
-if ([string]::IsNullOrWhiteSpace($env:AZURE_ARTIFACT_SIGNING_PUBLISHER_DN)) { throw 'AZURE_ARTIFACT_SIGNING_PUBLISHER_DN is required for full Authenticode identity verification.' }
+
+if ($env:SKIP_WIN_CODESIGN -eq '1') {
+  Write-Host 'SKIP_WIN_CODESIGN=1; skipping Authenticode verification.'
+  exit 0
+}
+if ($env:OS -ne 'Windows_NT') {
+  throw 'Authenticode verification must run on Windows.'
+}
+if ([string]::IsNullOrWhiteSpace($env:AZURE_ARTIFACT_SIGNING_PUBLISHER)) {
+  throw 'AZURE_ARTIFACT_SIGNING_PUBLISHER is required for Authenticode verification.'
+}
+if ([string]::IsNullOrWhiteSpace($env:AZURE_ARTIFACT_SIGNING_PUBLISHER_DN)) {
+  throw 'AZURE_ARTIFACT_SIGNING_PUBLISHER_DN is required for full Authenticode identity verification.'
+}
+
+. (Join-Path $PSScriptRoot 'artifact-signing-tools.ps1')
+Import-BundledPowerShellSecurityModule
 
 $releaseDir = (Resolve-Path -LiteralPath $TargetReleaseDir).Path
+
+# Arlet ships a Tauri runtime executable plus NSIS installers. Keep this list
+# deliberately scoped: Arlet has no shell-extension artifacts to discover or
+# trust.
 $files = @(Get-ChildItem -LiteralPath $releaseDir -File -Filter '*.exe')
 $bundleDir = Join-Path $releaseDir 'bundle'
-if (Test-Path -LiteralPath $bundleDir) {
+if (Test-Path -LiteralPath $bundleDir -PathType Container) {
   $files += Get-ChildItem -LiteralPath $bundleDir -File -Recurse | Where-Object {
     $_.Extension.ToLowerInvariant() -in @('.exe', '.msi')
   }
 }
 foreach ($extra in $ExtraFiles) {
-  if ($extra -and (Test-Path -LiteralPath $extra)) {
+  if ($extra -and (Test-Path -LiteralPath $extra -PathType Leaf)) {
     $files += Get-Item -LiteralPath $extra
   }
 }
+
 $files = @($files | Sort-Object FullName -Unique)
-if (-not $files.Count) { throw "No Windows runtime or installer artifacts were found under $releaseDir" }
+if (-not $files.Count) {
+  throw "No Windows runtime or NSIS installer artifacts were found under $releaseDir"
+}
 
 $expectedPublisher = $env:AZURE_ARTIFACT_SIGNING_PUBLISHER.Trim()
-$expectedDn = $env:AZURE_ARTIFACT_SIGNING_PUBLISHER_DN.Trim()
+$expectedSubject = $env:AZURE_ARTIFACT_SIGNING_PUBLISHER_DN.Trim()
 foreach ($file in $files) {
   $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
   if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
-    throw "Authenticode signature is not valid for $($file.FullName): $($signature.Status)"
+    throw "Invalid or missing Authenticode signature: $($file.FullName) ($($signature.Status))"
   }
-  $subject = $signature.SignerCertificate.Subject
-  if ($subject -ne $expectedDn -and $subject -notmatch [regex]::Escape($expectedPublisher)) {
-    throw "Unexpected signature subject for $($file.FullName): $subject"
+  if (-not $signature.SignerCertificate) {
+    throw "Missing signer certificate: $($file.FullName)"
   }
-  Write-Host "Authenticode OK: $($file.FullName)"
+  $publisher = $signature.SignerCertificate.GetNameInfo(
+    [System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName,
+    $false
+  )
+  if ($publisher -ne $expectedPublisher) {
+    throw "Unexpected publisher for $($file.FullName): '$publisher'"
+  }
+  $subject = $signature.SignerCertificate.Subject.Trim()
+  if ($subject -ne $expectedSubject) {
+    throw "Unexpected certificate Subject for $($file.FullName). Expected '$expectedSubject', got '$subject'."
+  }
+  if (-not $signature.TimeStamperCertificate) {
+    throw "Missing RFC3161 timestamp: $($file.FullName)"
+  }
+  Write-Host "Verified: $($file.FullName)"
 }
-Write-Host "Authenticode verification passed for $($files.Count) file(s)."
+Write-Host "Verified $($files.Count) timestamped Windows runtime/NSIS artifact(s) from '$expectedSubject'."

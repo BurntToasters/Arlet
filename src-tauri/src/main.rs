@@ -73,6 +73,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_info,
             commands::get_developer_token,
+            commands::get_beta_updater_target,
             music_diagnostic::open_music_diagnostic,
             settings::load_settings,
             settings::save_settings,

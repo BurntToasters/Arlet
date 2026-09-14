@@ -24,7 +24,7 @@ export function configureMusicKit(
     developerToken,
     app: {
       name: "Arlet",
-      build: "0.1.0",
+      build: __APP_VERSION__,
     },
   });
 }

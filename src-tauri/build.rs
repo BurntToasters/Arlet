@@ -9,6 +9,7 @@ fn main() {
     const COMMANDS: &[&str] = &[
         "get_app_info",
         "get_developer_token",
+        "get_beta_updater_target",
         "open_music_diagnostic",
         "load_settings",
         "save_settings",

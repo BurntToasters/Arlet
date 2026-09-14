@@ -71,6 +71,7 @@
     "release:preflight": "node scripts/release-preflight.js",
     "prerelease:prepare": "node scripts/release-warning.js && dotenv -e .env -- npm run release:preflight && npm run release:licenses",
     "release:sign:gpg": "dotenv -e .env -- node scripts/gpg-sign.js",
+    "release:sync-beta-manifests": "dotenv -e .env -- node scripts/gpg-sign.js --sync-beta-manifests",
     "release:mirror": "dotenv -e .env -- node scripts/finalize-release-assets.js",
     "release:finalize": "npm run release:mirror && git fetch origin && git reset --hard @{u} && git clean -fd",
     "release:updater-manifests": "dotenv -e .env -- node scripts/generate-updater-manifests.js",

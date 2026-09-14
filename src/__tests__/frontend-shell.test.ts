@@ -95,15 +95,21 @@ describe("settings", () => {
       schemaVersion: 1,
       theme: "dark",
       windowEffect: "mica",
+      autoCheckUpdates: true,
+      updateChannel: "auto",
       _futurePreference: { enabled: true },
     });
     expect(
       serializeSettings(migrateSettings({ theme: "dark", other: 1 })),
-    ).toBe('{"schemaVersion":1,"theme":"dark","windowEffect":"acrylic"}');
+    ).toBe(
+      '{"schemaVersion":1,"theme":"dark","windowEffect":"acrylic","autoCheckUpdates":true,"updateChannel":"auto"}',
+    );
     expect(migrateSettings({ theme: "dark", windowEffect: "blur" })).toEqual({
       schemaVersion: 1,
       theme: "dark",
       windowEffect: "acrylic",
+      autoCheckUpdates: true,
+      updateChannel: "auto",
     });
   });
 

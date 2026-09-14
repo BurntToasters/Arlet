@@ -35,11 +35,13 @@ import {
   setQueue,
   setSearchState,
   setSettings,
+  setUpdateState,
   setUiState,
   setVolume,
   setWindowEffectState,
   type AppSettings,
   type ThemePreference,
+  type UpdateChannel,
   type WindowEffectPreference,
 } from "../state.ts";
 import {
@@ -54,6 +56,7 @@ import type { Track } from "../domain/music.ts";
 import type { DiagnosticsStore } from "../diagnostics/store.ts";
 import type { GateEnvironment } from "../phase0/gate-session.ts";
 import { redactSensitive } from "../platform/redact.ts";
+import { createUpdaterService, type UpdaterService } from "../updater.ts";
 
 export interface ControllerDependencies {
   initializeMusicKit?: typeof initializeMusicKit;
@@ -61,6 +64,7 @@ export interface ControllerDependencies {
   invokeFn?: InvokeFunction;
   now?: () => number;
   diagnosticsStore?: DiagnosticsStore;
+  updater?: UpdaterService;
 }
 
 export interface AppController {
@@ -79,6 +83,12 @@ export interface AppController {
   setVolume(volume: number): void;
   setTheme(theme: ThemePreference): Promise<void>;
   setWindowEffect(preference: WindowEffectPreference): Promise<void>;
+  setAutoCheckUpdates(enabled: boolean): Promise<void>;
+  setUpdateChannel(channel: UpdateChannel): Promise<void>;
+  startupUpdateCheck(): Promise<void>;
+  checkForUpdates(): Promise<void>;
+  dismissUpdate(): void;
+  installUpdate(): Promise<void>;
   toggleQueue(): void;
   toggleDiagnostics(): void;
   closeDiagnostics(): void;
@@ -132,6 +142,14 @@ export function createAppController(
     // Keep development diagnostics useful when the drawer is not mounted.
     if (import.meta.env.DEV) console.info(line);
   };
+
+  const updater =
+    dependencies.updater ??
+    createUpdaterService({
+      onStateChange: setUpdateState,
+      onLog: log,
+      now,
+    });
 
   const applyCurrentEffect = async (): Promise<void> => {
     const settings = getState().settings;
@@ -215,6 +233,7 @@ export function createAppController(
     async loadSettings(): Promise<void> {
       const settings = await loadPersistedSettings(invokeFn);
       setSettings(settings);
+      updater.configure(settings);
       await applyCurrentEffect();
       stopThemeWatcher?.();
       stopThemeWatcher = watchSystemTheme((dark) => {
@@ -420,6 +439,50 @@ export function createAppController(
       await applyCurrentEffect();
     },
 
+    async setAutoCheckUpdates(enabled: boolean): Promise<void> {
+      const settings: AppSettings = {
+        ...getState().settings,
+        autoCheckUpdates: enabled,
+      };
+      setSettings(settings);
+      updater.configure(settings);
+      try {
+        await savePersistedSettings(settings, invokeFn);
+      } catch (error) {
+        log(`Settings save failed: ${errorMessage(error)}`);
+      }
+    },
+
+    async setUpdateChannel(channel: UpdateChannel): Promise<void> {
+      const settings: AppSettings = {
+        ...getState().settings,
+        updateChannel: channel,
+      };
+      setSettings(settings);
+      updater.configure(settings);
+      try {
+        await savePersistedSettings(settings, invokeFn);
+      } catch (error) {
+        log(`Settings save failed: ${errorMessage(error)}`);
+      }
+    },
+
+    startupUpdateCheck(): Promise<void> {
+      return updater.startupCheck();
+    },
+
+    checkForUpdates(): Promise<void> {
+      return updater.checkNow();
+    },
+
+    dismissUpdate(): void {
+      updater.dismissPending();
+    },
+
+    installUpdate(): Promise<void> {
+      return updater.installPending();
+    },
+
     toggleQueue(): void {
       setUiState({ queueOpen: !getState().ui.queueOpen });
     },
@@ -458,6 +521,7 @@ export function createAppController(
       restoreAuthProbe = undefined;
       stopThemeWatcher?.();
       stopThemeWatcher = undefined;
+      updater.dispose();
     },
 
     consecutiveTrackTarget: CONSECUTIVE_TRACK_TARGET,

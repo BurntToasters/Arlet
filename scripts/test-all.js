@@ -3,9 +3,9 @@
 // original and scoped to Arlet Phase 0/Milestone 1 (no e2e suite, no flatpak,
 // no archive fixtures, no vendor updater tree).
 //
-// Runs: typecheck, lint, format:check, vitest with coverage, cargo fmt --check,
-// cargo clippy -D warnings, cargo test. Records a quality-gate proof for the
-// release pipeline on success.
+// Runs: version drift check, typecheck, lint, format:check, vitest with
+// coverage, cargo fmt --check, cargo clippy -D warnings, cargo test. Records a
+// quality-gate proof for the release pipeline on success.
 //
 // Flags: --require-clean-proof --skip-e2e
 
@@ -38,6 +38,7 @@ const rustTimeoutMs = process.platform === "win32" ? 1_200_000 : 600_000;
 
 function createInitialResults() {
   return {
+    version: { status: "pending" },
     typecheck: { status: "pending" },
     lint: { status: "pending" },
     format: { status: "pending" },
@@ -143,6 +144,13 @@ function main({
   const results = createInitialResults();
   const npm = getNpmCommand();
 
+  runner(
+    "version",
+    npm,
+    ["run", "sync-version", "--", "--check"],
+    null,
+    results,
+  );
   runner("typecheck", npm, ["run", "typecheck"], null, results);
   runner("lint", npm, ["run", "lint"], null, results);
   runner("format", npm, ["run", "format:check"], null, results);

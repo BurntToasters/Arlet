@@ -1221,6 +1221,59 @@ button.search-row {
   padding-left: 21px;
   color: var(--text-muted);
 }
+.settings-toggle-field input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.settings-field-help {
+  margin: 10px 1px 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.update-dev-note {
+  margin: 10px 1px 0;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+.update-status {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 7px;
+  margin-top: 14px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.update-status-ready {
+  color: var(--accent-strong);
+}
+.update-status-up-to-date {
+  color: var(--success);
+}
+.update-status-error {
+  color: var(--danger);
+}
+.update-progress {
+  height: 4px;
+  margin-top: 5px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--surface-subtle);
+}
+.update-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width var(--duration-normal) var(--ease-standard);
+}
+.update-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 13px;
+}
 .comfort-note {
   display: flex;
   align-items: flex-start;
@@ -1234,6 +1287,68 @@ button.search-row {
 }
 .settings-developer .secondary-button {
   margin-top: 18px;
+}
+
+/* Update confirmation */
+.update-modal-scrim {
+  position: absolute;
+  z-index: 50;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(10, 11, 13, 0.42);
+  backdrop-filter: blur(10px) saturate(1.08);
+}
+.update-modal {
+  width: min(100%, 410px);
+  padding: 28px 30px 25px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface-solid) 94%, transparent);
+  box-shadow: var(--shadow-popover);
+  text-align: left;
+}
+.update-modal-icon {
+  display: inline-flex;
+  width: 38px;
+  height: 38px;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+.update-modal .eyebrow {
+  margin-bottom: 6px;
+}
+.update-modal h2 {
+  margin: 0;
+  color: var(--text);
+  font-size: 23px;
+  letter-spacing: -0.04em;
+}
+.update-modal p:not(.eyebrow):not(.update-modal-error) {
+  margin: 9px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.update-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 24px;
+}
+.update-modal-error {
+  margin: 12px 0 0;
+  padding: 9px 10px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+  font-size: 11px;
 }
 
 /* Player */

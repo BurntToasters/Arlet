@@ -1,6 +1,17 @@
 import { defineConfig } from "vite";
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+
+function readAppVersion(): string {
+  const packageJson = JSON.parse(
+    readFileSync(resolve(import.meta.dirname, "package.json"), "utf8"),
+  ) as { version?: unknown };
+  if (typeof packageJson.version !== "string" || !packageJson.version.trim()) {
+    throw new Error("package.json must contain a non-empty string version");
+  }
+  return packageJson.version;
+}
 
 function readNpmVersion(): string {
   if (process.platform === "win32") {
@@ -34,6 +45,7 @@ function readNpmVersion(): string {
 
 export default defineConfig({
   define: {
+    __APP_VERSION__: JSON.stringify(readAppVersion()),
     __BUILD_NODE_VERSION__: JSON.stringify(process.version),
     __BUILD_NPM_VERSION__: JSON.stringify(readNpmVersion()),
   },

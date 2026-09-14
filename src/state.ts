@@ -5,11 +5,23 @@ import { redactSensitive } from "./platform/redact.ts";
 
 export type ThemePreference = "system" | "light" | "dark";
 export type WindowEffectPreference = "acrylic" | "mica" | "solid";
+export type UpdateChannel = "auto" | "stable" | "beta";
+
+export type UpdateStatus =
+  | "idle"
+  | "checking"
+  | "downloading"
+  | "ready"
+  | "up-to-date"
+  | "error"
+  | "installing";
 
 export interface AppSettings {
   schemaVersion: 1;
   theme: ThemePreference;
   windowEffect: WindowEffectPreference;
+  autoCheckUpdates: boolean;
+  updateChannel: UpdateChannel;
   /** Reserved for forward-compatible settings owned by other versions. */
   [key: string]: unknown;
 }
@@ -18,6 +30,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   schemaVersion: 1,
   theme: "system",
   windowEffect: "acrylic",
+  autoCheckUpdates: true,
+  updateChannel: "auto",
 };
 
 export type AuthState =
@@ -67,6 +81,23 @@ export interface WindowEffectState {
   fallbackReason?: string;
 }
 
+export interface UpdateState {
+  status: UpdateStatus;
+  channel: UpdateChannel;
+  /** The concrete feed selected by the channel preference and installed version. */
+  resolvedChannel: "stable" | "beta";
+  target?: string;
+  version?: string;
+  progress?: number;
+  downloadedBytes?: number;
+  contentLength?: number;
+  message?: string;
+  error?: string;
+  /** True while the ready-to-install prompt is visible. */
+  promptOpen: boolean;
+  lastCheckedAt?: number;
+}
+
 export interface AppState {
   auth: AuthState;
   playback: PlaybackState;
@@ -77,6 +108,7 @@ export interface AppState {
   search?: SearchState;
   settings?: AppSettings;
   windowEffect?: WindowEffectState;
+  updates?: UpdateState;
   ui?: UiState;
   diagnostics?: DiagnosticsState;
 }
@@ -87,6 +119,7 @@ export interface RuntimeAppState extends AppState {
   search: SearchState;
   settings: AppSettings;
   windowEffect: WindowEffectState;
+  updates: UpdateState;
   ui: UiState;
   diagnostics: DiagnosticsState;
 }
@@ -119,6 +152,12 @@ const initialState: RuntimeAppState = {
     requested: DEFAULT_SETTINGS.windowEffect,
     applied: "solid",
   },
+  updates: {
+    status: "idle",
+    channel: DEFAULT_SETTINGS.updateChannel,
+    resolvedChannel: "stable",
+    promptOpen: false,
+  },
   ui: {
     queueOpen: false,
     diagnosticsOpen: false,
@@ -139,6 +178,7 @@ function cloneInitialState(): RuntimeAppState {
     search: { ...initialState.search, results: [] },
     settings: { ...DEFAULT_SETTINGS },
     windowEffect: { ...initialState.windowEffect },
+    updates: { ...initialState.updates },
     ui: { ...initialState.ui },
     diagnostics: {
       ...initialState.diagnostics,
@@ -244,6 +284,22 @@ export function setWindowEffectState(windowEffect: WindowEffectState): void {
   update({ ...state, windowEffect: { ...windowEffect } });
 }
 
+export function setUpdateState(patch: Partial<UpdateState>): void {
+  const next = { ...state.updates, ...patch };
+  update({
+    ...state,
+    updates: {
+      ...next,
+      ...(next.message === undefined
+        ? {}
+        : { message: sanitizeRenderableError(next.message) }),
+      ...(next.error === undefined
+        ? {}
+        : { error: sanitizeRenderableError(next.error) }),
+    },
+  });
+}
+
 export function setUiState(patch: Partial<UiState>): void {
   update({ ...state, ui: { ...state.ui, ...patch } });
 }
@@ -344,6 +400,7 @@ export function setPlaybackError(code: AppErrorCode, message: string): void {
 export function resetState(): void {
   const settings = state.settings;
   const windowEffect = state.windowEffect;
+  const updates = state.updates;
   // Sign-out resets account/playback data without moving the router behind
   // its back. The hash router owns navigation, so preserving these shell
   // fields keeps the rendered route and URL synchronized.
@@ -353,6 +410,7 @@ export function resetState(): void {
     ...cloneInitialState(),
     settings,
     windowEffect,
+    updates,
     navigation,
     ui,
   };

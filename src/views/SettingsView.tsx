@@ -1,16 +1,56 @@
 import {
   Check,
+  Download,
   ExternalLink,
   Info,
+  LoaderCircle,
   MonitorCog,
   Moon,
   Palette,
+  RefreshCw,
   Sun,
   UserRound,
 } from "lucide-preact";
 import type { JSX } from "preact";
 import { useAppController, useAppState } from "../app/context.tsx";
-import type { ThemePreference, WindowEffectPreference } from "../state.ts";
+import type {
+  ThemePreference,
+  UpdateChannel,
+  UpdateState,
+  WindowEffectPreference,
+} from "../state.ts";
+
+function updateStatusCopy(updates: UpdateState): string {
+  switch (updates.status) {
+    case "checking":
+      return "Checking for updates…";
+    case "downloading":
+      return updates.message ?? "Downloading update…";
+    case "ready":
+      return updates.version
+        ? `Version ${updates.version} is downloaded and ready to install.`
+        : "Update downloaded and ready to install.";
+    case "up-to-date":
+      return "You are running the latest version.";
+    case "error":
+      return updates.message ?? "Unable to check for updates.";
+    case "installing":
+      return updates.message ?? "Installing update…";
+    case "idle":
+      return updates.message ?? "Updates have not been checked yet.";
+  }
+}
+
+function updateChannelDescription(channel: UpdateChannel): string {
+  switch (channel) {
+    case "auto":
+      return "Stable installs follow stable releases; beta installs follow beta releases.";
+    case "stable":
+      return "Only published stable releases are offered.";
+    case "beta":
+      return "Stable and beta preview releases are offered.";
+  }
+}
 
 function initializationCopy(
   status: ReturnType<typeof useAppState>["initialization"],
@@ -42,6 +82,19 @@ export function SettingsView(): JSX.Element {
       event.currentTarget.value as WindowEffectPreference,
     );
   };
+  const updateChannel = (event: JSX.TargetedEvent<HTMLSelectElement>): void => {
+    void controller.setUpdateChannel(
+      event.currentTarget.value as UpdateChannel,
+    );
+  };
+  const updateBusy = ["checking", "downloading", "installing"].includes(
+    state.updates.status,
+  );
+  const updaterAvailable = !import.meta.env.DEV;
+  const updateProgress =
+    state.updates.progress === undefined
+      ? undefined
+      : Math.round(state.updates.progress * 100);
 
   return (
     <>
@@ -98,6 +151,103 @@ export function SettingsView(): JSX.Element {
                 {authorizationPending ? "Signing in…" : "Sign in"}
               </button>
             )}
+          </div>
+        </section>
+
+        <section className="settings-section" aria-labelledby="updates-heading">
+          <div className="settings-section-heading">
+            <span className="settings-icon">
+              <RefreshCw aria-hidden="true" size={19} strokeWidth={1.8} />
+            </span>
+            <div>
+              <h2 id="updates-heading">Updates</h2>
+              <p>Keep Arlet current with signed Windows releases.</p>
+            </div>
+          </div>
+          <div className="settings-fields">
+            <label className="settings-field settings-toggle-field">
+              <span>
+                <Download aria-hidden="true" size={16} strokeWidth={1.8} />{" "}
+                Check for updates on startup
+              </span>
+              <input
+                type="checkbox"
+                checked={settings.autoCheckUpdates}
+                onChange={(event) =>
+                  void controller.setAutoCheckUpdates(
+                    event.currentTarget.checked,
+                  )
+                }
+              />
+            </label>
+            <label className="settings-field">
+              <span>
+                <RefreshCw aria-hidden="true" size={16} strokeWidth={1.8} />{" "}
+                Release channel
+              </span>
+              <select value={settings.updateChannel} onChange={updateChannel}>
+                <option value="auto">Auto (follow installed release)</option>
+                <option value="stable">Stable</option>
+                <option value="beta">Beta</option>
+              </select>
+            </label>
+          </div>
+          <p className="settings-field-help">
+            {updateChannelDescription(settings.updateChannel)}
+          </p>
+          {!updaterAvailable ? (
+            <p className="update-dev-note" role="note">
+              Update checks are available in packaged builds only.
+            </p>
+          ) : null}
+          <div
+            className={`update-status update-status-${state.updates.status}`}
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {state.updates.status === "downloading" ||
+            state.updates.status === "checking" ||
+            state.updates.status === "installing" ? (
+              <LoaderCircle aria-hidden="true" size={15} className="spin" />
+            ) : state.updates.status === "ready" ? (
+              <Download aria-hidden="true" size={15} strokeWidth={1.8} />
+            ) : state.updates.status === "error" ? (
+              <Info aria-hidden="true" size={15} strokeWidth={1.8} />
+            ) : (
+              <Check aria-hidden="true" size={15} strokeWidth={1.8} />
+            )}
+            <span>{updateStatusCopy(state.updates)}</span>
+          </div>
+          {state.updates.status === "downloading" ? (
+            <div
+              className="update-progress"
+              role="progressbar"
+              aria-label="Update download progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={updateProgress}
+            >
+              <span
+                style={{
+                  width: `${updateProgress ?? 0}%`,
+                }}
+              />
+            </div>
+          ) : null}
+          <div className="update-actions">
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={updateBusy || !updaterAvailable}
+              onClick={() => {
+                if (updaterAvailable) void controller.checkForUpdates();
+              }}
+            >
+              {updateBusy && state.updates.status === "checking"
+                ? "Checking…"
+                : "Check now"}
+            </button>
           </div>
         </section>
 
