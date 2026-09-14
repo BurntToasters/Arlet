@@ -4,9 +4,10 @@
 //
 // Normal mode stages/signs the two Windows installers, their Tauri updater
 // sidecars, the stable+beta manifests, and checksums, then uploads them to
-// the exact-version draft. Beta mode also synchronizes only beta manifests to
-// GitHub's latest stable release. `--sync-beta-manifests` is the recovery
-// path for a beta that was published after its upload VM lost connectivity.
+// the exact-version draft. A beta draft is not copied to the live stable feed:
+// release:publish performs that sync only after GitHub confirms the beta is a
+// published prerelease. `--sync-beta-manifests` is the recovery path when
+// publication succeeds but that post-publish sync loses connectivity.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -20,15 +21,18 @@ import {
   REQUIRED_MANIFEST_NAMES,
 } from "./generate-updater-manifests.js";
 import {
+  assertUpdaterTargetArtifact,
   hasMinisignEnvelope,
   validateUpdaterManifest,
 } from "./validate-updater-manifest.js";
+import { assertStableReleaseOverridesAllowed } from "./release-policy.cjs";
+import { verifyUpdaterSignatures } from "./updater-signature-verifier.js";
 
 const require = createRequire(import.meta.url);
 const {
   assertGitHubCliAuthenticated,
   githubApi,
-  githubApiBuffer,
+  githubApiToFile,
   uploadReleaseAsset,
 } = require("./github-cli.cjs");
 
@@ -48,6 +52,7 @@ const BETA_VERSION = new RegExp(
 );
 const STABLE_VERSION = new RegExp(`^${NUMERIC}\\.${NUMERIC}\\.${NUMERIC}$`);
 const IS_PRERELEASE = BETA_VERSION.test(VERSION);
+const HASH_BUFFER_BYTES = 1024 * 1024;
 if (!IS_PRERELEASE && !STABLE_VERSION.test(VERSION)) {
   throw new Error(
     `Unsupported release version '${VERSION}'; Arlet releases use beta or stable only.`,
@@ -161,6 +166,13 @@ export function isGitHubConflict(error) {
   return error?.statusCode === 409 || error?.statusCode === 422;
 }
 
+function resolveUpdaterTargets(name) {
+  if (!/^Arlet_[^/\\]+_(?:x64|arm64)-setup\.exe$/i.test(String(name))) {
+    return [];
+  }
+  return [{ os: "windows", installer: "nsis" }];
+}
+
 function releaseArtifactSearchDirs() {
   const targetRoot = path.join(root, "src-tauri", "target");
   const directories = [path.join(targetRoot, "release", "bundle")];
@@ -209,6 +221,17 @@ function expectedInstallerName(arch) {
 
 function assertSignedInstallerSet(artifacts) {
   const names = new Set(artifacts.map((filePath) => path.basename(filePath)));
+  const escapedVersion = VERSION.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const allowed = new RegExp(
+    `^Arlet_${escapedVersion}_(?:x64|arm64)-setup\\.exe(?:\\.sig)?$`,
+    "i",
+  );
+  const unexpected = [...names].filter((name) => !allowed.test(name));
+  if (unexpected.length > 0) {
+    throw new Error(
+      `Release artifact set contains unsupported file(s): ${unexpected.sort().join(", ")}. Only the two signed NSIS installers and their .sig sidecars may be uploaded.`,
+    );
+  }
   const missing = [];
   for (const arch of ["x64", "arm64"]) {
     const installer = expectedInstallerName(arch);
@@ -223,10 +246,19 @@ function assertSignedInstallerSet(artifacts) {
 }
 
 function sha256File(filePath) {
-  return crypto
-    .createHash("sha256")
-    .update(fs.readFileSync(filePath))
-    .digest("hex");
+  const hash = crypto.createHash("sha256");
+  const buffer = Buffer.allocUnsafe(HASH_BUFFER_BYTES);
+  const descriptor = fs.openSync(filePath, "r");
+  try {
+    let bytesRead;
+    do {
+      bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  return hash.digest("hex");
 }
 
 function gpgSign(filePath) {
@@ -276,6 +308,28 @@ function stageReleaseFiles(artifacts) {
   return [...new Set(staged)].sort();
 }
 
+function verifyStagedUpdaterSignatures(files) {
+  const byName = new Map();
+  const signatureByBaseName = new Map();
+  for (const filePath of files) {
+    const name = path.basename(filePath);
+    // The staging directory also contains manifests and checksum files. The
+    // cryptographic verifier receives only updater installers; its fail-closed
+    // resolver intentionally rejects unrelated files.
+    if (resolveUpdaterTargets(name).length > 0) byName.set(name, filePath);
+    if (name.endsWith(".sig")) {
+      signatureByBaseName.set(name.slice(0, -4), filePath);
+    }
+  }
+  return verifyUpdaterSignatures({
+    root,
+    releaseDir,
+    byName,
+    signatureByBaseName,
+    resolveUpdaterTargets,
+  });
+}
+
 function makeChecksums(files) {
   const sumsPath = path.join(releaseDir, "SHA256SUMS");
   const lines = files
@@ -294,7 +348,10 @@ export function normalizeUpdaterSignature(value) {
   return trimmed;
 }
 
-function validateBetaManifestFiles(filePaths, { signatureDir = null } = {}) {
+function validateBetaManifestFiles(
+  filePaths,
+  { signatureDir = null, version = VERSION } = {},
+) {
   const names = filePaths.map((filePath) => path.basename(filePath));
   const expected = [...REQUIRED_BETA_MANIFEST_NAMES].sort();
   const actual = [...new Set(names)].sort();
@@ -310,9 +367,9 @@ function validateBetaManifestFiles(filePaths, { signatureDir = null } = {}) {
     if (errors.length > 0) {
       throw new Error(`${name} is invalid:\n${errors.join("\n")}`);
     }
-    if (manifest.version !== VERSION) {
+    if (manifest.version !== version) {
       throw new Error(
-        `${name} reports version ${manifest.version}, expected ${VERSION}.`,
+        `${name} reports version ${manifest.version}, expected ${version}.`,
       );
     }
     for (const [target, entry] of Object.entries(manifest.platforms || {})) {
@@ -321,6 +378,7 @@ function validateBetaManifestFiles(filePaths, { signatureDir = null } = {}) {
       if (
         parsedUrl.protocol !== "https:" ||
         parsedUrl.hostname.toLowerCase() !== "github.com" ||
+        parsedUrl.port !== "" ||
         !parsedUrl.pathname
           .toLowerCase()
           .startsWith(expectedPrefix.toLowerCase())
@@ -330,6 +388,7 @@ function validateBetaManifestFiles(filePaths, { signatureDir = null } = {}) {
       const artifactName = decodeURIComponent(
         parsedUrl.pathname.split("/").at(-1) || "",
       );
+      assertUpdaterTargetArtifact(target, manifest.version, artifactName, name);
       if (!hasMinisignEnvelope(String(entry.signature || "").trim())) {
         throw new Error(
           `${name} has an invalid updater signature for ${target}.`,
@@ -351,6 +410,146 @@ function validateBetaManifestFiles(filePaths, { signatureDir = null } = {}) {
       }
     }
   }
+}
+
+const RELEASE_VERSION_PATTERN =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?$/;
+
+export function parseReleaseVersion(version) {
+  const match = String(version || "").match(RELEASE_VERSION_PATTERN);
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    beta: match[4] === undefined ? null : Number(match[4]),
+  };
+}
+
+export function compareReleaseVersions(left, right) {
+  const leftParsed = parseReleaseVersion(left);
+  const rightParsed = parseReleaseVersion(right);
+  if (!leftParsed || !rightParsed) {
+    throw new Error(
+      `Cannot compare malformed release versions ${left} and ${right}.`,
+    );
+  }
+  for (const component of ["major", "minor", "patch"]) {
+    if (leftParsed[component] !== rightParsed[component]) {
+      return leftParsed[component] < rightParsed[component] ? -1 : 1;
+    }
+  }
+  if (leftParsed.beta === null || rightParsed.beta === null) {
+    if (leftParsed.beta === rightParsed.beta) return 0;
+    return leftParsed.beta === null ? 1 : -1;
+  }
+  if (leftParsed.beta === rightParsed.beta) return 0;
+  return leftParsed.beta < rightParsed.beta ? -1 : 1;
+}
+
+export function validateLiveBetaManifestVersions(manifestBodies) {
+  const entries =
+    manifestBodies instanceof Map
+      ? [...manifestBodies.entries()]
+      : Object.entries(manifestBodies || {});
+  const expected = [...REQUIRED_BETA_MANIFEST_NAMES].sort();
+  const names = entries.map(([name]) => String(name));
+  const duplicates = names.filter(
+    (name, index) => names.indexOf(name) !== index,
+  );
+  const unknown = names.filter((name) => !expected.includes(name));
+  const missing = expected.filter((name) => !names.includes(name));
+  if (duplicates.length > 0 || unknown.length > 0 || missing.length > 0) {
+    throw new Error(
+      `Live beta manifest set is invalid; expected exactly ${expected.join(", ")}, found ${names.sort().join(", ")}.`,
+    );
+  }
+
+  const versions = [];
+  for (const name of expected) {
+    const body = entries.find(([entryName]) => entryName === name)?.[1];
+    let manifest;
+    try {
+      manifest = typeof body === "string" ? JSON.parse(body) : body;
+    } catch (error) {
+      throw new Error(
+        `${name} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    const errors = validateUpdaterManifest(manifest, name);
+    if (errors.length > 0) {
+      throw new Error(`${name} is invalid:\n${errors.join("\n")}`);
+    }
+    if (!parseReleaseVersion(manifest.version)) {
+      throw new Error(
+        `${name} has malformed release version ${manifest.version}.`,
+      );
+    }
+    for (const [target, entry] of Object.entries(manifest.platforms || {})) {
+      const parsedUrl = new URL(entry.url);
+      const expectedPrefix = `/${REPO_OWNER}/${REPO_NAME}/releases/download/v${manifest.version}/`;
+      if (
+        parsedUrl.protocol !== "https:" ||
+        parsedUrl.hostname.toLowerCase() !== "github.com" ||
+        parsedUrl.port !== "" ||
+        parsedUrl.username ||
+        parsedUrl.password ||
+        parsedUrl.hash ||
+        !parsedUrl.pathname
+          .toLowerCase()
+          .startsWith(expectedPrefix.toLowerCase())
+      ) {
+        throw new Error(
+          `${name} platform ${target} points outside release v${manifest.version}.`,
+        );
+      }
+    }
+    versions.push(manifest.version);
+  }
+  if (new Set(versions).size !== 1) {
+    throw new Error(
+      `Live beta manifests disagree on version: ${versions.join(", ")}.`,
+    );
+  }
+  return versions;
+}
+
+export function assertBetaManifestVersionsMonotonic(
+  candidateVersion,
+  currentVersions,
+) {
+  const candidate = parseReleaseVersion(candidateVersion);
+  if (!candidate || candidate.beta === null) {
+    throw new Error(
+      `Candidate ${candidateVersion} is not a valid beta release version.`,
+    );
+  }
+  if (
+    !Array.isArray(currentVersions) ||
+    currentVersions.length !== REQUIRED_BETA_MANIFEST_NAMES.length
+  ) {
+    throw new Error(
+      `Live beta manifest version set must contain exactly ${REQUIRED_BETA_MANIFEST_NAMES.length} entries.`,
+    );
+  }
+  const parsedCurrent = currentVersions.map(parseReleaseVersion);
+  if (parsedCurrent.some((version) => !version)) {
+    throw new Error(
+      `Live beta manifests contain malformed release version(s): ${currentVersions.join(", ")}.`,
+    );
+  }
+  if (new Set(currentVersions).size !== 1) {
+    throw new Error(
+      `Live beta manifests disagree on version: ${currentVersions.join(", ")}.`,
+    );
+  }
+  const currentVersion = currentVersions[0];
+  if (compareReleaseVersions(candidateVersion, currentVersion) < 0) {
+    throw new Error(
+      `Candidate beta ${candidateVersion} is older than the live beta ${currentVersion}; refusing to replace the feed.`,
+    );
+  }
+  return true;
 }
 
 function uploadAsset(release, filePath) {
@@ -382,8 +581,15 @@ async function uploadAll(release, files) {
 export async function replaceReleaseAssetsTransactionally(
   release,
   files,
-  { assertStillHeld } = {},
+  {
+    assertStillHeld,
+    listAssets = listReleaseAssets,
+    upload = uploadAsset,
+    rename = renameReleaseAsset,
+    remove = deleteReleaseAsset,
+  } = {},
 ) {
+  assertStableReleaseOverridesAllowed(process.env, VERSION);
   if (files.length === 0) return;
   const temporaryDirectory = fs.mkdtempSync(
     path.join(os.tmpdir(), "arlet-release-replace-"),
@@ -391,15 +597,19 @@ export async function replaceReleaseAssetsTransactionally(
   const token = crypto.randomBytes(8).toString("hex");
   const staged = [];
   const swapped = [];
+  let committed = false;
   try {
-    const assets = listReleaseAssets(release.id);
+    const assets = await listAssets(release.id);
+    const assertHeld = async () => {
+      if (typeof assertStillHeld === "function") await assertStillHeld();
+    };
     for (const filePath of files) {
       const name = path.basename(filePath);
       const existing = assets.find((asset) => asset?.name === name);
       const stagedName = `arlet-pending-${token}-${name}`;
       const stagedPath = path.join(temporaryDirectory, stagedName);
       fs.copyFileSync(filePath, stagedPath);
-      const uploaded = await uploadAsset(release, stagedPath);
+      const uploaded = await upload(release, stagedPath);
       if (!uploaded || typeof uploaded.id !== "number") {
         throw new Error(`GitHub did not identify staged asset ${stagedName}.`);
       }
@@ -411,18 +621,20 @@ export async function replaceReleaseAssetsTransactionally(
         previousRenamed: false,
       });
     }
-    if (typeof assertStillHeld === "function") await assertStillHeld();
+    await assertHeld();
 
     for (const item of staged) {
+      await assertHeld();
       if (item.existing) {
-        await renameReleaseAsset(item.existing.id, item.backupName);
+        await rename(item.existing.id, item.backupName);
         item.previousRenamed = true;
       }
       try {
-        await renameReleaseAsset(item.uploaded.id, item.name);
+        await assertHeld();
+        await rename(item.uploaded.id, item.name);
       } catch (error) {
         if (item.existing) {
-          await renameReleaseAsset(item.existing.id, item.name);
+          await rename(item.existing.id, item.name);
           item.previousRenamed = false;
         }
         throw error;
@@ -430,10 +642,14 @@ export async function replaceReleaseAssetsTransactionally(
       swapped.push(item);
     }
 
+    // Every live name now points at the staged replacement. This is the
+    // transaction commit point: cleanup failures or a lock loss after here
+    // must never roll back an already complete feed swap.
+    committed = true;
     for (const item of staged) {
       if (!item.existing) continue;
       try {
-        await deleteReleaseAsset(item.existing.id);
+        await remove(item.existing.id);
       } catch (error) {
         console.warn(
           `Could not remove previous feed asset ${item.backupName}: ${error instanceof Error ? error.message : String(error)}`,
@@ -441,18 +657,19 @@ export async function replaceReleaseAssetsTransactionally(
       }
     }
   } catch (error) {
+    if (committed) throw error;
     const rollbackErrors = [];
     for (const item of [...swapped].reverse()) {
       try {
         if (item.existing) {
-          await renameReleaseAsset(
+          await rename(
             item.uploaded.id,
             `arlet-rollback-${token}-${item.name}`,
           );
-          await renameReleaseAsset(item.existing.id, item.name);
+          await rename(item.existing.id, item.name);
           item.previousRenamed = false;
         }
-        await deleteReleaseAsset(item.uploaded.id);
+        await remove(item.uploaded.id);
       } catch (rollbackError) {
         rollbackErrors.push(
           `${item.name}: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
@@ -464,10 +681,10 @@ export async function replaceReleaseAssetsTransactionally(
       if (swappedIds.has(item.uploaded.id)) continue;
       try {
         if (item.existing && item.previousRenamed) {
-          await renameReleaseAsset(item.existing.id, item.name);
+          await rename(item.existing.id, item.name);
           item.previousRenamed = false;
         }
-        await deleteReleaseAsset(item.uploaded.id);
+        await remove(item.uploaded.id);
       } catch (cleanupError) {
         rollbackErrors.push(
           `${item.name} staged cleanup: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`,
@@ -492,10 +709,14 @@ export function isTransactionalStagingAssetName(name) {
   );
 }
 
-async function removeAssetBestEffort(asset, label) {
+async function removeAssetBestEffort(
+  asset,
+  label,
+  remove = deleteReleaseAsset,
+) {
   if (!asset || typeof asset.id !== "number") return;
   try {
-    await deleteReleaseAsset(asset.id);
+    await remove(asset.id);
   } catch (error) {
     console.warn(
       `Could not remove ${label}: ${error instanceof Error ? error.message : String(error)}`,
@@ -503,17 +724,21 @@ async function removeAssetBestEffort(asset, label) {
   }
 }
 
-async function findSyncLock(release) {
-  return listReleaseAssets(release.id).find(
+async function findSyncLock(release, listAssets = listReleaseAssets) {
+  return (await listAssets(release.id)).find(
     (asset) => asset?.name === BETA_SYNC_LOCK_NAME,
   );
 }
 
-async function assertOwnsSyncLock(release, acquired) {
+async function assertOwnsSyncLock(
+  release,
+  acquired,
+  listAssets = listReleaseAssets,
+) {
   if (!acquired || typeof acquired.id !== "number") {
     throw new Error("Beta-manifest synchronization lock was not acquired.");
   }
-  const current = await findSyncLock(release);
+  const current = await findSyncLock(release, listAssets);
   if (!current || current.id !== acquired.id) {
     throw new Error(
       "Lost the beta-manifest synchronization lock before mutating live feeds.",
@@ -521,7 +746,18 @@ async function assertOwnsSyncLock(release, acquired) {
   }
 }
 
-async function withBetaManifestSyncLock(release, operation) {
+export async function withBetaManifestSyncLock(
+  release,
+  operation,
+  {
+    listAssets = listReleaseAssets,
+    upload = uploadAsset,
+    remove = deleteReleaseAsset,
+    retries = BETA_SYNC_LOCK_RETRIES,
+    delayMs = BETA_SYNC_LOCK_DELAY_MS,
+  } = {},
+) {
+  assertStableReleaseOverridesAllowed(process.env, VERSION);
   const temporaryDirectory = fs.mkdtempSync(
     path.join(os.tmpdir(), "arlet-beta-sync-lock-"),
   );
@@ -537,34 +773,41 @@ async function withBetaManifestSyncLock(release, operation) {
   );
   let acquired = null;
   try {
-    for (let attempt = 1; attempt <= BETA_SYNC_LOCK_RETRIES; attempt += 1) {
+    for (let attempt = 1; attempt <= retries; attempt += 1) {
       try {
-        acquired = await uploadAsset(release, lockPath);
+        acquired = await upload(release, lockPath);
         break;
       } catch (error) {
         if (!isGitHubConflict(error)) throw error;
-        if (attempt === BETA_SYNC_LOCK_RETRIES) {
-          const lock = await findSyncLock(release);
+        if (attempt === retries) {
+          const lock = await findSyncLock(release, listAssets);
           throw new Error(
             `Timed out waiting for another beta-manifest synchronization (existing lock created ${lock?.created_at || "at an unknown time"}). Delete ${BETA_SYNC_LOCK_NAME} only after confirming no release VM is active.`,
           );
         }
-        await new Promise((resolve) =>
-          setTimeout(resolve, BETA_SYNC_LOCK_DELAY_MS),
-        );
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
       }
     }
-    await assertOwnsSyncLock(release, acquired);
+    if (!acquired) {
+      throw new Error(
+        "Could not acquire the beta-manifest synchronization lock.",
+      );
+    }
+    const assertOwns = () => assertOwnsSyncLock(release, acquired, listAssets);
+    // Never remove the lock while another signer is active: ownership is
+    // checked again immediately before cleanup.
+    await assertOwns();
     return await operation({
-      assertStillHeld: () => assertOwnsSyncLock(release, acquired),
+      assertStillHeld: assertOwns,
     });
   } finally {
     if (acquired && typeof acquired.id === "number") {
-      const current = await findSyncLock(release);
+      const current = await findSyncLock(release, listAssets);
       if (current?.id === acquired.id) {
         await removeAssetBestEffort(
           acquired,
           "beta-manifest synchronization lock",
+          remove,
         );
       }
     }
@@ -573,10 +816,49 @@ async function withBetaManifestSyncLock(release, operation) {
 }
 
 async function cleanupTransactionalStagingAssets(release) {
-  for (const asset of listReleaseAssets(release.id).filter((item) =>
+  let assets;
+  try {
+    assets = await listReleaseAssets(release.id);
+  } catch (error) {
+    console.warn(
+      `Could not list orphan feed assets after commit: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return;
+  }
+  for (const asset of assets.filter((item) =>
     isTransactionalStagingAssetName(item?.name),
   )) {
     await removeAssetBestEffort(asset, `orphan feed asset ${asset.name}`);
+  }
+}
+
+async function loadLiveBetaManifestVersions(release) {
+  const assets = await listReleaseAssets(release.id);
+  const liveAssets = assets.filter((asset) =>
+    REQUIRED_BETA_MANIFEST_NAMES.includes(asset?.name),
+  );
+  const names = liveAssets.map((asset) => asset.name);
+  if (
+    liveAssets.length !== REQUIRED_BETA_MANIFEST_NAMES.length ||
+    new Set(names).size !== REQUIRED_BETA_MANIFEST_NAMES.length
+  ) {
+    throw new Error(
+      `Latest stable release has an incomplete beta manifest set; expected ${REQUIRED_BETA_MANIFEST_NAMES.join(", ")}, found ${names.sort().join(", ")}.`,
+    );
+  }
+  const temporaryDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "arlet-live-beta-manifests-"),
+  );
+  try {
+    const bodies = new Map();
+    for (const asset of liveAssets) {
+      const manifestPath = path.join(temporaryDirectory, asset.name);
+      await downloadAssetToFile(asset, manifestPath);
+      bodies.set(asset.name, fs.readFileSync(manifestPath, "utf8"));
+    }
+    return validateLiveBetaManifestVersions(bodies);
+  } finally {
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
   }
 }
 
@@ -585,6 +867,7 @@ export async function syncBetaManifestsToLatestStable(
   currentReleaseId,
   { signatureDir = releaseDir } = {},
 ) {
+  assertStableReleaseOverridesAllowed(process.env, VERSION);
   const betaManifests = uploadedFiles.filter((filePath) =>
     REQUIRED_BETA_MANIFEST_NAMES.includes(path.basename(filePath)),
   );
@@ -616,6 +899,11 @@ export async function syncBetaManifestsToLatestStable(
 
   await withBetaManifestSyncLock(latestStable, async ({ assertStillHeld }) => {
     await assertStillHeld();
+    const liveVersions = await loadLiveBetaManifestVersions(latestStable);
+    // Re-assert ownership after the downloads. The comparison must happen
+    // while this lock is still ours and before any live name is staged/swapped.
+    await assertStillHeld();
+    assertBetaManifestVersionsMonotonic(VERSION, liveVersions);
     await replaceReleaseAssetsTransactionally(latestStable, betaManifests, {
       assertStillHeld,
     });
@@ -628,11 +916,11 @@ export async function syncBetaManifestsToLatestStable(
 }
 
 async function downloadAssetToFile(asset, destination) {
-  const bytes = githubApiBuffer(
+  githubApiToFile(
     "GET",
     releaseApiPath(`/releases/assets/${asset.id}`),
+    destination,
   );
-  fs.writeFileSync(destination, bytes);
 }
 
 async function loadPublishedBetaManifests(release) {
@@ -650,6 +938,8 @@ async function loadPublishedBetaManifests(release) {
     path.join(os.tmpdir(), "arlet-beta-manifests-"),
   );
   const files = [];
+  const artifactPaths = new Map();
+  const signaturePaths = new Map();
   try {
     for (const name of REQUIRED_BETA_MANIFEST_NAMES) {
       const manifestPath = path.join(temporaryDirectory, name);
@@ -662,9 +952,27 @@ async function loadPublishedBetaManifests(release) {
       if (manifest.version !== VERSION) {
         throw new Error(`${name} does not report ${VERSION}.`);
       }
-      for (const entry of Object.values(manifest.platforms || {})) {
+      for (const [target, entry] of Object.entries(manifest.platforms || {})) {
+        const parsedUrl = new URL(entry.url);
+        const expectedPrefix = `/${REPO_OWNER}/${REPO_NAME}/releases/download/${TAG_NAME}/`;
+        if (
+          parsedUrl.protocol !== "https:" ||
+          parsedUrl.hostname.toLowerCase() !== "github.com" ||
+          parsedUrl.port !== "" ||
+          !parsedUrl.pathname
+            .toLowerCase()
+            .startsWith(expectedPrefix.toLowerCase())
+        ) {
+          throw new Error(`${name} points outside release ${TAG_NAME}.`);
+        }
         const artifactName = decodeURIComponent(
-          new URL(entry.url).pathname.split("/").at(-1) || "",
+          parsedUrl.pathname.split("/").at(-1) || "",
+        );
+        assertUpdaterTargetArtifact(
+          target,
+          manifest.version,
+          artifactName,
+          name,
         );
         if (!byName.has(artifactName)) {
           throw new Error(
@@ -675,17 +983,26 @@ async function loadPublishedBetaManifests(release) {
         if (!sidecar) {
           throw new Error(`${name} references missing ${artifactName}.sig.`);
         }
+        if (!artifactPaths.has(artifactName)) {
+          const artifactPath = path.join(temporaryDirectory, artifactName);
+          await downloadAssetToFile(byName.get(artifactName), artifactPath);
+          if (fs.statSync(artifactPath).size === 0) {
+            throw new Error(`Published artifact ${artifactName} is empty.`);
+          }
+          artifactPaths.set(artifactName, artifactPath);
+        }
         const sidecarPath = path.join(
           temporaryDirectory,
           `${artifactName}.sig`,
         );
-        if (!sidecar.localPath) {
+        if (!signaturePaths.has(artifactName)) {
           await downloadAssetToFile(sidecar, sidecarPath);
-          sidecar.localPath = sidecarPath;
+          signaturePaths.set(artifactName, sidecarPath);
         }
         if (
-          normalizeUpdaterSignature(fs.readFileSync(sidecarPath, "utf8")) !==
-          String(entry.signature).trim()
+          normalizeUpdaterSignature(
+            fs.readFileSync(signaturePaths.get(artifactName), "utf8"),
+          ) !== String(entry.signature).trim()
         ) {
           throw new Error(
             `${name} signature does not match ${artifactName}.sig.`,
@@ -694,6 +1011,13 @@ async function loadPublishedBetaManifests(release) {
       }
       files.push(manifestPath);
     }
+    verifyUpdaterSignatures({
+      root,
+      releaseDir: temporaryDirectory,
+      byName: artifactPaths,
+      signatureByBaseName: signaturePaths,
+      resolveUpdaterTargets,
+    });
     return { files, temporaryDirectory };
   } catch (error) {
     fs.rmSync(temporaryDirectory, { recursive: true, force: true });
@@ -701,7 +1025,8 @@ async function loadPublishedBetaManifests(release) {
   }
 }
 
-async function syncBetaManifestsAfterPublish() {
+export async function syncBetaManifestsAfterPublish() {
+  assertStableReleaseOverridesAllowed(process.env, VERSION);
   if (!IS_PRERELEASE) {
     throw new Error(
       "release:sync-beta-manifests is only valid for beta versions; stable releases already publish both feed families.",
@@ -732,6 +1057,7 @@ async function syncBetaManifestsAfterPublish() {
 }
 
 async function main() {
+  assertStableReleaseOverridesAllowed(process.env, VERSION);
   assertGitHubCliAuthenticated();
   const commit = currentReleaseCommit();
   const release = getReleaseByTag();
@@ -753,6 +1079,8 @@ async function main() {
   }
   assertSignedInstallerSet(artifacts);
   const staged = stageReleaseFiles(artifacts);
+  console.log("[gpg-sign] Verifying Tauri updater signatures...");
+  verifyStagedUpdaterSignatures(staged);
   const checksumPath = makeChecksums(staged);
   staged.push(checksumPath);
   for (const filePath of [...staged]) {
@@ -760,14 +1088,6 @@ async function main() {
     staged.push(`${filePath}.asc`);
   }
   await uploadAll(release, staged);
-  if (IS_PRERELEASE) {
-    await syncBetaManifestsToLatestStable(
-      staged.filter((filePath) =>
-        REQUIRED_BETA_MANIFEST_NAMES.includes(path.basename(filePath)),
-      ),
-      release.id,
-    );
-  }
   console.log(`[gpg-sign] Done: ${TAG_NAME} uploaded as draft.`);
 }
 
@@ -799,4 +1119,5 @@ export {
   findArtifacts,
   isExplicitTruthy,
   listReleaseAssets,
+  resolveUpdaterTargets,
 };

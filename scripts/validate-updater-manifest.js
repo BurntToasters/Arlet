@@ -57,6 +57,38 @@ function expectedTargetFromLabel(label) {
   return match ? match[1].toLowerCase() : null;
 }
 
+const UPDATER_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-beta\.\d+)?$/;
+
+export function expectedInstallerForUpdaterTarget(target, version) {
+  const match = String(target || "")
+    .toLowerCase()
+    .match(/^windows(?:-beta)?-(x86_64|aarch64)(?:-nsis)?$/);
+  const normalizedVersion = String(version || "");
+  if (!match || !UPDATER_VERSION_PATTERN.test(normalizedVersion)) return null;
+  const architecture = match[1] === "x86_64" ? "x64" : "arm64";
+  return `Arlet_${normalizedVersion}_${architecture}-setup.exe`;
+}
+
+export function assertUpdaterTargetArtifact(
+  target,
+  version,
+  artifactName,
+  label = "manifest",
+) {
+  const expected = expectedInstallerForUpdaterTarget(target, version);
+  if (!expected) {
+    throw new Error(
+      `${label} platform ${target} is an unsupported Windows NSIS updater target.`,
+    );
+  }
+  if (artifactName !== expected) {
+    throw new Error(
+      `${label} platform ${target} must reference ${expected}, not ${artifactName}.`,
+    );
+  }
+  return expected;
+}
+
 function isSafeReleaseUrl(value) {
   try {
     const url = new URL(value);
@@ -136,6 +168,25 @@ export function validateUpdaterManifest(manifest, label = "manifest") {
     }
     if (!isSafeReleaseUrl(entry.url)) {
       errors.push(`${label}: ${key}.url must point to a GitHub release asset`);
+    }
+    if (isNonEmptyString(entry.url)) {
+      try {
+        const artifactName = decodeURIComponent(
+          new URL(entry.url).pathname.split("/").at(-1) || "",
+        );
+        const expected = expectedInstallerForUpdaterTarget(
+          key,
+          manifest.version,
+        );
+        if (expected && artifactName !== expected) {
+          errors.push(
+            `${label}: ${key}.url must reference ${expected} (got ${artifactName})`,
+          );
+        }
+      } catch {
+        // The URL shape errors above carry the useful failure for malformed
+        // URLs; avoid turning validation into an exception path.
+      }
     }
     if (
       !isNonEmptyString(entry.signature) ||

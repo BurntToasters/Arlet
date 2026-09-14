@@ -9,6 +9,15 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Keep direct PowerShell invocation behind the same release policy as the
+# Node build driver. This prevents an unsigned stable artifact if this helper
+# is called outside tauri-windows-build.js.
+$policy = Join-Path $PSScriptRoot 'release-policy.cjs'
+& node $policy
+if ($LASTEXITCODE -ne 0) {
+  throw 'Stable release policy rejected the Windows signing environment.'
+}
+
 if ($env:SKIP_WIN_CODESIGN -eq '1') {
   Write-Host "SKIP_WIN_CODESIGN=1; leaving Windows artifact unsigned: $FilePath"
   exit 0

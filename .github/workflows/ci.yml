@@ -70,8 +70,8 @@ jobs:
         run: |
           npm run sync-version
           git diff --exit-code
-      - name: Full quality gate (E2E deferred until the Milestone 1 shell)
-        run: npm run test:all -- --skip-e2e
+      - name: Full quality gate (offline frontend smoke)
+        run: npm run test:all
 
   smoke-build:
     needs: quality-gate

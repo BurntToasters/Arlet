@@ -11,6 +11,12 @@ import {
 
 export const UPDATE_CHECK_TIMEOUT_MS = 30_000;
 export const UPDATE_DOWNLOAD_TIMEOUT_MS = 120_000;
+/**
+ * Public beta manifests can briefly point at an asset while GitHub finishes
+ * publishing it. Keep the retry window finite so a real download failure is
+ * still surfaced to the user.
+ */
+export const UPDATE_DOWNLOAD_RETRY_DELAYS_MS = [1_000, 3_000, 7_000] as const;
 
 export interface UpdateCheckOptions {
   target?: string;
@@ -42,6 +48,8 @@ export interface UpdaterServiceOptions {
   getVersionFn?: UpdateVersion;
   invokeFn?: UpdateInvoke;
   now?: () => number;
+  /** Test hook for advancing the bounded beta-download retry backoff. */
+  waitForRetry?: (delayMs: number) => Promise<void>;
   isDevelopment?: boolean;
   onStateChange?: (state: UpdateState) => void;
   onLog?: (message: string) => void;
@@ -85,6 +93,7 @@ export function createUpdaterService(
   const getVersionFn = options.getVersionFn ?? getVersion;
   const invokeFn = options.invokeFn ?? (invoke as unknown as UpdateInvoke);
   const now = options.now ?? Date.now;
+  const waitForRetry = options.waitForRetry;
   const isDevelopment = options.isDevelopment ?? import.meta.env.DEV;
   const onStateChange = options.onStateChange ?? (() => undefined);
   const onLog = options.onLog ?? (() => undefined);
@@ -100,9 +109,22 @@ export function createUpdaterService(
   let pendingTarget: string | undefined;
   let pendingResolvedChannel: "stable" | "beta" = STABLE_CHANNEL;
   let checkInFlight: Promise<void> | null = null;
+  let checkInFlightGeneration: number | null = null;
   let inFlightCheckIsInteractive = false;
+  /** Native install must own the Update resource until its promise settles. */
+  let installInFlight = false;
+  let discardPendingAfterInstall = false;
   let generation = 0;
   let disposed = false;
+  const retryWaiters = new Set<() => void>();
+
+  const advanceGeneration = (): void => {
+    generation += 1;
+    // A channel change/dispose should wake a retry immediately. The stale
+    // operation then closes its resource after its current native call settles.
+    const waiters = [...retryWaiters];
+    for (const cancel of waiters) cancel();
+  };
 
   const emit = (patch: Partial<UpdateState>): void => {
     state = { ...state, ...patch, channel: settings.updateChannel };
@@ -119,6 +141,12 @@ export function createUpdaterService(
   };
 
   const clearPending = (): void => {
+    if (installInFlight) {
+      // Closing an Update while install() is live races the native updater.
+      // Defer cleanup until install() has settled instead.
+      discardPendingAfterInstall = true;
+      return;
+    }
     const update = pendingUpdate;
     pendingUpdate = null;
     pendingTarget = undefined;
@@ -127,9 +155,15 @@ export function createUpdaterService(
   };
 
   const discardPending = (): void => {
+    if (installInFlight) {
+      // Keep the native resource alive until install() resolves/rejects. A
+      // failed install will be discarded once it is safe to close it.
+      discardPendingAfterInstall = true;
+      return;
+    }
     // Incrementing the generation also makes a currently downloading update
     // close itself as soon as the Tauri resource settles.
-    generation += 1;
+    advanceGeneration();
     clearPending();
     emit({
       status: "idle",
@@ -144,6 +178,54 @@ export function createUpdaterService(
     });
   };
 
+  const isNotFoundError = (error: unknown): boolean => {
+    if (typeof error === "object" && error !== null) {
+      const candidate = error as {
+        status?: unknown;
+        statusCode?: unknown;
+        code?: unknown;
+      };
+      if (
+        candidate.status === 404 ||
+        candidate.statusCode === 404 ||
+        candidate.code === 404 ||
+        candidate.code === "404"
+      ) {
+        return true;
+      }
+    }
+    return /\b404\b|not[ -]?found/iu.test(errorMessage(error));
+  };
+
+  const waitForDownloadRetry = (
+    delayMs: number,
+    expectedGeneration: number,
+  ): Promise<boolean> => {
+    if (disposed || expectedGeneration !== generation) {
+      return Promise.resolve(false);
+    }
+    if (waitForRetry) {
+      return waitForRetry(delayMs).then(
+        () => !disposed && expectedGeneration === generation,
+      );
+    }
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (active: boolean): void => {
+        if (settled) return;
+        settled = true;
+        if (timer !== undefined) clearTimeout(timer);
+        retryWaiters.delete(cancel);
+        resolve(active && !disposed && expectedGeneration === generation);
+      };
+      const cancel = (): void => finish(false);
+      retryWaiters.add(cancel);
+      timer = setTimeout(() => finish(true), delayMs);
+      if (disposed || expectedGeneration !== generation) finish(false);
+    });
+  };
+
   const betaTarget = async (): Promise<string> => {
     const target = await invokeFn<string>("get_beta_updater_target");
     if (!BETA_TARGET_PATTERN.test(target)) {
@@ -154,14 +236,16 @@ export function createUpdaterService(
     return target;
   };
 
-  const resolveFeed = async (): Promise<{
+  const resolveFeed = async (
+    channel: UpdateChannel,
+  ): Promise<{
     target: string | undefined;
     resolvedChannel: "stable" | "beta";
   }> => {
-    if (settings.updateChannel === "stable") {
+    if (channel === "stable") {
       return { target: undefined, resolvedChannel: STABLE_CHANNEL };
     }
-    if (settings.updateChannel === "beta") {
+    if (channel === "beta") {
       return { target: await betaTarget(), resolvedChannel: BETA_CHANNEL };
     }
     const version = await getVersionFn();
@@ -190,25 +274,58 @@ export function createUpdaterService(
     }
   };
 
+  const downloadUpdate = async (
+    update: UpdaterUpdate,
+    target: string | undefined,
+    checkGeneration: number,
+    onEvent: (event: DownloadEvent) => void,
+  ): Promise<boolean> => {
+    let retryIndex = 0;
+    while (true) {
+      try {
+        await update.download(onEvent, { timeout: UPDATE_DOWNLOAD_TIMEOUT_MS });
+        return true;
+      } catch (error) {
+        if (
+          !target ||
+          !isNotFoundError(error) ||
+          retryIndex >= UPDATE_DOWNLOAD_RETRY_DELAYS_MS.length
+        ) {
+          throw error;
+        }
+        if (disposed || checkGeneration !== generation) return false;
+        const delayMs = UPDATE_DOWNLOAD_RETRY_DELAYS_MS[retryIndex];
+        retryIndex += 1;
+        onLog(
+          `Beta update download returned 404; retrying in ${delayMs}ms (${retryIndex}/${UPDATE_DOWNLOAD_RETRY_DELAYS_MS.length}).`,
+        );
+        if (!(await waitForDownloadRetry(delayMs, checkGeneration))) {
+          return false;
+        }
+      }
+    }
+  };
+
   const runCheck = async (interactive: boolean): Promise<void> => {
     let checkedUpdate: UpdaterUpdate | null = null;
     const checkGeneration = generation;
+    const checkChannel = settings.updateChannel;
     try {
       if (disposed || isDevelopment) return;
-      const feed = await resolveFeed();
+      // Mark the whole operation busy, including target/version resolution, so
+      // settings controls cannot change underneath an in-flight check.
+      emit({
+        status: "checking",
+        message: interactive ? undefined : "Checking for updates…",
+        error: undefined,
+        promptOpen: false,
+      });
+      const feed = await resolveFeed(checkChannel);
       if (disposed || checkGeneration !== generation) return;
 
       emit({
         resolvedChannel: feed.resolvedChannel,
         target: feed.target,
-        ...(interactive
-          ? {
-              status: "checking" as const,
-              message: undefined,
-              error: undefined,
-              promptOpen: false,
-            }
-          : {}),
       });
 
       if (
@@ -219,25 +336,15 @@ export function createUpdaterService(
         clearPending();
       }
       if (pendingUpdate) {
-        if (interactive) {
-          emit({
-            status: "ready",
-            promptOpen: true,
-            error: undefined,
-            message: "Update downloaded and ready to install.",
-          });
-        }
+        emit({
+          status: "ready",
+          promptOpen: interactive || state.promptOpen,
+          error: undefined,
+          message: "Update downloaded and ready to install.",
+        });
         return;
       }
 
-      if (!interactive) {
-        emit({
-          status: "checking",
-          message: "Checking for updates…",
-          error: undefined,
-          promptOpen: false,
-        });
-      }
       onLog(
         `Update check started (interactive=${interactive}, target=${feed.target ?? "default"}).`,
       );
@@ -280,10 +387,14 @@ export function createUpdaterService(
         error: undefined,
         promptOpen: false,
       });
-      await checkedUpdate.download(
+      const downloaded = await downloadUpdate(
+        checkedUpdate,
+        feed.target,
+        checkGeneration,
         (event: DownloadEvent): void => {
           if (disposed || checkGeneration !== generation) return;
           if (event.event === "Started") {
+            downloadedBytes = 0;
             contentLength = event.data.contentLength;
           } else if (event.event === "Progress") {
             downloadedBytes += event.data.chunkLength;
@@ -303,9 +414,8 @@ export function createUpdaterService(
             contentLength,
           });
         },
-        { timeout: UPDATE_DOWNLOAD_TIMEOUT_MS },
       );
-      if (disposed || checkGeneration !== generation) {
+      if (!downloaded || disposed || checkGeneration !== generation) {
         closeUpdate(checkedUpdate);
         checkedUpdate = null;
         return;
@@ -350,16 +460,22 @@ export function createUpdaterService(
   };
 
   const startCheck = (interactive: boolean): Promise<void> => {
-    if (disposed || isDevelopment) return Promise.resolve();
+    if (disposed || isDevelopment || installInFlight) return Promise.resolve();
     if (checkInFlight) {
-      if (interactive && !inFlightCheckIsInteractive) {
-        return checkInFlight.then(() => startCheck(true));
+      const checkIsStale = checkInFlightGeneration !== generation;
+      if (checkIsStale || (interactive && !inFlightCheckIsInteractive)) {
+        // A channel change invalidates the existing promise. Always queue a
+        // fresh check for the current generation instead of handing the
+        // caller the stale promise and swallowing its manual request.
+        return checkInFlight.then(() => startCheck(interactive));
       }
       return checkInFlight;
     }
+    checkInFlightGeneration = generation;
     inFlightCheckIsInteractive = interactive;
     checkInFlight = runCheck(interactive).finally(() => {
       checkInFlight = null;
+      checkInFlightGeneration = null;
       inFlightCheckIsInteractive = false;
     });
     return checkInFlight;
@@ -397,6 +513,7 @@ export function createUpdaterService(
       const update = pendingUpdate;
       if (!update || state.status === "installing") return;
       const installGeneration = generation;
+      installInFlight = true;
       emit({
         status: "installing",
         promptOpen: false,
@@ -407,20 +524,24 @@ export function createUpdaterService(
         // On Windows the passive NSIS updater exits and starts Arlet again.
         // Do not invoke a second process restart; it would race that handoff.
         await update.install();
-        if (disposed || installGeneration !== generation) return;
-        pendingUpdate = null;
-        pendingTarget = undefined;
-        pendingResolvedChannel = STABLE_CHANNEL;
-        emit({
-          status: "idle",
-          version: undefined,
-          progress: undefined,
-          downloadedBytes: undefined,
-          contentLength: undefined,
-          promptOpen: false,
-          message: "Update installed. Restarting Arlet…",
-          error: undefined,
-        });
+        // install() has settled, so it is now safe to detach the resource.
+        if (pendingUpdate === update) {
+          pendingUpdate = null;
+          pendingTarget = undefined;
+          pendingResolvedChannel = STABLE_CHANNEL;
+        }
+        if (!disposed && installGeneration === generation) {
+          emit({
+            status: "idle",
+            version: undefined,
+            progress: undefined,
+            downloadedBytes: undefined,
+            contentLength: undefined,
+            promptOpen: false,
+            message: "Update installed. Restarting Arlet…",
+            error: undefined,
+          });
+        }
       } catch (error) {
         if (disposed || installGeneration !== generation) return;
         const message = safeErrorMessage(error);
@@ -432,13 +553,35 @@ export function createUpdaterService(
           error: `Failed to install update. ${message}`,
         });
         throw error;
+      } finally {
+        installInFlight = false;
+        if (discardPendingAfterInstall) {
+          discardPendingAfterInstall = false;
+          if (pendingUpdate) {
+            advanceGeneration();
+            clearPending();
+            if (!disposed) {
+              emit({
+                status: "idle",
+                target: undefined,
+                version: undefined,
+                progress: undefined,
+                downloadedBytes: undefined,
+                contentLength: undefined,
+                error: undefined,
+                message: undefined,
+                promptOpen: false,
+              });
+            }
+          }
+        }
       }
     },
 
     dispose(): void {
       if (disposed) return;
       disposed = true;
-      generation += 1;
+      advanceGeneration();
       clearPending();
     },
   };

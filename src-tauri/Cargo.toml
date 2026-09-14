@@ -37,6 +37,9 @@ windows = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+[dev-dependencies]
+minisign-verify = "0.2.5"
+
 [features]
 default = []
 

@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // Arlet full quality gate. Architecture inspired by Zinnia; implementation is
-// original and scoped to Arlet Phase 0/Milestone 1 (no e2e suite, no flatpak,
-// no archive fixtures, no vendor updater tree).
+// original and scoped to Arlet Phase 0/Milestone 1 (offline built smoke only;
+// no browser-driver suite, no flatpak, no archive fixtures, no vendor updater
+// tree).
 //
 // Runs: version drift check, typecheck, lint, format:check, vitest with
-// coverage, cargo fmt --check, cargo clippy -D warnings, cargo test. Records a
-// quality-gate proof for the release pipeline on success.
+// coverage, cargo fmt --check, cargo clippy -D warnings, cargo test, and the
+// deterministic built frontend smoke gate. Records a quality-gate proof for
+// the release pipeline on success.
 //
 // Flags: --require-clean-proof --skip-e2e
 
@@ -141,6 +143,12 @@ function main({
   runner = runCommand,
 } = {}) {
   clearProof(root);
+  if (requireCleanProof && skipE2e) {
+    console.error(
+      "Cannot record release quality-gate proof while E2E is skipped; run test:all without --skip-e2e.",
+    );
+    return 1;
+  }
   const results = createInitialResults();
   const npm = getNpmCommand();
 

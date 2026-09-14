@@ -11,6 +11,7 @@ import {
   isIgnorableReleaseDirtyPath,
   porcelainPaths,
 } from "./release-session.js";
+import { assertStableReleaseOverridesAllowed } from "./release-policy.cjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(scriptDir, "..");
@@ -149,6 +150,7 @@ function checkWindowsTargets() {
 
 function runPreflight() {
   const version = String(packageJson.version ?? "");
+  assertStableReleaseOverridesAllowed(process.env, version);
   const expectedBranch = expectedReleaseBranch(version);
   const branch = git(["branch", "--show-current"]);
   if (branch !== expectedBranch) {

@@ -16,7 +16,9 @@ export function UpdateReadyModal(): JSX.Element | null {
   const controller = useAppController();
   const dialogRef = useRef<HTMLElement>(null);
   const restartButton = useRef<HTMLButtonElement>(null);
-  const open = state.updates.promptOpen && Boolean(state.updates.version);
+  const installing = state.updates.status === "installing";
+  const open =
+    (state.updates.promptOpen || installing) && Boolean(state.updates.version);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -34,7 +36,6 @@ export function UpdateReadyModal(): JSX.Element | null {
   if (!open) return null;
 
   const version = state.updates.version ?? "the latest version";
-  const installing = state.updates.status === "installing";
   const onDialogKeyDown = (event: KeyboardEvent): void => {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -71,6 +72,7 @@ export function UpdateReadyModal(): JSX.Element | null {
         onKeyDown={onDialogKeyDown}
         role="dialog"
         aria-modal="true"
+        aria-busy={installing}
         aria-labelledby="update-modal-title"
         aria-describedby="update-modal-description"
       >
@@ -78,11 +80,20 @@ export function UpdateReadyModal(): JSX.Element | null {
           <Download size={20} strokeWidth={1.8} />
         </div>
         <p className="eyebrow">Arlet update</p>
-        <h2 id="update-modal-title">Update downloaded</h2>
-        <p id="update-modal-description">
-          Version <strong>{version}</strong> is ready to install. Restart Arlet
-          now to apply the update.
-        </p>
+        <h2 id="update-modal-title">
+          {installing ? "Installing update" : "Update downloaded"}
+        </h2>
+        {installing ? (
+          <p id="update-modal-description">
+            Version <strong>{version}</strong> is being installed. Arlet will
+            restart automatically when installation finishes.
+          </p>
+        ) : (
+          <p id="update-modal-description">
+            Version <strong>{version}</strong> is ready to install. Restart
+            Arlet now to apply the update.
+          </p>
+        )}
         {state.updates.error ? (
           <p className="update-modal-error" role="alert">
             {state.updates.error}

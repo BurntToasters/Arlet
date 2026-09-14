@@ -7,6 +7,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { assertGitHubCliAuthenticated, githubApi } = require("./github-cli.cjs");
+const { assertStableReleaseOverridesAllowed } = require("./release-policy.cjs");
 
 try {
   require("dotenv").config();
@@ -136,6 +137,7 @@ function createDraft(commit) {
 }
 
 function ensureDraftRelease() {
+  assertStableReleaseOverridesAllowed(process.env, VERSION);
   assertGitHubCliAuthenticated();
   const commit = currentReleaseCommit();
   const releases = listReleases();

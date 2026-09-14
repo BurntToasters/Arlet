@@ -4,6 +4,7 @@ import {
   isBetaVersion,
   UPDATE_CHECK_TIMEOUT_MS,
   UPDATE_DOWNLOAD_TIMEOUT_MS,
+  UPDATE_DOWNLOAD_RETRY_DELAYS_MS,
   type UpdaterUpdate,
 } from "../updater.ts";
 import {
@@ -181,6 +182,43 @@ describe("updater", () => {
     service.dispose();
   });
 
+  it("queues a manual check for the new channel after an old check is invalidated", async () => {
+    const resolvers: Array<(update: UpdaterUpdate | null) => void> = [];
+    const check = vi.fn(
+      () =>
+        new Promise<UpdaterUpdate | null>((resolve) => {
+          resolvers.push(resolve);
+        }),
+    );
+    const service = createUpdaterService({
+      isDevelopment: false,
+      checkFn: check,
+      getVersionFn: vi.fn().mockResolvedValue("0.1.0"),
+      invokeFn: vi.fn().mockResolvedValue("windows-beta-x86_64-nsis"),
+      onStateChange: setUpdateState,
+    });
+
+    const first = service.checkNow();
+    await vi.waitFor(() => expect(check).toHaveBeenCalledOnce());
+    service.configure(settings({ updateChannel: "beta" }));
+    const second = service.checkNow();
+
+    expect(check).toHaveBeenCalledOnce();
+    resolvers.shift()?.(null);
+    await vi.waitFor(() => expect(check).toHaveBeenCalledTimes(2));
+    resolvers.shift()?.(updateResource());
+    await Promise.all([first, second]);
+
+    expect(check).toHaveBeenNthCalledWith(1, {
+      timeout: UPDATE_CHECK_TIMEOUT_MS,
+    });
+    expect(check).toHaveBeenNthCalledWith(2, {
+      target: "windows-beta-x86_64-nsis",
+      timeout: UPDATE_CHECK_TIMEOUT_MS,
+    });
+    service.dispose();
+  });
+
   it("downloads with progress, keeps Later pending, then installs without relaunch", async () => {
     let downloadEvent: ((event: never) => void) | undefined;
     const install = vi.fn().mockResolvedValue(undefined);
@@ -229,6 +267,92 @@ describe("updater", () => {
     service.dispose();
   });
 
+  it("retries a transient beta download 404 with bounded backoff", async () => {
+    const waitForRetry = vi.fn().mockResolvedValue(undefined);
+    const download = vi
+      .fn()
+      .mockRejectedValueOnce({ status: 404 })
+      .mockResolvedValueOnce(undefined);
+    const resource = updateResource({ download });
+    const service = createUpdaterService({
+      isDevelopment: false,
+      checkFn: vi.fn().mockResolvedValue(resource),
+      invokeFn: vi.fn().mockResolvedValue("windows-beta-x86_64-nsis"),
+      waitForRetry,
+      onStateChange: setUpdateState,
+    });
+
+    service.configure(settings({ updateChannel: "beta" }));
+    await service.checkNow();
+
+    expect(download).toHaveBeenCalledTimes(2);
+    expect(waitForRetry).toHaveBeenCalledWith(
+      UPDATE_DOWNLOAD_RETRY_DELAYS_MS[0],
+    );
+    expect(getState().updates.status).toBe("ready");
+    service.dispose();
+  });
+
+  it("preserves the final beta download error after retry exhaustion", async () => {
+    const waitForRetry = vi.fn().mockResolvedValue(undefined);
+    const download = vi
+      .fn()
+      .mockRejectedValue(new Error("HTTP status 404: asset not found"));
+    const resource = updateResource({ download });
+    const service = createUpdaterService({
+      isDevelopment: false,
+      checkFn: vi.fn().mockResolvedValue(resource),
+      invokeFn: vi.fn().mockResolvedValue("windows-beta-x86_64-nsis"),
+      waitForRetry,
+      onStateChange: setUpdateState,
+    });
+
+    service.configure(settings({ updateChannel: "beta" }));
+    await service.checkNow();
+
+    expect(download).toHaveBeenCalledTimes(
+      UPDATE_DOWNLOAD_RETRY_DELAYS_MS.length + 1,
+    );
+    expect(waitForRetry).toHaveBeenCalledTimes(
+      UPDATE_DOWNLOAD_RETRY_DELAYS_MS.length,
+    );
+    expect(getState().updates.status).toBe("error");
+    expect(getState().updates.error).toContain("404");
+    expect(resource.close).toHaveBeenCalledOnce();
+    service.dispose();
+  });
+
+  it("cancels a beta download retry when the channel changes", async () => {
+    let resolveWait: (() => void) | undefined;
+    const waitForRetry = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveWait = resolve;
+        }),
+    );
+    const download = vi.fn().mockRejectedValue(new Error("404 not found"));
+    const resource = updateResource({ download });
+    const service = createUpdaterService({
+      isDevelopment: false,
+      checkFn: vi.fn().mockResolvedValue(resource),
+      invokeFn: vi.fn().mockResolvedValue("windows-beta-x86_64-nsis"),
+      waitForRetry,
+      onStateChange: setUpdateState,
+    });
+
+    service.configure(settings({ updateChannel: "beta" }));
+    const checking = service.checkNow();
+    await vi.waitFor(() => expect(waitForRetry).toHaveBeenCalledOnce());
+    service.configure(settings({ updateChannel: "stable" }));
+    resolveWait?.();
+    await checking;
+
+    expect(download).toHaveBeenCalledOnce();
+    expect(resource.close).toHaveBeenCalledOnce();
+    expect(getState().updates.status).toBe("idle");
+    service.dispose();
+  });
+
   it("closes a pending resource when the channel changes", async () => {
     const resource = updateResource();
     const service = createUpdaterService({
@@ -242,6 +366,35 @@ describe("updater", () => {
     service.configure(settings({ updateChannel: "beta" }));
     await Promise.resolve();
     expect(resource.close).toHaveBeenCalledOnce();
+    expect(getState().updates.status).toBe("idle");
+    service.dispose();
+  });
+
+  it("does not close the native resource while install is in flight", async () => {
+    let resolveInstall: (() => void) | undefined;
+    const install = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveInstall = resolve;
+        }),
+    );
+    const resource = updateResource({ install });
+    const service = createUpdaterService({
+      isDevelopment: false,
+      checkFn: vi.fn().mockResolvedValue(resource),
+      getVersionFn: vi.fn().mockResolvedValue("0.1.0"),
+      onStateChange: setUpdateState,
+    });
+
+    await service.checkNow();
+    const installing = service.installPending();
+    await vi.waitFor(() => expect(install).toHaveBeenCalledOnce());
+    service.configure(settings({ updateChannel: "beta" }));
+    expect(resource.close).not.toHaveBeenCalled();
+
+    resolveInstall?.();
+    await installing;
+    expect(resource.close).not.toHaveBeenCalled();
     expect(getState().updates.status).toBe("idle");
     service.dispose();
   });

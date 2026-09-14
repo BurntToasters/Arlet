@@ -5,8 +5,8 @@ This document tracks our progress through the Arlet `plan.md` architecture brief
 ## 📌 Status (2026-09-11 — read first)
 
 - [ ] **Commit review:** gate-session + phase0-preflight work is UNCOMMITTED.
-      `npm run test:all --skip-e2e` green on dirty tree; commit then re-run for
-      release proof.
+      `npm run test:all` green on dirty tree; commit then re-run for release
+      proof.
 - [ ] **Back up `.env` offline:** updater private key + password live only
       there (gitignored). Required on the release VM.
 - [x] **Set `AFTER_PACK_LOC`:** this machine uses
@@ -46,8 +46,9 @@ This document tracks our progress through the Arlet `plan.md` architecture brief
       lockfile quality-gate + build-session proofs).
 - [x] **Test gate:** `test-all.js` (typecheck → lint → format → vitest →
       node `--test scripts` → cargo fmt → clippy `-D warnings` → cargo test →
-      e2e) — all green; `test:e2e.js` is a documented no-op until the
-      Milestone 1 shell exists.
+      offline built frontend smoke) — all green; live account, signing, and
+      release-feed checks remain explicit external gates (see
+      `docs/TESTING.md`).
 - [x] **Windows build/sign:** `tauri-windows-build.js` (NSIS only),
       `launch-vs-devshell.ps1`, `setup-windows-artifact-signing.ps1`,
       `windows-artifact-sign.ps1`, `verify-windows-authenticode.ps1`.
@@ -95,7 +96,7 @@ This document tracks our progress through the Arlet `plan.md` architecture brief
       os/arch/WebView2 version/debug flag (+ Rust test); Phase 0 UI logs the
       environment line at startup for pasting into the feasibility report.
 - [x] **CI:** `.github/workflows/ci.yml` — PR trailer policy, Ubuntu quality
-      gate (`test:all --skip-e2e` + version-sync check), unsigned Windows
+      gate (`test:all` + version-sync check), unsigned Windows
       x64/ARM64 `--no-bundle` smoke builds, npm + cargo audits, `ci-gate`
       aggregator. Holds no secrets/keys by design.
 - [x] **Docs:** `docs/RELEASE.md` (operator flow), `docs/SECURITY.md`

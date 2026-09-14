@@ -171,3 +171,14 @@ test("package wiring keeps mirror before reset", () => {
     assert.ok(existsSync(path.join(repoRoot, file)));
   }
 });
+
+test("release preparation requires the built frontend smoke gate", () => {
+  const scripts = JSON.parse(
+    readFileSync(path.join(repoRoot, "package.json"), "utf8"),
+  ).scripts;
+  assert.match(
+    String(scripts["release:prepare"]),
+    /test:all -- --require-clean-proof/,
+  );
+  assert.doesNotMatch(String(scripts["release:prepare"]), /skip-e2e/);
+});

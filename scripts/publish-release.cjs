@@ -1,12 +1,14 @@
 // Publish the fully verified exact-version draft. The draft verifier runs
 // before the final API patch so a partial/mis-tagged release cannot become a
 // channel feed. Stable releases remain the GitHub /releases/latest target;
-// beta releases keep prerelease=true and their beta manifests are synced by
-// gpg-sign.js.
+// beta releases keep prerelease=true and sync their beta manifests only after
+// GitHub returns the published prerelease. If that final sync fails, the
+// release:sync-beta-manifests command is the documented recovery path.
 
 const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
 const { assertGitHubCliAuthenticated, githubApi } = require("./github-cli.cjs");
+const { assertStableReleaseOverridesAllowed } = require("./release-policy.cjs");
 
 try {
   require("dotenv").config();
@@ -92,7 +94,8 @@ function runVerifyDraft() {
   }
 }
 
-function main() {
+async function main() {
+  assertStableReleaseOverridesAllowed(process.env, VERSION);
   assertGitHubCliAuthenticated();
   const commit = currentReleaseCommit();
   runVerifyDraft();
@@ -122,18 +125,30 @@ function main() {
   console.log(
     `[release:publish] Published ${TAG_NAME}: ${published.html_url || "ok"}`,
   );
+  if (published.prerelease) {
+    try {
+      const { syncBetaManifestsAfterPublish } = await import("./gpg-sign.js");
+      await syncBetaManifestsAfterPublish();
+    } catch (error) {
+      throw new Error(
+        `Published ${TAG_NAME}, but beta manifest synchronization failed. Retry with npm run release:sync-beta-manifests. ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
+    console.log(
+      "[release:publish] Beta manifests synchronized after the published prerelease was confirmed.",
+    );
+  }
   console.log("[release:publish] Run npm run release:verify:published next.");
 }
 
 if (require.main === module) {
-  try {
-    main();
-  } catch (error) {
+  Promise.resolve(main()).catch((error) => {
     console.error(
       `[release:publish] FAILED: ${error instanceof Error ? error.message : String(error)}`,
     );
     process.exit(1);
-  }
+  });
 }
 
 module.exports = { assertReleaseTargetsCommit, currentReleaseCommit, main };

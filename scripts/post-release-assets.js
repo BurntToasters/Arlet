@@ -12,6 +12,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertStableReleaseOverridesAllowed } from "./release-policy.cjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 export const REPOSITORY_ROOT = path.resolve(scriptDir, "..");
@@ -325,6 +326,7 @@ export function finalizeReleaseAssets({
   logger = console,
   version = readPackageVersion(),
 } = {}) {
+  assertStableReleaseOverridesAllowed(env, version);
   let destination = getAfterPackLocation(env);
   let skippedBetaMirror = false;
   if (destination && shouldSkipBetaMirror(env, version)) {

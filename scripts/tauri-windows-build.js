@@ -10,10 +10,13 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { assertStableReleaseOverridesAllowed } from "./release-policy.cjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(scriptDir, "..");
 const args = process.argv.slice(2);
+
+assertStableReleaseOverridesAllowed();
 
 const skipSigning = process.env.SKIP_WIN_CODESIGN?.trim() === "1";
 const requiredEnv = [

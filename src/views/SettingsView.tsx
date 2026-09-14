@@ -173,6 +173,7 @@ export function SettingsView(): JSX.Element {
               <input
                 type="checkbox"
                 checked={settings.autoCheckUpdates}
+                disabled={updateBusy}
                 onChange={(event) =>
                   void controller.setAutoCheckUpdates(
                     event.currentTarget.checked,
@@ -185,7 +186,11 @@ export function SettingsView(): JSX.Element {
                 <RefreshCw aria-hidden="true" size={16} strokeWidth={1.8} />{" "}
                 Release channel
               </span>
-              <select value={settings.updateChannel} onChange={updateChannel}>
+              <select
+                value={settings.updateChannel}
+                disabled={updateBusy}
+                onChange={updateChannel}
+              >
                 <option value="auto">Auto (follow installed release)</option>
                 <option value="stable">Stable</option>
                 <option value="beta">Beta</option>

@@ -7,6 +7,14 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Apply the centralized release policy even when this verifier is invoked
+# directly rather than through tauri-windows-build.js.
+$policy = Join-Path $PSScriptRoot 'release-policy.cjs'
+& node $policy
+if ($LASTEXITCODE -ne 0) {
+  throw 'Stable release policy rejected the Windows verification environment.'
+}
+
 if ($env:SKIP_WIN_CODESIGN -eq '1') {
   Write-Host 'SKIP_WIN_CODESIGN=1; skipping Authenticode verification.'
   exit 0

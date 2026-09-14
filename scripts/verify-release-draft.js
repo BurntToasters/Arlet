@@ -4,10 +4,12 @@
 // Tauri updater sidecar, and the checksum/signature sidecars before publish.
 //
 // Usage: npm run release:verify:draft
-// `--verify-artifacts` additionally downloads referenced installers and checks
-// the SHA256SUMS entries. No GitHub state is mutated.
+// `--verify-artifacts` additionally downloads referenced installers, checks
+// SHA256SUMS + SHA256SUMS.asc, and verifies Tauri signatures cryptographically.
+// No GitHub state is mutated.
 
 import crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -19,15 +21,19 @@ import {
   REQUIRED_STABLE_MANIFEST_NAMES,
 } from "./generate-updater-manifests.js";
 import {
+  assertUpdaterTargetArtifact,
   hasMinisignEnvelope,
   validateUpdaterManifest,
 } from "./validate-updater-manifest.js";
+import { resolveUpdaterTargets } from "./gpg-sign.js";
+import { verifyUpdaterSignatures } from "./updater-signature-verifier.js";
+import { assertStableReleaseOverridesAllowed } from "./release-policy.cjs";
 
 const require = createRequire(import.meta.url);
 const {
   assertGitHubCliAuthenticated,
   githubApi,
-  githubApiBuffer,
+  githubApiToFile,
 } = require("./github-cli.cjs");
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -40,6 +46,7 @@ const TAG_NAME = `v${VERSION}`;
 const REPO_OWNER = process.env.GH_REPO_OWNER || "BurntToasters";
 const REPO_NAME = process.env.GH_REPO_NAME || "Arlet";
 const REPO = `${REPO_OWNER}/${REPO_NAME}`;
+const HASH_BUFFER_BYTES = 1024 * 1024;
 
 function isPrereleaseVersion(version) {
   return /^\d+\.\d+\.\d+-beta\.\d+$/.test(String(version || ""));
@@ -80,6 +87,22 @@ export function requiredDraftInstallerNames(
 
 export function requiredDraftSidecarNames(installers) {
   return installers.flatMap((name) => [`${name}.sig`, `${name}.asc`]);
+}
+
+export function requiredDraftChecksumNames(installers, manifests) {
+  return [...installers.flatMap((name) => [name, `${name}.sig`]), ...manifests];
+}
+
+export function draftVerificationDownloadNames(shape) {
+  return [
+    ...new Set([
+      ...shape.installers,
+      ...shape.installers.map((name) => `${name}.sig`),
+      ...shape.manifests,
+      "SHA256SUMS",
+      "SHA256SUMS.asc",
+    ]),
+  ];
 }
 
 export function isSafeArtifactName(name) {
@@ -147,6 +170,7 @@ export function assertManifestAssetReferences(
     if (
       url.protocol !== "https:" ||
       url.hostname.toLowerCase() !== "github.com" ||
+      url.port !== "" ||
       url.username ||
       url.password ||
       url.hash ||
@@ -164,6 +188,12 @@ export function assertManifestAssetReferences(
         `${manifestName} platform ${target} has an unsafe artifact name.`,
       );
     }
+    assertUpdaterTargetArtifact(
+      target,
+      manifest.version,
+      artifactName,
+      manifestName,
+    );
     if (!present.has(artifactName)) {
       throw new Error(
         `${manifestName} references missing artifact ${artifactName}.`,
@@ -194,6 +224,12 @@ export function assertDraftReleaseShape({
   headCommit = null,
 }) {
   const tag = `v${version}`;
+  if (!Array.isArray(assetNames)) {
+    throw new Error(`Release ${tag} asset names must be an array.`);
+  }
+  if (new Set(assetNames).size !== assetNames.length) {
+    throw new Error(`Release ${tag} contains duplicate asset names.`);
+  }
   if (!release?.draft) {
     throw new Error(`Release ${tag} must still be a draft for verification.`);
   }
@@ -245,6 +281,14 @@ export function assertDraftReleaseShape({
       `Draft ${tag} is missing installer sidecars: ${missingSidecars.join(", ")}.`,
     );
   }
+  const missingUpdaterSidecarSignatures = installers
+    .map((name) => `${name}.sig.asc`)
+    .filter((name) => !present.has(name));
+  if (missingUpdaterSidecarSignatures.length > 0) {
+    throw new Error(
+      `Draft ${tag} is missing GPG signatures for updater sidecars: ${missingUpdaterSidecarSignatures.join(", ")}.`,
+    );
+  }
   const missingManifestSignatures = requiredDraftManifestNames()
     .map((name) => `${name}.asc`)
     .filter((name) => !present.has(name));
@@ -257,6 +301,23 @@ export function assertDraftReleaseShape({
     if (!present.has(name)) {
       throw new Error(`Draft ${tag} is missing required asset ${name}.`);
     }
+  }
+  const expectedAssetNames = new Set([
+    ...installers,
+    ...requiredDraftSidecarNames(installers),
+    ...installers.map((name) => `${name}.sig.asc`),
+    ...requiredDraftManifestNames(),
+    ...requiredDraftManifestNames().map((name) => `${name}.asc`),
+    "SHA256SUMS",
+    "SHA256SUMS.asc",
+  ]);
+  const unknownAssets = assetNames.filter(
+    (name) => !expectedAssetNames.has(name),
+  );
+  if (unknownAssets.length > 0) {
+    throw new Error(
+      `Draft ${tag} contains unknown release asset(s): ${unknownAssets.join(", ")}.`,
+    );
   }
   return { installers, manifests: requiredDraftManifestNames() };
 }
@@ -312,34 +373,119 @@ function getDraftRelease() {
 }
 
 function downloadAsset(asset, destination) {
-  fs.writeFileSync(
+  githubApiToFile(
+    "GET",
+    `/repos/${REPO}/releases/assets/${asset.id}`,
     destination,
-    githubApiBuffer("GET", `/repos/${REPO}/releases/assets/${asset.id}`),
   );
 }
 
 function sha256File(filePath) {
-  return crypto
-    .createHash("sha256")
-    .update(fs.readFileSync(filePath))
-    .digest("hex");
+  const hash = crypto.createHash("sha256");
+  const buffer = Buffer.allocUnsafe(HASH_BUFFER_BYTES);
+  const descriptor = fs.openSync(filePath, "r");
+  try {
+    let bytesRead;
+    do {
+      bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  return hash.digest("hex");
 }
 
-function verifyChecksums(sumText, downloaded) {
-  for (const line of String(sumText).split(/\r?\n/).filter(Boolean)) {
+export function verifyChecksums(sumText, downloaded, expectedNames = []) {
+  if (!(downloaded instanceof Map)) {
+    throw new Error("Checksum verification requires a downloaded-file map.");
+  }
+  const expected = expectedNames.length
+    ? [...expectedNames]
+    : [...downloaded.keys()];
+  if (new Set(expected).size !== expected.length) {
+    throw new Error(
+      "Checksum verification received duplicate intended artifacts.",
+    );
+  }
+  if (expected.length === 0) {
+    throw new Error(
+      "SHA256SUMS is empty; no intended artifacts were provided.",
+    );
+  }
+  const lines = String(sumText).split(/\r?\n/);
+  // A single final newline is the conventional checksum-file terminator;
+  // additional blank records are malformed and must not be discarded.
+  if (lines.at(-1) === "") lines.pop();
+  if (lines.length === 0) {
+    throw new Error("SHA256SUMS is empty.");
+  }
+  const expectedSet = new Set(expected);
+  const seen = new Set();
+  for (const line of lines) {
+    if (!line.trim()) {
+      throw new Error("SHA256SUMS contains an empty entry.");
+    }
     const match = line.match(/^([a-f0-9]{64}) {2}(.+)$/i);
     if (!match || !isSafeArtifactName(match[2])) {
       throw new Error(`Invalid SHA256SUMS line: ${line}`);
     }
-    const file = downloaded.get(match[2]);
-    if (!file) continue;
+    const name = match[2];
+    if (seen.has(name)) {
+      throw new Error(`SHA256SUMS contains duplicate entry for ${name}.`);
+    }
+    seen.add(name);
+    if (!expectedSet.has(name)) {
+      throw new Error(`SHA256SUMS contains unknown artifact ${name}.`);
+    }
+    const file = downloaded.get(name);
+    if (!file) {
+      throw new Error(`SHA256SUMS entry ${name} was not downloaded.`);
+    }
     if (sha256File(file).toLowerCase() !== match[1].toLowerCase()) {
-      throw new Error(`SHA256SUMS mismatch for ${match[2]}.`);
+      throw new Error(`SHA256SUMS mismatch for ${name}.`);
     }
   }
+  const missing = expected.filter((name) => !seen.has(name));
+  if (missing.length > 0) {
+    throw new Error(
+      `SHA256SUMS is missing artifact entr${missing.length === 1 ? "y" : "ies"}: ${missing.join(", ")}.`,
+    );
+  }
+  return true;
+}
+
+export function verifyDetachedGpgSignature(
+  signaturePath,
+  dataPath,
+  { rootDir = root, runner = spawnSync } = {},
+) {
+  const result = runner(
+    "gpg",
+    ["--batch", "--no-auto-key-retrieve", "--verify", signaturePath, dataPath],
+    {
+      cwd: rootDir,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    },
+  );
+  if (result?.error) throw result.error;
+  if (result?.status !== 0) {
+    const detail = [result?.stderr, result?.stdout]
+      .filter(Boolean)
+      .map(String)
+      .join("\n")
+      .trim();
+    throw new Error(
+      `SHA256SUMS.asc GPG signature verification failed${detail ? `: ${detail}` : "."}`,
+    );
+  }
+  return true;
 }
 
 async function verifyDraft({ verifyArtifacts = false } = {}) {
+  assertStableReleaseOverridesAllowed(process.env, VERSION);
   assertGitHubCliAuthenticated();
   const release = getDraftRelease();
   const assets = listReleaseAssets(release.id);
@@ -357,6 +503,7 @@ async function verifyDraft({ verifyArtifacts = false } = {}) {
   );
   try {
     const signatures = new Map();
+    const downloaded = new Map();
     for (const installer of shape.installers) {
       const sidecarPath = path.join(temporaryDirectory, `${installer}.sig`);
       downloadAsset(byName.get(`${installer}.sig`), sidecarPath);
@@ -365,6 +512,7 @@ async function verifyDraft({ verifyArtifacts = false } = {}) {
         throw new Error(`Invalid updater signature sidecar ${installer}.sig.`);
       }
       signatures.set(installer, signature);
+      downloaded.set(`${installer}.sig`, sidecarPath);
     }
     for (const manifestName of shape.manifests) {
       const manifestPath = path.join(temporaryDirectory, manifestName);
@@ -384,14 +532,8 @@ async function verifyDraft({ verifyArtifacts = false } = {}) {
         signatures,
       });
     }
-    const downloaded = new Map();
     if (verifyArtifacts) {
-      const files = [
-        ...shape.installers,
-        ...shape.installers.map((name) => `${name}.sig`),
-        ...shape.manifests,
-        "SHA256SUMS",
-      ];
+      const files = draftVerificationDownloadNames(shape);
       for (const name of files) {
         const destination = path.join(temporaryDirectory, name);
         if (name === "SHA256SUMS") {
@@ -399,6 +541,10 @@ async function verifyDraft({ verifyArtifacts = false } = {}) {
         } else if (name.endsWith(".json")) {
           // Already downloaded manifest path; reuse it.
           downloaded.set(name, path.join(temporaryDirectory, name));
+          continue;
+        } else if (downloaded.has(name)) {
+          // Installer updater sidecars were downloaded during the shape pass;
+          // githubApiToFile intentionally refuses to overwrite them.
           continue;
         } else {
           downloadAsset(byName.get(name), destination);
@@ -408,7 +554,31 @@ async function verifyDraft({ verifyArtifacts = false } = {}) {
       verifyChecksums(
         fs.readFileSync(path.join(temporaryDirectory, "SHA256SUMS"), "utf8"),
         downloaded,
+        requiredDraftChecksumNames(shape.installers, shape.manifests),
       );
+      verifyDetachedGpgSignature(
+        path.join(temporaryDirectory, "SHA256SUMS.asc"),
+        path.join(temporaryDirectory, "SHA256SUMS"),
+      );
+      const byName = new Map(
+        shape.installers.map((name) => [
+          name,
+          path.join(temporaryDirectory, name),
+        ]),
+      );
+      const signatureByBaseName = new Map(
+        shape.installers.map((name) => [
+          name,
+          path.join(temporaryDirectory, `${name}.sig`),
+        ]),
+      );
+      verifyUpdaterSignatures({
+        root,
+        releaseDir: temporaryDirectory,
+        byName,
+        signatureByBaseName,
+        resolveUpdaterTargets,
+      });
       for (const installer of shape.installers) {
         if (fs.statSync(path.join(temporaryDirectory, installer)).size === 0) {
           throw new Error(`Downloaded installer ${installer} is empty.`);

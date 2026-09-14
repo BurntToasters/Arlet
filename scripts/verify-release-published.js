@@ -3,12 +3,28 @@
 // manifests at GitHub's /releases/latest alias. Beta releases require the
 // beta family only because stable manifests intentionally remain on the last
 // stable release. Every live manifest must reference a downloadable artifact
-// and a matching Tauri updater signature sidecar.
+// and matching Tauri updater signature sidecars. Full mode also downloads the
+// release checksums, requires complete coverage, verifies SHA256SUMS.asc, and
+// cryptographically checks every referenced updater artifact.
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { REQUIRED_MANIFEST_NAMES } from "./generate-updater-manifests.js";
 import {
+  isSafeArtifactName,
+  verifyChecksums,
+  verifyDetachedGpgSignature,
+} from "./verify-release-draft.js";
+import { resolveUpdaterTargets } from "./gpg-sign.js";
+import { verifyUpdaterSignatures } from "./updater-signature-verifier.js";
+import { assertStableReleaseOverridesAllowed } from "./release-policy.cjs";
+import {
+  assertUpdaterTargetArtifact,
   hasMinisignEnvelope,
   validateUpdaterManifest,
 } from "./validate-updater-manifest.js";
@@ -77,10 +93,50 @@ async function getText(url, accept = "application/json") {
   return response.text();
 }
 
+async function downloadToFile(
+  url,
+  destination,
+  accept = "application/octet-stream",
+) {
+  const response = await fetch(url, {
+    headers: { Accept: accept, "User-Agent": "Arlet-release-verifier" },
+    redirect: "follow",
+  });
+  if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
+  let descriptor;
+  let created = false;
+  try {
+    if (!response.body) throw new Error(`${url}: response has no body`);
+    descriptor = fs.openSync(destination, "wx");
+    created = true;
+    await pipeline(
+      Readable.fromWeb(response.body),
+      fs.createWriteStream(null, { fd: descriptor, autoClose: true }),
+    );
+    descriptor = undefined;
+    if (fs.statSync(destination).size === 0) {
+      throw new Error(`${url}: downloaded file is empty`);
+    }
+    return destination;
+  } catch (error) {
+    if (descriptor !== undefined) {
+      try {
+        fs.closeSync(descriptor);
+      } catch {
+        // Preserve the original download error.
+      }
+    }
+    if (created) fs.rmSync(destination, { force: true });
+    throw error;
+  }
+}
+
 export function collectManifestArtifactRefs(manifestBodies) {
   const artifacts = new Map();
   for (const body of manifestBodies) {
     const manifest = typeof body === "string" ? JSON.parse(body) : body;
+    const expectedPrefix = `/${REPO_OWNER}/${REPO_NAME}/releases/download/v${manifest?.version}/`;
+    const releaseKeys = new Set();
     for (const [target, entry] of Object.entries(manifest.platforms || {})) {
       if (
         !entry ||
@@ -93,26 +149,27 @@ export function collectManifestArtifactRefs(manifestBodies) {
       if (
         parsed.protocol !== "https:" ||
         parsed.hostname.toLowerCase() !== "github.com" ||
+        parsed.port !== "" ||
         parsed.username ||
         parsed.password ||
         parsed.hash ||
-        !parsed.pathname.includes("/releases/download/")
+        !parsed.pathname.toLowerCase().startsWith(expectedPrefix.toLowerCase())
       ) {
         throw new Error(
           `Updater artifact URL for ${target} is outside GitHub releases.`,
         );
       }
+      releaseKeys.add(releaseDownloadPrefix(parsed));
       const name = decodeURIComponent(parsed.pathname.split("/").at(-1) || "");
-      if (
-        !name ||
-        name !== path.posix.basename(name) ||
-        name !== path.win32.basename(name) ||
-        name.includes("/") ||
-        name.includes("\\") ||
-        name.includes(":")
-      ) {
+      if (!isSafeArtifactName(name)) {
         throw new Error(`Unsafe updater artifact filename for ${target}.`);
       }
+      assertUpdaterTargetArtifact(
+        target,
+        manifest.version,
+        name,
+        "live manifest",
+      );
       if (!hasMinisignEnvelope(entry.signature.trim())) {
         throw new Error(`Invalid updater signature for ${target}.`);
       }
@@ -124,6 +181,11 @@ export function collectManifestArtifactRefs(manifestBodies) {
         url: entry.url,
         signature: entry.signature.trim(),
       });
+    }
+    if (releaseKeys.size > 1) {
+      throw new Error(
+        "A live updater manifest references artifacts from multiple releases.",
+      );
     }
   }
   return artifacts;
@@ -145,6 +207,7 @@ export function assertManifestReleaseUrls(
     if (
       parsed.protocol !== "https:" ||
       parsed.hostname.toLowerCase() !== "github.com" ||
+      parsed.port !== "" ||
       parsed.username ||
       parsed.password ||
       parsed.hash ||
@@ -179,32 +242,163 @@ function assertLiveManifestVersion(target, manifest) {
 }
 
 async function verifyLiveArtifacts(manifestBodies) {
+  assertStableReleaseOverridesAllowed(process.env, EXPECTED_VERSION);
   const artifacts = collectManifestArtifactRefs(manifestBodies);
   if (artifacts.size === 0)
     throw new Error("No updater artifacts referenced by manifests.");
-  for (const [name, record] of artifacts) {
-    const artifactResponse = await fetch(record.url, {
-      headers: {
-        Accept: "application/octet-stream",
-        "User-Agent": "Arlet-release-verifier",
-      },
-      redirect: "follow",
-    });
-    if (!artifactResponse.ok)
-      throw new Error(`${record.url}: HTTP ${artifactResponse.status}`);
-    const artifact = Buffer.from(await artifactResponse.arrayBuffer());
-    if (artifact.length === 0)
-      throw new Error(`Downloaded updater artifact ${name} is empty.`);
-    const signatureUrl = `${record.url}.sig`;
-    const signature = await getText(signatureUrl, "text/plain");
-    if (normalizeUpdaterSignature(signature) !== record.signature) {
-      throw new Error(`Live manifest signature does not match ${name}.sig.`);
+  const temporaryDirectory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "arlet-live-verify-"),
+  );
+  try {
+    const byName = new Map();
+    const signatureByBaseName = new Map();
+    for (const [name, record] of artifacts) {
+      const artifactPath = path.join(temporaryDirectory, name);
+      await downloadToFile(record.url, artifactPath);
+      const signaturePath = `${artifactPath}.sig`;
+      const signature = await getText(
+        releaseAssetUrlFromRecord(record, `${name}.sig`),
+        "text/plain",
+      );
+      fs.writeFileSync(signaturePath, signature, { flag: "wx" });
+      if (normalizeUpdaterSignature(signature) !== record.signature) {
+        throw new Error(`Live manifest signature does not match ${name}.sig.`);
+      }
+      byName.set(name, artifactPath);
+      signatureByBaseName.set(name, signaturePath);
+      console.log(`[verify-release-published] artifact downloaded: ${name}`);
     }
-    console.log(`[verify-release-published] artifact OK: ${name}`);
+    verifyUpdaterSignatures({
+      root,
+      releaseDir: temporaryDirectory,
+      byName,
+      signatureByBaseName,
+      resolveUpdaterTargets,
+    });
+  } finally {
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true });
   }
 }
 
+function releaseAssetUrlFromRecord(record, name) {
+  const url = new URL(record.url);
+  const segments = url.pathname.split("/");
+  segments[segments.length - 1] = encodeURIComponent(name);
+  url.pathname = segments.join("/");
+  return url.toString();
+}
+
+function releaseDownloadPrefix(url) {
+  const parsed = url instanceof URL ? url : new URL(url);
+  const segments = parsed.pathname.split("/").filter(Boolean);
+  return `${parsed.origin}/${segments.slice(0, 5).join("/")}`;
+}
+
+export async function verifyPublishedChecksums(manifestBodies) {
+  assertStableReleaseOverridesAllowed(process.env, EXPECTED_VERSION);
+  const groups = new Map();
+  for (const body of manifestBodies) {
+    const artifacts = collectManifestArtifactRefs([body]);
+    if (artifacts.size === 0) {
+      throw new Error("No updater artifacts referenced by a live manifest.");
+    }
+    const releaseKeys = new Set(
+      [...artifacts.values()].map((record) =>
+        releaseDownloadPrefix(record.url),
+      ),
+    );
+    if (releaseKeys.size !== 1) {
+      throw new Error(
+        "A live updater manifest references artifacts from multiple releases.",
+      );
+    }
+    const [releaseKey] = releaseKeys;
+    let group = groups.get(releaseKey);
+    if (!group) {
+      group = {
+        representative: artifacts.values().next().value,
+        artifacts: new Map(),
+      };
+      groups.set(releaseKey, group);
+    }
+    for (const [name, record] of artifacts) {
+      const previous = group.artifacts.get(name);
+      if (previous && previous.signature !== record.signature) {
+        throw new Error(`Conflicting updater signatures for ${name}.`);
+      }
+      group.artifacts.set(name, record);
+    }
+  }
+  if (groups.size === 0) {
+    throw new Error("No updater artifacts referenced by manifests.");
+  }
+
+  for (const [releaseKey, group] of groups) {
+    const expectedNames = [
+      ...group.artifacts.keys(),
+      ...[...group.artifacts.keys()].map((name) => `${name}.sig`),
+      ...REQUIRED_MANIFEST_NAMES,
+    ];
+    const temporaryDirectory = fs.mkdtempSync(
+      path.join(os.tmpdir(), "arlet-checksum-verify-"),
+    );
+    try {
+      const downloaded = new Map();
+      for (const [name, record] of group.artifacts) {
+        const artifactPath = path.join(temporaryDirectory, name);
+        await downloadToFile(record.url, artifactPath);
+        downloaded.set(name, artifactPath);
+        const sidecarName = `${name}.sig`;
+        const sidecarPath = path.join(temporaryDirectory, sidecarName);
+        await downloadToFile(
+          releaseAssetUrlFromRecord(record, sidecarName),
+          sidecarPath,
+          "text/plain",
+        );
+        downloaded.set(sidecarName, sidecarPath);
+      }
+      for (const name of REQUIRED_MANIFEST_NAMES) {
+        const manifestPath = path.join(temporaryDirectory, name);
+        await downloadToFile(
+          releaseAssetUrlFromRecord(group.representative, name),
+          manifestPath,
+          "application/json",
+        );
+        downloaded.set(name, manifestPath);
+      }
+      const sumsPath = path.join(temporaryDirectory, "SHA256SUMS");
+      const sumsSignaturePath = path.join(temporaryDirectory, "SHA256SUMS.asc");
+      await downloadToFile(
+        releaseAssetUrlFromRecord(group.representative, "SHA256SUMS"),
+        sumsPath,
+        "text/plain",
+      );
+      await downloadToFile(
+        releaseAssetUrlFromRecord(group.representative, "SHA256SUMS.asc"),
+        sumsSignaturePath,
+        "text/plain",
+      );
+      verifyChecksums(
+        fs.readFileSync(sumsPath, "utf8"),
+        downloaded,
+        expectedNames,
+      );
+      verifyDetachedGpgSignature(sumsSignaturePath, sumsPath, {
+        rootDir: root,
+        runner: spawnSync,
+      });
+      console.log(
+        `[verify-release-published] ${releaseKey}: SHA256SUMS and SHA256SUMS.asc verified (${expectedNames.length} entries).`,
+      );
+    } finally {
+      fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+    }
+  }
+  return true;
+}
+
 async function main() {
+  assertStableReleaseOverridesAllowed(process.env, EXPECTED_VERSION);
   const targets = requiredLiveTargets(EXPECTED_VERSION);
   const bodies = [];
   for (const target of targets) {
@@ -223,7 +417,10 @@ async function main() {
     );
     bodies.push(body);
   }
-  if (!process.argv.includes("--shape-only")) await verifyLiveArtifacts(bodies);
+  if (!process.argv.includes("--shape-only")) {
+    await verifyLiveArtifacts(bodies);
+    await verifyPublishedChecksums(bodies);
+  }
   console.log(
     `[verify-release-published] ${IS_BETA ? "beta" : "stable"} live feed verified (${targets.length} manifests).`,
   );

@@ -27,6 +27,11 @@ let diagnosticsStarted = false;
 let stopLifecycleDiagnostics: (() => void) | undefined;
 let stopNetworkDiagnostics: (() => void) | undefined;
 
+export interface InitializeApplicationOptions {
+  /** Override the Vite mode only for deterministic startup integration tests. */
+  isDevelopment?: boolean;
+}
+
 async function logNativeDiagnostics(controller: AppController): Promise<void> {
   try {
     const info = await invoke<NativeDiagnostics>("get_app_info");
@@ -48,6 +53,7 @@ async function logNativeDiagnostics(controller: AppController): Promise<void> {
 export async function initializeApplication(
   controller = createAppController(),
   diagnosticsStore?: DiagnosticsStore,
+  options: InitializeApplicationOptions = {},
 ): Promise<AppController> {
   if (!diagnosticsStarted) {
     diagnosticsStarted = true;
@@ -76,7 +82,7 @@ export async function initializeApplication(
   // Updates are deliberately kicked off only after both persisted settings and
   // MusicKit are ready. The updater service no-ops in development builds and
   // coalesces this startup check with a user-triggered Settings check.
-  if (!import.meta.env.DEV) {
+  if (!(options.isDevelopment ?? import.meta.env.DEV)) {
     void controller.startupUpdateCheck().catch((error: unknown) => {
       controller.log(
         `Startup update check failed: ${error instanceof Error ? error.message : String(error)}`,

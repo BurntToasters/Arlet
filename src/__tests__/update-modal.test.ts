@@ -69,4 +69,39 @@ describe("update ready modal", () => {
     expect(backward.defaultPrevented).toBe(true);
     expect(document.activeElement).toBe(restart);
   });
+
+  it("keeps the dialog visible with an installing status", async () => {
+    const controller = {
+      dismissUpdate: vi.fn(),
+      installUpdate: vi.fn().mockResolvedValue(undefined),
+    } as unknown as AppController;
+    setUpdateState({
+      status: "installing",
+      version: "0.2.0",
+      promptOpen: false,
+      message: "Installing version 0.2.0…",
+    });
+    render(
+      h(AppProvider, {
+        controller,
+        router: createHashRouter(),
+        children: h(UpdateReadyModal, {}),
+      }),
+      root,
+    );
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 10));
+
+    const dialog = root.querySelector<HTMLElement>('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog?.textContent).toContain("Installing update");
+    expect(dialog?.textContent).toContain("restart automatically");
+    expect(
+      dialog?.querySelector<HTMLButtonElement>("button.primary-button")
+        ?.disabled,
+    ).toBe(true);
+    expect(
+      dialog?.querySelector<HTMLButtonElement>("button.secondary-button")
+        ?.disabled,
+    ).toBe(true);
+  });
 });

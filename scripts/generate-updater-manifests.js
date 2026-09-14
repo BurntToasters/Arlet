@@ -15,6 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { validateUpdaterManifest } from "./validate-updater-manifest.js";
+import { assertStableReleaseOverridesAllowed } from "./release-policy.cjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
@@ -219,6 +220,7 @@ export function draftNotes(
 }
 
 function main() {
+  assertStableReleaseOverridesAllowed(process.env, VERSION);
   const installers = findSignedInstallers();
   const manifests = buildManifests(installers, { notes: draftNotes() });
   const releaseDir = path.join(repoRoot, "release");

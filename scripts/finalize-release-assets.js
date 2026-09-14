@@ -7,6 +7,7 @@
 // survive the `git clean` in `release:finalize`); betas skip it by default.
 
 import fs from "node:fs";
+import { assertStableReleaseOverridesAllowed } from "./release-policy.cjs";
 import {
   finalizeReleaseAssets,
   getAfterPackLocation,
@@ -19,6 +20,7 @@ function banner(message) {
 }
 
 const version = readPackageVersion();
+assertStableReleaseOverridesAllowed(process.env, version);
 banner("starting");
 banner(`platform=${process.platform}; node=${process.version}`);
 banner(`cwd=${process.cwd()}`);
