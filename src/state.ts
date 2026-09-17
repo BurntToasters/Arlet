@@ -63,6 +63,78 @@ export interface SearchState {
   requestId: number;
 }
 
+export type LibrarySection =
+  "recent" | "history" | "artists" | "albums" | "songs" | "playlists";
+
+export type LibraryLoadStatus =
+  "idle" | "loading" | "refreshing" | "success" | "error";
+
+export type LibraryDataSource = "none" | "cache" | "network";
+
+/**
+ * Normalized resources are intentionally structural here. The API/domain
+ * layer owns the richer resource types, while the store can remain stable as
+ * Apple adds resource kinds.
+ */
+export interface LibraryEntity {
+  id: string;
+  type?: string;
+  name?: string;
+  title?: string;
+  [key: string]: unknown;
+}
+
+export interface LibraryCollectionState<
+  T extends { id: string } = LibraryEntity,
+> {
+  items: T[];
+  status: LibraryLoadStatus;
+  source: LibraryDataSource;
+  next?: string;
+  error?: string;
+  lastUpdatedAt?: number;
+  /** True when network refresh failed but cached items remain renderable. */
+  stale: boolean;
+}
+
+export interface LibraryDetailState<T extends { id: string } = LibraryEntity> {
+  status: LibraryLoadStatus;
+  source: LibraryDataSource;
+  item?: T;
+  items: T[];
+  next?: string;
+  error?: string;
+  lastUpdatedAt?: number;
+  stale: boolean;
+  /** Compatibility aliases consumed by detail views. */
+  resource?: T;
+  tracks?: T[];
+  albums?: T[];
+}
+
+export interface AccountSummary {
+  /** Generic provider label; Apple identity is not exposed by MusicKit. */
+  provider: "Apple Music";
+  label: "Apple Music account";
+  storefront?: string;
+  connectedAt?: number;
+  lastRefreshAt?: number;
+}
+
+export interface LibraryDetailsState {
+  album: LibraryDetailState & Record<string, unknown>;
+  artist: LibraryDetailState & Record<string, unknown>;
+  playlist: LibraryDetailState & Record<string, unknown>;
+  playlistFolder: LibraryDetailState & Record<string, unknown>;
+}
+
+export interface LibraryState {
+  account: AccountSummary;
+  hydrated: boolean;
+  collections: Record<LibrarySection, LibraryCollectionState>;
+  details: LibraryDetailsState;
+}
+
 export interface DiagnosticsState {
   logs: string[];
   failures: string[];
@@ -102,6 +174,8 @@ export interface AppState {
   auth: AuthState;
   playback: PlaybackState;
   tracksPlayed: number;
+  account?: AccountSummary;
+  library?: LibraryState;
   /** Milestone 0-compatible snapshots may omit the shell fields. */
   initialization?: InitializationState;
   navigation?: Route;
@@ -122,6 +196,8 @@ export interface RuntimeAppState extends AppState {
   updates: UpdateState;
   ui: UiState;
   diagnostics: DiagnosticsState;
+  library: LibraryState;
+  account: AccountSummary;
 }
 
 const initialPlaybackState: PlaybackState = {
@@ -134,6 +210,61 @@ const initialPlaybackState: PlaybackState = {
   queueIndex: 0,
   error: undefined,
 };
+
+const librarySections: LibrarySection[] = [
+  "recent",
+  "history",
+  "artists",
+  "albums",
+  "songs",
+  "playlists",
+];
+
+function emptyLibraryCollection(): LibraryCollectionState {
+  return {
+    items: [],
+    status: "idle",
+    source: "none",
+    next: undefined,
+    error: undefined,
+    lastUpdatedAt: undefined,
+    stale: false,
+  };
+}
+
+function emptyLibraryDetail(): LibraryDetailState & Record<string, unknown> {
+  return {
+    status: "idle",
+    source: "none",
+    item: undefined,
+    items: [],
+    next: undefined,
+    error: undefined,
+    lastUpdatedAt: undefined,
+    stale: false,
+  };
+}
+
+export function createInitialLibraryState(): LibraryState {
+  const collections = {} as Record<LibrarySection, LibraryCollectionState>;
+  for (const section of librarySections) {
+    collections[section] = emptyLibraryCollection();
+  }
+  return {
+    account: {
+      provider: "Apple Music",
+      label: "Apple Music account",
+    },
+    hydrated: false,
+    collections,
+    details: {
+      album: emptyLibraryDetail(),
+      artist: emptyLibraryDetail(),
+      playlist: emptyLibraryDetail(),
+      playlistFolder: emptyLibraryDetail(),
+    },
+  };
+}
 
 const initialState: RuntimeAppState = {
   auth: { status: "unauthorized", pending: false },
@@ -169,6 +300,8 @@ const initialState: RuntimeAppState = {
     sessionStartedAt: Date.now(),
   },
   tracksPlayed: 0,
+  account: createInitialLibraryState().account,
+  library: createInitialLibraryState(),
 };
 
 function cloneInitialState(): RuntimeAppState {
@@ -186,6 +319,8 @@ function cloneInitialState(): RuntimeAppState {
       failures: [],
       sessionStartedAt: Date.now(),
     },
+    library: createInitialLibraryState(),
+    account: { ...initialState.account },
   };
 }
 
@@ -232,6 +367,134 @@ export function setAuthPending(pending: boolean): void {
   update({
     ...state,
     auth: { status: state.auth.status, pending },
+  });
+}
+
+export function setAccountSummary(patch: Partial<AccountSummary>): void {
+  const account = {
+    ...state.account,
+    ...state.library.account,
+    ...patch,
+    provider: "Apple Music" as const,
+    label: "Apple Music account" as const,
+  };
+  update({
+    ...state,
+    account,
+    library: {
+      ...state.library,
+      account: {
+        ...account,
+      },
+    },
+  });
+}
+
+export function setLibraryHydrated(hydrated: boolean): void {
+  update({
+    ...state,
+    library: { ...state.library, hydrated },
+  });
+}
+
+export function setLibraryCollectionState(
+  section: LibrarySection,
+  patch: Partial<LibraryCollectionState>,
+): void {
+  const current = state.library.collections[section];
+  const next = {
+    ...current,
+    ...patch,
+    ...(patch.error === undefined
+      ? {}
+      : { error: sanitizeRenderableError(patch.error) }),
+  };
+  update({
+    ...state,
+    library: {
+      ...state.library,
+      collections: { ...state.library.collections, [section]: next },
+    },
+  });
+}
+
+export function setLibraryCollectionItems<T extends { id: string }>(
+  section: LibrarySection,
+  items: readonly T[],
+  options: {
+    source?: LibraryDataSource;
+    status?: LibraryLoadStatus;
+    next?: string;
+    error?: string;
+    lastUpdatedAt?: number;
+    stale?: boolean;
+  } = {},
+): void {
+  setLibraryCollectionState(section, {
+    items: [...items],
+    source: options.source ?? "network",
+    status: options.status ?? "success",
+    next: options.next,
+    error: options.error,
+    lastUpdatedAt: options.lastUpdatedAt,
+    stale: options.stale ?? false,
+  });
+}
+
+export function appendLibraryCollectionItems<T extends { id: string }>(
+  section: LibrarySection,
+  items: readonly T[],
+  options: {
+    next?: string;
+    source?: LibraryDataSource;
+    lastUpdatedAt?: number;
+  } = {},
+): void {
+  const current = state.library.collections[section];
+  const seen = new Set(current.items.map((item) => item.id));
+  const appended = items.filter((item) => !seen.has(item.id));
+  setLibraryCollectionItems(section, [...current.items, ...appended], {
+    source: options.source ?? current.source,
+    status: "success",
+    next: options.next,
+    lastUpdatedAt: options.lastUpdatedAt ?? current.lastUpdatedAt,
+    stale: false,
+  });
+}
+
+export type LibraryDetailKind = keyof LibraryDetailsState;
+
+export function setLibraryDetailState(
+  kind: LibraryDetailKind,
+  patch: Partial<LibraryDetailState>,
+  id?: string,
+): void {
+  const current = state.library.details[kind];
+  const next = {
+    ...current,
+    ...patch,
+    ...(patch.error === undefined
+      ? {}
+      : { error: sanitizeRenderableError(patch.error) }),
+  };
+  const details = id
+    ? { ...state.library.details, [kind]: { ...current, [id]: next } }
+    : { ...state.library.details, [kind]: next };
+  update({
+    ...state,
+    library: {
+      ...state.library,
+      details,
+    },
+  });
+}
+
+export function clearLibraryState(): void {
+  const library = createInitialLibraryState();
+  update({
+    ...state,
+    account: library.account,
+    library,
   });
 }
 

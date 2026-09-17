@@ -1,5 +1,5 @@
 export type LibrarySection =
-  "recent" | "artists" | "albums" | "songs" | "playlists";
+  "recent" | "history" | "artists" | "albums" | "songs" | "playlists";
 
 export type Route =
   | { kind: "home" }
@@ -14,6 +14,7 @@ export type Route =
 
 const librarySections = new Set<LibrarySection>([
   "recent",
+  "history",
   "artists",
   "albums",
   "songs",

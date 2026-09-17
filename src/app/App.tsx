@@ -16,6 +16,7 @@ import { Titlebar } from "../components/Titlebar.tsx";
 import { RouteView } from "../views/RouteView.tsx";
 import { DiagnosticsDrawer } from "../components/diagnostics/DiagnosticsDrawer.tsx";
 import { UpdateReadyModal } from "../components/UpdateReadyModal.tsx";
+import { ContextMenu } from "../components/ContextMenu.tsx";
 import type { DiagnosticsDrawerController } from "../diagnostics/types.ts";
 import type { DiagnosticsStore } from "../diagnostics/store.ts";
 
@@ -58,6 +59,15 @@ function AppLayout({
             .querySelector<HTMLInputElement>(".search-form input")
             ?.focus();
         }, 0);
+      } else if (event.ctrlKey && event.key.toLowerCase() === "r") {
+        event.preventDefault();
+        void controller.refreshCurrentData().catch(() => undefined);
+      } else if (event.altKey && event.key === "ArrowLeft") {
+        event.preventDefault();
+        router.back();
+      } else if (event.altKey && event.key === "ArrowRight") {
+        event.preventDefault();
+        router.forward();
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -98,6 +108,7 @@ function AppLayout({
       ) : null}
       <PlayerBar />
       <UpdateReadyModal />
+      <ContextMenu />
     </div>
   );
 }

@@ -67,12 +67,38 @@ function initializationCopy(
   }
 }
 
+interface AccountSummaryLike {
+  displayName?: string;
+  name?: string;
+  storefront?: string;
+}
+
+function readAccountSummary(
+  state: ReturnType<typeof useAppState>,
+): AccountSummaryLike | undefined {
+  const value = (state as unknown as { account?: unknown }).account;
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as Record<string, unknown>;
+  return {
+    displayName:
+      typeof candidate.displayName === "string"
+        ? candidate.displayName
+        : undefined,
+    name: typeof candidate.name === "string" ? candidate.name : undefined,
+    storefront:
+      typeof candidate.storefront === "string"
+        ? candidate.storefront
+        : undefined,
+  };
+}
+
 export function SettingsView(): JSX.Element {
   const state = useAppState();
   const controller = useAppController();
   const settings = state.settings;
   const authorized = state.auth.status === "authorized";
   const authorizationPending = state.auth.pending === true;
+  const account = readAccountSummary(state);
 
   const updateTheme = (event: JSX.TargetedEvent<HTMLSelectElement>): void => {
     void controller.setTheme(event.currentTarget.value as ThemePreference);
@@ -123,10 +149,17 @@ export function SettingsView(): JSX.Element {
             <div className="account-card-copy">
               <strong>
                 {authorized
-                  ? "Apple Music connected"
+                  ? (account?.displayName ??
+                    account?.name ??
+                    "Apple Music connected")
                   : "Apple Music not connected"}
               </strong>
-              <span>{initializationCopy(state.initialization)}</span>
+              <span>
+                {initializationCopy(state.initialization)}
+                {authorized && account?.storefront
+                  ? ` · ${account.storefront} storefront`
+                  : ""}
+              </span>
             </div>
             {authorized ? (
               <button
@@ -205,25 +238,6 @@ export function SettingsView(): JSX.Element {
               Update checks are available in packaged builds only.
             </p>
           ) : null}
-          <div
-            className={`update-status update-status-${state.updates.status}`}
-            role="status"
-            aria-live="polite"
-            aria-atomic="true"
-          >
-            {state.updates.status === "downloading" ||
-            state.updates.status === "checking" ||
-            state.updates.status === "installing" ? (
-              <LoaderCircle aria-hidden="true" size={15} className="spin" />
-            ) : state.updates.status === "ready" ? (
-              <Download aria-hidden="true" size={15} strokeWidth={1.8} />
-            ) : state.updates.status === "error" ? (
-              <Info aria-hidden="true" size={15} strokeWidth={1.8} />
-            ) : (
-              <Check aria-hidden="true" size={15} strokeWidth={1.8} />
-            )}
-            <span>{updateStatusCopy(state.updates)}</span>
-          </div>
           {state.updates.status === "downloading" ? (
             <div
               className="update-progress"
@@ -240,19 +254,40 @@ export function SettingsView(): JSX.Element {
               />
             </div>
           ) : null}
-          <div className="update-actions">
-            <button
-              className="secondary-button"
-              type="button"
-              disabled={updateBusy || !updaterAvailable}
-              onClick={() => {
-                if (updaterAvailable) void controller.checkForUpdates();
-              }}
+          <div className="update-footer">
+            <div
+              className={`update-status update-status-${state.updates.status}`}
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
             >
-              {updateBusy && state.updates.status === "checking"
-                ? "Checking…"
-                : "Check now"}
-            </button>
+              {state.updates.status === "downloading" ||
+              state.updates.status === "checking" ||
+              state.updates.status === "installing" ? (
+                <LoaderCircle aria-hidden="true" size={15} className="spin" />
+              ) : state.updates.status === "ready" ? (
+                <Download aria-hidden="true" size={15} strokeWidth={1.8} />
+              ) : state.updates.status === "error" ? (
+                <Info aria-hidden="true" size={15} strokeWidth={1.8} />
+              ) : (
+                <Check aria-hidden="true" size={15} strokeWidth={1.8} />
+              )}
+              <span>{updateStatusCopy(state.updates)}</span>
+            </div>
+            <div className="update-actions">
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={updateBusy || !updaterAvailable}
+                onClick={() => {
+                  if (updaterAvailable) void controller.checkForUpdates();
+                }}
+              >
+                {updateBusy && state.updates.status === "checking"
+                  ? "Checking…"
+                  : "Check now"}
+              </button>
+            </div>
           </div>
         </section>
 

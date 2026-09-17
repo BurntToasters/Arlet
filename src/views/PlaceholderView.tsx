@@ -85,6 +85,12 @@ function copyForRoute(
             icon: ListMusic,
           };
       }
+      return {
+        eyebrow: "Library",
+        title: "Library",
+        description: "Your Apple Music library will appear here.",
+        icon: Music2,
+      };
     case "album":
       return {
         eyebrow: "Album",

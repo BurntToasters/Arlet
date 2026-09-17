@@ -6,6 +6,8 @@ import { HomeView } from "./HomeView.tsx";
 import { PlaceholderView } from "./PlaceholderView.tsx";
 import { SearchView } from "./SearchView.tsx";
 import { SettingsView } from "./SettingsView.tsx";
+import { LibraryView } from "./LibraryView.tsx";
+import { LibraryDetailView } from "./LibraryDetailView.tsx";
 
 export function RouteView({ route }: { route: Route }): JSX.Element {
   const page = useRef<HTMLElement>(null);
@@ -29,6 +31,14 @@ export function RouteView({ route }: { route: Route }): JSX.Element {
         return <SearchView />;
       case "settings":
         return <SettingsView />;
+      case "library":
+        return <LibraryView section={route.section} />;
+      case "album":
+        return <LibraryDetailView kind="album" id={route.id} />;
+      case "artist":
+        return <LibraryDetailView kind="artist" id={route.id} />;
+      case "playlist":
+        return <LibraryDetailView kind="playlist" id={route.id} />;
       default:
         return <PlaceholderView route={route} />;
     }

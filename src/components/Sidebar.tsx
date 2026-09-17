@@ -2,6 +2,7 @@ import { useEffect, useState } from "preact/hooks";
 import {
   Album,
   Clock3,
+  History as HistoryIcon,
   House,
   ListMusic,
   Music2,
@@ -36,6 +37,11 @@ const libraryItems: Array<
     label: "Recently Added",
     route: { kind: "library", section: "recent" },
     icon: Clock3,
+  },
+  {
+    label: "Recently Played",
+    route: { kind: "library", section: "history" },
+    icon: HistoryIcon,
   },
   {
     label: "Artists",
@@ -78,9 +84,35 @@ function sameRoute(left: Route, right: Route): boolean {
   return true;
 }
 
+interface AccountSummaryLike {
+  displayName?: string;
+  name?: string;
+  storefront?: string;
+}
+
+function readAccountSummary(
+  state: ReturnType<typeof useAppState>,
+): AccountSummaryLike | undefined {
+  const value = (state as unknown as { account?: unknown }).account;
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as Record<string, unknown>;
+  return {
+    displayName:
+      typeof candidate.displayName === "string"
+        ? candidate.displayName
+        : undefined,
+    name: typeof candidate.name === "string" ? candidate.name : undefined,
+    storefront:
+      typeof candidate.storefront === "string"
+        ? candidate.storefront
+        : undefined,
+  };
+}
+
 export function Sidebar(): JSX.Element {
   const state = useAppState();
   const router = useAppRouter();
+  const account = readAccountSummary(state);
   const [query, setQuery] = useState(
     state.navigation.kind === "search" ? state.navigation.query : "",
   );
@@ -175,11 +207,15 @@ export function Sidebar(): JSX.Element {
           </span>
           <span className="account-copy">
             <strong>
-              {state.auth.status === "authorized" ? "Apple Music" : "Sign in"}
+              {state.auth.status === "authorized"
+                ? (account?.displayName ?? account?.name ?? "Apple Music")
+                : "Sign in"}
             </strong>
             <small>
               {state.auth.status === "authorized"
-                ? "Connected"
+                ? account?.storefront
+                  ? `${account.storefront} · Connected`
+                  : "Connected"
                 : "Connect account"}
             </small>
           </span>

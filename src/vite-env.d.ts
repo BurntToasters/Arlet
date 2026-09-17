@@ -19,12 +19,18 @@ declare namespace MusicKit {
     unauthorize(): Promise<void>;
     isAuthorized: boolean;
     musicUserToken: string;
-    setQueue(options: {
-      songs?: string[];
-      album?: string;
-      url?: string;
-    }): Promise<void>;
+    setQueue(options: QueueOptions): Promise<void>;
+    /** Recently loaded library songs exposed by MusicKit JS when available. */
+    librarySongs?: MediaItem[];
+    /** Current playlist/resource descriptor exposed by MusicKit JS. */
+    playlist?: ResourceDescriptor | MediaItem | string;
     play(): Promise<void>;
+    playNext?(
+      options?: QueueOptions | string | MediaItem,
+    ): Promise<void> | void;
+    playLater?(
+      options?: QueueOptions | string | MediaItem,
+    ): Promise<void> | void;
     pause(): void;
     stop(): void;
     seekToTime(time: number): Promise<void>;
@@ -45,11 +51,54 @@ declare namespace MusicKit {
       callback: (event: Record<string, unknown>) => void,
     ): void;
     api: {
-      music?(path: string, query?: Record<string, unknown>): Promise<unknown>;
+      music?(
+        path: string,
+        query?: Record<string, unknown>,
+        options?: RequestOptions,
+      ): Promise<unknown>;
       v3?: {
-        music(path: string, query?: Record<string, unknown>): Promise<unknown>;
+        music(
+          path: string,
+          query?: Record<string, unknown>,
+          options?: RequestOptions,
+        ): Promise<unknown>;
       };
     };
+  }
+
+  interface RequestOptions {
+    method?: string;
+    body?: string;
+    headers?: Record<string, string>;
+    [key: string]: unknown;
+  }
+
+  interface QueueOptions {
+    songs?: string[];
+    librarySongs?: string[];
+    musicVideos?: string[];
+    libraryMusicVideos?: string[];
+    album?: string;
+    url?: string;
+    [key: string]: unknown;
+  }
+
+  interface ResourceDescriptor {
+    id: string;
+    type: string;
+    href?: string;
+    attributes?: Record<string, unknown>;
+    relationships?: Record<string, unknown>;
+    meta?: Record<string, unknown>;
+  }
+
+  type Resource = ResourceDescriptor;
+
+  interface ResourceResponse {
+    data?: ResourceDescriptor | ResourceDescriptor[];
+    next?: string;
+    meta?: Record<string, unknown>;
+    links?: { next?: string };
   }
 
   interface MediaItem {
