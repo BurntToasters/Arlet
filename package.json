@@ -4,7 +4,7 @@
   "license": "GPL-3.0-only",
   "private": true,
   "packageManager": "npm@12.0.2",
-  "description": "A Windows-first Apple Music client built with Tauri v2.",
+  "description": "An Apple Music client built with Tauri v2.",
   "type": "module",
   "engines": {
     "node": "^22.22.2 || ^24.15.0 || >=26.0.0",
