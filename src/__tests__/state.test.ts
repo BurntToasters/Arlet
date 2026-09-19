@@ -20,6 +20,7 @@ describe("state", () => {
     const state = getState();
     expect(state.auth.status).toBe("unauthorized");
     expect(state.playback.status).toBe("idle");
+    expect(state.playback.volume).toBe(1);
     expect(state.tracksPlayed).toBe(0);
   });
 

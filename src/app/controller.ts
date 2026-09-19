@@ -200,7 +200,7 @@ export interface AppController {
   previous(): Promise<void>;
   next(): Promise<void>;
   seek(seconds: number): Promise<void>;
-  setVolume(volume: number): void;
+  setVolume(volume: number): Promise<void>;
   setTheme(theme: ThemePreference): Promise<void>;
   setWindowEffect(preference: WindowEffectPreference): Promise<void>;
   setAutoCheckUpdates(enabled: boolean): Promise<void>;
@@ -442,6 +442,7 @@ export function createAppController(
   const now = dependencies.now ?? Date.now;
   const diagnosticsStore = dependencies.diagnosticsStore;
   let music: MusicKit.MusicKitInstance | null = null;
+  let volumeSaveQueue: Promise<void> = Promise.resolve();
   let searchRequestId = 0;
   let lastSearchTracks: Track[] = [];
   let lastSearchSource: "catalog" | "library" = "catalog";
@@ -459,6 +460,15 @@ export function createAppController(
   let homeRequestId = 0;
   let browseRequestId = 0;
   let radioRequestId = 0;
+
+  const applyPlaybackVolume = (volume: number): number => {
+    const safeVolume = Number.isFinite(volume)
+      ? Math.max(0, Math.min(1, volume))
+      : DEFAULT_SETTINGS.volume;
+    setVolume(safeVolume);
+    if (music) setMusicVolume(music, safeVolume);
+    return safeVolume;
+  };
 
   const ensureLibraryCache = async (): Promise<void> => {
     cacheReady ??= libraryCache.initialize().catch((error: unknown) => {
@@ -1461,6 +1471,7 @@ export function createAppController(
     log("Initializing MusicKit…");
     try {
       music = await initialize();
+      applyPlaybackVolume(getState().settings.volume);
       try {
         libraryClient = createLibraryClient(music);
       } catch (error) {
@@ -1537,6 +1548,7 @@ export function createAppController(
     async loadSettings(): Promise<void> {
       const settings = await loadPersistedSettings(invokeFn);
       setSettings(settings);
+      applyPlaybackVolume(settings.volume);
       updater.configure(settings);
       const effectPromise = applyCurrentEffect();
       const pinsPromise = reloadPins();
@@ -2219,10 +2231,22 @@ export function createAppController(
       }
     },
 
-    setVolume(volume: number): void {
-      const safeVolume = Math.max(0, Math.min(1, volume));
-      setVolume(safeVolume);
-      if (music) setMusicVolume(music, safeVolume);
+    async setVolume(volume: number): Promise<void> {
+      const safeVolume = applyPlaybackVolume(volume);
+      const settings: AppSettings = {
+        ...getState().settings,
+        volume: safeVolume,
+      };
+      setSettings(settings);
+      volumeSaveQueue = volumeSaveQueue
+        .catch(() => undefined)
+        .then(() => savePersistedSettings(settings, invokeFn));
+      const save = volumeSaveQueue;
+      try {
+        await save;
+      } catch (error) {
+        log(`Settings save failed: ${errorMessage(error)}`);
+      }
     },
 
     async setTheme(theme: ThemePreference): Promise<void> {

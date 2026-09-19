@@ -21,10 +21,12 @@ const settingsShape = z.object({
   windowEffect: z.enum(["acrylic", "mica", "solid"]).optional(),
   autoCheckUpdates: z.boolean().optional(),
   updateChannel: z.enum(["auto", "stable", "beta"]).optional(),
+  volume: z.number().finite().min(0).max(1).optional(),
 });
 const themeSchema = z.enum(["system", "light", "dark"]);
 const windowEffectSchema = z.enum(["acrylic", "mica", "solid"]);
 const updateChannelSchema = z.enum(["auto", "stable", "beta"]);
+const volumeSchema = z.number().finite().min(0).max(1);
 
 export const appSettingsSchema = settingsShape.passthrough();
 
@@ -68,6 +70,7 @@ export function migrateSettings(raw: unknown): AppSettings {
     windowEffect: windowEffectSchema.safeParse(parsed.windowEffect),
     autoCheckUpdates: z.boolean().safeParse(parsed.autoCheckUpdates),
     updateChannel: updateChannelSchema.safeParse(parsed.updateChannel),
+    volume: volumeSchema.safeParse(parsed.volume),
   };
   const reserved = Object.fromEntries(
     Object.entries(parsed).filter(([key]) => key.startsWith("_")),
@@ -87,6 +90,9 @@ export function migrateSettings(raw: unknown): AppSettings {
     updateChannel: candidate.updateChannel.success
       ? candidate.updateChannel.data
       : DEFAULT_SETTINGS.updateChannel,
+    volume: candidate.volume.success
+      ? candidate.volume.data
+      : DEFAULT_SETTINGS.volume,
   };
 }
 
@@ -101,6 +107,7 @@ export function serializeSettings(settings: AppSettings): string {
     windowEffect: settings.windowEffect,
     autoCheckUpdates: settings.autoCheckUpdates,
     updateChannel: settings.updateChannel,
+    volume: settings.volume,
   });
 }
 

@@ -210,9 +210,9 @@ export function PlayerBar(): JSX.Element {
             step="0.01"
             value={playback.volume}
             style={{ "--range-progress": `${playback.volume * 100}%` }}
-            onInput={(event) =>
-              controller.setVolume(Number(event.currentTarget.value))
-            }
+            onInput={(event) => {
+              void controller.setVolume(Number(event.currentTarget.value));
+            }}
           />
         </div>
         <IconButton

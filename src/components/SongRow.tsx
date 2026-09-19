@@ -50,7 +50,14 @@ export function SongRow({
           <span className={numberClassName} aria-hidden="true">
             {String(index + 1).padStart(2, "0")}
           </span>
-          <Artwork track={track} size="sm" alt="" />
+          <span className="song-row-artwork">
+            <Artwork track={track} size="sm" alt="" />
+            <span className="song-row-artwork-overlay" aria-hidden="true">
+              <span className="row-play-button">
+                <Play size={15} fill="currentColor" strokeWidth={1.9} />
+              </span>
+            </span>
+          </span>
           <span className={copyClassName}>
             <strong title={track.title}>{track.title}</strong>
             <span title={track.artistName}>
@@ -61,9 +68,6 @@ export function SongRow({
           {track.explicit ? <span className="explicit-badge">E</span> : null}
           <span className={durationClassName}>
             {formatDuration(track.durationMs)}
-          </span>
-          <span className="row-play-button" aria-hidden="true">
-            <Play size={15} fill="currentColor" strokeWidth={1.9} />
           </span>
         </button>
         <div

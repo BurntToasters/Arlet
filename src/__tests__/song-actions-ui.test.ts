@@ -81,6 +81,13 @@ describe("song row actions", () => {
     const buttons = root.querySelectorAll("button");
     expect(buttons).toHaveLength(3);
     expect(root.querySelector("button.search-row button")).toBeNull();
+    expect(root.querySelector(".song-row-artwork-overlay")).not.toBeNull();
+    expect(
+      root.querySelector(".song-row-artwork .row-play-button"),
+    ).not.toBeNull();
+    expect(
+      root.querySelector("button.search-row > .row-play-button"),
+    ).toBeNull();
     await act(() => {
       (root.querySelector(".song-row-next") as HTMLButtonElement).click();
       (root.querySelector(".song-row-more") as HTMLButtonElement).click();

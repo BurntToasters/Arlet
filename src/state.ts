@@ -33,6 +33,7 @@ export interface AppSettings {
   windowEffect: WindowEffectPreference;
   autoCheckUpdates: boolean;
   updateChannel: UpdateChannel;
+  volume: number;
   /** Reserved for forward-compatible settings owned by other versions. */
   [key: string]: unknown;
 }
@@ -43,6 +44,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   windowEffect: "acrylic",
   autoCheckUpdates: true,
   updateChannel: "auto",
+  volume: 1,
 };
 
 export type AuthState =
@@ -283,7 +285,7 @@ const initialPlaybackState: PlaybackState = {
   current: undefined,
   positionSeconds: 0,
   durationSeconds: 0,
-  volume: 0.5,
+  volume: DEFAULT_SETTINGS.volume,
   queue: [],
   queueIndex: 0,
   shuffleMode: "off",

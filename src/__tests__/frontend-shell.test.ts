@@ -8,6 +8,7 @@ import {
   darkModeForTheme,
   migrateSettings,
   serializeSettings,
+  type InvokeFunction,
 } from "../app/settings.ts";
 import { parseRoute, serializeRoute } from "../routing/router.ts";
 import {
@@ -97,12 +98,13 @@ describe("settings", () => {
       windowEffect: "mica",
       autoCheckUpdates: true,
       updateChannel: "auto",
+      volume: 1,
       _futurePreference: { enabled: true },
     });
     expect(
       serializeSettings(migrateSettings({ theme: "dark", other: 1 })),
     ).toBe(
-      '{"schemaVersion":1,"theme":"dark","windowEffect":"acrylic","autoCheckUpdates":true,"updateChannel":"auto"}',
+      '{"schemaVersion":1,"theme":"dark","windowEffect":"acrylic","autoCheckUpdates":true,"updateChannel":"auto","volume":1}',
     );
     expect(migrateSettings({ theme: "dark", windowEffect: "blur" })).toEqual({
       schemaVersion: 1,
@@ -110,6 +112,7 @@ describe("settings", () => {
       windowEffect: "acrylic",
       autoCheckUpdates: true,
       updateChannel: "auto",
+      volume: 1,
     });
   });
 
@@ -227,6 +230,45 @@ describe("MusicKit event lifecycle", () => {
 });
 
 describe("MusicKit controller", () => {
+  it("restores volume and persists later volume changes", async () => {
+    const savedSettings: string[] = [];
+    const instance = {
+      isAuthorized: false,
+      volume: 0.5,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    } as unknown as MusicKit.MusicKitInstance;
+    const invokeFn = vi.fn(
+      async (command: string, args?: Record<string, unknown>) => {
+        if (command === "load_settings")
+          return JSON.stringify({ volume: 0.35 });
+        if (command === "load_pins") return "[]";
+        if (command === "set_window_fx") return "solid";
+        if (command === "save_settings") {
+          savedSettings.push(String(args?.json));
+        }
+        return undefined;
+      },
+    ) as unknown as InvokeFunction;
+    const controller = createAppController({
+      initializeMusicKit: async () => instance,
+      invokeFn,
+    });
+
+    await controller.loadSettings();
+    expect(getState().playback.volume).toBe(0.35);
+    await controller.initialize();
+    expect(instance.volume).toBe(0.35);
+
+    await controller.setVolume(1);
+    expect(getState().playback.volume).toBe(1);
+    expect(instance.volume).toBe(1);
+    expect(JSON.parse(savedSettings.at(-1) ?? "{}")).toMatchObject({
+      volume: 1,
+    });
+    controller.dispose();
+  });
+
   it("discards stale search responses and queues the exact suffix", async () => {
     const instance = {
       isAuthorized: false,
