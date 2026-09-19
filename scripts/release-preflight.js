@@ -12,6 +12,7 @@ import {
   porcelainPaths,
 } from "./release-session.js";
 import { assertStableReleaseOverridesAllowed } from "./release-policy.cjs";
+import { readChangelogSection } from "./changelog.cjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(scriptDir, "..");
@@ -61,6 +62,16 @@ function checkVersionSync() {
     const detail = [stderr, stdout].filter(Boolean).join("\n");
     throw new Error(
       `Version files are not synchronized with package.json. Run npm run sync-version.\n${detail}`.trim(),
+    );
+  }
+}
+
+function checkChangelog(version) {
+  try {
+    readChangelogSection(path.join(root, "CHANGELOG.md"), version);
+  } catch (error) {
+    throw new Error(
+      `Release notes are invalid for ${version}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 }
@@ -150,6 +161,7 @@ function checkWindowsTargets() {
 
 function runPreflight() {
   const version = String(packageJson.version ?? "");
+  checkChangelog(version);
   assertStableReleaseOverridesAllowed(process.env, version);
   const expectedBranch = expectedReleaseBranch(version);
   const branch = git(["branch", "--show-current"]);
@@ -209,4 +221,4 @@ if (isDirectExecution()) {
   }
 }
 
-export { expectedReleaseBranch };
+export { checkChangelog, expectedReleaseBranch };

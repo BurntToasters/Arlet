@@ -132,6 +132,7 @@ test("manifest generation normalizes raw minisign sidecars", () => {
   const manifests = buildManifests(installerFixtures(), {
     version: "0.1.0",
     tag: "v0.1.0",
+    notes: "notes",
     readSig: () => rawEnvelope,
     pubDate: "2026-09-13T00:00:00.000Z",
   });

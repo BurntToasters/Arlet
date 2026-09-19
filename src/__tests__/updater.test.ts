@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createUpdaterService,
   isBetaVersion,
+  normalizeReleaseNotes,
   UPDATE_CHECK_TIMEOUT_MS,
   UPDATE_DOWNLOAD_TIMEOUT_MS,
   UPDATE_DOWNLOAD_RETRY_DELAYS_MS,
@@ -264,6 +265,84 @@ describe("updater", () => {
     await service.installPending();
     expect(install).toHaveBeenCalledOnce();
     expect(getState().updates.status).toBe("idle");
+    expect(getState().updates.releaseNotes).toBeUndefined();
+    service.dispose();
+  });
+
+  it("retains usable release notes while a pending update is deferred or fails", async () => {
+    const resource = updateResource({
+      body: "# What’s new\n\n- Safer updates",
+      install: vi.fn().mockRejectedValue(new Error("installer failed")),
+    });
+    const service = createUpdaterService({
+      isDevelopment: false,
+      checkFn: vi.fn().mockResolvedValue(resource),
+      getVersionFn: vi.fn().mockResolvedValue("0.1.0"),
+      onStateChange: setUpdateState,
+    });
+
+    await service.checkNow();
+    expect(getState().updates.releaseNotes).toBe(resource.body);
+    service.dismissPending();
+    await service.checkNow();
+    expect(getState().updates.releaseNotes).toBe(resource.body);
+
+    await expect(service.installPending()).rejects.toThrow("installer failed");
+    expect(getState().updates.releaseNotes).toBe(resource.body);
+
+    service.configure(settings({ updateChannel: "beta" }));
+    expect(getState().updates.releaseNotes).toBeUndefined();
+    service.dispose();
+  });
+
+  it.each([undefined, "   \n\t", "x".repeat(64 * 1024 + 1)])(
+    "uses generic release-notes fallback metadata for unusable bodies",
+    async (body) => {
+      const service = createUpdaterService({
+        isDevelopment: false,
+        checkFn: vi.fn().mockResolvedValue(updateResource({ body })),
+        getVersionFn: vi.fn().mockResolvedValue("0.1.0"),
+        onStateChange: setUpdateState,
+      });
+
+      await service.checkNow();
+      expect(getState().updates.status).toBe("ready");
+      expect(getState().updates.releaseNotes).toBeUndefined();
+      service.dispose();
+    },
+  );
+
+  it("ignores a release-notes body containing an unpaired surrogate", async () => {
+    const malformedBody = String.fromCharCode(0xd800);
+    expect(malformedBody.charCodeAt(0)).toBe(0xd800);
+    expect(normalizeReleaseNotes(malformedBody)).toBeUndefined();
+    const service = createUpdaterService({
+      isDevelopment: false,
+      checkFn: vi
+        .fn()
+        .mockResolvedValue(updateResource({ body: malformedBody })),
+      getVersionFn: vi.fn().mockResolvedValue("0.1.0"),
+      onStateChange: setUpdateState,
+    });
+
+    await service.checkNow();
+    expect(getState().updates.status).toBe("ready");
+    expect(getState().updates.releaseNotes).toBeUndefined();
+    service.dispose();
+  });
+
+  it("clears release notes when a check finds no update", async () => {
+    setUpdateState({ releaseNotes: "old notes" });
+    const service = createUpdaterService({
+      isDevelopment: false,
+      checkFn: vi.fn().mockResolvedValue(null),
+      getVersionFn: vi.fn().mockResolvedValue("0.1.0"),
+      onStateChange: setUpdateState,
+    });
+
+    await service.checkNow();
+    expect(getState().updates.status).toBe("up-to-date");
+    expect(getState().updates.releaseNotes).toBeUndefined();
     service.dispose();
   });
 

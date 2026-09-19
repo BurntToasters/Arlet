@@ -13,7 +13,6 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   buildManifests,
-  draftNotes,
   findSignedInstallers,
   platformForInstaller,
 } from "./generate-updater-manifests.js";
@@ -107,6 +106,7 @@ test("manifests carry deterministic URLs and valid shape", () => {
     for (const manifest of Object.values(manifests)) {
       assert.equal(manifest.version, "0.1.0");
       assert.equal(manifest.pub_date, "2026-01-01T00:00:00.000Z");
+      assert.equal(manifest.notes, "notes");
       assert.ok(!Object.hasOwn(manifest, "pubdate"));
     }
     assert.match(
@@ -118,28 +118,47 @@ test("manifests carry deterministic URLs and valid shape", () => {
   }
 });
 
-test("duplicate arch installers fail closed", () => {
+test("every stable and beta manifest carries only the selected section", () => {
   const root = fixtureBundle();
   try {
     const installers = findSignedInstallers(root);
-    const doubled = [...installers, installers[0]];
-    assert.throws(() => buildManifests(doubled), /Duplicate/);
+    const stable = buildManifests(installers, {
+      version: "1.2.3",
+      tag: "v1.2.3",
+      notes: "- Stable release notes.",
+    });
+    const beta = buildManifests(installers, {
+      version: "1.2.3-beta.1",
+      tag: "v1.2.3-beta.1",
+      notes: "- Beta release notes.",
+    });
+    assert.ok(
+      Object.values(stable).every(
+        (manifest) => manifest.notes === "- Stable release notes.",
+      ),
+    );
+    assert.ok(
+      Object.values(beta).every(
+        (manifest) => manifest.notes === "- Beta release notes.",
+      ),
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("draft notes fall back when gh is unavailable", () => {
-  assert.equal(
-    draftNotes(() => {
-      throw new Error("no gh");
-    }),
-    "Arlet v0.1.0",
-  );
-  assert.equal(
-    draftNotes(() => JSON.stringify({ body: "  hello  " })),
-    "hello",
-  );
+test("duplicate arch installers fail closed", () => {
+  const root = fixtureBundle();
+  try {
+    const installers = findSignedInstallers(root);
+    const doubled = [...installers, installers[0]];
+    assert.throws(
+      () => buildManifests(doubled, { notes: "notes" }),
+      /Duplicate/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("script wiring is consistent", () => {

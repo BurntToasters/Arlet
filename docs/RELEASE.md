@@ -55,6 +55,28 @@ Azure signing, and live updater feeds remain explicit release-environment gates.
   These switches remain available only for intentional beta or local
   development flows.
 
+## Release notes contract
+
+Author release notes in the root [`CHANGELOG.md`](../CHANGELOG.md) before
+running `npm run release:preflight`. The package version must have exactly one
+heading in this form:
+
+```markdown
+## Changes in `v1.2.3`
+
+- User-visible change.
+```
+
+Stable versions (`vX.Y.Z`) and beta versions (`vX.Y.Z-beta.N`) are supported.
+The section body is trimmed, ends at the next level-2 heading, must be
+non-empty, and must not exceed 64 KiB in UTF-8. CRLF files are normalized to
+LF. The heading itself is not included in the release notes.
+
+The preflight validates the section for the current `package.json` version
+before checking release state. Both the GitHub draft body and every generated
+updater manifest read that same local section; manifest generation does not
+call `gh release view` or use another release API to source notes.
+
 ## Standard flow (Windows release VM)
 
 ```text

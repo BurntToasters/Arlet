@@ -10,15 +10,16 @@
 //
 // Usage: npm run release:updater-manifests (after both arch builds)
 
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { validateUpdaterManifest } from "./validate-updater-manifest.js";
 import { assertStableReleaseOverridesAllowed } from "./release-policy.cjs";
+import { readChangelogSection } from "./changelog.cjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
+const changelogPath = path.join(repoRoot, "CHANGELOG.md");
 const { version: VERSION } = JSON.parse(
   fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"),
 );
@@ -129,7 +130,7 @@ export function buildManifests(
     tag = TAG_NAME,
     owner = REPO_OWNER,
     repo = REPO_NAME,
-    notes = `Arlet ${TAG_NAME}`,
+    notes,
     pubDate,
     // Keep accepting the old option for callers outside the repository while
     // never emitting the obsolete `pubdate` key.
@@ -164,6 +165,8 @@ export function buildManifests(
     );
   }
 
+  const selectedNotes = notes ?? readChangelogSection(changelogPath, version);
+
   const publicationDate =
     pubDate ??
     pubdate ??
@@ -185,7 +188,7 @@ export function buildManifests(
     const createManifest = (platforms) => ({
       version,
       pub_date: publicationDate,
-      notes,
+      notes: selectedNotes,
       platforms,
     });
     manifests[`latest-${stableTarget}.json`] = createManifest(stablePlatforms);
@@ -197,32 +200,11 @@ export function buildManifests(
   return manifests;
 }
 
-export function draftNotes(
-  runGh = (args) =>
-    execFileSync("gh", args, { cwd: repoRoot, encoding: "utf8" }).trim(),
-) {
-  try {
-    const out = runGh([
-      "release",
-      "view",
-      TAG_NAME,
-      "--repo",
-      `${REPO_OWNER}/${REPO_NAME}`,
-      "--json",
-      "body",
-    ]);
-    const body = JSON.parse(out).body;
-    if (typeof body === "string" && body.trim()) return body.trim();
-  } catch {
-    // Draft may not exist yet in dry runs; fall back below.
-  }
-  return `Arlet ${TAG_NAME}`;
-}
-
 function main() {
   assertStableReleaseOverridesAllowed(process.env, VERSION);
   const installers = findSignedInstallers();
-  const manifests = buildManifests(installers, { notes: draftNotes() });
+  const notes = readChangelogSection(changelogPath, VERSION);
+  const manifests = buildManifests(installers, { notes });
   const releaseDir = path.join(repoRoot, "release");
   fs.mkdirSync(releaseDir, { recursive: true });
   for (const [name, manifest] of Object.entries(manifests)) {

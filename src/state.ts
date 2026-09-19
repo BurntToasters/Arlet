@@ -235,6 +235,8 @@ export interface UpdateState {
   progress?: number;
   downloadedBytes?: number;
   contentLength?: number;
+  /** Sanitized, bounded release notes retained for the downloaded update. */
+  releaseNotes?: string;
   message?: string;
   error?: string;
   /** True while the ready-to-install prompt is visible. */

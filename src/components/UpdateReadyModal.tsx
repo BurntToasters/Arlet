@@ -2,6 +2,7 @@ import { Download, RefreshCw } from "lucide-preact";
 import { useEffect, useRef } from "preact/hooks";
 import type { JSX } from "preact";
 import { useAppController, useAppState } from "../app/context.tsx";
+import { ReleaseNotes } from "./ReleaseNotes.tsx";
 
 const FOCUSABLE_SELECTOR =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
@@ -17,6 +18,7 @@ export function UpdateReadyModal(): JSX.Element | null {
   const dialogRef = useRef<HTMLElement>(null);
   const restartButton = useRef<HTMLButtonElement>(null);
   const installing = state.updates.status === "installing";
+  const showReleaseNotes = state.updates.status === "ready";
   const open =
     (state.updates.promptOpen || installing) && Boolean(state.updates.version);
 
@@ -94,6 +96,15 @@ export function UpdateReadyModal(): JSX.Element | null {
             Arlet now to apply the update.
           </p>
         )}
+        {showReleaseNotes ? (
+          <div
+            className="update-modal-notes"
+            role="region"
+            aria-label="Release notes"
+          >
+            <ReleaseNotes markdown={state.updates.releaseNotes} />
+          </div>
+        ) : null}
         {state.updates.error ? (
           <p className="update-modal-error" role="alert">
             {state.updates.error}

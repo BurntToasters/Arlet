@@ -7,6 +7,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { assertGitHubCliAuthenticated, githubApi } = require("./github-cli.cjs");
+const { readChangelogSection } = require("./changelog.cjs");
 const { assertStableReleaseOverridesAllowed } = require("./release-policy.cjs");
 
 try {
@@ -19,6 +20,7 @@ const REPO_ROOT = path.resolve(__dirname, "..");
 const REPO_OWNER = process.env.GH_REPO_OWNER || "BurntToasters";
 const REPO_NAME = process.env.GH_REPO_NAME || "Arlet";
 const REPO = `${REPO_OWNER}/${REPO_NAME}`;
+const CHANGELOG_PATH = path.join(REPO_ROOT, "CHANGELOG.md");
 const packageJson = require("../package.json");
 const VERSION = String(packageJson.version || "").trim();
 const TAG_NAME = `v${VERSION}`;
@@ -103,17 +105,20 @@ function assertNoMisnamedVersionDrafts(releases) {
   }
 }
 
-function releaseNotes() {
-  return `Arlet ${TAG_NAME} draft. Assets upload here; publish only via \`npm run release:publish\` after verification.`;
+function releaseNotes({
+  changelogPath = CHANGELOG_PATH,
+  version = VERSION,
+} = {}) {
+  return readChangelogSection(changelogPath, version);
 }
 
-function patchDraft(release, commit) {
+function patchDraft(release, commit, notes = releaseNotes()) {
   // Keep GitHub's untagged draft placeholder intact until publish. The publish
   // operation supplies the final tag atomically with draft=false.
   const updated = githubApi("PATCH", `/repos/${REPO}/releases/${release.id}`, {
     target_commitish: commit,
     name: VERSION,
-    body: releaseNotes(),
+    body: notes,
     prerelease: IS_PRERELEASE,
     draft: true,
   });
@@ -125,18 +130,19 @@ function patchDraft(release, commit) {
   return updated;
 }
 
-function createDraft(commit) {
+function createDraft(commit, notes = releaseNotes()) {
   return githubApi("POST", `/repos/${REPO}/releases`, {
     tag_name: TAG_NAME,
     target_commitish: commit,
     name: VERSION,
-    body: releaseNotes(),
+    body: notes,
     draft: true,
     prerelease: IS_PRERELEASE,
   });
 }
 
 function ensureDraftRelease() {
+  const notes = releaseNotes();
   assertStableReleaseOverridesAllowed(process.env, VERSION);
   assertGitHubCliAuthenticated();
   const commit = currentReleaseCommit();
@@ -157,7 +163,7 @@ function ensureDraftRelease() {
   }
   if (drafts.length === 1) {
     assertReleaseTargetsCommit(drafts[0], commit);
-    const refreshed = patchDraft(drafts[0], commit);
+    const refreshed = patchDraft(drafts[0], commit, notes);
     assertReleaseTargetsCommit(refreshed, commit);
     console.log(
       `[release:draft] Reused draft ${TAG_NAME} (${refreshed.html_url || refreshed.id}).`,
@@ -165,7 +171,7 @@ function ensureDraftRelease() {
     return refreshed;
   }
   try {
-    const created = createDraft(commit);
+    const created = createDraft(commit, notes);
     assertReleaseTargetsCommit(created, commit);
     if (!created?.draft || Boolean(created.prerelease) !== IS_PRERELEASE) {
       throw new Error(
@@ -185,7 +191,7 @@ function ensureDraftRelease() {
     );
     if (afterRace.length !== 1) throw error;
     assertReleaseTargetsCommit(afterRace[0], commit);
-    return patchDraft(afterRace[0], commit);
+    return patchDraft(afterRace[0], commit, notes);
   }
 }
 
@@ -209,4 +215,5 @@ module.exports = {
   ensureDraftRelease,
   findMatchingReleases,
   isExpectedRelease,
+  releaseNotes,
 };

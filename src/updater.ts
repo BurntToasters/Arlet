@@ -17,6 +17,8 @@ export const UPDATE_DOWNLOAD_TIMEOUT_MS = 120_000;
  * still surfaced to the user.
  */
 export const UPDATE_DOWNLOAD_RETRY_DELAYS_MS = [1_000, 3_000, 7_000] as const;
+/** Keep release-note parsing bounded even when a feed contains an oversized body. */
+export const MAX_RELEASE_NOTES_BYTES = 64 * 1024;
 
 export interface UpdateCheckOptions {
   target?: string;
@@ -26,6 +28,7 @@ export interface UpdateCheckOptions {
 /** The small portion of the Tauri Update resource used by the app. */
 export interface UpdaterUpdate {
   version: string;
+  body?: string;
   download(
     onEvent?: (event: DownloadEvent) => void,
     options?: { timeout?: number },
@@ -79,6 +82,52 @@ function safeErrorMessage(error: unknown): string {
     .replace(/[\r\n]+/gu, " ")
     .trim()
     .slice(0, 500);
+}
+
+function isWellFormedUtf16(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (index + 1 >= value.length || next < 0xdc00 || next > 0xdfff) {
+        return false;
+      }
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Release notes are optional metadata. Invalid metadata should never prevent a
+ * signed update from downloading or installing, so unusable bodies are
+ * represented as `undefined` and the UI supplies its generic fallback.
+ */
+export function normalizeReleaseNotes(body: unknown): string | undefined {
+  if (typeof body !== "string" || !body.trim()) return undefined;
+  if (!isWellFormedUtf16(body)) return undefined;
+  try {
+    if (new TextEncoder().encode(body).byteLength > MAX_RELEASE_NOTES_BYTES) {
+      return undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  return body;
+}
+
+function releaseNotesForUpdate(
+  update: UpdaterUpdate | null,
+): string | undefined {
+  if (!update) return undefined;
+  try {
+    return normalizeReleaseNotes(update.body);
+  } catch {
+    // A malformed resource getter is optional metadata, never a check error.
+    return undefined;
+  }
 }
 
 /** Auto follows the beta feed only for the beta versions Arlet publishes. */
@@ -159,6 +208,7 @@ export function createUpdaterService(
       // Keep the native resource alive until install() resolves/rejects. A
       // failed install will be discarded once it is safe to close it.
       discardPendingAfterInstall = true;
+      emit({ releaseNotes: undefined });
       return;
     }
     // Incrementing the generation also makes a currently downloading update
@@ -172,6 +222,7 @@ export function createUpdaterService(
       progress: undefined,
       downloadedBytes: undefined,
       contentLength: undefined,
+      releaseNotes: undefined,
       error: undefined,
       message: undefined,
       promptOpen: false,
@@ -316,6 +367,9 @@ export function createUpdaterService(
       // settings controls cannot change underneath an in-flight check.
       emit({
         status: "checking",
+        releaseNotes: pendingUpdate
+          ? releaseNotesForUpdate(pendingUpdate)
+          : undefined,
         message: interactive ? undefined : "Checking for updates…",
         error: undefined,
         promptOpen: false,
@@ -334,10 +388,12 @@ export function createUpdaterService(
           pendingResolvedChannel !== feed.resolvedChannel)
       ) {
         clearPending();
+        emit({ releaseNotes: undefined });
       }
       if (pendingUpdate) {
         emit({
           status: "ready",
+          releaseNotes: releaseNotesForUpdate(pendingUpdate),
           promptOpen: interactive || state.promptOpen,
           error: undefined,
           message: "Update downloaded and ready to install.",
@@ -366,6 +422,7 @@ export function createUpdaterService(
           progress: undefined,
           downloadedBytes: undefined,
           contentLength: undefined,
+          releaseNotes: undefined,
           message: "You are running the latest version.",
           error: undefined,
           promptOpen: false,
@@ -383,6 +440,7 @@ export function createUpdaterService(
         progress: 0,
         downloadedBytes: 0,
         contentLength: undefined,
+        releaseNotes: undefined,
         message: `Downloading version ${checkedUpdate.version}…`,
         error: undefined,
         promptOpen: false,
@@ -432,6 +490,7 @@ export function createUpdaterService(
         progress: 1,
         downloadedBytes,
         contentLength,
+        releaseNotes: releaseNotesForUpdate(pendingUpdate),
         message: "Update downloaded and ready to install.",
         error: undefined,
         promptOpen: true,
@@ -449,6 +508,9 @@ export function createUpdaterService(
           ? `Failed to check for updates. ${message}`
           : "Unable to check for updates.",
         error: message,
+        releaseNotes: pendingUpdate
+          ? releaseNotesForUpdate(pendingUpdate)
+          : undefined,
         promptOpen: false,
         lastCheckedAt: now(),
       });
@@ -537,6 +599,7 @@ export function createUpdaterService(
             progress: undefined,
             downloadedBytes: undefined,
             contentLength: undefined,
+            releaseNotes: undefined,
             promptOpen: false,
             message: "Update installed. Restarting Arlet…",
             error: undefined,
@@ -568,6 +631,7 @@ export function createUpdaterService(
                 progress: undefined,
                 downloadedBytes: undefined,
                 contentLength: undefined,
+                releaseNotes: undefined,
                 error: undefined,
                 message: undefined,
                 promptOpen: false,
@@ -583,6 +647,7 @@ export function createUpdaterService(
       disposed = true;
       advanceGeneration();
       clearPending();
+      emit({ releaseNotes: undefined });
     },
   };
 }
