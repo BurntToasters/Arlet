@@ -1,8 +1,10 @@
 import {
   AlertCircle,
+  Disc3,
+  ListMusic,
   LoaderCircle,
-  Play,
   Search as SearchIcon,
+  UserRound,
 } from "lucide-preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { JSX } from "preact";
@@ -12,55 +14,99 @@ import {
   useAppState,
 } from "../app/context.tsx";
 import { Artwork } from "../components/Artwork.tsx";
+import { SongRow } from "../components/SongRow.tsx";
 import { EmptyState } from "./EmptyState.tsx";
-import type { Track } from "../domain/music.ts";
-
-function formatDuration(durationMs?: number): string {
-  if (!durationMs || durationMs <= 0) return "—";
-  const seconds = Math.floor(durationMs / 1000);
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-}
+import type { Album, Artist, Playlist, Track } from "../domain/music.ts";
 
 export function TrackRow({
   track,
   index,
   onPlay,
+  onPlayNext,
   disabled,
 }: {
   track: Track;
   index: number;
   onPlay: () => void;
+  onPlayNext?: () => void;
   disabled: boolean;
 }): JSX.Element {
   return (
-    <li>
-      <button
-        className="search-row"
-        type="button"
-        aria-label={`Play ${track.title} by ${track.artistName}`}
-        disabled={disabled}
-        onClick={onPlay}
-      >
-        <span className="search-row-number" aria-hidden="true">
-          {String(index + 1).padStart(2, "0")}
-        </span>
-        <Artwork track={track} size="sm" alt="" />
-        <span className="search-row-copy">
-          <strong title={track.title}>{track.title}</strong>
-          <span title={track.artistName}>
-            {track.artistName}
-            {track.albumTitle ? ` · ${track.albumTitle}` : ""}
-          </span>
-        </span>
-        {track.explicit ? <span className="explicit-badge">E</span> : null}
-        <span className="search-row-duration">
-          {formatDuration(track.durationMs)}
-        </span>
-        <span className="row-play-button" aria-hidden="true">
-          <Play size={15} fill="currentColor" strokeWidth={1.9} />
-        </span>
-      </button>
-    </li>
+    <SongRow
+      track={track}
+      index={index}
+      onPlay={onPlay}
+      onPlayNext={onPlayNext}
+      disabled={disabled}
+      rowClassName="search-row"
+      numberClassName="search-row-number"
+      copyClassName="search-row-copy"
+      durationClassName="search-row-duration"
+      contextData={{
+        "data-context-kind": "track",
+        "data-context-id": track.id,
+        "data-context-title": track.title,
+        "data-context-artist": track.artistName,
+        ...(track.albumTitle ? { "data-context-album": track.albumTitle } : {}),
+        ...(track.artwork?.url
+          ? { "data-context-artwork": track.artwork.url }
+          : {}),
+        ...(track.resourceType
+          ? { "data-context-resource-type": track.resourceType }
+          : {}),
+        ...(track.catalogId
+          ? { "data-context-catalog-id": track.catalogId }
+          : {}),
+      }}
+    />
+  );
+}
+
+function itemTrack(item: Album | Artist | Playlist): Track {
+  return {
+    id: item.id,
+    title: "name" in item ? item.name : item.title,
+    artistName: "artistName" in item ? item.artistName : "Apple Music",
+    artwork: item.artwork,
+    resourceType: item.resourceType,
+  };
+}
+
+function ResourceCard({
+  item,
+  kind,
+  source,
+}: {
+  item: Album | Artist | Playlist;
+  kind: "album" | "artist" | "playlist";
+  source: "catalog" | "library";
+}): JSX.Element {
+  const router = useAppRouter();
+  const track = itemTrack(item);
+  const title = track.title;
+  const Icon =
+    kind === "artist" ? UserRound : kind === "album" ? Disc3 : ListMusic;
+  return (
+    <button
+      className="home-discovery-card"
+      type="button"
+      onClick={() => router.navigate({ kind, id: item.id, source })}
+    >
+      <Artwork
+        track={track}
+        size="lg"
+        alt={`${title} artwork`}
+        className="home-discovery-art"
+      />
+      {track.artwork ? null : <Icon aria-hidden="true" />}
+      <span className="home-discovery-copy">
+        <strong title={title}>{title}</strong>
+        <small>{track.artistName}</small>
+      </span>
+      <span className="home-discovery-source">
+        {source === "library" ? "Library" : "Apple Music"}
+      </span>
+    </button>
   );
 }
 
@@ -72,10 +118,19 @@ export function SearchView(): JSX.Element {
     state.navigation.kind === "search" ? state.navigation.query : "";
   const [term, setTerm] = useState(routeQuery);
   const debounceTimer = useRef<number | undefined>(undefined);
+  const source = state.search.activeSource;
+  const groups =
+    source === "catalog" ? state.search.catalog : state.search.library;
   const canPlay =
     state.initialization.status === "ready" &&
     state.auth.status === "authorized";
   const authorizationPending = state.auth.pending === true;
+  const total =
+    groups.songs.length +
+    groups.albums.length +
+    groups.artists.length +
+    groups.playlists.length;
+  const groupError = groups.status === "error";
 
   useEffect(() => {
     setTerm(routeQuery);
@@ -88,8 +143,9 @@ export function SearchView(): JSX.Element {
       void controller.search(value);
     }, 250);
     return () => {
-      if (debounceTimer.current !== undefined)
+      if (debounceTimer.current !== undefined) {
         window.clearTimeout(debounceTimer.current);
+      }
     };
   }, [term, controller]);
 
@@ -107,35 +163,31 @@ export function SearchView(): JSX.Element {
     event.preventDefault();
     const value = term.trim();
     router.navigate({ kind: "search", query: value });
-    if (debounceTimer.current !== undefined)
+    if (debounceTimer.current !== undefined) {
       window.clearTimeout(debounceTimer.current);
+    }
     void controller.search(value);
   };
 
-  const play = (index: number): void => {
-    void controller.playFromSearch(index).catch(() => undefined);
+  const selectSource = (next: "catalog" | "library"): void => {
+    controller.setSearchSource?.(next);
   };
 
   return (
     <>
       <div className="page-heading search-heading">
         <div>
-          <span className="eyebrow">Catalog</span>
+          <span className="eyebrow">
+            {source === "library" ? "Your Library" : "Apple Music"}
+          </span>
           <h1 tabIndex={-1}>Search</h1>
         </div>
-        {state.auth.status === "authorized" ? (
-          <span className="search-count">
-            {state.search.results.length
-              ? `${state.search.results.length} results`
-              : ""}
-          </span>
-        ) : null}
+        {total ? <span className="search-count">{total} results</span> : null}
       </div>
-
       <form className="search-form" role="search" onSubmit={submit}>
-        <SearchIcon aria-hidden="true" size={20} strokeWidth={1.8} />
+        <SearchIcon aria-hidden="true" size={20} />
         <input
-          aria-label="Search the Apple Music catalog"
+          aria-label={`Search ${source === "library" ? "your library" : "Apple Music"}`}
           type="search"
           value={term}
           placeholder="Artists, albums, songs, and more"
@@ -159,12 +211,11 @@ export function SearchView(): JSX.Element {
           Search
         </button>
       </form>
-
       {state.auth.status !== "authorized" ? (
         <EmptyState
           icon={SearchIcon}
           title="Sign in to search Apple Music"
-          description="Connect your Apple Music account to search the catalog and start playback."
+          description="Connect your Apple Music account to search and start playback."
           action={
             <button
               className="primary-button"
@@ -178,74 +229,181 @@ export function SearchView(): JSX.Element {
             </button>
           }
         />
-      ) : state.search.status === "error" ? (
-        <EmptyState
-          icon={AlertCircle}
-          title="Search could not be completed"
-          description={state.search.error ?? "Try again in a moment."}
-          action={
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => void controller.search(term)}
-            >
-              Try again
-            </button>
-          }
-        />
-      ) : state.search.status === "loading" ? (
-        <div className="search-feedback" role="status">
-          <LoaderCircle className="spin" aria-hidden="true" size={22} />{" "}
-          Searching Apple Music…
-        </div>
-      ) : state.search.status === "success" &&
-        state.search.results.length === 0 ? (
-        <EmptyState
-          icon={SearchIcon}
-          title="No matches"
-          description={`We couldn't find anything for “${state.search.query}”. Try another search.`}
-          compact
-        />
-      ) : state.search.results.length > 0 ? (
-        <section className="search-results-panel" aria-label="Search results">
-          <div className="results-toolbar">
-            <span>{state.search.results.length} songs</span>
-            {state.search.results.length >=
-            controller.consecutiveTrackTarget ? (
-              <button
-                className="quiet-button"
-                type="button"
-                disabled={!canPlay}
-                onClick={() =>
-                  void controller.playConsecutive().catch(() => undefined)
-                }
-              >
-                Queue first {controller.consecutiveTrackTarget}
-              </button>
-            ) : null}
-          </div>
-          <ol className="search-results-list">
-            {state.search.results.map((track, index) => (
-              <TrackRow
-                key={track.id}
-                track={track}
-                index={index}
-                disabled={!canPlay}
-                onPlay={() => play(index)}
-              />
-            ))}
-          </ol>
-          <p className="search-note">
-            Selecting a song starts a queue from that result onward.
-          </p>
-        </section>
       ) : (
-        <EmptyState
-          icon={SearchIcon}
-          title="Search the catalog"
-          description="Find a song, artist, or album to begin listening."
-          compact
-        />
+        <>
+          <div
+            className="search-source-tabs"
+            role="tablist"
+            aria-label="Search source"
+          >
+            <button
+              className={source === "catalog" ? "is-active" : ""}
+              type="button"
+              role="tab"
+              aria-selected={source === "catalog"}
+              onClick={() => selectSource("catalog")}
+            >
+              Apple Music
+            </button>
+            <button
+              className={source === "library" ? "is-active" : ""}
+              type="button"
+              role="tab"
+              aria-selected={source === "library"}
+              onClick={() => selectSource("library")}
+            >
+              Your Library
+            </button>
+          </div>
+          {groupError && total === 0 ? (
+            <EmptyState
+              icon={AlertCircle}
+              title="Search could not be completed"
+              description={
+                groups.error ?? state.search.error ?? "Try again in a moment."
+              }
+              action={
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => void controller.search(term)}
+                >
+                  Try again
+                </button>
+              }
+            />
+          ) : state.search.status === "loading" ? (
+            <div className="search-feedback" role="status">
+              <LoaderCircle className="spin" size={22} /> Searching Apple Music…
+            </div>
+          ) : total === 0 ? (
+            <EmptyState
+              icon={SearchIcon}
+              title={term ? "No matches" : "Search Apple Music"}
+              description={
+                term
+                  ? `We couldn't find anything for “${state.search.query}”. Try another search.`
+                  : "Find a song, artist, album, or playlist."
+              }
+              compact
+            />
+          ) : (
+            <div className="search-groups">
+              {groupError ? (
+                <p className="library-stale-note" role="status">
+                  Some {source === "library" ? "library" : "Apple Music"}{" "}
+                  results could not be refreshed:{" "}
+                  {groups.error ?? "Try again in a moment."}
+                </p>
+              ) : null}
+              {groups.songs.length ? (
+                <section
+                  className="search-results-panel"
+                  aria-labelledby="search-songs-heading"
+                >
+                  <div className="results-toolbar">
+                    <h2 id="search-songs-heading">Songs</h2>
+                    {groups.songs.length >=
+                    controller.consecutiveTrackTarget ? (
+                      <button
+                        className="quiet-button"
+                        type="button"
+                        disabled={!canPlay}
+                        onClick={() =>
+                          void controller
+                            .playConsecutive()
+                            .catch(() => undefined)
+                        }
+                      >
+                        Queue first {controller.consecutiveTrackTarget}
+                      </button>
+                    ) : null}
+                  </div>
+                  <ol className="search-results-list">
+                    {groups.songs.map((track, index) => (
+                      <TrackRow
+                        key={track.id}
+                        track={track}
+                        index={index}
+                        disabled={!canPlay}
+                        onPlay={() =>
+                          void controller
+                            .playFromSearch(index)
+                            .catch(() => undefined)
+                        }
+                        onPlayNext={() =>
+                          void controller
+                            .playNextTracks([track])
+                            .catch(() => undefined)
+                        }
+                      />
+                    ))}
+                  </ol>
+                </section>
+              ) : null}
+              {groups.albums.length ? (
+                <section
+                  className="home-feed-section"
+                  aria-labelledby="search-albums-heading"
+                >
+                  <div className="section-heading">
+                    <h2 id="search-albums-heading">Albums</h2>
+                  </div>
+                  <div className="home-discovery-grid">
+                    {groups.albums.map((item) => (
+                      <ResourceCard
+                        key={item.id}
+                        item={item}
+                        kind="album"
+                        source={source}
+                      />
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+              {groups.artists.length ? (
+                <section
+                  className="home-feed-section"
+                  aria-labelledby="search-artists-heading"
+                >
+                  <div className="section-heading">
+                    <h2 id="search-artists-heading">Artists</h2>
+                  </div>
+                  <div className="home-discovery-grid">
+                    {groups.artists.map((item) => (
+                      <ResourceCard
+                        key={item.id}
+                        item={item}
+                        kind="artist"
+                        source={source}
+                      />
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+              {groups.playlists.length ? (
+                <section
+                  className="home-feed-section"
+                  aria-labelledby="search-playlists-heading"
+                >
+                  <div className="section-heading">
+                    <h2 id="search-playlists-heading">Playlists</h2>
+                  </div>
+                  <div className="home-discovery-grid">
+                    {groups.playlists.map((item) => (
+                      <ResourceCard
+                        key={item.id}
+                        item={item}
+                        kind="playlist"
+                        source={source}
+                      />
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+            </div>
+          )}
+        </>
       )}
     </>
   );

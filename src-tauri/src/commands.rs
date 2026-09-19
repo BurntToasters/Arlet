@@ -1,5 +1,41 @@
 use serde::Serialize;
 
+pub const MINIMUM_WINDOWS_BUILD: u32 = 19045;
+
+pub fn supports_windows_build(build: u32) -> bool {
+    build >= MINIMUM_WINDOWS_BUILD
+}
+
+#[cfg(windows)]
+pub fn current_windows_build() -> Option<u32> {
+    use windows::Win32::System::SystemInformation::{GetVersionExW, OSVERSIONINFOEXW};
+    let mut version = OSVERSIONINFOEXW {
+        dwOSVersionInfoSize: std::mem::size_of::<OSVERSIONINFOEXW>() as u32,
+        ..Default::default()
+    };
+    unsafe { GetVersionExW((&mut version as *mut OSVERSIONINFOEXW).cast()) }.ok()?;
+    Some(version.dwBuildNumber)
+}
+
+#[cfg(not(windows))]
+pub fn current_windows_build() -> Option<u32> {
+    None
+}
+
+pub fn ensure_supported_windows() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let build = current_windows_build()
+            .ok_or_else(|| "Could not determine Windows build. Arlet requires Windows 10 22H2 (build 19045) or newer.".to_string())?;
+        if !supports_windows_build(build) {
+            return Err(format!(
+                "Arlet requires Windows 10 22H2 (build 19045) or newer. Detected build {build}."
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 pub struct AppInfo {
     pub version: String,
@@ -168,5 +204,12 @@ mod tests {
     #[test]
     fn beta_target_rejects_unpublished_architectures() {
         assert!(super::beta_updater_target_for_arch("x86").is_err());
+    }
+
+    #[test]
+    fn windows_support_floor_is_build_19045() {
+        assert!(!super::supports_windows_build(19044));
+        assert!(super::supports_windows_build(19045));
+        assert!(super::supports_windows_build(26100));
     }
 }

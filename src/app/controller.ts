@@ -8,15 +8,24 @@ import {
 import { initializeMusicKit } from "../musickit/bootstrap.ts";
 import {
   resolveMusicKitMusicRequest,
+  loadBrowseCharts,
+  loadRadioStations,
+  resolveStorefront,
+  searchMusicResources,
   searchCatalogSongs,
 } from "../musickit/catalog.ts";
 import { registerMusicKitEvents } from "../musickit/events.ts";
 import {
   CONSECUTIVE_TRACK_TARGET,
+  queueOptionsForTracks as musicKitQueueOptionsForTracks,
   seekToTime,
+  readPlaybackModes,
+  setShuffleMode as setMusicShuffleMode,
+  setRepeatMode as setMusicRepeatMode,
   setVolume as setMusicVolume,
   skipToNext,
   skipToPrevious,
+  syncMusicKitQueue,
   toggle,
 } from "../musickit/player.ts";
 import { mapErrorToCode } from "../musickit/errors.ts";
@@ -33,18 +42,25 @@ import {
   setAuthState,
   setAuthPending,
   setCurrentTrack,
+  setHomeState,
   setInitializationState,
   setPlaybackError,
   setPlaybackPosition,
   setPlaybackStatus,
+  setPins,
   setQueue,
+  setQueueSnapshot,
   setSearchState,
+  setBrowseState,
+  setRadioState,
+  setPlaybackModes,
   setSettings,
   setUpdateState,
   setUiState,
   setVolume,
   setWindowEffectState,
   type AppSettings,
+  type HomeState,
   type ThemePreference,
   type UpdateChannel,
   type WindowEffectPreference,
@@ -57,8 +73,15 @@ import {
   watchSystemTheme,
   type InvokeFunction,
 } from "./settings.ts";
-import type { Track } from "../domain/music.ts";
+import {
+  MAX_PINS,
+  loadPins as loadPersistedPins,
+  savePins as savePersistedPins,
+} from "./pins.ts";
+import type { PinnedPlaylist, Track } from "../domain/music.ts";
 import type {
+  Station,
+  MusicSource,
   MusicResourceRef,
   PlaylistTrackResourceType,
 } from "../domain/music.ts";
@@ -79,6 +102,7 @@ import {
 import type { LibraryEntity, LibrarySection } from "../state.ts";
 import {
   appendLibraryCollectionItems,
+  clearHomeState,
   clearLibraryState,
   setAccountSummary,
   setLibraryCollectionItems,
@@ -98,11 +122,19 @@ export interface ControllerDependencies {
   createLibraryClient?: (
     instance: MusicKit.MusicKitInstance,
   ) => AppleMusicLibraryClient;
+  searchMusicResources?: typeof searchMusicResources;
+  loadBrowseCharts?: typeof loadBrowseCharts;
+  loadRadioStations?: typeof loadRadioStations;
+}
+
+export interface DetailLoadOptions {
+  refresh?: boolean;
 }
 
 export interface AppController {
   initialize(): Promise<void>;
   loadSettings(): Promise<void>;
+  loadPins(): Promise<void>;
   authorize(): Promise<void>;
   signOut(): Promise<void>;
   loadLibrarySection(
@@ -114,14 +146,37 @@ export interface AppController {
     cursor?: string,
   ): Promise<void>;
   refreshLibrarySection(section: LibrarySection): Promise<void>;
-  loadAlbum(id: string): Promise<void>;
-  loadArtist(id: string): Promise<void>;
-  loadPlaylist(id: string): Promise<void>;
+  loadHome(options?: { refresh?: boolean }): Promise<void>;
+  loadBrowse?(options?: { refresh?: boolean }): Promise<void>;
+  loadRadio?(options?: { refresh?: boolean }): Promise<void>;
+  playStation?(station: Station): Promise<void>;
+  loadAlbum(
+    id: string,
+    source?: MusicSource,
+    options?: DetailLoadOptions,
+  ): Promise<void>;
+  loadArtist(
+    id: string,
+    source?: MusicSource,
+    options?: DetailLoadOptions,
+  ): Promise<void>;
+  loadPlaylist(
+    id: string,
+    source?: MusicSource,
+    options?: DetailLoadOptions,
+  ): Promise<void>;
   loadPlaylistFolder(id?: string): Promise<void>;
+  togglePin(id: string, source?: MusicSource): Promise<void>;
+  unpin(id: string): Promise<void>;
+  isPinned(id: string): boolean;
   searchPlaylists(query: string): Promise<LibraryEntity[]>;
+  createPlaylist(
+    request: CreatePlaylistRequest,
+  ): Promise<LibraryEntity | undefined>;
   createPlaylist(
     name: string,
     description?: string,
+    tracks?: readonly Track[] | readonly string[],
   ): Promise<LibraryEntity | undefined>;
   createPlaylistFolder(name: string): Promise<LibraryEntity | undefined>;
   addTracksToPlaylist(
@@ -130,12 +185,18 @@ export interface AppController {
   ): Promise<void>;
   playNextTracks(tracks: readonly Track[] | readonly string[]): Promise<void>;
   playLaterTracks(tracks: readonly Track[] | readonly string[]): Promise<void>;
+  playQueueItem(index: number): Promise<void>;
   refreshCurrentData(): Promise<void>;
   search(term: string): Promise<Track[]>;
+  setSearchSource?(source: "catalog" | "library"): void;
   playFromSearch(index: number): Promise<void>;
   playTracks(tracks: readonly Track[], startIndex?: number): Promise<void>;
   playConsecutive(): Promise<void>;
   togglePlayback(): Promise<void>;
+  play?(): Promise<void>;
+  pause?(): Promise<void>;
+  setShuffleMode?(mode: "off" | "songs"): Promise<void>;
+  cycleRepeatMode?(): Promise<void>;
   previous(): Promise<void>;
   next(): Promise<void>;
   seek(seconds: number): Promise<void>;
@@ -156,6 +217,12 @@ export interface AppController {
   log(message: string): void;
   dispose(): void;
   readonly consecutiveTrackTarget: number;
+}
+
+export interface CreatePlaylistRequest {
+  name: string;
+  description?: string;
+  tracks?: readonly Track[] | readonly string[];
 }
 
 function errorMessage(error: unknown): string {
@@ -249,6 +316,23 @@ function detailFromResponse(raw: unknown): {
   };
 }
 
+function detailCacheSection(
+  kind: "album" | "artist" | "playlist",
+  id: string,
+  source: MusicSource,
+): string {
+  const base = `${kind}:${id}`;
+  return source === "catalog" ? `${kind}:catalog:${id}` : base;
+}
+
+function detailRequestKey(
+  kind: "album" | "artist" | "playlist",
+  id: string,
+  source: MusicSource,
+): string {
+  return `${kind}:${source}:${id}`;
+}
+
 function flattenFolderChildren(value: unknown): LibraryEntity[] {
   const output: LibraryEntity[] = [];
   const seen = new Set<string>();
@@ -273,17 +357,7 @@ function flattenFolderChildren(value: unknown): LibraryEntity[] {
 function queueOptionsForTracks(
   tracks: readonly Track[],
 ): MusicKit.QueueOptions {
-  const types = new Set(tracks.map((track) => track.resourceType));
-  if (types.size === 1 && types.has("library-songs")) {
-    return { librarySongs: tracks.map((track) => track.id) };
-  }
-  if (types.size === 1 && types.has("library-music-videos")) {
-    return { libraryMusicVideos: tracks.map((track) => track.id) };
-  }
-  if (types.size === 1 && types.has("music-videos")) {
-    return { musicVideos: tracks.map((track) => track.catalogId ?? track.id) };
-  }
-  return { songs: tracks.map((track) => track.catalogId ?? track.id) };
+  return musicKitQueueOptionsForTracks(tracks);
 }
 
 function libraryMethod(
@@ -329,17 +403,48 @@ function trackRefs(
   });
 }
 
+function materializeTracks(
+  tracks: readonly Track[] | readonly string[],
+): Track[] {
+  return tracks
+    .map((track) =>
+      typeof track === "string"
+        ? {
+            id: track.trim(),
+            title: track.trim(),
+            artistName: "Unknown Artist",
+          }
+        : track,
+    )
+    .filter((track) => track.id.trim().length > 0);
+}
+
+function sameTrackIds(
+  left: readonly Track[],
+  right: readonly Track[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((track, index) => track.id === right[index]?.id)
+  );
+}
+
 export function createAppController(
   dependencies: ControllerDependencies = {},
 ): AppController {
   const initialize = dependencies.initializeMusicKit ?? initializeMusicKit;
-  const searchCatalog = dependencies.searchCatalogSongs ?? searchCatalogSongs;
+  const searchCatalogOverride = dependencies.searchCatalogSongs;
+  const searchResources =
+    dependencies.searchMusicResources ?? searchMusicResources;
+  const browseCharts = dependencies.loadBrowseCharts ?? loadBrowseCharts;
+  const radioStations = dependencies.loadRadioStations ?? loadRadioStations;
   const invokeFn = dependencies.invokeFn ?? (invoke as InvokeFunction);
   const now = dependencies.now ?? Date.now;
   const diagnosticsStore = dependencies.diagnosticsStore;
   let music: MusicKit.MusicKitInstance | null = null;
   let searchRequestId = 0;
   let lastSearchTracks: Track[] = [];
+  let lastSearchSource: "catalog" | "library" = "catalog";
   let restoreAuthProbe: (() => void) | undefined;
   let stopMusicKitEvents: (() => void) | undefined;
   let stopThemeWatcher: (() => void) | undefined;
@@ -350,6 +455,10 @@ export function createAppController(
   let cacheReady: Promise<void> | undefined;
   const refreshedSections = new Set<LibrarySection>();
   const libraryRequests = new Map<LibrarySection, number>();
+  const detailRequests = new Map<string, number>();
+  let homeRequestId = 0;
+  let browseRequestId = 0;
+  let radioRequestId = 0;
 
   const ensureLibraryCache = async (): Promise<void> => {
     cacheReady ??= libraryCache.initialize().catch((error: unknown) => {
@@ -372,6 +481,8 @@ export function createAppController(
 
   const clearLibraryCache = async (): Promise<void> => {
     refreshedSections.clear();
+    homeRequestId += 1;
+    clearHomeState();
     clearLibraryState();
     try {
       await libraryCache.clear(LIBRARY_CACHE_SCOPE);
@@ -387,6 +498,14 @@ export function createAppController(
     }
     if (!libraryClient) {
       throw new Error("Apple Music library is still initializing.");
+    }
+    return libraryClient;
+  };
+
+  const requireMusicClient = (): AppleMusicLibraryClient => {
+    requireMusic();
+    if (!libraryClient) {
+      throw new Error("Apple Music catalog is still initializing.");
     }
     return libraryClient;
   };
@@ -409,7 +528,9 @@ export function createAppController(
                 ? await libraryMethod(client, "getSongs")(cursor)
                 : await libraryMethod(client, "getPlaylists")(cursor);
     const storefront = String(requireMusic().storefrontId ?? "").trim();
-    if (storefront) setAccountSummary({ storefront });
+    if (storefront && storefront !== getState().library.account.storefront) {
+      setAccountSummary({ storefront });
+    }
     return asPage(raw, cursor, now());
   };
 
@@ -493,6 +614,188 @@ export function createAppController(
     }
   };
 
+  const loadHome = async (
+    options: { refresh?: boolean } = {},
+  ): Promise<void> => {
+    requireLibrary();
+    const current = getState().home;
+    if (!options.refresh && current.status === "success") return;
+    const requestId = ++homeRequestId;
+    setHomeState({
+      status:
+        current.recentPlaylists.length ||
+        current.heavyRotation.length ||
+        current.recommendations.length
+          ? "refreshing"
+          : "loading",
+      errors: {},
+    });
+    const client = requireLibrary();
+    const results = await Promise.allSettled([
+      Promise.resolve().then(() =>
+        libraryMethod(client, "getRecentlyPlayedPlaylists")(10),
+      ),
+      Promise.resolve().then(() =>
+        libraryMethod(client, "getHeavyRotation")(10),
+      ),
+      Promise.resolve().then(() =>
+        libraryMethod(client, "getRecommendations")(10),
+      ),
+    ]);
+    if (homeRequestId !== requestId) return;
+
+    const errors: HomeState["errors"] = {};
+    let successful = 0;
+    let recentPlaylists = current.recentPlaylists;
+    let heavyRotation = current.heavyRotation;
+    let recommendations = current.recommendations;
+    const [recentResult, heavyResult, recommendationResult] = results;
+    if (recentResult.status === "fulfilled") {
+      successful += 1;
+      recentPlaylists = asLibraryEntities(
+        asRecord(recentResult.value)?.items ?? recentResult.value,
+      ) as HomeState["recentPlaylists"];
+    } else {
+      errors.recentPlaylists = safeErrorMessage(recentResult.reason);
+    }
+    if (heavyResult.status === "fulfilled") {
+      successful += 1;
+      heavyRotation = asLibraryEntities(
+        asRecord(heavyResult.value)?.items ?? heavyResult.value,
+      ).filter((item) => {
+        const type = String(item.type ?? item.resourceType ?? "");
+        return type.includes("album") || type.includes("playlist");
+      }) as HomeState["heavyRotation"];
+    } else {
+      errors.heavyRotation = safeErrorMessage(heavyResult.reason);
+    }
+    if (recommendationResult.status === "fulfilled") {
+      successful += 1;
+      recommendations = Array.isArray(recommendationResult.value)
+        ? recommendationResult.value
+        : [];
+    } else {
+      errors.recommendations = safeErrorMessage(recommendationResult.reason);
+    }
+    const hasData =
+      recentPlaylists.length > 0 ||
+      heavyRotation.length > 0 ||
+      recommendations.length > 0;
+    const updatedAt = now();
+    setHomeState({
+      status: successful > 0 ? "success" : "error",
+      recentPlaylists,
+      heavyRotation,
+      recommendations,
+      errors,
+      lastUpdatedAt: successful > 0 ? updatedAt : current.lastUpdatedAt,
+      stale: hasData && successful < 3,
+    });
+    if (successful === 0) {
+      throw new Error(
+        Object.values(errors).filter(Boolean).join("; ") ||
+          "Apple Music Home is unavailable.",
+      );
+    }
+  };
+
+  const loadBrowse = async (
+    options: { refresh?: boolean } = {},
+  ): Promise<void> => {
+    const current = getState().browse;
+    if (!options.refresh && current.status === "success") return;
+    const requestId = ++browseRequestId;
+    setBrowseState({
+      status:
+        current.songs.length ||
+        current.albums.length ||
+        current.playlists.length
+          ? "refreshing"
+          : "loading",
+      error: undefined,
+    });
+    try {
+      const result = await browseCharts(requireMusic(), { limit: 20 });
+      if (requestId !== browseRequestId) return;
+      setBrowseState({
+        status: "success",
+        songs: result.songs,
+        albums: result.albums,
+        playlists: result.playlists,
+        lastUpdatedAt: now(),
+        error: undefined,
+      });
+    } catch (error) {
+      if (requestId !== browseRequestId) return;
+      const message = safeErrorMessage(error);
+      setBrowseState({
+        status: "error",
+        error: message,
+      });
+      log(`Browse load failed: ${message}`);
+      throw error;
+    }
+  };
+
+  const loadRadio = async (
+    options: { refresh?: boolean } = {},
+  ): Promise<void> => {
+    const current = getState().radio;
+    if (!options.refresh && current.status === "success") return;
+    const requestId = ++radioRequestId;
+    const hadData =
+      current.personal.items.length > 0 ||
+      current.live.items.length > 0 ||
+      current.recent.items.length > 0;
+    setRadioState({
+      status: hadData ? "refreshing" : "loading",
+      personal: { ...current.personal, status: "loading", error: undefined },
+      live: { ...current.live, status: "loading", error: undefined },
+      recent: { ...current.recent, status: "loading", error: undefined },
+      error: undefined,
+    });
+    const kinds = ["personal", "live", "recent"] as const;
+    const results = await Promise.allSettled(
+      kinds.map((kind) =>
+        Promise.resolve().then(() => radioStations(requireMusic(), kind)),
+      ),
+    );
+    if (requestId !== radioRequestId) return;
+    let successCount = 0;
+    const next = {
+      personal: { ...current.personal },
+      live: { ...current.live },
+      recent: { ...current.recent },
+    };
+    results.forEach((result, index) => {
+      const kind = kinds[index];
+      if (result.status === "fulfilled") {
+        successCount += 1;
+        next[kind] = { status: "success", items: result.value };
+      } else {
+        next[kind] = {
+          status: "error",
+          items: current[kind].items,
+          error: safeErrorMessage(result.reason),
+        };
+      }
+    });
+    const errors = results
+      .filter(
+        (result): result is PromiseRejectedResult =>
+          result.status === "rejected",
+      )
+      .map((result) => safeErrorMessage(result.reason));
+    setRadioState({
+      ...next,
+      status: successCount > 0 ? "success" : "error",
+      error: errors.length ? errors.join("; ") : undefined,
+      lastUpdatedAt: successCount > 0 ? now() : current.lastUpdatedAt,
+    });
+    if (successCount === 0)
+      throw new Error(errors.join("; ") || "Radio unavailable.");
+  };
+
   const loadLibrarySection = async (
     section: LibrarySection,
     options: { refresh?: boolean; cursor?: string } = {},
@@ -574,12 +877,13 @@ export function createAppController(
   const loadAlbumTracks = async (
     client: AppleMusicLibraryClient,
     id: string,
+    source: MusicSource,
   ): Promise<LibraryEntity[]> => {
     const method = (client as unknown as Record<string, unknown>)
       .getAlbumTracks;
     if (typeof method === "function") {
       return asLibraryEntities(
-        await (method as LibraryMethod).call(client, id),
+        await (method as LibraryMethod).call(client, id, source),
       );
     }
     // The current public client contract keeps album-track expansion optional.
@@ -588,8 +892,13 @@ export function createAppController(
     const instance = music;
     if (!instance) return [];
     try {
+      const storefront = String(instance.storefrontId ?? "").trim();
+      const prefix =
+        source === "catalog" && storefront
+          ? `/v1/catalog/${encodeURIComponent(storefront)}`
+          : "/v1/me/library";
       const raw = await resolveMusicKitMusicRequest(instance)(
-        `/v1/me/library/albums/${encodeURIComponent(id)}/tracks`,
+        `${prefix}/albums/${encodeURIComponent(id)}/tracks`,
       );
       return normalizedLibraryEntities(raw);
     } catch {
@@ -600,49 +909,120 @@ export function createAppController(
   const loadDetail = async (
     kind: "album" | "artist",
     id: string,
+    source: MusicSource = "library",
+    options: DetailLoadOptions = {},
   ): Promise<void> => {
-    const client = requireLibrary();
-    const section = `${kind}:${id}`;
-    setLibraryDetailState(
-      kind,
-      {
-        status: "loading",
-        error: undefined,
-      },
-      id,
-    );
+    const client =
+      source === "library" ? requireLibrary() : requireMusicClient();
+    const cacheSection = detailCacheSection(kind, id, source);
+    const requestKey = detailRequestKey(kind, id, source);
+    const requestId = (detailRequests.get(requestKey) ?? 0) + 1;
+    detailRequests.set(requestKey, requestId);
+    const isCurrent = (): boolean =>
+      detailRequests.get(requestKey) === requestId;
+    const explicit = options.refresh === true;
+    let stalePage: CachedPage<LibraryEntity> | undefined;
+    if (!explicit) {
+      try {
+        await ensureLibraryCache();
+        const cached = await libraryCache.readSection<LibraryEntity>(
+          LIBRARY_CACHE_SCOPE,
+          cacheSection,
+        );
+        if (!isCurrent()) {
+          stalePage = undefined;
+        } else if (cached?.items.length) {
+          stalePage = cached;
+          setLibraryDetailState(
+            kind,
+            {
+              status: "success",
+              source: "cache",
+              item: cached.items[0],
+              resource: cached.items[0],
+              items: cached.items.slice(1),
+              tracks: kind === "album" ? cached.items.slice(1) : undefined,
+              albums: kind === "artist" ? cached.items.slice(1) : undefined,
+              next: cached.next,
+              lastUpdatedAt: cached.updatedAt,
+              stale: true,
+              error: undefined,
+            },
+            id,
+            source,
+          );
+        } else {
+          setLibraryDetailState(
+            kind,
+            { status: "loading", error: undefined },
+            id,
+            source,
+          );
+        }
+      } catch (error) {
+        log(
+          `Library detail cache read failed (${kind}): ${safeErrorMessage(error)}`,
+        );
+        if (isCurrent()) {
+          setLibraryDetailState(
+            kind,
+            { status: "loading", error: undefined },
+            id,
+            source,
+          );
+        }
+      }
+    } else {
+      setLibraryDetailState(
+        kind,
+        { status: "loading", error: undefined },
+        id,
+        source,
+      );
+    }
     try {
       const raw = await libraryMethod(
         client,
         `get${kind[0].toUpperCase()}${kind.slice(1)}`,
-      )(id);
+      )(id, source);
+      if (!isCurrent()) return;
       const detail = detailFromResponse(raw);
       if (!detail.item && detail.items.length > 0) {
         detail.item = detail.items[0];
         detail.items = detail.items.slice(1);
       }
       if (kind === "album" && detail.items.length === 0) {
-        detail.items = await loadAlbumTracks(client, id);
+        detail.items = await loadAlbumTracks(client, id, source);
+        if (!isCurrent()) return;
       }
       if (kind === "artist" && detail.items.length === 0) {
         try {
-          await loadLibrarySection("albums");
-          const artistName = detail.item?.name;
-          detail.items = getState().library.collections.albums.items.filter(
-            (album) => {
-              const candidate = album as LibraryEntity;
-              return (
-                typeof candidate.artistName === "string" &&
-                typeof artistName === "string" &&
-                candidate.artistName.localeCompare(artistName, undefined, {
-                  sensitivity: "base",
-                }) === 0
-              );
-            },
-          );
+          if (source === "catalog" && music) {
+            const storefront = await resolveStorefront(music);
+            const rawAlbums = await resolveMusicKitMusicRequest(music)(
+              `/v1/catalog/${encodeURIComponent(storefront)}/artists/${encodeURIComponent(id)}/albums`,
+            );
+            detail.items = normalizedLibraryEntities(rawAlbums);
+          } else {
+            await loadLibrarySection("albums");
+            const artistName = detail.item?.name;
+            detail.items = getState().library.collections.albums.items.filter(
+              (album) => {
+                const candidate = album as LibraryEntity;
+                return (
+                  typeof candidate.artistName === "string" &&
+                  typeof artistName === "string" &&
+                  candidate.artistName.localeCompare(artistName, undefined, {
+                    sensitivity: "base",
+                  }) === 0
+                );
+              },
+            );
+          }
         } catch (error) {
           log(`Artist album expansion failed: ${safeErrorMessage(error)}`);
         }
+        if (!isCurrent()) return;
       }
       const page: CachedPage<LibraryEntity> = {
         cursor: undefined,
@@ -652,13 +1032,14 @@ export function createAppController(
       };
       await ensureLibraryCache();
       try {
-        await libraryCache.clearSection(LIBRARY_CACHE_SCOPE, section);
-        await libraryCache.writePage(LIBRARY_CACHE_SCOPE, section, page);
+        await libraryCache.clearSection(LIBRARY_CACHE_SCOPE, cacheSection);
+        await libraryCache.writePage(LIBRARY_CACHE_SCOPE, cacheSection, page);
       } catch (error) {
         log(
           `Library detail cache write failed (${kind}): ${safeErrorMessage(error)}`,
         );
       }
+      if (!isCurrent()) return;
       setLibraryDetailState(
         kind,
         {
@@ -674,14 +1055,40 @@ export function createAppController(
           stale: false,
         },
         id,
+        source,
       );
     } catch (error) {
+      if (!isCurrent()) return;
+      if (stalePage?.items.length) {
+        setLibraryDetailState(
+          kind,
+          {
+            status: "success",
+            source: "cache",
+            item: stalePage.items[0],
+            resource: stalePage.items[0],
+            items: stalePage.items.slice(1),
+            tracks: kind === "album" ? stalePage.items.slice(1) : undefined,
+            albums: kind === "artist" ? stalePage.items.slice(1) : undefined,
+            next: stalePage.next,
+            lastUpdatedAt: stalePage.updatedAt,
+            stale: true,
+            error: safeErrorMessage(error),
+          },
+          id,
+          source,
+        );
+        log(`Library detail load failed (${kind}): ${safeErrorMessage(error)}`);
+        if (explicit) throw error;
+        return;
+      }
       try {
         await ensureLibraryCache();
         const cached = await libraryCache.readSection<LibraryEntity>(
           LIBRARY_CACHE_SCOPE,
-          section,
+          cacheSection,
         );
+        if (!isCurrent()) return;
         if (cached?.items.length) {
           setLibraryDetailState(
             kind,
@@ -699,7 +1106,12 @@ export function createAppController(
               error: safeErrorMessage(error),
             },
             id,
+            source,
           );
+          log(
+            `Library detail load failed (${kind}): ${safeErrorMessage(error)}`,
+          );
+          if (explicit) throw error;
           return;
         }
       } catch (cacheError) {
@@ -707,37 +1119,97 @@ export function createAppController(
           `Library detail cache read failed (${kind}): ${safeErrorMessage(cacheError)}`,
         );
       }
+      if (!isCurrent()) return;
       const message = safeErrorMessage(error);
       setLibraryDetailState(
         kind,
-        {
-          status: "error",
-          source: "none",
-          error: message,
-          stale: false,
-        },
+        { status: "error", source: "none", error: message, stale: false },
         id,
+        source,
       );
       log(`Library detail load failed (${kind}): ${message}`);
       throw error;
     }
   };
 
-  const loadPlaylist = async (id: string): Promise<void> => {
-    const client = requireLibrary();
-    setLibraryDetailState(
-      "playlist",
-      {
-        status: "loading",
-        error: undefined,
-      },
-      id,
-    );
+  const loadPlaylist = async (
+    id: string,
+    source: MusicSource = "library",
+    options: DetailLoadOptions = {},
+  ): Promise<void> => {
+    const client =
+      source === "library" ? requireLibrary() : requireMusicClient();
+    const cacheSection = detailCacheSection("playlist", id, source);
+    const requestKey = detailRequestKey("playlist", id, source);
+    const requestId = (detailRequests.get(requestKey) ?? 0) + 1;
+    detailRequests.set(requestKey, requestId);
+    const isCurrent = (): boolean =>
+      detailRequests.get(requestKey) === requestId;
+    const explicit = options.refresh === true;
+    let stalePage: CachedPage<LibraryEntity> | undefined;
+    if (!explicit) {
+      try {
+        await ensureLibraryCache();
+        const cached = await libraryCache.readSection<LibraryEntity>(
+          LIBRARY_CACHE_SCOPE,
+          cacheSection,
+        );
+        if (!isCurrent()) {
+          stalePage = undefined;
+        } else if (cached?.items.length) {
+          stalePage = cached;
+          setLibraryDetailState(
+            "playlist",
+            {
+              status: "success",
+              source: "cache",
+              item: cached.items[0],
+              resource: cached.items[0],
+              items: cached.items.slice(1),
+              tracks: cached.items.slice(1),
+              next: cached.next,
+              lastUpdatedAt: cached.updatedAt,
+              stale: true,
+              error: undefined,
+            },
+            id,
+            source,
+          );
+        } else {
+          setLibraryDetailState(
+            "playlist",
+            { status: "loading", error: undefined },
+            id,
+            source,
+          );
+        }
+      } catch (error) {
+        log(`Playlist cache read failed: ${safeErrorMessage(error)}`);
+        if (isCurrent()) {
+          setLibraryDetailState(
+            "playlist",
+            { status: "loading", error: undefined },
+            id,
+            source,
+          );
+        }
+      }
+    } else {
+      setLibraryDetailState(
+        "playlist",
+        { status: "loading", error: undefined },
+        id,
+        source,
+      );
+    }
     try {
       const [playlistRaw, tracksRaw] = await Promise.all([
-        libraryMethod(client, "getPlaylist")(id),
-        libraryMethod(client, "getPlaylistTracks")(id),
+        libraryMethod(client, "getPlaylist")(id, source),
+        source === "catalog"
+          ? libraryMethod(client, "getPlaylistTracks")(id, source)
+          : libraryMethod(client, "getPlaylistTracks")(id),
       ]);
+      if (!isCurrent()) return;
       const detail = detailFromResponse(playlistRaw);
       const tracks = asLibraryEntities(tracksRaw);
       if (!detail.item && detail.items.length > 0) {
@@ -751,15 +1223,12 @@ export function createAppController(
       };
       await ensureLibraryCache();
       try {
-        await libraryCache.clearSection(LIBRARY_CACHE_SCOPE, `playlist:${id}`);
-        await libraryCache.writePage(
-          LIBRARY_CACHE_SCOPE,
-          `playlist:${id}`,
-          page,
-        );
+        await libraryCache.clearSection(LIBRARY_CACHE_SCOPE, cacheSection);
+        await libraryCache.writePage(LIBRARY_CACHE_SCOPE, cacheSection, page);
       } catch (error) {
         log(`Playlist cache write failed: ${safeErrorMessage(error)}`);
       }
+      if (!isCurrent()) return;
       setLibraryDetailState(
         "playlist",
         {
@@ -774,14 +1243,39 @@ export function createAppController(
           stale: false,
         },
         id,
+        source,
       );
     } catch (error) {
+      if (!isCurrent()) return;
+      if (stalePage?.items.length) {
+        setLibraryDetailState(
+          "playlist",
+          {
+            status: "success",
+            source: "cache",
+            item: stalePage.items[0],
+            resource: stalePage.items[0],
+            items: stalePage.items.slice(1),
+            tracks: stalePage.items.slice(1),
+            next: stalePage.next,
+            lastUpdatedAt: stalePage.updatedAt,
+            stale: true,
+            error: safeErrorMessage(error),
+          },
+          id,
+          source,
+        );
+        log(`Playlist load failed: ${safeErrorMessage(error)}`);
+        if (explicit) throw error;
+        return;
+      }
       try {
         await ensureLibraryCache();
         const cached = await libraryCache.readSection<LibraryEntity>(
           LIBRARY_CACHE_SCOPE,
-          `playlist:${id}`,
+          cacheSection,
         );
+        if (!isCurrent()) return;
         if (cached?.items.length) {
           setLibraryDetailState(
             "playlist",
@@ -798,22 +1292,22 @@ export function createAppController(
               error: safeErrorMessage(error),
             },
             id,
+            source,
           );
+          log(`Playlist load failed: ${safeErrorMessage(error)}`);
+          if (explicit) throw error;
           return;
         }
       } catch (cacheError) {
         log(`Playlist cache read failed: ${safeErrorMessage(cacheError)}`);
       }
+      if (!isCurrent()) return;
       const message = safeErrorMessage(error);
       setLibraryDetailState(
         "playlist",
-        {
-          status: "error",
-          source: "none",
-          error: message,
-          stale: false,
-        },
+        { status: "error", source: "none", error: message, stale: false },
         id,
+        source,
       );
       log(`Playlist load failed: ${message}`);
       throw error;
@@ -927,6 +1421,20 @@ export function createAppController(
     }
   };
 
+  const persistPins = async (
+    pins: readonly PinnedPlaylist[],
+  ): Promise<void> => {
+    try {
+      await savePersistedPins(pins, invokeFn);
+    } catch (error) {
+      log(`Pinned playlists save failed: ${safeErrorMessage(error)}`);
+    }
+  };
+
+  const reloadPins = async (): Promise<void> => {
+    setPins(await loadPersistedPins(invokeFn));
+  };
+
   const syncPlaybackDiagnostics = (): void => {
     if (!diagnosticsStore) return;
     const snapshot = getState();
@@ -967,6 +1475,14 @@ export function createAppController(
       stopMusicKitEvents?.();
       stopMusicKitEvents = undefined;
       if (typeof music.addEventListener === "function") {
+        const syncPlaybackModes = (): void => {
+          const modes = readPlaybackModes(music as MusicKit.MusicKitInstance);
+          setPlaybackModes({
+            shuffleMode: modes.shuffleMode,
+            repeatMode: modes.repeatMode,
+            modeCapabilities: modes.capabilities,
+          });
+        };
         stopMusicKitEvents = registerMusicKitEvents(
           music,
           () => {
@@ -975,19 +1491,31 @@ export function createAppController(
           (message) => {
             log(`Media playback error: ${message}`);
           },
+          undefined,
+          syncPlaybackModes,
         );
+        syncPlaybackModes();
       }
+      syncMusicKitQueue(music);
+      const initialModes = readPlaybackModes(music);
+      setPlaybackModes({
+        shuffleMode: initialModes.shuffleMode,
+        repeatMode: initialModes.repeatMode,
+        modeCapabilities: initialModes.capabilities,
+      });
       restoreAuthProbe = installAuthPopupProbe(log);
       setInitializationState({ status: "ready" });
       log("MusicKit initialized successfully.");
       if (isAuthorized(music)) {
         setAuthState({ status: "authorized" });
-        await ensureLibraryCache();
+        const cachePromise = ensureLibraryCache();
         const storefront = String(music.storefrontId ?? "").trim();
+        const nowPlaying = music.nowPlayingItem
+          ? normalizeTrack(music.nowPlayingItem)
+          : undefined;
+        if (nowPlaying) setCurrentTrack(nowPlaying);
+        await cachePromise;
         if (storefront) setAccountSummary({ storefront });
-        if (music.nowPlayingItem) {
-          setCurrentTrack(normalizeTrack(music.nowPlayingItem));
-        }
         log("Already authorized from previous session.");
       }
       syncPlaybackDiagnostics();
@@ -1010,7 +1538,8 @@ export function createAppController(
       const settings = await loadPersistedSettings(invokeFn);
       setSettings(settings);
       updater.configure(settings);
-      await applyCurrentEffect();
+      const effectPromise = applyCurrentEffect();
+      const pinsPromise = reloadPins();
       stopThemeWatcher?.();
       stopThemeWatcher = watchSystemTheme((dark) => {
         if (getState().settings.theme === "system") {
@@ -1021,6 +1550,11 @@ export function createAppController(
           ).then(setWindowEffectState);
         }
       });
+      await Promise.all([effectPromise, pinsPromise]);
+    },
+
+    async loadPins(): Promise<void> {
+      await reloadPins();
     },
 
     async authorize(): Promise<void> {
@@ -1047,7 +1581,7 @@ export function createAppController(
             `Library API unavailable after authorization: ${safeErrorMessage(error)}`,
           );
         }
-        await ensureLibraryCache();
+        await Promise.all([ensureLibraryCache(), reloadPins()]);
         const storefront = String(instance.storefrontId ?? "").trim();
         if (storefront) setAccountSummary({ storefront, connectedAt: now() });
         log("Authorization successful.");
@@ -1068,6 +1602,7 @@ export function createAppController(
         searchRequestId += 1;
         lastSearchTracks = [];
         resetState();
+        setPins([]);
         setInitializationState({ status: "ready" });
         log("Signed out.");
       } catch (error) {
@@ -1083,17 +1618,74 @@ export function createAppController(
 
     refreshLibrarySection,
 
-    loadAlbum(id: string): Promise<void> {
-      return loadDetail("album", id);
+    loadHome,
+
+    loadBrowse,
+
+    loadRadio,
+
+    async playStation(station: Station): Promise<void> {
+      const url = station.url?.trim();
+      if (!url) throw new Error("This station cannot be played.");
+      const instance = requireMusic();
+      setPlaybackStatus("loading");
+      try {
+        await instance.setQueue({ url });
+        await instance.play();
+      } catch (error) {
+        const rawMessage = errorMessage(error);
+        const message = safeErrorMessage(error);
+        setPlaybackError(mapErrorToCode(rawMessage), message);
+        log(`Station play failed: ${message}`);
+        throw error;
+      }
     },
 
-    loadArtist(id: string): Promise<void> {
-      return loadDetail("artist", id);
+    loadAlbum(
+      id: string,
+      source: MusicSource = "library",
+      options: DetailLoadOptions = {},
+    ): Promise<void> {
+      return loadDetail("album", id, source, options);
+    },
+
+    loadArtist(
+      id: string,
+      source: MusicSource = "library",
+      options: DetailLoadOptions = {},
+    ): Promise<void> {
+      return loadDetail("artist", id, source, options);
     },
 
     loadPlaylist,
 
     loadPlaylistFolder,
+
+    async togglePin(
+      id: string,
+      source: MusicSource = "library",
+    ): Promise<void> {
+      const trimmed = id.trim();
+      if (!trimmed) return;
+      const current = getState().pins;
+      const next = current.some((pin) => pin.id === trimmed)
+        ? current.filter((pin) => pin.id !== trimmed)
+        : [...current, { id: trimmed, source }].slice(0, MAX_PINS);
+      setPins(next);
+      await persistPins(next);
+    },
+
+    async unpin(id: string): Promise<void> {
+      const current = getState().pins;
+      if (!current.some((pin) => pin.id === id)) return;
+      const next = current.filter((pin) => pin.id !== id);
+      setPins(next);
+      await persistPins(next);
+    },
+
+    isPinned(id: string): boolean {
+      return getState().pins.some((pin) => pin.id === id);
+    },
 
     async searchPlaylists(query: string): Promise<LibraryEntity[]> {
       const trimmed = query.trim();
@@ -1106,10 +1698,19 @@ export function createAppController(
     },
 
     async createPlaylist(
-      name: string,
-      description?: string,
+      requestOrName: CreatePlaylistRequest | string,
+      legacyDescription?: string,
+      legacyTracks?: readonly Track[] | readonly string[],
     ): Promise<LibraryEntity | undefined> {
-      const trimmed = name.trim();
+      const request: CreatePlaylistRequest =
+        typeof requestOrName === "string"
+          ? {
+              name: requestOrName,
+              description: legacyDescription,
+              tracks: legacyTracks,
+            }
+          : requestOrName;
+      const trimmed = request.name.trim();
       if (!trimmed) throw new Error("Playlist name is required.");
       const raw = await libraryMethod(
         requireLibrary(),
@@ -1117,9 +1718,12 @@ export function createAppController(
       )({
         name: trimmed,
         description:
-          description && description.trim().length > 0
-            ? description.trim()
+          request.description && request.description.trim().length > 0
+            ? request.description.trim()
             : undefined,
+        ...(request.tracks && request.tracks.length > 0
+          ? { tracks: trackRefs(request.tracks) }
+          : {}),
       });
       const items = asLibraryEntities(raw);
       refreshedSections.delete("playlists");
@@ -1183,7 +1787,7 @@ export function createAppController(
         trackRefs(tracks),
       );
       try {
-        await loadPlaylist(playlistId);
+        await loadPlaylist(playlistId, "library", { refresh: true });
       } catch (error) {
         log(
           `Playlist refresh failed after adding tracks: ${safeErrorMessage(error)}`,
@@ -1196,6 +1800,24 @@ export function createAppController(
     ): Promise<void> {
       const ids = trackIds(tracks);
       if (ids.length === 0) throw new Error("At least one track is required.");
+      const normalizedTracks = materializeTracks(tracks);
+      const currentQueue = getState().playback.queue;
+      const currentIndex = getState().playback.queueIndex;
+      if (currentQueue.length === 0) {
+        await controller.playTracks(normalizedTracks);
+        return;
+      }
+      // Capture the local snapshot before crossing the provider boundary. A
+      // queue event can replace app state while playNext is awaiting, so a
+      // post-await read would lose the index that the insertion is relative
+      // to when MusicKit does not expose its queue yet.
+      const beforeQueue = [...currentQueue];
+      const snapshotIndex = Math.max(
+        0,
+        Math.min(currentIndex, beforeQueue.length - 1),
+      );
+      const expectedQueue = [...beforeQueue];
+      expectedQueue.splice(snapshotIndex + 1, 0, ...normalizedTracks);
       const instance = requireMusic() as unknown as Record<string, unknown>;
       const playNext = instance.playNext;
       if (typeof playNext !== "function") {
@@ -1208,6 +1830,17 @@ export function createAppController(
       await (
         playNext as (options: MusicKit.QueueOptions) => Promise<void>
       ).call(instance, options);
+      const synced = syncMusicKitQueue(
+        instance as unknown as MusicKit.MusicKitInstance,
+      );
+      // MusicKit can acknowledge the operation before publishing its updated
+      // queue. Keep the provider snapshot when it contains the requested
+      // mutation; otherwise use the captured local snapshot deterministically
+      // until queueItemsDidChange reports the authoritative queue.
+      if (synced && sameTrackIds(getState().playback.queue, expectedQueue)) {
+        return;
+      }
+      setQueueSnapshot(expectedQueue, snapshotIndex);
     },
 
     async playLaterTracks(
@@ -1215,6 +1848,19 @@ export function createAppController(
     ): Promise<void> {
       const ids = trackIds(tracks);
       if (ids.length === 0) throw new Error("At least one track is required.");
+      const normalizedTracks = materializeTracks(tracks);
+      const currentQueue = getState().playback.queue;
+      const currentIndex = getState().playback.queueIndex;
+      if (currentQueue.length === 0) {
+        await controller.playTracks(normalizedTracks);
+        return;
+      }
+      const beforeQueue = [...currentQueue];
+      const snapshotIndex = Math.max(
+        0,
+        Math.min(currentIndex, beforeQueue.length - 1),
+      );
+      const expectedQueue = [...beforeQueue, ...normalizedTracks];
       const instance = requireMusic() as unknown as Record<string, unknown>;
       const playLater = instance.playLater;
       if (typeof playLater !== "function") {
@@ -1229,22 +1875,71 @@ export function createAppController(
       await (
         playLater as (options: MusicKit.QueueOptions) => Promise<void>
       ).call(instance, options);
+      const synced = syncMusicKitQueue(
+        instance as unknown as MusicKit.MusicKitInstance,
+      );
+      if (synced && sameTrackIds(getState().playback.queue, expectedQueue)) {
+        return;
+      }
+      setQueueSnapshot(expectedQueue, snapshotIndex);
+    },
+
+    async playQueueItem(index: number): Promise<void> {
+      const instance = requireMusic();
+      syncMusicKitQueue(instance);
+      const snapshot = getState().playback;
+      if (
+        !Number.isInteger(index) ||
+        index < 0 ||
+        index >= snapshot.queue.length
+      ) {
+        throw new Error("Queue item is unavailable.");
+      }
+      const queue = snapshot.queue.slice(index);
+      setPlaybackStatus("loading");
+      try {
+        await instance.setQueue(queueOptionsForTracks(queue));
+        await instance.play();
+        setQueue(queue, 0);
+        setCurrentTrack(queue[0], 0);
+      } catch (error) {
+        const rawMessage = errorMessage(error);
+        const message = safeErrorMessage(error);
+        setPlaybackError(mapErrorToCode(rawMessage), message);
+        log(`Queue item play failed: ${message}`);
+        throw error;
+      }
     },
 
     async refreshCurrentData(): Promise<void> {
       const route = getState().navigation;
       switch (route.kind) {
+        case "home":
+          await loadHome({ refresh: true });
+          return;
+        case "browse":
+          await loadBrowse({ refresh: true });
+          return;
+        case "radio":
+          await loadRadio({ refresh: true });
+          return;
         case "library":
           await refreshLibrarySection(route.section as LibrarySection);
           return;
         case "album":
-          await loadDetail("album", route.id);
+          await loadDetail("album", route.id, route.source ?? "library", {
+            refresh: true,
+          });
           return;
         case "artist":
-          await loadDetail("artist", route.id);
+          await loadDetail("artist", route.id, route.source ?? "library", {
+            refresh: true,
+          });
           return;
         case "playlist":
-          await loadPlaylist(route.id);
+          await loadPlaylist(route.id, route.source ?? "library", {
+            refresh: true,
+          });
           return;
         case "search":
           await controller.search(route.query);
@@ -1254,6 +1949,17 @@ export function createAppController(
       }
     },
 
+    setSearchSource(source: "catalog" | "library"): void {
+      const search = getState().search;
+      const groups = source === "catalog" ? search.catalog : search.library;
+      lastSearchSource = source;
+      lastSearchTracks = groups.songs;
+      setSearchState({
+        activeSource: source,
+        results: groups.songs,
+      });
+    },
+
     async search(term: string): Promise<Track[]> {
       const trimmed = term.trim();
       const requestId = ++searchRequestId;
@@ -1261,6 +1967,32 @@ export function createAppController(
         query: trimmed,
         status: trimmed ? "loading" : "idle",
         results: [],
+        catalog: trimmed
+          ? {
+              ...getState().search.catalog,
+              status: "loading",
+              error: undefined,
+            }
+          : {
+              songs: [],
+              albums: [],
+              artists: [],
+              playlists: [],
+              status: "idle",
+            },
+        library: trimmed
+          ? {
+              ...getState().search.library,
+              status: "loading",
+              error: undefined,
+            }
+          : {
+              songs: [],
+              albums: [],
+              artists: [],
+              playlists: [],
+              status: "idle",
+            },
         error: undefined,
         requestId,
       });
@@ -1269,27 +2001,86 @@ export function createAppController(
         return [];
       }
       try {
-        const tracks = await searchCatalog(requireMusic(), trimmed, {
-          limit: 25,
-        });
-        if (requestId !== searchRequestId) return tracks;
+        const instance = requireMusic();
+        const catalogSearch = searchCatalogOverride
+          ? searchCatalogOverride(instance, trimmed, { limit: 10 }).then(
+              (songs) => ({
+                songs,
+                albums: [],
+                artists: [],
+                playlists: [],
+              }),
+            )
+          : searchResources(instance, trimmed, "catalog", { limit: 10 });
+        const results = await Promise.allSettled([
+          catalogSearch,
+          searchResources(instance, trimmed, "library", { limit: 10 }),
+        ]);
+        if (requestId !== searchRequestId) return [];
+        const currentSearch = getState().search;
+        // A user can switch source tabs while both requests are in flight.
+        // Preserve that selection when the response settles instead of
+        // restoring the tab that started the request.
+        const selectedSource = currentSearch.activeSource;
+        const catalog =
+          results[0].status === "fulfilled"
+            ? { ...results[0].value, status: "success" as const }
+            : {
+                ...currentSearch.catalog,
+                status: "error" as const,
+                error: safeErrorMessage(results[0].reason),
+              };
+        const library =
+          results[1].status === "fulfilled"
+            ? { ...results[1].value, status: "success" as const }
+            : {
+                ...currentSearch.library,
+                status: "error" as const,
+                error: safeErrorMessage(results[1].reason),
+              };
+        const groups = selectedSource === "catalog" ? catalog : library;
+        const tracks = groups.songs;
+        const successful = results.some(
+          (result) => result.status === "fulfilled",
+        );
+        const providerErrors = results
+          .filter(
+            (result): result is PromiseRejectedResult =>
+              result.status === "rejected",
+          )
+          .map((result) => safeErrorMessage(result.reason));
+        lastSearchSource = selectedSource;
         lastSearchTracks = tracks;
         setSearchState({
           query: trimmed,
-          status: "success",
+          status: successful ? "success" : "error",
           results: tracks,
-          error: undefined,
+          catalog,
+          library,
+          activeSource: selectedSource,
+          error: successful ? undefined : providerErrors.join("; "),
           requestId,
         });
-        log(`Found ${tracks.length} result${tracks.length === 1 ? "" : "s"}.`);
+        log(`Found ${tracks.length} song${tracks.length === 1 ? "" : "s"}.`);
         return tracks;
       } catch (error) {
         if (requestId !== searchRequestId) return [];
         const message = safeErrorMessage(error);
+        const currentSearch = getState().search;
         setSearchState({
           query: trimmed,
           status: "error",
           results: [],
+          catalog: {
+            ...currentSearch.catalog,
+            status: "error",
+            error: message,
+          },
+          library: {
+            ...currentSearch.library,
+            status: "error",
+            error: message,
+          },
           error: message,
           requestId,
         });
@@ -1301,7 +2092,9 @@ export function createAppController(
     async playFromSearch(index: number): Promise<void> {
       const tracks = lastSearchTracks.length
         ? lastSearchTracks
-        : getState().search.results;
+        : lastSearchSource === "catalog"
+          ? getState().search.catalog.songs
+          : getState().search.library.songs;
       await controller.playTracks(tracks, index);
     },
 
@@ -1342,6 +2135,59 @@ export function createAppController(
         log(`Toggle failed: ${errorMessage(error)}`);
         throw error;
       }
+    },
+
+    async play(): Promise<void> {
+      await requireMusic().play();
+    },
+
+    async pause(): Promise<void> {
+      requireMusic().pause();
+    },
+
+    async setShuffleMode(mode: "off" | "songs"): Promise<void> {
+      const instance = requireMusic();
+      if (!setMusicShuffleMode(instance, mode === "songs")) {
+        const modes = readPlaybackModes(instance);
+        setPlaybackModes({
+          modeCapabilities: { ...modes.capabilities, shuffle: false },
+        });
+        throw new Error("Shuffle is not available in this MusicKit runtime.");
+      }
+      const modes = readPlaybackModes(instance);
+      setPlaybackModes({
+        shuffleMode: modes.shuffleMode,
+        repeatMode: modes.repeatMode,
+        modeCapabilities: modes.capabilities,
+      });
+    },
+
+    async cycleRepeatMode(): Promise<void> {
+      const instance = requireMusic();
+      const current = readPlaybackModes(instance);
+      if (!current.capabilities.repeat) {
+        throw new Error("Repeat is not available in this MusicKit runtime.");
+      }
+      const next =
+        current.repeatMode === "off"
+          ? "all"
+          : current.repeatMode === "all"
+            ? "one"
+            : "off";
+      if (!setMusicRepeatMode(instance, next)) {
+        setPlaybackModes({
+          modeCapabilities: { ...current.capabilities, repeat: false },
+        });
+        throw new Error(
+          "Repeat could not be changed in this MusicKit runtime.",
+        );
+      }
+      const modes = readPlaybackModes(instance);
+      setPlaybackModes({
+        shuffleMode: modes.shuffleMode,
+        repeatMode: modes.repeatMode,
+        modeCapabilities: modes.capabilities,
+      });
     },
 
     async previous(): Promise<void> {

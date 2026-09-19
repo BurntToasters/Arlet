@@ -14,15 +14,24 @@ fn main() {
         "load_settings",
         "save_settings",
         "reset_settings",
+        "load_pins",
+        "save_pins",
+        "delete_pins",
         "append_local_log",
         "get_log_dir",
         "clear_logs",
         "set_window_fx",
         "supports_window_fx",
         "set_snap_overlay_bounds",
+        "update_windows_media_session",
+        "clear_windows_media_session",
     ];
     tauri_build::try_build(
         tauri_build::Attributes::new()
+            .windows_attributes(
+                tauri_build::WindowsAttributes::new()
+                    .app_manifest(include_str!("windows-app.manifest")),
+            )
             .app_manifest(tauri_build::AppManifest::new().commands(COMMANDS)),
     )
     .expect("failed to build Tauri application metadata");

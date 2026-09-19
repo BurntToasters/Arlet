@@ -39,11 +39,16 @@
     "allow-load-settings",
     "allow-save-settings",
     "allow-reset-settings",
+    "allow-load-pins",
+    "allow-save-pins",
+    "allow-delete-pins",
     "allow-append-local-log",
     "allow-get-log-dir",
     "allow-clear-logs",
     "allow-set-window-fx",
     "allow-supports-window-fx",
-    "allow-set-snap-overlay-bounds"
+    "allow-set-snap-overlay-bounds",
+    "allow-update-windows-media-session",
+    "allow-clear-windows-media-session"
   ]
 }

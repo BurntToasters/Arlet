@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-clear-windows-media-session"
+description = "Enables the clear_windows_media_session command without any pre-configured scope."
+commands.allow = ["clear_windows_media_session"]
+
+[[permission]]
+identifier = "deny-clear-windows-media-session"
+description = "Denies the clear_windows_media_session command without any pre-configured scope."
+commands.deny = ["clear_windows_media_session"]

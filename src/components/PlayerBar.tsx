@@ -4,15 +4,43 @@ import {
   LoaderCircle,
   Pause,
   Play,
+  Repeat,
   SkipBack,
   SkipForward,
+  Shuffle,
   Volume2,
   VolumeX,
 } from "lucide-preact";
 import type { JSX } from "preact";
 import { useAppController, useAppState } from "../app/context.tsx";
+import type { AppErrorCode } from "../domain/errors.ts";
 import { Artwork } from "./Artwork.tsx";
 import { IconButton } from "./IconButton.tsx";
+
+export function playerErrorLabel(code: AppErrorCode): string {
+  switch (code) {
+    case "NETWORK":
+      return "No connection";
+    case "AUTH_REQUIRED":
+      return "Sign in needed";
+    case "SUBSCRIPTION_REQUIRED":
+      return "Subscription needed";
+    case "TOKEN_EXPIRED":
+      return "Session expired";
+    case "MUSICKIT_INIT_FAILED":
+      return "Player unavailable";
+    case "PLAYBACK_FAILED":
+      return "Can't play";
+    case "CONTENT_UNAVAILABLE":
+      return "Unavailable";
+    case "RATE_LIMITED":
+      return "Rate limited";
+    case "UPDATER_FAILED":
+      return "Update failed";
+    case "UNKNOWN":
+      return "Error";
+  }
+}
 
 function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
@@ -134,10 +162,38 @@ export function PlayerBar(): JSX.Element {
       </div>
 
       <div className="player-actions">
+        {playback.modeCapabilities?.shuffle ? (
+          <IconButton
+            icon={Shuffle}
+            label="Toggle shuffle"
+            pressed={playback.shuffleMode === "songs"}
+            className={playback.shuffleMode === "songs" ? "is-active" : ""}
+            onClick={() =>
+              void Promise.resolve(
+                controller.setShuffleMode?.(
+                  playback.shuffleMode === "songs" ? "off" : "songs",
+                ),
+              ).catch(() => undefined)
+            }
+          />
+        ) : null}
+        {playback.modeCapabilities?.repeat ? (
+          <IconButton
+            icon={Repeat}
+            label={`Repeat ${playback.repeatMode ?? "off"}`}
+            pressed={playback.repeatMode !== "off"}
+            className={playback.repeatMode !== "off" ? "is-active" : ""}
+            onClick={() =>
+              void Promise.resolve(controller.cycleRepeatMode?.()).catch(
+                () => undefined,
+              )
+            }
+          />
+        ) : null}
         {playback.error ? (
           <span className="player-error" title={playback.error.message}>
             <CircleAlert aria-hidden="true" size={15} strokeWidth={1.9} />
-            <span>{playback.error.code}</span>
+            <span>{playerErrorLabel(playback.error.code)}</span>
           </span>
         ) : null}
         <div className="volume-control">

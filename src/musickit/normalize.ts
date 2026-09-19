@@ -5,6 +5,7 @@ import type {
   LibraryItem,
   MusicResourceRef,
   MusicResourceType,
+  MusicSource,
   Playlist,
   PlaylistFolder,
   PlaylistTrackResourceType,
@@ -49,8 +50,11 @@ function asRecord(value: unknown): UnknownRecord | undefined {
   return value as UnknownRecord;
 }
 
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+function stringValue(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
 }
 
 function positiveNumber(value: unknown): number | undefined {
@@ -67,6 +71,10 @@ function resourceType(
   resource: AppleMusicResource,
 ): MusicResourceType | undefined {
   return stringValue(asRecord(resource)?.type) as MusicResourceType | undefined;
+}
+
+function resourceSource(type: MusicResourceType | undefined): MusicSource {
+  return type?.startsWith("library-") ? "library" : "catalog";
 }
 
 function attributesOf(resource: AppleMusicResource): UnknownRecord {
@@ -162,10 +170,18 @@ function catalogDurationMs(item: MusicKit.MediaItem): number | undefined {
 
 export function normalizeTrack(item: MusicKit.MediaItem): Track {
   const record = asRecord(item);
+  const attributes = asRecord(record?.attributes);
   const id = stringValue(record?.id) ?? "";
-  const title = stringValue(record?.title) ?? "Unknown Title";
-  const artistName = stringValue(record?.artistName) ?? "Unknown Artist";
-  const albumName = stringValue(record?.albumName);
+  const title =
+    stringValue(record?.title, record?.name, attributes?.name) ??
+    "Unknown Title";
+  const artistName =
+    stringValue(record?.artistName, attributes?.artistName) ?? "Unknown Artist";
+  const albumName = stringValue(record?.albumName, attributes?.albumName);
+  const type = stringValue(record?.type, attributes?.type) as
+    MusicResourceType | undefined;
+  const playParams =
+    asRecord(record?.playParams) ?? asRecord(attributes?.playParams);
   return {
     id,
     title,
@@ -173,6 +189,10 @@ export function normalizeTrack(item: MusicKit.MediaItem): Track {
     albumTitle: albumName,
     artwork: normalizeArtwork(item),
     durationMs: catalogDurationMs(item),
+    ...(type ? { resourceType: type } : {}),
+    ...(stringValue(playParams?.catalogId)
+      ? { catalogId: stringValue(playParams?.catalogId) }
+      : {}),
   };
 }
 
@@ -278,6 +298,7 @@ export function normalizeAlbumResource(
     artistName: stringValue(attributes.artistName) ?? "Unknown Artist",
     artwork: artworkFromUnknown(attributes.artwork),
     resourceType: resourceType(resource) ?? "albums",
+    source: resourceSource(resourceType(resource) ?? "albums"),
   };
   const trackCount =
     positiveNumber(attributes.trackCount) ??
@@ -310,6 +331,7 @@ export function normalizePlaylistResource(
     name: stringValue(attributes.name) ?? "Untitled Playlist",
     artwork: artworkFromUnknown(attributes.artwork),
     resourceType: resourceType(resource) ?? "playlists",
+    source: resourceSource(resourceType(resource) ?? "playlists"),
   };
   const description = descriptionValue(attributes.description);
   if (description) playlist.description = description;

@@ -24,6 +24,13 @@ declare namespace MusicKit {
     librarySongs?: MediaItem[];
     /** Current playlist/resource descriptor exposed by MusicKit JS. */
     playlist?: ResourceDescriptor | MediaItem | string;
+    /** Current playback queue. MusicKit JS versions expose one of these shapes. */
+    queue?: Queue | MediaItem[];
+    queueItems?: MediaItem[];
+    /** MusicKit JS exposes the live queue through instance.player.queue. */
+    player?: Player;
+    currentPlaybackQueueItem?: MediaItem | null;
+    currentPlaybackQueueItemIndex?: number;
     play(): Promise<void>;
     playNext?(
       options?: QueueOptions | string | MediaItem,
@@ -75,9 +82,7 @@ declare namespace MusicKit {
 
   interface QueueOptions {
     songs?: string[];
-    librarySongs?: string[];
     musicVideos?: string[];
-    libraryMusicVideos?: string[];
     album?: string;
     url?: string;
     [key: string]: unknown;
@@ -99,6 +104,31 @@ declare namespace MusicKit {
     next?: string;
     meta?: Record<string, unknown>;
     links?: { next?: string };
+  }
+
+  interface Queue {
+    items?: MediaItem[];
+    songs?: MediaItem[];
+    tracks?: MediaItem[];
+    isEmpty?: boolean;
+    length?: number;
+    currentItemIndex?: number;
+    index?: number;
+    position?: number;
+    currentItem?: MediaItem | null;
+    nextPlayableItem?: MediaItem | null;
+    previousPlayableItem?: MediaItem | null;
+    [key: string]: unknown;
+  }
+
+  interface Player {
+    queue?: Queue | MediaItem[];
+    nowPlayingItem?: MediaItem | null;
+    nowPlayingItemIndex?: number;
+    currentPlaybackQueueItemIndex?: number;
+    shuffle?: boolean;
+    repeatMode?: number | "off" | "all" | "one";
+    [key: string]: unknown;
   }
 
   interface MediaItem {
@@ -136,6 +166,8 @@ declare namespace MusicKit {
     queueItemsDidChange: string;
     playbackTimeDidChange: string;
     playbackDurationDidChange: string;
+    shuffleModeDidChange?: string;
+    repeatModeDidChange?: string;
   };
 
   function configure(config: Config): MusicKitInstance;

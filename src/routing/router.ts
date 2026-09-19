@@ -1,16 +1,29 @@
+import type { MusicSource } from "../domain/music.ts";
+
 export type LibrarySection =
   "recent" | "history" | "artists" | "albums" | "songs" | "playlists";
 
 export type Route =
   | { kind: "home" }
+  | { kind: "browse" }
+  /** Legacy route shape accepted by old callers; parser keeps it stable. */
   | { kind: "new" }
   | { kind: "radio" }
   | { kind: "search"; query: string }
   | { kind: "library"; section: LibrarySection }
-  | { kind: "album"; id: string }
-  | { kind: "artist"; id: string }
-  | { kind: "playlist"; id: string }
+  | { kind: "album"; id: string; source?: MusicSource }
+  | { kind: "artist"; id: string; source?: MusicSource }
+  | { kind: "playlist"; id: string; source?: MusicSource }
   | { kind: "settings" };
+
+export function routeSource(route: Route): MusicSource {
+  return (route.kind === "album" ||
+    route.kind === "artist" ||
+    route.kind === "playlist") &&
+    route.source === "catalog"
+    ? "catalog"
+    : "library";
+}
 
 const librarySections = new Set<LibrarySection>([
   "recent",
@@ -53,9 +66,17 @@ export function parseRoute(hash: string): Route {
     (head === "album" || head === "artist" || head === "playlist") &&
     segments[1]
   ) {
+    const source = new URLSearchParams(queryPart).get("source");
+    if (
+      (head === "album" || head === "artist" || head === "playlist") &&
+      source === "catalog"
+    ) {
+      return { kind: head, id: segments[1], source: "catalog" };
+    }
     return { kind: head, id: segments[1] };
   }
   if (head === "new") return { kind: "new" };
+  if (head === "browse") return { kind: "browse" };
   if (head === "radio") return { kind: "radio" };
   if (head === "settings") return { kind: "settings" };
   return { kind: "home" };
@@ -65,6 +86,8 @@ export function serializeRoute(route: Route): string {
   switch (route.kind) {
     case "home":
       return "#/home";
+    case "browse":
+      return "#/browse";
     case "new":
       return "#/new";
     case "radio":
@@ -78,7 +101,9 @@ export function serializeRoute(route: Route): string {
     case "album":
     case "artist":
     case "playlist":
-      return `#/${route.kind}/${encode(route.id)}`;
+      return route.source === "catalog"
+        ? `#/${route.kind}/${encode(route.id)}?source=catalog`
+        : `#/${route.kind}/${encode(route.id)}`;
     case "settings":
       return "#/settings";
   }

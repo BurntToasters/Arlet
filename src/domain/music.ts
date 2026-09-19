@@ -2,6 +2,9 @@ import type { PlayerError } from "./errors.ts";
 
 export type MusicId = string;
 
+/** Apple Music API resource origin used by navigation and detail loaders. */
+export type MusicSource = "catalog" | "library";
+
 /** Resource types returned by Apple Music API. */
 export type MusicResourceType =
   | "songs"
@@ -16,6 +19,9 @@ export type MusicResourceType =
   | "library-playlists"
   | "library-playlist-folders"
   | "library-music-videos"
+  | "stations"
+  | "radio-stations"
+  | "live-radio-stations"
   | (string & {});
 
 /** Track resource types accepted by Apple playlist append requests. */
@@ -59,6 +65,7 @@ export interface Album {
   artwork?: Artwork;
   trackCount?: number;
   resourceType?: MusicResourceType;
+  source?: MusicSource;
   catalogId?: MusicId;
   playable?: boolean;
 }
@@ -82,6 +89,7 @@ export interface Playlist {
   canDelete?: boolean;
   isPublic?: boolean;
   resourceType?: MusicResourceType;
+  source?: MusicSource;
   /** Parent folder when the playlist was loaded through a folder relationship. */
   parentId?: MusicId;
 }
@@ -96,6 +104,32 @@ export interface PlaylistFolder {
   children?: LibraryItem[];
 }
 
+export interface PinnedPlaylist {
+  id: MusicId;
+  source: MusicSource;
+}
+
+export interface Station {
+  id: MusicId;
+  name: string;
+  description?: string;
+  artwork?: Artwork;
+  url?: string;
+  isLive: boolean;
+  resourceType?: MusicResourceType;
+}
+
+/** Catalog resources Apple groups together in personalized recommendations. */
+export type DiscoveryResource = Album | Playlist;
+
+export interface RecommendationSection {
+  id: string;
+  title: string;
+  items: DiscoveryResource[];
+  kind?: string;
+  reason?: string;
+}
+
 export type LibraryItem = Track | Album | Artist | Playlist | PlaylistFolder;
 
 export interface PlaybackState {
@@ -106,5 +140,11 @@ export interface PlaybackState {
   volume: number;
   queue: Track[];
   queueIndex: number;
+  shuffleMode?: "off" | "songs";
+  repeatMode?: "off" | "all" | "one";
+  modeCapabilities?: {
+    shuffle: boolean;
+    repeat: boolean;
+  };
   error?: PlayerError;
 }

@@ -9,7 +9,6 @@ import {
   ListMusic,
   LoaderCircle,
   Music2,
-  Play,
   RefreshCw,
   UserRound,
 } from "lucide-preact";
@@ -22,6 +21,7 @@ import {
 } from "../app/context.tsx";
 import type { AppController } from "../app/controller.ts";
 import { Artwork } from "../components/Artwork.tsx";
+import { SongRow } from "../components/SongRow.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import type { Track } from "../domain/music.ts";
 import type { LibrarySection } from "../routing/router.ts";
@@ -339,12 +339,6 @@ function readPlaylistFolderItems(
   return Array.isArray(folder?.items) ? folder.items : [];
 }
 
-function formatDuration(durationMs?: number): string {
-  if (!durationMs || durationMs <= 0) return "—";
-  const seconds = Math.floor(durationMs / 1000);
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-}
-
 function formatUpdated(value: number | string | undefined): string {
   if (value === undefined) return "";
   const parsed = typeof value === "number" ? value : Date.parse(value);
@@ -387,45 +381,36 @@ export function LibraryTrackRow({
   resource,
   index,
   onPlay,
+  onPlayNext,
   disabled,
 }: {
   resource: ResourceLike;
   index: number;
   onPlay: (track: Track) => void;
+  onPlayNext?: (track: Track) => void;
   disabled: boolean;
 }): JSX.Element {
+  const appController = useAppController();
   const track = toTrack(resource);
   if (!track) return <li />;
+  const playNext =
+    onPlayNext ??
+    ((value: Track) => {
+      run(() => appController.playNextTracks([value]));
+    });
   return (
-    <li>
-      <button
-        className="library-track-row"
-        type="button"
-        disabled={disabled}
-        aria-label={`Play ${track.title} by ${track.artistName}`}
-        {...contextData(resource, "track")}
-        onClick={() => onPlay(track)}
-      >
-        <span className="library-row-number" aria-hidden="true">
-          {String(index + 1).padStart(2, "0")}
-        </span>
-        <Artwork track={track} size="sm" alt="" />
-        <span className="library-row-copy">
-          <strong title={track.title}>{track.title}</strong>
-          <span title={track.artistName}>
-            {track.artistName}
-            {track.albumTitle ? ` · ${track.albumTitle}` : ""}
-          </span>
-        </span>
-        {track.explicit ? <span className="explicit-badge">E</span> : null}
-        <span className="library-row-duration">
-          {formatDuration(track.durationMs)}
-        </span>
-        <span className="row-play-button" aria-hidden="true">
-          <Play size={15} fill="currentColor" strokeWidth={1.9} />
-        </span>
-      </button>
-    </li>
+    <SongRow
+      track={track}
+      index={index}
+      onPlay={() => onPlay(track)}
+      onPlayNext={() => playNext(track)}
+      disabled={disabled}
+      rowClassName="library-track-row"
+      numberClassName="library-row-number"
+      copyClassName="library-row-copy"
+      durationClassName="library-row-duration"
+      contextData={contextData(resource, "track")}
+    />
   );
 }
 
@@ -776,6 +761,9 @@ export function LibraryView({
                     resource={resource}
                     index={index}
                     onPlay={playTrack}
+                    onPlayNext={(track) =>
+                      run(() => controller.playNextTracks?.([track]))
+                    }
                     disabled={!authorized}
                   />
                 ))}

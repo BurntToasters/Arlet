@@ -27,6 +27,7 @@ function copyForRoute(
 ): PlaceholderCopy {
   switch (route.kind) {
     case "new":
+    case "browse":
       return {
         eyebrow: "Discover",
         title: "New music",

@@ -238,6 +238,7 @@ pub fn reset_settings(app: tauri::AppHandle) -> Result<(), String> {
     if backup.exists() {
         std::fs::remove_file(&backup).map_err(|e| e.to_string())?;
     }
+    crate::pins::remove_pins_for_app(&app);
     Ok(())
 }
 

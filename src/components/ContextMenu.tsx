@@ -8,8 +8,9 @@ import {
   FolderPlus,
   Forward,
   ListPlus,
-  MoreHorizontal,
   Music2,
+  Pin,
+  PinOff,
   Play,
   Plus,
   RefreshCw,
@@ -24,6 +25,11 @@ import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useAppController, useAppRouter } from "../app/context.tsx";
 import type { Track } from "../domain/music.ts";
 import type { Route } from "../routing/router.ts";
+import {
+  CONTEXT_MENU_REQUEST,
+  type ContextMenuRequestDetail,
+} from "./context-menu-events.ts";
+import { requestPlaylistDialog } from "./playlist-events.ts";
 
 type ContextKind = "track" | "album" | "artist" | "playlist" | "folder";
 
@@ -36,6 +42,7 @@ interface ContextTarget {
   artworkUrl?: string;
   resourceType?: string;
   catalogId?: string;
+  source?: "library" | "catalog";
   route?: Route;
 }
 
@@ -65,6 +72,8 @@ function parseTarget(node: HTMLElement | null): ContextTarget {
   if (!node) return {};
   const kind = node.dataset.contextKind as ContextKind | undefined;
   const routeKind = node.dataset.contextRouteKind as Route["kind"] | undefined;
+  const source =
+    node.dataset.contextSource === "catalog" ? "catalog" : undefined;
   let route: Route | undefined;
   if (
     routeKind === "album" ||
@@ -72,7 +81,12 @@ function parseTarget(node: HTMLElement | null): ContextTarget {
     routeKind === "playlist"
   ) {
     const id = node.dataset.contextId;
-    if (id) route = { kind: routeKind, id };
+    if (id) {
+      route =
+        routeKind !== "artist" && source === "catalog"
+          ? { kind: routeKind, id, source }
+          : { kind: routeKind, id };
+    }
   }
   return {
     kind,
@@ -83,6 +97,7 @@ function parseTarget(node: HTMLElement | null): ContextTarget {
     artworkUrl: node.dataset.contextArtwork,
     resourceType: node.dataset.contextResourceType,
     catalogId: node.dataset.contextCatalogId,
+    source,
     route,
   };
 }
@@ -178,15 +193,50 @@ export function ContextMenu(): JSX.Element | null {
   const extendedController = controller as unknown as AppControllerWithContext;
 
   useEffect(() => {
-    const onContextMenu = (event: MouseEvent): void => {
-      event.preventDefault();
-      const contextNode = closestContextTarget(event.target);
+    const open = ({
+      target: eventTarget,
+      x,
+      y,
+      restoreFocus,
+    }: ContextMenuRequestDetail): void => {
+      const contextNode = closestContextTarget(eventTarget) ?? eventTarget;
       const target = parseTarget(contextNode);
       const track = targetTrack(target);
       restoreFocusRef.current =
-        document.activeElement instanceof HTMLElement
+        restoreFocus ??
+        (document.activeElement instanceof HTMLElement
           ? document.activeElement
-          : null;
+          : null);
+      setMenu({
+        x,
+        y,
+        target,
+        items: buildItems({
+          controller: extendedController,
+          router,
+          target,
+          track,
+          editable: false,
+          selected: false,
+          close: () => setMenu(null),
+          restoreFocus: () => restoreFocusRef.current?.focus(),
+          restoreTarget: restoreFocusRef.current ?? undefined,
+        }),
+      });
+      setPosition({ x, y });
+    };
+    const onContextMenu = (event: MouseEvent): void => {
+      event.preventDefault();
+      const eventTarget =
+        event.target instanceof HTMLElement ? event.target : document.body;
+      const contextNode = closestContextTarget(event.target) ?? eventTarget;
+      const target = parseTarget(contextNode);
+      const track = targetTrack(target);
+      restoreFocusRef.current =
+        eventTarget.closest<HTMLElement>("button, [tabindex]") ??
+        (document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null);
       setMenu({
         x: event.clientX,
         y: event.clientY,
@@ -200,12 +250,21 @@ export function ContextMenu(): JSX.Element | null {
           selected: hasSelection(),
           close: () => setMenu(null),
           restoreFocus: () => restoreFocusRef.current?.focus(),
+          restoreTarget: restoreFocusRef.current ?? undefined,
         }),
       });
       setPosition({ x: event.clientX, y: event.clientY });
     };
+    const onRequest = (event: Event): void => {
+      const detail = (event as CustomEvent<ContextMenuRequestDetail>).detail;
+      if (detail?.target) open(detail);
+    };
     window.addEventListener("contextmenu", onContextMenu);
-    return () => window.removeEventListener("contextmenu", onContextMenu);
+    window.addEventListener(CONTEXT_MENU_REQUEST, onRequest);
+    return () => {
+      window.removeEventListener("contextmenu", onContextMenu);
+      window.removeEventListener(CONTEXT_MENU_REQUEST, onRequest);
+    };
   }, [controller, router]);
 
   useEffect(() => {
@@ -306,12 +365,15 @@ interface AppControllerWithContext extends Record<string, unknown> {
   playLaterTracks?: (tracks: readonly Track[]) => Promise<void>;
   refreshCurrentData?: () => Promise<void>;
   refreshCurrentView?: () => Promise<void>;
-  createPlaylist?: (name: string) => Promise<unknown>;
+  createPlaylist?: (...args: unknown[]) => Promise<unknown>;
   createPlaylistFolder?: (name: string) => Promise<unknown>;
   addTracksToPlaylist?: (
     playlistId: string,
     tracks: readonly Track[],
   ) => Promise<unknown>;
+  isPinned?: (id: string) => boolean;
+  togglePin?: (id: string, source?: "library" | "catalog") => Promise<void>;
+  unpin?: (id: string) => Promise<void>;
 }
 
 function buildItems({
@@ -323,6 +385,7 @@ function buildItems({
   selected,
   close,
   restoreFocus,
+  restoreTarget,
 }: {
   controller: AppControllerWithContext;
   router: ReturnType<typeof useAppRouter>;
@@ -332,6 +395,7 @@ function buildItems({
   selected: boolean;
   close: () => void;
   restoreFocus: () => void;
+  restoreTarget?: HTMLElement;
 }): MenuItem[] {
   const run =
     (action: () => void): (() => void) =>
@@ -459,10 +523,8 @@ function buildItems({
         icon: ListPlus,
         disabled: !controller.addTracksToPlaylist,
         action: run(() => {
-          const add = controller.addTracksToPlaylist;
-          const playlistId = promptName("Enter the playlist ID");
-          if (add && playlistId)
-            void add(playlistId, [track]).catch(() => undefined);
+          if (controller.addTracksToPlaylist)
+            requestPlaylistDialog("picker", [track], restoreTarget);
         }),
       },
     );
@@ -477,6 +539,36 @@ function buildItems({
     });
   }
 
+  const playlistId =
+    target.kind === "playlist"
+      ? target.id
+      : target.route?.kind === "playlist"
+        ? target.route.id
+        : undefined;
+  if (playlistId && (controller.togglePin ?? controller.unpin)) {
+    const source =
+      target.source ??
+      (target.route?.kind === "playlist" ? target.route.source : undefined) ??
+      "library";
+    const pinned =
+      typeof controller.isPinned === "function"
+        ? controller.isPinned(playlistId)
+        : false;
+    items.push({
+      id: pinned ? "unpin-playlist" : "pin-playlist",
+      label: pinned ? "Unpin playlist" : "Pin playlist",
+      icon: pinned ? PinOff : Pin,
+      disabled: pinned ? !controller.unpin : !controller.togglePin,
+      action: run(() => {
+        if (pinned) void controller.unpin?.(playlistId).catch(() => undefined);
+        else
+          void controller
+            .togglePin?.(playlistId, source)
+            .catch(() => undefined);
+      }),
+    });
+  }
+
   if (target.kind === "playlist" || target.kind === "folder" || !target.kind) {
     items.push(
       {
@@ -485,9 +577,8 @@ function buildItems({
         icon: Plus,
         disabled: !controller.createPlaylist,
         action: run(() => {
-          const name = promptName("Playlist name");
-          if (name && controller.createPlaylist)
-            void controller.createPlaylist(name).catch(() => undefined);
+          if (controller.createPlaylist)
+            requestPlaylistDialog("create", [], restoreTarget);
         }),
       },
       {
@@ -500,20 +591,6 @@ function buildItems({
           if (name && controller.createPlaylistFolder)
             void controller.createPlaylistFolder(name).catch(() => undefined);
         }),
-      },
-      {
-        id: "rename-separator",
-        label: "Rename playlist (not supported by Apple Music)",
-        icon: MoreHorizontal,
-        disabled: true,
-        action: () => undefined,
-      },
-      {
-        id: "delete-separator",
-        label: "Delete playlist (not supported by Apple Music)",
-        icon: MoreHorizontal,
-        disabled: true,
-        action: () => undefined,
       },
     );
   }

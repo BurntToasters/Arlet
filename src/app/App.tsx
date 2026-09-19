@@ -17,8 +17,14 @@ import { RouteView } from "../views/RouteView.tsx";
 import { DiagnosticsDrawer } from "../components/diagnostics/DiagnosticsDrawer.tsx";
 import { UpdateReadyModal } from "../components/UpdateReadyModal.tsx";
 import { ContextMenu } from "../components/ContextMenu.tsx";
+import { PlaylistDialogs } from "../components/PlaylistDialogs.tsx";
 import type { DiagnosticsDrawerController } from "../diagnostics/types.ts";
 import type { DiagnosticsStore } from "../diagnostics/store.ts";
+import {
+  clearWindowsMediaSession,
+  listenWindowsMediaControls,
+  updateWindowsMediaSession,
+} from "../platform/windows-media.ts";
 
 export interface AppProps {
   controller: AppController;
@@ -74,6 +80,59 @@ function AppLayout({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [router, state.ui.diagnosticsOpen]);
 
+  useEffect(() => {
+    let active = true;
+    let stop: (() => void) | undefined;
+    void listenWindowsMediaControls((control) => {
+      if (control === "play")
+        void Promise.resolve(controller.play?.()).catch(() => undefined);
+      else if (control === "pause")
+        void Promise.resolve(controller.pause?.()).catch(() => undefined);
+      else if (control === "next")
+        void controller.next().catch(() => undefined);
+      else void controller.previous().catch(() => undefined);
+    })
+      .then((unlisten) => {
+        if (active) stop = unlisten;
+        else unlisten();
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      stop?.();
+    };
+  }, [controller]);
+
+  useEffect(() => {
+    const current = state.playback.current;
+    if (
+      !current ||
+      state.playback.status === "idle" ||
+      state.playback.status === "stopped" ||
+      state.playback.status === "error"
+    ) {
+      void clearWindowsMediaSession().catch(() => undefined);
+      return;
+    }
+    void updateWindowsMediaSession({
+      title: current.title,
+      artist: current.artistName,
+      album: current.albumTitle,
+      artworkUrl: current.artwork?.url,
+      playbackStatus:
+        state.playback.status === "playing" ? "playing" : "paused",
+      playEnabled: state.playback.status !== "playing",
+      pauseEnabled: state.playback.status === "playing",
+      nextEnabled: state.playback.queueIndex < state.playback.queue.length - 1,
+      previousEnabled: state.playback.queueIndex > 0,
+    }).catch(() => undefined);
+  }, [
+    state.playback.current,
+    state.playback.status,
+    state.playback.queueIndex,
+    state.playback.queue.length,
+  ]);
+
   return (
     <div className="app-shell">
       <Titlebar />
@@ -109,6 +168,7 @@ function AppLayout({
       <PlayerBar />
       <UpdateReadyModal />
       <ContextMenu />
+      <PlaylistDialogs />
     </div>
   );
 }

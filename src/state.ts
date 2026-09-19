@@ -1,4 +1,15 @@
-import type { PlaybackState, Track } from "./domain/music.ts";
+import type {
+  Album,
+  Artist,
+  DiscoveryResource,
+  PinnedPlaylist,
+  PlaybackState,
+  Playlist,
+  RecommendationSection,
+  Station,
+  Track,
+  MusicSource,
+} from "./domain/music.ts";
 import type { AppErrorCode } from "./domain/errors.ts";
 import type { Route } from "./routing/router.ts";
 import { redactSensitive } from "./platform/redact.ts";
@@ -59,8 +70,47 @@ export interface SearchState {
   query: string;
   status: "idle" | "loading" | "success" | "error";
   results: Track[];
+  activeSource: "catalog" | "library";
+  catalog: SearchResourceGroups;
+  library: SearchResourceGroups;
   error?: string;
   requestId: number;
+}
+
+export interface SearchResourceGroups {
+  songs: Track[];
+  albums: Album[];
+  artists: Artist[];
+  playlists: Playlist[];
+  status: "idle" | "loading" | "success" | "error";
+  error?: string;
+}
+
+export type DiscoveryLoadStatus =
+  "idle" | "loading" | "refreshing" | "success" | "error";
+
+export interface BrowseState {
+  status: DiscoveryLoadStatus;
+  songs: Track[];
+  albums: Album[];
+  playlists: Playlist[];
+  error?: string;
+  lastUpdatedAt?: number;
+}
+
+export interface RadioSectionState {
+  status: DiscoveryLoadStatus;
+  items: Station[];
+  error?: string;
+}
+
+export interface RadioState {
+  status: DiscoveryLoadStatus;
+  personal: RadioSectionState;
+  live: RadioSectionState;
+  recent: RadioSectionState;
+  error?: string;
+  lastUpdatedAt?: number;
 }
 
 export type LibrarySection =
@@ -110,6 +160,26 @@ export interface LibraryDetailState<T extends { id: string } = LibraryEntity> {
   resource?: T;
   tracks?: T[];
   albums?: T[];
+}
+
+export type HomeLoadStatus =
+  "idle" | "loading" | "refreshing" | "success" | "error";
+
+export interface HomeErrors {
+  recentPlaylists?: string;
+  heavyRotation?: string;
+  recommendations?: string;
+}
+
+export interface HomeState {
+  status: HomeLoadStatus;
+  recentPlaylists: Playlist[];
+  heavyRotation: DiscoveryResource[];
+  recommendations: RecommendationSection[];
+  errors: HomeErrors;
+  lastUpdatedAt?: number;
+  /** True when a prior session snapshot remains after refresh failure. */
+  stale: boolean;
 }
 
 export interface AccountSummary {
@@ -176,6 +246,9 @@ export interface AppState {
   tracksPlayed: number;
   account?: AccountSummary;
   library?: LibraryState;
+  home?: HomeState;
+  browse?: BrowseState;
+  radio?: RadioState;
   /** Milestone 0-compatible snapshots may omit the shell fields. */
   initialization?: InitializationState;
   navigation?: Route;
@@ -183,6 +256,7 @@ export interface AppState {
   settings?: AppSettings;
   windowEffect?: WindowEffectState;
   updates?: UpdateState;
+  pins?: PinnedPlaylist[];
   ui?: UiState;
   diagnostics?: DiagnosticsState;
 }
@@ -194,9 +268,13 @@ export interface RuntimeAppState extends AppState {
   settings: AppSettings;
   windowEffect: WindowEffectState;
   updates: UpdateState;
+  pins: PinnedPlaylist[];
   ui: UiState;
   diagnostics: DiagnosticsState;
   library: LibraryState;
+  home: HomeState;
+  browse: BrowseState;
+  radio: RadioState;
   account: AccountSummary;
 }
 
@@ -208,6 +286,9 @@ const initialPlaybackState: PlaybackState = {
   volume: 0.5,
   queue: [],
   queueIndex: 0,
+  shuffleMode: "off",
+  repeatMode: "off",
+  modeCapabilities: { shuffle: false, repeat: false },
   error: undefined,
 };
 
@@ -245,6 +326,41 @@ function emptyLibraryDetail(): LibraryDetailState & Record<string, unknown> {
   };
 }
 
+export function createInitialHomeState(): HomeState {
+  return {
+    status: "idle",
+    recentPlaylists: [],
+    heavyRotation: [],
+    recommendations: [],
+    errors: {},
+    stale: false,
+  };
+}
+
+function emptySearchGroups(): SearchResourceGroups {
+  return {
+    songs: [],
+    albums: [],
+    artists: [],
+    playlists: [],
+    status: "idle",
+  };
+}
+
+export function createInitialBrowseState(): BrowseState {
+  return { status: "idle", songs: [], albums: [], playlists: [] };
+}
+
+export function createInitialRadioState(): RadioState {
+  const section = (): RadioSectionState => ({ status: "idle", items: [] });
+  return {
+    status: "idle",
+    personal: section(),
+    live: section(),
+    recent: section(),
+  };
+}
+
 export function createInitialLibraryState(): LibraryState {
   const collections = {} as Record<LibrarySection, LibraryCollectionState>;
   for (const section of librarySections) {
@@ -275,6 +391,9 @@ const initialState: RuntimeAppState = {
     query: "",
     status: "idle",
     results: [],
+    activeSource: "catalog",
+    catalog: emptySearchGroups(),
+    library: emptySearchGroups(),
     error: undefined,
     requestId: 0,
   },
@@ -289,6 +408,7 @@ const initialState: RuntimeAppState = {
     resolvedChannel: "stable",
     promptOpen: false,
   },
+  pins: [],
   ui: {
     queueOpen: false,
     diagnosticsOpen: false,
@@ -302,16 +422,25 @@ const initialState: RuntimeAppState = {
   tracksPlayed: 0,
   account: createInitialLibraryState().account,
   library: createInitialLibraryState(),
+  home: createInitialHomeState(),
+  browse: createInitialBrowseState(),
+  radio: createInitialRadioState(),
 };
 
 function cloneInitialState(): RuntimeAppState {
   return {
     ...initialState,
     playback: { ...initialPlaybackState },
-    search: { ...initialState.search, results: [] },
+    search: {
+      ...initialState.search,
+      results: [],
+      catalog: emptySearchGroups(),
+      library: emptySearchGroups(),
+    },
     settings: { ...DEFAULT_SETTINGS },
     windowEffect: { ...initialState.windowEffect },
     updates: { ...initialState.updates },
+    pins: [],
     ui: { ...initialState.ui },
     diagnostics: {
       ...initialState.diagnostics,
@@ -321,6 +450,9 @@ function cloneInitialState(): RuntimeAppState {
     },
     library: createInitialLibraryState(),
     account: { ...initialState.account },
+    home: createInitialHomeState(),
+    browse: createInitialBrowseState(),
+    radio: createInitialRadioState(),
   };
 }
 
@@ -464,10 +596,18 @@ export function appendLibraryCollectionItems<T extends { id: string }>(
 
 export type LibraryDetailKind = keyof LibraryDetailsState;
 
+export function libraryDetailKey(
+  id: string,
+  source: MusicSource = "library",
+): string {
+  return source === "catalog" ? `catalog:${id}` : id;
+}
+
 export function setLibraryDetailState(
   kind: LibraryDetailKind,
   patch: Partial<LibraryDetailState>,
   id?: string,
+  source?: MusicSource,
 ): void {
   const current = state.library.details[kind];
   const next = {
@@ -477,8 +617,15 @@ export function setLibraryDetailState(
       ? {}
       : { error: sanitizeRenderableError(patch.error) }),
   };
-  const details = id
-    ? { ...state.library.details, [kind]: { ...current, [id]: next } }
+  const key = id ? libraryDetailKey(id, source) : id;
+  const details = key
+    ? {
+        ...state.library.details,
+        [kind]: {
+          ...current,
+          [key]: next,
+        },
+      }
     : { ...state.library.details, [kind]: next };
   update({
     ...state,
@@ -487,6 +634,28 @@ export function setLibraryDetailState(
       details,
     },
   });
+}
+
+export function setHomeState(patch: Partial<HomeState>): void {
+  const errors =
+    patch.errors === undefined
+      ? state.home.errors
+      : Object.fromEntries(
+          Object.entries(patch.errors).map(([key, value]) => [
+            key,
+            value === undefined ? undefined : sanitizeRenderableError(value),
+          ]),
+        );
+  const next = {
+    ...state.home,
+    ...patch,
+    errors,
+  };
+  update({ ...state, home: next });
+}
+
+export function clearHomeState(): void {
+  update({ ...state, home: createInitialHomeState() });
 }
 
 export function clearLibraryState(): void {
@@ -532,6 +701,22 @@ export function setSearchState(patch: Partial<SearchState>): void {
   });
 }
 
+export function setBrowseState(patch: Partial<BrowseState>): void {
+  update({ ...state, browse: { ...state.browse, ...patch } });
+}
+
+export function setRadioState(patch: Partial<RadioState>): void {
+  update({ ...state, radio: { ...state.radio, ...patch } });
+}
+
+export function setPlaybackModes(
+  patch: Partial<
+    Pick<PlaybackState, "shuffleMode" | "repeatMode" | "modeCapabilities">
+  >,
+): void {
+  update({ ...state, playback: { ...state.playback, ...patch } });
+}
+
 export function setSettings(settings: AppSettings): void {
   update({
     ...state,
@@ -561,6 +746,10 @@ export function setUpdateState(patch: Partial<UpdateState>): void {
         : { error: sanitizeRenderableError(next.error) }),
     },
   });
+}
+
+export function setPins(pins: readonly PinnedPlaylist[]): void {
+  update({ ...state, pins: [...pins] });
 }
 
 export function setUiState(patch: Partial<UiState>): void {
@@ -593,12 +782,21 @@ export function setPlaybackStatus(status: PlaybackState["status"]): void {
   });
 }
 
-export function setCurrentTrack(track: Track | undefined): void {
+export function setCurrentTrack(
+  track: Track | undefined,
+  explicitQueueIndex?: number,
+): void {
   const isNewTrack =
     track !== undefined && track.id !== state.playback.current?.id;
-  const queueIndex = track
-    ? state.playback.queue.findIndex((item) => item.id === track.id)
-    : -1;
+  const queueIndex =
+    track &&
+    explicitQueueIndex !== undefined &&
+    explicitQueueIndex >= 0 &&
+    explicitQueueIndex < state.playback.queue.length
+      ? explicitQueueIndex
+      : track
+        ? state.playback.queue.findIndex((item) => item.id === track.id)
+        : -1;
   update({
     ...state,
     playback: {
@@ -647,6 +845,13 @@ export function setQueue(queue: Track[], queueIndex = 0): void {
       queueIndex: safeIndex,
     },
   });
+}
+
+/** Replace queue while preserving explicit position for duplicate track IDs. */
+export function setQueueSnapshot(queue: Track[], queueIndex = 0): void {
+  setQueue(queue, queueIndex);
+  const current = queue[queueIndex];
+  if (current) setCurrentTrack(current, Math.max(0, queueIndex));
 }
 
 export function setPlaybackError(code: AppErrorCode, message: string): void {

@@ -1,6 +1,5 @@
 import {
   AlertCircle,
-  ArrowLeft,
   Disc3,
   ListMusic,
   LoaderCircle,
@@ -30,16 +29,56 @@ import {
 import type { Track } from "../domain/music.ts";
 
 type DetailKind = "album" | "artist" | "playlist";
+type DetailSource = "library" | "catalog";
 
 interface DetailController {
-  loadAlbum?: (id: string) => Promise<unknown>;
-  loadArtist?: (id: string) => Promise<unknown>;
-  loadPlaylist?: (id: string) => Promise<unknown>;
+  loadAlbum?: (
+    id: string,
+    source?: DetailSource,
+    options?: { refresh?: boolean },
+  ) => Promise<unknown>;
+  loadArtist?: (
+    id: string,
+    source?: DetailSource,
+    options?: { refresh?: boolean },
+  ) => Promise<unknown>;
+  loadPlaylist?: (
+    id: string,
+    source?: DetailSource,
+    options?: { refresh?: boolean },
+  ) => Promise<unknown>;
   refreshCurrentData?: () => Promise<unknown>;
 }
 
 function run(action: () => Promise<unknown> | undefined): void {
   void Promise.resolve(action()).catch(() => undefined);
+}
+
+function callLoader(
+  loader:
+    | ((
+        id: string,
+        source?: DetailSource,
+        options?: { refresh?: boolean },
+      ) => Promise<unknown>)
+    | undefined,
+  id: string,
+  source?: DetailSource,
+  options?: { refresh?: boolean },
+): void {
+  if (loader) run(() => loader(id, source, options));
+}
+
+function resourceSource(resource: ResourceLike): DetailSource | undefined {
+  const raw = resource.raw;
+  const attributes =
+    raw.attributes && typeof raw.attributes === "object"
+      ? (raw.attributes as Record<string, unknown>)
+      : undefined;
+  const value = raw.source ?? attributes?.source;
+  if (value === "library" || value === "catalog") return value;
+  const type = resource.type?.toLowerCase();
+  return type?.startsWith("library-") ? "library" : undefined;
 }
 
 function findResource(
@@ -102,6 +141,9 @@ function detailContext(
     "data-context-id": resource.id,
     "data-context-title": resource.title,
     "data-context-route-kind": kind,
+    ...(resourceSource(resource)
+      ? { "data-context-source": resourceSource(resource) as string }
+      : {}),
   };
 }
 
@@ -134,15 +176,22 @@ function TrackList({
 export function LibraryDetailView({
   kind,
   id,
+  source,
 }: {
   kind: DetailKind;
   id: string;
+  source?: DetailSource;
 }): JSX.Element {
   const state = useAppState();
   const controller = useAppController();
   const router = useAppRouter();
   const extendedController = controller as AppController & DetailController;
-  const detail = readDetail(state, kind, id);
+  const sourceDetail =
+    source === "catalog" ? readDetail(state, kind, `catalog:${id}`) : undefined;
+  const detail =
+    sourceDetail && sourceDetail.status !== "idle"
+      ? sourceDetail
+      : readDetail(state, kind, id);
   const fallback = findResource(state, kind, id);
   const resource = detailResource(detail, fallback);
   const resources = useMemo(
@@ -165,7 +214,7 @@ export function LibraryDetailView({
         : kind === "artist"
           ? extendedController.loadArtist
           : extendedController.loadPlaylist;
-    if (loader) run(() => loader(id));
+    callLoader(loader, id, source);
   }, [
     authorized,
     extendedController.loadAlbum,
@@ -173,6 +222,7 @@ export function LibraryDetailView({
     extendedController.loadPlaylist,
     id,
     kind,
+    source,
   ]);
 
   const playTrack = (track: Track): void =>
@@ -233,7 +283,7 @@ export function LibraryDetailView({
                   : kind === "artist"
                     ? extendedController.loadArtist
                     : extendedController.loadPlaylist;
-              if (loader) run(() => loader(id));
+              callLoader(loader, id, source, { refresh: true });
             }}
           >
             Try again
@@ -249,15 +299,6 @@ export function LibraryDetailView({
   const isArtist = kind === "artist";
   return (
     <>
-      <div className="detail-back-row">
-        <button
-          className="quiet-button"
-          type="button"
-          onClick={() => router.back()}
-        >
-          <ArrowLeft aria-hidden="true" size={16} /> Back
-        </button>
-      </div>
       <section
         className="library-detail-hero"
         {...(resource ? detailContext(resource, kind) : {})}
@@ -301,7 +342,7 @@ export function LibraryDetailView({
                     : kind === "artist"
                       ? extendedController.loadArtist
                       : extendedController.loadPlaylist;
-                if (loader) run(() => loader(id));
+                callLoader(loader, id, source, { refresh: true });
               }}
             >
               <RefreshCw aria-hidden="true" size={16} />
@@ -328,7 +369,13 @@ export function LibraryDetailView({
                 className="library-card"
                 type="button"
                 {...detailContext(album, "album")}
-                onClick={() => router.navigate({ kind: "album", id: album.id })}
+                onClick={() =>
+                  router.navigate({
+                    kind: "album",
+                    id: album.id,
+                    source: resourceSource(album) ?? source,
+                  } as Parameters<typeof router.navigate>[0])
+                }
               >
                 <Artwork
                   track={toTrack(album)}

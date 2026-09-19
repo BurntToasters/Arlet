@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-preact";
 import type { JSX } from "preact";
+import appIconUrl from "../assets/app-icon.png";
 import {
   useAppController,
   useAppRouter,
@@ -303,11 +304,13 @@ export function Titlebar(): JSX.Element {
         <Menu aria-hidden="true" size={18} strokeWidth={1.9} />
       </button>
       <div className="titlebar-brand" data-tauri-drag-region>
-        <span className="brand-mark" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </span>
+        <img
+          className="brand-mark"
+          src={appIconUrl}
+          alt=""
+          aria-hidden="true"
+          draggable={false}
+        />
         <span className="brand-name">Arlet</span>
       </div>
 

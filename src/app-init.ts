@@ -67,14 +67,12 @@ export async function initializeApplication(
   }
 
   await logNativeDiagnostics(controller);
-  try {
-    await controller.loadSettings();
-  } catch (error) {
+  const settingsSettled = controller.loadSettings().catch((error: unknown) => {
     controller.log(
       `Settings initialization failed: ${error instanceof Error ? error.message : String(error)}`,
     );
-  }
-  await controller.initialize();
+  });
+  await Promise.all([settingsSettled, controller.initialize()]);
   controller.log("Arlet shell ready. Sign in to begin listening.");
   controller.log(
     "Developer diagnostics: Ctrl+Shift+D (development builds only).",

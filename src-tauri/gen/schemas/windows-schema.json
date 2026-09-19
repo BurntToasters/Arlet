@@ -189,6 +189,18 @@
           "markdownDescription": "Enables the clear_logs command without any pre-configured scope."
         },
         {
+          "description": "Enables the clear_windows_media_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-clear-windows-media-session",
+          "markdownDescription": "Enables the clear_windows_media_session command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the delete_pins command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-pins",
+          "markdownDescription": "Enables the delete_pins command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_app_info command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-app-info",
@@ -213,6 +225,12 @@
           "markdownDescription": "Enables the get_log_dir command without any pre-configured scope."
         },
         {
+          "description": "Enables the load_pins command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-load-pins",
+          "markdownDescription": "Enables the load_pins command without any pre-configured scope."
+        },
+        {
           "description": "Enables the load_settings command without any pre-configured scope.",
           "type": "string",
           "const": "allow-load-settings",
@@ -229,6 +247,12 @@
           "type": "string",
           "const": "allow-reset-settings",
           "markdownDescription": "Enables the reset_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_pins command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-pins",
+          "markdownDescription": "Enables the save_pins command without any pre-configured scope."
         },
         {
           "description": "Enables the save_settings command without any pre-configured scope.",
@@ -255,6 +279,12 @@
           "markdownDescription": "Enables the supports_window_fx command without any pre-configured scope."
         },
         {
+          "description": "Enables the update_windows_media_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-update-windows-media-session",
+          "markdownDescription": "Enables the update_windows_media_session command without any pre-configured scope."
+        },
+        {
           "description": "Denies the append_local_log command without any pre-configured scope.",
           "type": "string",
           "const": "deny-append-local-log",
@@ -265,6 +295,18 @@
           "type": "string",
           "const": "deny-clear-logs",
           "markdownDescription": "Denies the clear_logs command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the clear_windows_media_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-clear-windows-media-session",
+          "markdownDescription": "Denies the clear_windows_media_session command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the delete_pins command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-pins",
+          "markdownDescription": "Denies the delete_pins command without any pre-configured scope."
         },
         {
           "description": "Denies the get_app_info command without any pre-configured scope.",
@@ -291,6 +333,12 @@
           "markdownDescription": "Denies the get_log_dir command without any pre-configured scope."
         },
         {
+          "description": "Denies the load_pins command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-load-pins",
+          "markdownDescription": "Denies the load_pins command without any pre-configured scope."
+        },
+        {
           "description": "Denies the load_settings command without any pre-configured scope.",
           "type": "string",
           "const": "deny-load-settings",
@@ -307,6 +355,12 @@
           "type": "string",
           "const": "deny-reset-settings",
           "markdownDescription": "Denies the reset_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_pins command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-pins",
+          "markdownDescription": "Denies the save_pins command without any pre-configured scope."
         },
         {
           "description": "Denies the save_settings command without any pre-configured scope.",
@@ -331,6 +385,12 @@
           "type": "string",
           "const": "deny-supports-window-fx",
           "markdownDescription": "Denies the supports_window_fx command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the update_windows_media_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-update-windows-media-session",
+          "markdownDescription": "Denies the update_windows_media_session command without any pre-configured scope."
         },
         {
           "description": "No features are enabled by default, as we believe\nthe clipboard can be inherently dangerous and it is \napplication specific if read and/or write access is needed.\n\nClipboard interaction needs to be explicitly enabled.\n",

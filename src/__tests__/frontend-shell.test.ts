@@ -216,12 +216,12 @@ describe("MusicKit event lifecycle", () => {
     } as unknown as MusicKit.MusicKitInstance;
 
     const stop = registerMusicKitEvents(instance);
-    expect(addEventListener).toHaveBeenCalledTimes(4);
+    expect(addEventListener).toHaveBeenCalledTimes(5);
 
     stop();
     stop();
 
-    expect(removeEventListener).toHaveBeenCalledTimes(4);
+    expect(removeEventListener).toHaveBeenCalledTimes(5);
     expect(removeEventListener.mock.calls).toEqual(addEventListener.mock.calls);
   });
 });
@@ -366,7 +366,7 @@ describe("MusicKit controller", () => {
     expect(latestEntry?.message).not.toContain("eyJmedia-secret");
     expect(getState().playback.error?.message).toContain("[REDACTED]");
     controller.dispose();
-    expect(removeEventListener).toHaveBeenCalledTimes(4);
+    expect(removeEventListener).toHaveBeenCalledTimes(5);
   });
 
   it("guards authorization popups and clears pending state on success or failure", async () => {

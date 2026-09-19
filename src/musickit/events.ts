@@ -8,6 +8,7 @@ import { normalizeTrack } from "./normalize.ts";
 import { mapErrorToCode } from "./errors.ts";
 import { redactSensitive } from "../platform/redact.ts";
 import type { PlaybackState } from "../domain/music.ts";
+import { syncMusicKitQueue } from "./player.ts";
 
 function mapPlaybackState(state: number): PlaybackState["status"] {
   const states = MusicKit.PlaybackStates;
@@ -34,6 +35,8 @@ export function registerMusicKitEvents(
   instance: MusicKit.MusicKitInstance,
   onStateChange?: () => void,
   onPlaybackError?: (message: string) => void,
+  onQueueChange?: () => void,
+  onModeChange?: () => void,
 ): () => void {
   const onPlaybackStateChange = (event: Record<string, unknown>): void => {
     const state = (event.state ?? event.oldState ?? 0) as number;
@@ -42,9 +45,10 @@ export function registerMusicKitEvents(
   };
   const onNowPlayingItemChange = (event: Record<string, unknown>): void => {
     const item = (event.item ?? null) as MusicKit.MediaItem | null;
-    if (item) {
+    const queueWasSynced = item ? syncMusicKitQueue(instance, event) : false;
+    if (item && !queueWasSynced) {
       setCurrentTrack(normalizeTrack(item));
-    } else {
+    } else if (!item) {
       setCurrentTrack(undefined);
     }
     onStateChange?.();
@@ -61,6 +65,15 @@ export function registerMusicKitEvents(
     setPlaybackError(mapErrorToCode(message), safeMessage);
     onPlaybackError?.(safeMessage);
     onStateChange?.();
+  };
+
+  const onQueueItemsChange = (event: Record<string, unknown>): void => {
+    if (syncMusicKitQueue(instance, event)) onQueueChange?.();
+    onStateChange?.();
+  };
+
+  const onPlaybackModeChange = (): void => {
+    onModeChange?.();
   };
 
   const listeners: Array<{
@@ -84,6 +97,25 @@ export function registerMusicKitEvents(
       callback: onMediaPlaybackError,
     },
   ];
+
+  // Queue data can appear only after playback starts, so register the event
+  // whenever the runtime advertises it. The handler safely ignores hidden
+  // queue shapes and the controller maintains a deterministic local fallback.
+  if (typeof MusicKit.Events.queueItemsDidChange === "string") {
+    listeners.push({
+      name: MusicKit.Events.queueItemsDidChange,
+      callback: onQueueItemsChange,
+    });
+  }
+
+  for (const name of [
+    (MusicKit.Events as Record<string, unknown>).shuffleModeDidChange,
+    (MusicKit.Events as Record<string, unknown>).repeatModeDidChange,
+  ]) {
+    if (typeof name === "string") {
+      listeners.push({ name, callback: onPlaybackModeChange });
+    }
+  }
 
   for (const listener of listeners) {
     instance.addEventListener(listener.name, listener.callback);

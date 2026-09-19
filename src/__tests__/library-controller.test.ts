@@ -92,7 +92,7 @@ describe("library controller", () => {
     controller.dispose();
   });
 
-  it("queues library resources with their MusicKit library identifiers", async () => {
+  it("queues library tracks through catalog identifiers", async () => {
     const client = {} as AppleMusicLibraryClient;
     const { controller, music } = controllerWith(client);
     await controller.initialize();
@@ -104,10 +104,17 @@ describe("library controller", () => {
         artistName: "Artist",
         resourceType: "library-songs",
       },
+      {
+        id: "i.library-match",
+        title: "Matched song",
+        artistName: "Artist",
+        resourceType: "library-songs",
+        catalogId: "catalog-song",
+      },
     ]);
 
     expect(music.setQueue).toHaveBeenCalledWith({
-      librarySongs: ["i.library-song"],
+      songs: ["i.library-song", "catalog-song"],
     });
     expect(music.play).toHaveBeenCalledOnce();
     controller.dispose();

@@ -4,9 +4,11 @@ mod auth_popup;
 mod commands;
 mod logging;
 mod music_diagnostic;
+mod pins;
 mod settings;
 mod window_fx;
 mod window_snap;
+mod windows_media;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -14,6 +16,27 @@ use tauri::Manager;
 use logging::LogFileLock;
 
 fn main() {
+    if let Err(error) = commands::ensure_supported_windows() {
+        #[cfg(windows)]
+        {
+            use windows::core::PCWSTR;
+            use windows::Win32::Foundation::HWND;
+            use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+            let mut text: Vec<u16> = error.encode_utf16().collect();
+            text.push(0);
+            let title: Vec<u16> = "Arlet".encode_utf16().chain([0]).collect();
+            unsafe {
+                let _ = MessageBoxW(
+                    Some(HWND(std::ptr::null_mut())),
+                    PCWSTR(text.as_ptr()),
+                    PCWSTR(title.as_ptr()),
+                    MB_OK | MB_ICONERROR,
+                );
+            }
+        }
+        eprintln!("{error}");
+        return;
+    }
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_dialog::init())
@@ -70,6 +93,7 @@ fn main() {
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 window_snap::on_window_destroyed(window);
+                windows_media::dispose();
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -80,12 +104,17 @@ fn main() {
             settings::load_settings,
             settings::save_settings,
             settings::reset_settings,
+            pins::load_pins,
+            pins::save_pins,
+            pins::delete_pins,
             logging::append_local_log,
             logging::get_log_dir,
             logging::clear_logs,
             window_fx::set_window_fx,
             window_fx::supports_window_fx,
             window_snap::set_snap_overlay_bounds,
+            windows_media::update_windows_media_session,
+            windows_media::clear_windows_media_session,
         ])
         .run(tauri::generate_context!())
         .expect("failed to initialize Arlet");

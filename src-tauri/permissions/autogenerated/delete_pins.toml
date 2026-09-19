@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-delete-pins"
+description = "Enables the delete_pins command without any pre-configured scope."
+commands.allow = ["delete_pins"]
+
+[[permission]]
+identifier = "deny-delete-pins"
+description = "Denies the delete_pins command without any pre-configured scope."
+commands.deny = ["delete_pins"]

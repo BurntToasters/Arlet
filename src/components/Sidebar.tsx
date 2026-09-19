@@ -16,6 +16,7 @@ import type { LucideIcon } from "lucide-preact";
 import type { JSX } from "preact";
 import { useAppRouter, useAppState } from "../app/context.tsx";
 import { setUiState } from "../state.ts";
+import type { PinnedPlaylist } from "../domain/music.ts";
 import type { LibrarySection, Route } from "../routing/router.ts";
 
 interface NavItem {
@@ -26,7 +27,7 @@ interface NavItem {
 
 const primaryItems: NavItem[] = [
   { label: "Home", route: { kind: "home" }, icon: House },
-  { label: "New", route: { kind: "new" }, icon: Sparkles },
+  { label: "Browse", route: { kind: "browse" }, icon: Sparkles },
   { label: "Radio", route: { kind: "radio" }, icon: Radio },
 ];
 
@@ -66,6 +67,12 @@ const libraryItems: Array<
 ];
 
 function sameRoute(left: Route, right: Route): boolean {
+  if (
+    (left.kind === "new" && right.kind === "browse") ||
+    (left.kind === "browse" && right.kind === "new")
+  ) {
+    return true;
+  }
   if (left.kind !== right.kind) return false;
   if (left.kind === "search" && right.kind === "search") {
     return left.query === right.query;
@@ -79,7 +86,10 @@ function sameRoute(left: Route, right: Route): boolean {
       left.kind === "playlist") &&
     right.kind === left.kind
   ) {
-    return left.id === right.id;
+    return (
+      left.id === right.id &&
+      (left.source ?? "library") === (right.source ?? "library")
+    );
   }
   return true;
 }
@@ -107,6 +117,72 @@ function readAccountSummary(
         ? candidate.storefront
         : undefined,
   };
+}
+
+function displayNameOf(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const direct = record.name ?? record.title;
+  if (typeof direct === "string" && direct.trim().length > 0) return direct;
+  const attributes = record.attributes;
+  if (attributes && typeof attributes === "object") {
+    const name = (attributes as Record<string, unknown>).name;
+    if (typeof name === "string" && name.trim().length > 0) return name;
+  }
+  return undefined;
+}
+
+function artworkUrlOf(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  const artwork = record.artwork;
+  if (artwork && typeof artwork === "object") {
+    const url = (artwork as Record<string, unknown>).url;
+    if (typeof url === "string" && url.trim().length > 0) return url;
+  }
+  const attributes = record.attributes;
+  if (attributes && typeof attributes === "object") {
+    const nested = (attributes as Record<string, unknown>).artwork;
+    if (nested && typeof nested === "object") {
+      const url = (nested as Record<string, unknown>).url;
+      if (typeof url === "string" && url.trim().length > 0) return url;
+    }
+  }
+  return undefined;
+}
+
+function resolvePinDisplay(
+  state: ReturnType<typeof useAppState>,
+  pin: PinnedPlaylist,
+): { name?: string; artworkUrl?: string } {
+  const candidates = [
+    ...(state.library?.collections?.playlists?.items ?? []),
+    ...(state.library?.details?.playlistFolder?.items ?? []),
+    ...(state.home?.recentPlaylists ?? []),
+    ...(state.home?.heavyRotation ?? []),
+  ];
+  for (const item of candidates) {
+    if ((item as { id?: unknown }).id !== pin.id) continue;
+    const name = displayNameOf(item);
+    if (name) return { name, artworkUrl: artworkUrlOf(item) };
+  }
+  return {};
+}
+
+function renderPinIcon(artworkUrl?: string): JSX.Element {
+  if (artworkUrl) {
+    return (
+      <img
+        className="sidebar-pin-art"
+        src={artworkUrl}
+        alt=""
+        aria-hidden="true"
+        loading="lazy"
+        draggable={false}
+      />
+    );
+  }
+  return <ListMusic aria-hidden="true" size={18} strokeWidth={1.8} />;
 }
 
 export function Sidebar(): JSX.Element {
@@ -150,6 +226,79 @@ export function Sidebar(): JSX.Element {
     );
   };
 
+  const pins = state.pins ?? [];
+  const playlistsStatus = state.library?.collections?.playlists?.status;
+  const pinsSettled =
+    playlistsStatus === "success" || playlistsStatus === "refreshing";
+
+  const renderPin = (pin: PinnedPlaylist): JSX.Element => {
+    const route: Route =
+      pin.source === "catalog"
+        ? { kind: "playlist", id: pin.id, source: "catalog" }
+        : { kind: "playlist", id: pin.id };
+    const active = sameRoute(state.navigation, route);
+    const display = resolvePinDisplay(state, pin);
+    const name = display.name;
+    if (name) {
+      return (
+        <button
+          key={`${pin.source}:${pin.id}`}
+          className={`sidebar-link ${active ? "is-active" : ""}`.trim()}
+          type="button"
+          aria-label={name}
+          title={name}
+          aria-current={active ? "page" : undefined}
+          data-context-kind="playlist"
+          data-context-id={pin.id}
+          data-context-route-kind="playlist"
+          data-context-source={pin.source}
+          onClick={() => navigate(route)}
+        >
+          {renderPinIcon(display.artworkUrl)}
+          <span>{name}</span>
+        </button>
+      );
+    }
+    if (!pinsSettled) {
+      return (
+        <button
+          key={`${pin.source}:${pin.id}`}
+          className="sidebar-link"
+          type="button"
+          aria-label="Pinned playlist"
+          title="Pinned playlist"
+          style={{ opacity: 0.55 }}
+          data-context-kind="playlist"
+          data-context-id={pin.id}
+          data-context-route-kind="playlist"
+          data-context-source={pin.source}
+          onClick={() => navigate(route)}
+        >
+          <ListMusic aria-hidden="true" size={18} strokeWidth={1.8} />
+          <span>Playlist</span>
+        </button>
+      );
+    }
+    return (
+      <button
+        key={`${pin.source}:${pin.id}`}
+        className="sidebar-link"
+        type="button"
+        aria-label="Unknown playlist"
+        title="Unknown playlist"
+        aria-disabled="true"
+        style={{ opacity: 0.55 }}
+        data-context-kind="playlist"
+        data-context-id={pin.id}
+        data-context-route-kind="playlist"
+        data-context-source={pin.source}
+      >
+        <ListMusic aria-hidden="true" size={18} strokeWidth={1.8} />
+        <span>Unknown playlist</span>
+      </button>
+    );
+  };
+
   return (
     <aside
       className={`sidebar ${state.ui.sidebarOpen ? "is-open" : ""}`.trim()}
@@ -169,6 +318,14 @@ export function Sidebar(): JSX.Element {
 
       <nav className="sidebar-nav" aria-label="Library navigation">
         <div className="sidebar-group">{primaryItems.map(renderItem)}</div>
+        {pins.length > 0 ? (
+          <>
+            <div className="sidebar-heading">Pinned</div>
+            <div className="sidebar-group" aria-label="Pinned playlists">
+              {pins.map(renderPin)}
+            </div>
+          </>
+        ) : null}
         <div className="sidebar-heading">Library</div>
         <div className="sidebar-group">{libraryItems.map(renderItem)}</div>
       </nav>

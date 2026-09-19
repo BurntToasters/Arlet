@@ -1,4 +1,4 @@
-import { resolveMusicKitMusicRequest } from "./catalog.ts";
+import { resolveMusicKitMusicRequest, resolveStorefront } from "./catalog.ts";
 import {
   normalizeAlbumResource,
   normalizeArtistResource,
@@ -17,6 +17,9 @@ import type {
   Playlist,
   PlaylistFolder,
   Track,
+  DiscoveryResource,
+  MusicSource,
+  RecommendationSection,
 } from "../domain/music.ts";
 
 export interface Page<T> {
@@ -62,12 +65,21 @@ export interface AppleMusicLibraryClient {
   getRecentlyPlayedTracks(
     cursor?: string | LibraryPageOptions,
   ): Promise<Page<Track>>;
-  getAlbum(id: string): Promise<Album | undefined>;
-  getArtist(id: string): Promise<Artist | undefined>;
-  getPlaylist(id: string): Promise<Playlist | undefined>;
+  getRecentlyPlayedPlaylists(limit?: number): Promise<Page<Playlist>>;
+  getHeavyRotation(limit?: number): Promise<Page<DiscoveryResource>>;
+  getRecommendations(limit?: number): Promise<RecommendationSection[]>;
+  getAlbum(id: string, source?: MusicSource): Promise<Album | undefined>;
+  getAlbumTracks(
+    id: string,
+    source?: MusicSource,
+    cursor?: string | LibraryPageOptions,
+  ): Promise<Page<Track>>;
+  getArtist(id: string, source?: MusicSource): Promise<Artist | undefined>;
+  getPlaylist(id: string, source?: MusicSource): Promise<Playlist | undefined>;
   getPlaylistTracks(
     id: string,
     cursor?: string | LibraryPageOptions,
+    source?: MusicSource,
   ): Promise<Page<Track>>;
   getRootPlaylistFolder(): Promise<PlaylistFolder | undefined>;
   getPlaylistFolder(id: string): Promise<PlaylistFolder | undefined>;
@@ -286,6 +298,118 @@ function withPageMetadata<T>(items: T[], raw: unknown): Page<T> {
   return page;
 }
 
+function supportedDiscoveryType(value: unknown): boolean {
+  const type = nonEmptyString(asRecord(value)?.type);
+  return (
+    type === "albums" ||
+    type === "library-albums" ||
+    type === "playlists" ||
+    type === "library-playlists"
+  );
+}
+
+function resourceKey(value: unknown): string | undefined {
+  const record = asRecord(value);
+  const id = nonEmptyString(record?.id);
+  const type = nonEmptyString(record?.type);
+  return id && type ? `${type}:${id}` : undefined;
+}
+
+function recommendationAttributes(value: unknown): Record<string, unknown> {
+  return asRecord(asRecord(value)?.attributes) ?? {};
+}
+
+function displayString(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  const record = asRecord(value);
+  return (
+    nonEmptyString(record?.stringForDisplay) ??
+    nonEmptyString(record?.standard) ??
+    nonEmptyString(record?.short) ??
+    nonEmptyString(record?.name)
+  );
+}
+
+function recommendationRelationshipData(group: unknown): unknown[] {
+  const relationships = asRecord(asRecord(group)?.relationships);
+  for (const key of ["contents", "recommendations", "items", "resources"]) {
+    const relationshipValue = relationships?.[key];
+    if (Array.isArray(relationshipValue)) return relationshipValue;
+    const relationship = asRecord(relationshipValue);
+    const data = relationship?.data;
+    if (Array.isArray(data)) return data;
+  }
+  const record = asRecord(group);
+  for (const key of ["contents", "recommendations", "items", "resources"]) {
+    if (Array.isArray(record?.[key])) return record[key] as unknown[];
+  }
+  return [];
+}
+
+function normalizeDiscoveryResource(
+  value: unknown,
+): DiscoveryResource | undefined {
+  if (!supportedDiscoveryType(value)) return undefined;
+  return normalizeLibraryItemResource(value as AppleMusicResource) as
+    DiscoveryResource | undefined;
+}
+
+/** Normalize Apple's recommendation envelope and keep only album/playlist cards. */
+export function normalizeRecommendationGroups(
+  raw: unknown,
+  limit = 10,
+): RecommendationSection[] {
+  const root = asRecord(raw);
+  const data = Array.isArray(root?.data) ? root.data : [];
+  const included = Array.isArray(root?.included) ? root.included : [];
+  const includedByKey = new Map<string, unknown>();
+  for (const resource of included) {
+    const key = resourceKey(resource);
+    if (key) includedByKey.set(key, resource);
+  }
+  const sections: RecommendationSection[] = [];
+  for (const group of data) {
+    const groupRecord = asRecord(group);
+    if (!groupRecord) continue;
+    const candidates = recommendationRelationshipData(group)
+      .map((candidate) => {
+        const key = resourceKey(candidate);
+        return (key && includedByKey.get(key)) ?? candidate;
+      })
+      .map(normalizeDiscoveryResource)
+      .filter((item): item is DiscoveryResource => Boolean(item))
+      .slice(0, limit);
+    const direct = normalizeDiscoveryResource(group);
+    if (direct && candidates.length === 0) candidates.push(direct);
+    if (candidates.length === 0) continue;
+    const attributes = recommendationAttributes(group);
+    const id =
+      nonEmptyString(groupRecord.id) ?? `recommendation-${sections.length}`;
+    const title =
+      displayString(attributes.title) ??
+      displayString(attributes.name) ??
+      "Recommendations";
+    const kind = displayString(attributes.kind);
+    const reason = displayString(attributes.reason);
+    sections.push({
+      id,
+      title,
+      items: candidates,
+      ...(kind ? { kind } : {}),
+      ...(reason ? { reason } : {}),
+    });
+  }
+  if (sections.length > 0) return sections;
+
+  const fallback = data
+    .map(normalizeDiscoveryResource)
+    .filter((item): item is DiscoveryResource => Boolean(item))
+    .slice(0, limit);
+  return fallback.length > 0
+    ? [{ id: "recommendations", title: "Recommendations", items: fallback }]
+    : [];
+}
+
 function encodePathPart(value: string): string {
   return encodeURIComponent(value.trim());
 }
@@ -480,28 +604,84 @@ export function createAppleMusicLibraryClient(
         },
         normalizeTrackResource,
       ),
-    getAlbum: (id) =>
-      getOne(
-        `/v1/me/library/albums/${encodePathPart(id)}`,
-        normalizeAlbumResource,
-      ),
-    getArtist: (id) =>
-      getOne(
-        `/v1/me/library/artists/${encodePathPart(id)}`,
-        normalizeArtistResource,
-      ),
-    getPlaylist: (id) =>
-      getOne(
-        `/v1/me/library/playlists/${encodePathPart(id)}`,
+    getRecentlyPlayedPlaylists: (limit = 10) =>
+      getPage(
+        "/v1/me/recent/played",
+        undefined,
+        { types: "playlists,library-playlists", limit },
         normalizePlaylistResource,
       ),
-    getPlaylistTracks: (id, cursor) =>
+    getHeavyRotation: (limit = 10) =>
       getPage(
-        `/v1/me/library/playlists/${encodePathPart(id)}/tracks`,
-        cursor,
+        "/v1/me/history/heavy-rotation",
         undefined,
-        normalizeTrackResource,
+        { limit },
+        normalizeDiscoveryResource,
       ),
+    async getRecommendations(limit = 10): Promise<RecommendationSection[]> {
+      // Default recommendations endpoint does not expose a limit query. Slice
+      // normalized groups locally and apply limit to each content section.
+      const raw = await request("/v1/me/recommendations");
+      return normalizeRecommendationGroups(raw, limit);
+    },
+    async getAlbum(
+      id: string,
+      source: MusicSource = "library",
+    ): Promise<Album | undefined> {
+      const path =
+        source === "catalog"
+          ? `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/albums/${encodePathPart(id)}`
+          : `/v1/me/library/albums/${encodePathPart(id)}`;
+      return getOne(path, normalizeAlbumResource);
+    },
+    async getAlbumTracks(
+      id: string,
+      source: MusicSource = "library",
+      cursor?: string | LibraryPageOptions,
+    ): Promise<Page<Track>> {
+      const path =
+        source === "catalog"
+          ? `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/albums/${encodePathPart(id)}/tracks`
+          : `/v1/me/library/albums/${encodePathPart(id)}/tracks`;
+      return getPage(path, cursor, undefined, normalizeTrackResource);
+    },
+    async getArtist(
+      id: string,
+      source: MusicSource = "library",
+    ): Promise<Artist | undefined> {
+      const path =
+        source === "catalog"
+          ? `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/artists/${encodePathPart(id)}`
+          : `/v1/me/library/artists/${encodePathPart(id)}`;
+      return getOne(path, normalizeArtistResource);
+    },
+    async getPlaylist(
+      id: string,
+      source: MusicSource = "library",
+    ): Promise<Playlist | undefined> {
+      const path =
+        source === "catalog"
+          ? `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/playlists/${encodePathPart(id)}`
+          : `/v1/me/library/playlists/${encodePathPart(id)}`;
+      return getOne(path, normalizePlaylistResource);
+    },
+    async getPlaylistTracks(
+      id: string,
+      cursor?: string | LibraryPageOptions,
+      source: MusicSource = "library",
+    ): Promise<Page<Track>> {
+      // Permit the convenient getPlaylistTracks(id, "catalog") form while
+      // retaining the existing opaque-cursor position in the API.
+      if (cursor === "catalog" || cursor === "library") {
+        source = cursor;
+        cursor = undefined;
+      }
+      const path =
+        source === "catalog"
+          ? `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/playlists/${encodePathPart(id)}/tracks`
+          : `/v1/me/library/playlists/${encodePathPart(id)}/tracks`;
+      return getPage(path, cursor, undefined, normalizeTrackResource);
+    },
     async getRootPlaylistFolder(): Promise<PlaylistFolder | undefined> {
       const raw = await request("/v1/me/library/playlist-folders", {
         "filter[identity]": "playlistsroot",

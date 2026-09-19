@@ -2,6 +2,8 @@ pub mod auth_popup;
 pub mod commands;
 pub mod logging;
 pub mod music_diagnostic;
+pub mod pins;
 pub mod settings;
 pub mod window_fx;
 pub mod window_snap;
+pub mod windows_media;
