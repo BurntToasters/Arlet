@@ -4,6 +4,11 @@ Arlet is a Windows-first Tauri v2 application with a Preact/TypeScript frontend
 and Rust backend. Preserve unrelated work in the shared worktree and keep
 changes scoped to the requested subsystem.
 
+# Critical Information - Do not modify
+- NEVER write unit tests after you write code. 
+- Highly prefer E2E tests as the sole testing mechanism. Use them to verify complex features work. At the end of E2E tests, produce a verifiable and repeatable artifact. 
+- If you must test a system in isolation, FIRST write all the ways it could fail, THEN write the code. 
+
 ## Validation
 
 - Run `npm run typecheck`, `npm run lint`, and `npm run format:check`.
