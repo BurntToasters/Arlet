@@ -7,6 +7,7 @@ static PINS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 const MAX_PINS_BYTES: usize = 64 * 1024;
 const MAX_PINS: usize = 100;
+#[allow(dead_code)] // Written by the frontend; asserted by tests.
 pub const PINS_SCHEMA_VERSION: u64 = 1;
 
 fn lock_pins() -> Result<std::sync::MutexGuard<'static, ()>, String> {
@@ -43,8 +44,7 @@ fn validate_pins_json(json: &str) -> Result<(), String> {
             json.len()
         ));
     }
-    let value: Value =
-        serde_json::from_str(json).map_err(|e| format!("Invalid pins JSON: {e}"))?;
+    let value: Value = serde_json::from_str(json).map_err(|e| format!("Invalid pins JSON: {e}"))?;
     let pins = pins_entries(&value)?;
     if pins.len() > MAX_PINS {
         return Err(format!(

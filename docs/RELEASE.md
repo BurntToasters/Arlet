@@ -33,7 +33,25 @@ Azure signing, and live updater feeds remain explicit release-environment gates.
    without it: after verification, cleaned artifacts are mirrored there with
    hash checks, because `release:finalize` then resets the checkout.
    Betas skip the mirror unless `OVERRIDE_BETA_MIRROR_SKIP=1`.
-5. **GitHub CLI.** `gh auth login` with rights to create/edit releases in
+5. **MusicKit developer token.** Release builds embed
+   `MUSICKIT_DEVELOPER_TOKEN` from the release VM's `.env`.
+   `prerelease:prepare` runs `release:mint-token` before the preflight:
+   - With `MUSICKIT_TEAM_ID`, `MUSICKIT_KEY_ID`, and `MUSICKIT_P8_PATH` set
+     (the `.p8` outside the repo), it mints a fresh 180-day token scoped to
+     `http://tauri.localhost` into `.env` on every release. Dev
+     `MUSICKIT_TOKEN_ORIGINS`/`MUSICKIT_TOKEN_TTL_SECONDS` are ignored.
+   - With none of them set, it keeps the pasted token, so the `.p8` can stay
+     off the release VM. Mint elsewhere with
+     `MUSICKIT_TOKEN_ORIGINS=http://tauri.localhost` and paste the JWT.
+   - With only some set, it fails rather than reuse a stale token.
+
+   `build.rs` and `release:preflight` then refuse a missing token, a
+   non-ES256 JWT, fewer than 30 days left, or any origin list other than
+   `["http://tauri.localhost"]` (a missing claim warns). Ship a release
+   before the embedded token expires or MusicKit stops working for users.
+   Verify a new key or origin setup once with `npm run test:e2e:app:real`.
+
+6. **GitHub CLI.** `gh auth login` with rights to create/edit releases in
    `BurntToasters/Arlet`. `GH_REPO_OWNER`/`GH_REPO_NAME` retargeting is
    available only for beta/local recovery; stable runs require the canonical
    repository.
@@ -45,7 +63,7 @@ Azure signing, and live updater feeds remain explicit release-environment gates.
   upstream, synchronized versions (`package.json`, `tauri.conf.json`,
   `Cargo.toml`), updater pubkey presence, NSIS target config, and credential
   hygiene (no `.p8` in the worktree, `.env` never staged, no Vite-exposed
-  MusicKit developer token).
+  MusicKit developer token), and an embeddable MusicKit developer token.
 - Stable release boundaries reject recovery overrides such as
   `SKIP_WIN_CODESIGN`, `FORCE_UPLOAD`, `SKIP_RELEASE_MIRROR`,
   `ALLOW_ASSET_REPLACE`, `SKIP_E2E`, `SKIP_WIN_CONTEXT_MENU`, and
@@ -81,14 +99,16 @@ call `gh release view` or use another release API to source notes.
 
 ```text
 npm run release:prepare          # bootstrap + full test:all + clean artifacts dir
-npm run release:win              # warning + preflight + full win run (or release:win:resume to continue)
+npm run release:win              # warning + token mint + preflight + full win run (or release:win:resume to continue)
 ```
 
 `release:win:continue` runs: session verify → licenses → draft (single
 creator) → Rust targets → x64 + ARM64 NSIS builds (in-build Authenticode via
 `bundle.windows.signCommand`, then a skip-if-signed safety pass) → updater
 manifest generation → GPG sign + upload → mirror cleaned artifacts to
-`AFTER_PACK_LOC` + reset the checkout (`release:finalize`) → draft verification
+`AFTER_PACK_LOC` + reset the checkout (`release:finalize`; `finalize-reset.js`
+refuses when anything besides release by-products is uncommitted or local
+commits are unpushed) → draft verification
 (installers, checksums, signatures, updater manifests, and
 manifest-to-sidecar references).
 

@@ -98,14 +98,21 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
+          components: clippy
       - run: npm ci --ignore-scripts
       - run: npm run sync-version
       - run: npm run licenses
       - name: Unsigned Tauri build (no bundle, no signing)
+        # CI never holds the MusicKit token; this binary is never published.
+        env:
+          ARLET_SKIP_MUSICKIT_TOKEN: "1"
         run: npx tauri build --no-bundle
       - name: Verify smoke binary
         shell: bash
         run: test -e "src-tauri/target/release/arlet.exe"
+      # The Ubuntu gate cannot see cfg(windows) code, so lint it here.
+      - name: Windows clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
   security-audit:
     runs-on: ubuntu-latest

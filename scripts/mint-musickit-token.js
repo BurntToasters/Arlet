@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Mint a local MusicKit developer JWT from a Media Services .p8 that lives
 // outside the repository. Never prints the token or private key. Writes
-// MUSICKIT_DEVELOPER_TOKEN into `.env` for debug `tauri:dev` only.
+// MUSICKIT_DEVELOPER_TOKEN into `.env`, optionally origin-restricted via
+// MUSICKIT_TOKEN_ORIGINS. `--release` is the release-pipeline variant.
 
 import { createPrivateKey, createSign } from "node:crypto";
 import fs from "node:fs";
@@ -12,6 +13,43 @@ import { parseEnvFile, repoRoot } from "./phase0-preflight.js";
 export const TOKEN_ENV_KEY = "MUSICKIT_DEVELOPER_TOKEN";
 export const MAX_TTL_SECONDS = 180 * 24 * 60 * 60;
 export const DEFAULT_TTL_SECONDS = 120 * 24 * 60 * 60;
+// Mirrors RELEASE_ORIGIN in src-tauri/src/token_policy.rs.
+export const RELEASE_ORIGIN = "http://tauri.localhost";
+const MINT_INPUT_KEYS = [
+  "MUSICKIT_TEAM_ID",
+  "MUSICKIT_KEY_ID",
+  "MUSICKIT_P8_PATH",
+];
+
+/**
+ * Parses MUSICKIT_TOKEN_ORIGINS (comma-separated). Apple compares origins as
+ * exact strings, so only bare http(s) scheme://host[:port] values pass.
+ */
+export function parseTokenOrigins(raw) {
+  const origins = [];
+  for (const entry of String(raw ?? "").split(",")) {
+    const value = entry.trim();
+    if (!value) continue;
+    let parsed;
+    try {
+      parsed = new URL(value);
+    } catch {
+      parsed = undefined;
+    }
+    if (
+      !parsed ||
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      parsed.origin !== value ||
+      value.includes("*")
+    ) {
+      throw new Error(
+        `MUSICKIT_TOKEN_ORIGINS entries must be exact origins like http://tauri.localhost (got "${value}").`,
+      );
+    }
+    if (!origins.includes(value)) origins.push(value);
+  }
+  return origins;
+}
 
 function b64urlJson(value) {
   return Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
@@ -23,6 +61,7 @@ export function mintMusicKitDeveloperToken(options) {
   const privateKeyPem = String(options.privateKeyPem ?? "");
   const nowMs = options.nowMs ?? Date.now();
   const ttlSeconds = options.ttlSeconds ?? DEFAULT_TTL_SECONDS;
+  const origins = options.origins ?? [];
   if (!/^[A-Z0-9]{10}$/iu.test(teamId)) {
     throw new Error("MUSICKIT_TEAM_ID must be the 10-character Apple Team ID.");
   }
@@ -42,7 +81,12 @@ export function mintMusicKitDeveloperToken(options) {
   const iat = Math.floor(nowMs / 1000);
   const exp = iat + ttlSeconds;
   const header = b64urlJson({ alg: "ES256", kid: keyId });
-  const payload = b64urlJson({ iss: teamId, iat, exp });
+  const payload = b64urlJson({
+    iss: teamId,
+    iat,
+    exp,
+    ...(origins.length > 0 ? { origin: origins } : {}),
+  });
   const unsigned = `${header}.${payload}`;
   const key = createPrivateKey(privateKeyPem);
   const signature = createSign("SHA256")
@@ -99,17 +143,18 @@ export function resolveMintInput(env, root = repoRoot) {
   if (!Number.isFinite(ttlSeconds)) {
     throw new Error("MUSICKIT_TOKEN_TTL_SECONDS must be an integer.");
   }
+  const origins = parseTokenOrigins(env.MUSICKIT_TOKEN_ORIGINS);
   const resolvedP8 = assertP8OutsideRepo(p8Path, root);
   if (!fs.existsSync(resolvedP8)) {
     throw new Error("MUSICKIT_P8_PATH does not exist.");
   }
-  return { teamId, keyId, p8Path: resolvedP8, ttlSeconds };
+  return { teamId, keyId, p8Path: resolvedP8, ttlSeconds, origins };
 }
 
 export function mintDeveloperTokenIntoEnv(options = {}) {
   const root = options.root ?? repoRoot;
   const envPath = path.join(root, ".env");
-  const env = parseEnvFile(envPath);
+  const env = options.env ?? parseEnvFile(envPath);
   const input = resolveMintInput(env, root);
   const privateKeyPem = fs.readFileSync(input.p8Path, "utf8");
   const minted = mintMusicKitDeveloperToken({
@@ -117,6 +162,7 @@ export function mintDeveloperTokenIntoEnv(options = {}) {
     keyId: input.keyId,
     privateKeyPem,
     ttlSeconds: input.ttlSeconds,
+    origins: input.origins,
     nowMs: options.nowMs,
   });
   upsertEnvKey(envPath, TOKEN_ENV_KEY, minted.token);
@@ -126,7 +172,30 @@ export function mintDeveloperTokenIntoEnv(options = {}) {
     tokenLength: minted.token.length,
     exp: minted.exp,
     iat: minted.iat,
+    origins: input.origins,
   };
+}
+
+/**
+ * Release step: with the .p8 configured, mint a fresh 180-day token scoped to
+ * the release origin (dev MUSICKIT_TOKEN_ORIGINS/TTL are ignored). Without it,
+ * keep the pasted MUSICKIT_DEVELOPER_TOKEN; the preflight validates either.
+ */
+export function mintReleaseTokenIntoEnv(options = {}) {
+  const root = options.root ?? repoRoot;
+  const env = parseEnvFile(path.join(root, ".env"));
+  if (MINT_INPUT_KEYS.every((key) => !String(env[key] ?? "").trim())) {
+    return { wrote: false };
+  }
+  return mintDeveloperTokenIntoEnv({
+    ...options,
+    root,
+    env: {
+      ...env,
+      MUSICKIT_TOKEN_ORIGINS: RELEASE_ORIGIN,
+      MUSICKIT_TOKEN_TTL_SECONDS: String(MAX_TTL_SECONDS),
+    },
+  });
 }
 
 function isMain() {
@@ -136,9 +205,18 @@ function isMain() {
 
 if (isMain()) {
   try {
+    if (process.argv.includes("--release")) {
+      const result = mintReleaseTokenIntoEnv();
+      console.log(
+        result.wrote
+          ? `release:mint-token: minted ${result.key} for ${RELEASE_ORIGIN}, exp ${new Date(result.exp * 1000).toISOString()}.`
+          : "release:mint-token: no .p8 configured; keeping MUSICKIT_DEVELOPER_TOKEN from .env.",
+      );
+      process.exit(0);
+    }
     const result = mintDeveloperTokenIntoEnv();
     console.log(
-      `Wrote ${result.key} to .env (length ${result.tokenLength}, exp ${new Date(result.exp * 1000).toISOString()}). Restart npm run tauri:dev.`,
+      `Wrote ${result.key} to .env (length ${result.tokenLength}, exp ${new Date(result.exp * 1000).toISOString()}, origins ${result.origins.length ? result.origins.join(", ") : "unrestricted"}). Restart npm run tauri:dev.`,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

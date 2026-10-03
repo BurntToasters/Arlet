@@ -14,6 +14,36 @@ contact a release service. It therefore does not prove that protected playback
 works, that an Apple account can authorize, or that a live updater feed is
 reachable.
 
+## Native app E2E
+
+`npm run test:e2e:app` (Windows only, opt-in) builds a release binary into
+`src-tauri/target/e2e` with a synthetic MusicKit token, moves the per-user
+Arlet data folders aside, launches the app with WebView2 remote debugging, and
+drives it over the DevTools Protocol. It restores the data folders afterwards
+and writes `e2e-artifacts/<timestamp>/report.json` (binary SHA-256, commit,
+per-check results), `screenshot.png`, and the run's `arlet.log`. Close every
+running Arlet first; the app is single-instance. `--skip-build` reuses the
+last E2E binary.
+
+Failure modes it covers:
+
+1. A release build cannot embed the token, or serves the runtime env instead.
+2. The window never renders its shell.
+3. A corrupt `settings.json` silently resets preferences (backup ignored).
+4. A long multibyte log entry panics and aborts the process.
+5. Music User Tokens reach the log file unredacted.
+6. The registry Windows-build lookup or media-session commands fail.
+7. Removed plugins (`dialog`, `notification`) are still reachable.
+8. The app does not run on `http://tauri.localhost`, so origin-scoped
+   tokens would break.
+
+`npm run test:e2e:app:real` embeds the real `MUSICKIT_DEVELOPER_TOKEN` from
+`.env` instead and adds a check that Apple's catalog API accepts it from the
+release origin. Run it after minting a token with `MUSICKIT_TOKEN_ORIGINS`.
+The E2E binary then contains that token; it stays in `src-tauri/target/e2e`.
+
+It does not sign in to Apple Music or play protected audio.
+
 ## Release-only evidence
 
 The following checks require a Windows release environment and are kept out of

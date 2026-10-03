@@ -115,7 +115,7 @@ function checkCredentialLeaks() {
     );
   }
   // MusicKit tokens live in `.env` like postal-snap secrets. They must not
-  // be Vite-prefixed; Rust serves them only in debug builds.
+  // be Vite-prefixed; Rust reads them (runtime in debug, build.rs in release).
   const viteConfig = fs.readFileSync(path.join(root, "vite.config.ts"), "utf8");
   if (viteConfig.includes("VITE_MUSICKIT_DEVELOPER_TOKEN")) {
     throw new Error(
@@ -147,6 +147,66 @@ function checkCredentialLeaks() {
   if (diff && /BEGIN.*PRIVATE KEY/.test(diff)) {
     throw new Error("Staged diff appears to contain a private key.");
   }
+}
+
+const MIN_TOKEN_REMAINING_SECONDS = 30 * 24 * 60 * 60;
+// Mirrors RELEASE_ORIGIN in src-tauri/src/token_policy.rs.
+const RELEASE_ORIGIN = "http://tauri.localhost";
+
+/**
+ * Early copy of the build.rs embed gate so an expiring token fails before a
+ * draft release exists. Messages never include the token.
+ */
+function checkMusicKitToken(
+  env = process.env,
+  nowSeconds = Math.floor(Date.now() / 1000),
+) {
+  if (env.ARLET_SKIP_MUSICKIT_TOKEN !== undefined) {
+    throw new Error(
+      "ARLET_SKIP_MUSICKIT_TOKEN must not be set for a release build.",
+    );
+  }
+  const token = String(env.MUSICKIT_DEVELOPER_TOKEN ?? "").trim();
+  if (!token) {
+    throw new Error(
+      "MUSICKIT_DEVELOPER_TOKEN is missing from the release .env; release builds embed it.",
+    );
+  }
+  const segments = token.split(".");
+  const decode = (segment) => {
+    try {
+      return JSON.parse(Buffer.from(segment, "base64url").toString("utf8"));
+    } catch {
+      return undefined;
+    }
+  };
+  const header = segments.length === 3 ? decode(segments[0]) : undefined;
+  const payload = segments.length === 3 ? decode(segments[1]) : undefined;
+  if (header?.alg !== "ES256" || !Number.isSafeInteger(payload?.exp)) {
+    throw new Error(
+      "MUSICKIT_DEVELOPER_TOKEN is not an ES256 JWT with an integer exp claim.",
+    );
+  }
+  const remaining = payload.exp - nowSeconds;
+  if (remaining < MIN_TOKEN_REMAINING_SECONDS) {
+    throw new Error(
+      `MUSICKIT_DEVELOPER_TOKEN expires in ${Math.max(0, Math.floor(remaining / 86400))} day(s); mint a new one (npm run phase0:mint-token).`,
+    );
+  }
+  const origin = payload.origin;
+  if (
+    origin !== undefined &&
+    !(
+      Array.isArray(origin) &&
+      origin.length === 1 &&
+      origin[0] === RELEASE_ORIGIN
+    )
+  ) {
+    throw new Error(
+      `MUSICKIT_DEVELOPER_TOKEN origin claim must be exactly ["${RELEASE_ORIGIN}"] for release builds. Mint with MUSICKIT_TOKEN_ORIGINS=${RELEASE_ORIGIN}.`,
+    );
+  }
+  return { exp: payload.exp, originRestricted: origin !== undefined };
 }
 
 function checkWindowsTargets() {
@@ -200,6 +260,11 @@ function runPreflight() {
   checkUpdaterPubkey();
   checkWindowsTargets();
   checkCredentialLeaks();
+  if (!checkMusicKitToken().originRestricted) {
+    console.warn(
+      `release-preflight: warning: MusicKit token has no origin claim; mint it with MUSICKIT_TOKEN_ORIGINS=${RELEASE_ORIGIN}.`,
+    );
+  }
   console.log(
     `release-preflight: ok (${version}, ${expectedBranch}@${head.slice(0, 12)})`,
   );
@@ -221,4 +286,4 @@ if (isDirectExecution()) {
   }
 }
 
-export { checkChangelog, expectedReleaseBranch };
+export { checkChangelog, checkMusicKitToken, expectedReleaseBranch };

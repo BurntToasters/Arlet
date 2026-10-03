@@ -150,13 +150,22 @@ function verifySourceContracts() {
   );
 
   const startup = read("src/app-init.ts");
-  requireText(startup, "await controller.loadSettings();", "src/app-init.ts");
-  requireText(startup, "await controller.initialize();", "src/app-init.ts");
-  requireText(
-    startup,
+  const startupOrder = [
+    "controller.loadSettings()",
+    "controller.initialize()",
     "void controller.startupUpdateCheck().catch",
-    "src/app-init.ts",
-  );
+  ].map((text) => {
+    requireText(startup, text, "src/app-init.ts");
+    return startup.indexOf(text);
+  });
+  if (
+    startupOrder.some((index, i) => i > 0 && index < startupOrder[i - 1]) ||
+    startup.indexOf("await Promise.all([") > startupOrder[2]
+  ) {
+    fail(
+      "src/app-init.ts must await settings and MusicKit before the update check",
+    );
+  }
 
   const controller = read("src/app/controller.ts");
   requireText(

@@ -54,7 +54,8 @@ pub struct AppInfo {
     pub debug: bool,
 }
 
-#[tauri::command]
+// `async` keeps the WebView2 and registry queries off the UI thread.
+#[tauri::command(async)]
 pub fn get_app_info(app: tauri::AppHandle) -> Result<AppInfo, String> {
     let version = app
         .config()
@@ -73,14 +74,40 @@ pub fn get_app_info(app: tauri::AppHandle) -> Result<AppInfo, String> {
     })
 }
 
-const TOKEN_ENV_KEYS: [&str; 2] = ["MUSICKIT_DEVELOPER_TOKEN", "VITE_MUSICKIT_DEVELOPER_TOKEN"];
+const TOKEN_ENV_KEYS: [&str; 2] = [
+    crate::token_policy::TOKEN_ENV,
+    "VITE_MUSICKIT_DEVELOPER_TOKEN",
+];
 
-pub fn developer_token_from_lookup<F>(lookup: F) -> Result<String, String>
+/// Release builds compiled by `build.rs` carry a validated token.
+const EMBEDDED_TOKEN: Option<&str> = option_env!("ARLET_MUSICKIT_DEVELOPER_TOKEN");
+
+/// Debug builds read `.env` at runtime; release builds serve only the token
+/// embedded at compile time and never consult the user's environment.
+pub fn resolve_developer_token<F>(
+    debug: bool,
+    embedded: Option<&str>,
+    lookup: F,
+    now: u64,
+) -> Result<String, String>
 where
     F: Fn(&str) -> Option<String>,
 {
-    if !cfg!(debug_assertions) {
-        return Err("MusicKit developer tokens are not served in release builds.".to_string());
+    if !debug {
+        let token = embedded
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+            .ok_or_else(|| {
+                "This Arlet build was compiled without a MusicKit developer token.".to_string()
+            })?;
+        let exp = crate::token_policy::token_expiry(token)?;
+        if exp <= now {
+            return Err(
+                "Arlet's Apple Music access token has expired. Install the latest Arlet update."
+                    .to_string(),
+            );
+        }
+        return Ok(token.to_string());
     }
     for key in TOKEN_ENV_KEYS {
         if let Some(value) = lookup(key) {
@@ -96,13 +123,21 @@ where
     )
 }
 
-pub fn developer_token_from_env() -> Result<String, String> {
-    developer_token_from_lookup(|key| std::env::var(key).ok())
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(0)
 }
 
 #[tauri::command]
 pub fn get_developer_token() -> Result<String, String> {
-    developer_token_from_env()
+    resolve_developer_token(
+        cfg!(debug_assertions),
+        EMBEDDED_TOKEN,
+        |key| std::env::var(key).ok(),
+        unix_now(),
+    )
 }
 
 pub fn beta_updater_target_for_arch(arch: &str) -> Result<String, String> {
@@ -120,22 +155,63 @@ pub fn get_beta_updater_target() -> Result<String, String> {
 }
 
 #[cfg(windows)]
+fn read_current_version_value(
+    name: &str,
+    flags: windows::Win32::System::Registry::REG_ROUTINE_FLAGS,
+) -> Option<Vec<u8>> {
+    use windows::core::HSTRING;
+    use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE};
+    let subkey = HSTRING::from(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion");
+    let value = HSTRING::from(name);
+    let mut buffer = vec![0u8; 256];
+    let mut size = buffer.len() as u32;
+    unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            &subkey,
+            &value,
+            flags,
+            None,
+            Some(buffer.as_mut_ptr().cast()),
+            Some(&mut size),
+        )
+    }
+    .ok()
+    .ok()?;
+    buffer.truncate(size as usize);
+    Some(buffer)
+}
+
+#[cfg(windows)]
+fn read_current_version_string(name: &str) -> Option<String> {
+    use windows::Win32::System::Registry::RRF_RT_REG_SZ;
+    let bytes = read_current_version_value(name, RRF_RT_REG_SZ)?;
+    let wide: Vec<u16> = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
+        .take_while(|unit| *unit != 0)
+        .collect();
+    let text = String::from_utf16_lossy(&wide).trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+/// Registry read in-process; spawning PowerShell flashed a console window in
+/// GUI-subsystem builds and stalled startup.
+#[cfg(windows)]
 fn windows_display_build() -> Option<String> {
-    use std::process::Command;
-    let script = "$v=Get-ItemProperty 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion'; \"$($v.DisplayVersion) build $($v.CurrentBuild).$($v.UBR)\"";
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-Command", script])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if text.is_empty() {
-        None
-    } else {
-        Some(text)
-    }
+    use windows::Win32::System::Registry::RRF_RT_REG_DWORD;
+    let build = read_current_version_string("CurrentBuild")?;
+    let display = read_current_version_string("DisplayVersion").unwrap_or_default();
+    let ubr = read_current_version_value("UBR", RRF_RT_REG_DWORD)
+        .and_then(|bytes| {
+            bytes
+                .get(..4)
+                .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        })
+        .unwrap_or(0);
+    Some(format!("{display} build {build}.{ubr}").trim().to_string())
 }
 
 #[cfg(not(windows))]
@@ -164,29 +240,83 @@ mod tests {
         assert!(json.contains("windows_build"));
     }
 
+    const NOW: u64 = 1_800_000_000;
+
+    fn embedded(exp: u64) -> String {
+        // {"alg":"ES256"} . {"exp":<exp>} . sig
+        let payload = format!("{{\"exp\":{exp}}}");
+        let encode = |bytes: &[u8]| {
+            const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            let mut out = String::new();
+            for chunk in bytes.chunks(3) {
+                let n = chunk
+                    .iter()
+                    .enumerate()
+                    .fold(0u32, |acc, (i, b)| acc | (u32::from(*b) << (16 - 8 * i)));
+                for i in 0..=chunk.len() {
+                    out.push(A[((n >> (18 - 6 * i)) & 63) as usize] as char);
+                }
+            }
+            out
+        };
+        format!(
+            "{}.{}.{}",
+            encode(br#"{"alg":"ES256"}"#),
+            encode(payload.as_bytes()),
+            encode(b"sig")
+        )
+    }
+
+    fn env_token(key: &str) -> Option<String> {
+        (key == "MUSICKIT_DEVELOPER_TOKEN").then(|| " jwt-from-env ".to_string())
+    }
+
     #[test]
     fn debug_reads_musickit_developer_token() {
-        let token = super::developer_token_from_lookup(|key| {
-            (key == "MUSICKIT_DEVELOPER_TOKEN").then(|| " jwt-from-env ".to_string())
-        })
-        .expect("token");
+        let token = super::resolve_developer_token(true, None, env_token, NOW).expect("token");
         assert_eq!(token, "jwt-from-env");
     }
 
     #[test]
     fn debug_accepts_legacy_vite_token_alias() {
-        let token = super::developer_token_from_lookup(|key| {
-            (key == "VITE_MUSICKIT_DEVELOPER_TOKEN").then(|| "legacy-jwt".to_string())
-        })
+        let token = super::resolve_developer_token(
+            true,
+            None,
+            |key| (key == "VITE_MUSICKIT_DEVELOPER_TOKEN").then(|| "legacy-jwt".to_string()),
+            NOW,
+        )
         .expect("token");
         assert_eq!(token, "legacy-jwt");
     }
 
     #[test]
     fn missing_token_does_not_echo_secrets() {
-        let err = super::developer_token_from_lookup(|_| None).unwrap_err();
+        let err = super::resolve_developer_token(true, None, |_| None, NOW).unwrap_err();
         assert!(err.contains("MUSICKIT_DEVELOPER_TOKEN"));
         assert!(!err.contains("jwt"));
+    }
+
+    // Failure modes: release build without an embedded token falls back to a
+    // user-controlled env var; an expired embedded token reaches MusicKit and
+    // fails opaquely; error text echoes the embedded token.
+    #[test]
+    fn release_serves_embedded_token_only() {
+        let valid = embedded(NOW + 86_400);
+        assert_eq!(
+            super::resolve_developer_token(false, Some(&valid), env_token, NOW).unwrap(),
+            valid
+        );
+        let missing = super::resolve_developer_token(false, None, env_token, NOW).unwrap_err();
+        assert!(missing.contains("without"));
+    }
+
+    #[test]
+    fn release_rejects_expired_embedded_token() {
+        let expired = embedded(NOW - 1);
+        let err =
+            super::resolve_developer_token(false, Some(&expired), env_token, NOW).unwrap_err();
+        assert!(err.contains("update"));
+        assert!(!err.contains(expired.split('.').nth(1).unwrap()));
     }
 
     #[test]

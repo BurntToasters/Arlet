@@ -1,4 +1,4 @@
-# AGENTS.md — Windows Apple Music Client (Tauri v2)
+# Arlet Plan — Windows Apple Music Client (Tauri v2)
 
 > **Status:** Architecture / implementation brief for a coding agent  
 > **Primary target:** Windows 11 desktop  
@@ -16,9 +16,13 @@
 > WebDriver E2E harness is being added yet because native validation remains
 > manual. These decisions supersede the earlier vanilla-frontend, Mica-default,
 > and immediate-E2E guidance where it conflicts with the current implementation
-> slice. The historical rationale below remains preserved. The production HTTPS
-> developer-token service is still a pre-release prerequisite and release-mode
-> MusicKit is intentionally not wired yet.
+> slice. The historical rationale below remains preserved.
+
+> **Owner decisions (2026-10-02):** Release builds embed a validated MusicKit
+> developer token from the release machine's `.env` at compile time instead of
+> a hosted token service (see `docs/SECURITY.md`). A native E2E gate now exists
+> (`npm run test:e2e:app`, `docs/TESTING.md`), superseding the "no E2E
+> harness yet" note above.
 
 ---
 

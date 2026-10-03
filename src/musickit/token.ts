@@ -2,11 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import type { AppErrorCode } from "../domain/errors.ts";
 import { mapErrorToCode } from "./errors.ts";
 
-// Developer-token sourcing (plan section 5.2/5.3). Production obtains a
-// short-lived token from a small HTTPS token service. Local Phase 0 reads
-// `MUSICKIT_DEVELOPER_TOKEN` from `.env` via a debug-only Tauri command so
-// the JWT is never a Vite/VITE_ frontend env var. The `.p8` private key is
-// never shipped, bundled, or committed.
+// Developer-token sourcing. `get_developer_token` serves `.env` at runtime in
+// debug builds and, in release builds, the token `build.rs` validated and
+// compiled from the release machine's `.env`. The JWT is never a Vite/VITE_
+// frontend env var, and the `.p8` private key is never shipped or committed.
+// `createServiceTokenProvider` remains for a future hosted token service.
 
 export interface DeveloperToken {
   token: string;
@@ -31,15 +31,17 @@ export function createNativeTokenProvider(
       try {
         token = await invokeFn<string>("get_developer_token");
       } catch (error) {
-        throw Object.assign(
-          new Error(
-            error instanceof Error
-              ? error.message
-              : "MUSICKIT_DEVELOPER_TOKEN is not available. " +
-                  "Copy .env.example to .env and run npm run tauri:dev.",
-          ),
-          { code: "TOKEN_EXPIRED" satisfies AppErrorCode },
-        );
+        // Tauri rejects command errors with a plain string, which carries
+        // the release-build message (missing or expired embedded token).
+        const message =
+          error instanceof Error
+            ? error.message
+            : typeof error === "string" && error.trim()
+              ? error
+              : "MusicKit developer token is not available.";
+        throw Object.assign(new Error(message), {
+          code: "TOKEN_EXPIRED" satisfies AppErrorCode,
+        });
       }
       if (typeof token !== "string" || !token.trim()) {
         throw Object.assign(

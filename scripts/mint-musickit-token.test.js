@@ -7,8 +7,12 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   assertP8OutsideRepo,
+  MAX_TTL_SECONDS,
   mintDeveloperTokenIntoEnv,
   mintMusicKitDeveloperToken,
+  mintReleaseTokenIntoEnv,
+  RELEASE_ORIGIN,
+  parseTokenOrigins,
   TOKEN_ENV_KEY,
   upsertEnvKey,
 } from "./mint-musickit-token.js";
@@ -126,5 +130,173 @@ test("phase0:mint-token is an explicit script alias", () => {
   assert.equal(
     scripts["phase0:mint-token"],
     "node scripts/mint-musickit-token.js",
+  );
+});
+
+function decodePayload(token) {
+  return JSON.parse(
+    Buffer.from(token.split(".")[1], "base64url").toString("utf8"),
+  );
+}
+
+// Failure modes: Apple matches origins as exact strings, so a trailing
+// slash, path, query, missing scheme, wildcard, or non-http(s) scheme
+// silently produces a token MusicKit rejects; blanks or duplicates leak
+// into the claim; an unset variable adds an empty claim that blocks all use.
+test("parseTokenOrigins rejects anything that is not an exact origin", () => {
+  for (const bad of [
+    "http://tauri.localhost/",
+    "http://tauri.localhost/app",
+    "http://tauri.localhost?x=1",
+    "tauri.localhost",
+    "*",
+    "https://*.apple.com",
+    "ftp://tauri.localhost",
+    "tauri://localhost",
+  ]) {
+    assert.throws(() => parseTokenOrigins(bad), /MUSICKIT_TOKEN_ORIGINS/u, bad);
+  }
+});
+
+test("parseTokenOrigins trims, drops blanks, and dedupes", () => {
+  assert.deepEqual(parseTokenOrigins(undefined), []);
+  assert.deepEqual(parseTokenOrigins(" , "), []);
+  assert.deepEqual(
+    parseTokenOrigins(
+      " http://tauri.localhost ,http://localhost:5173,,http://tauri.localhost",
+    ),
+    ["http://tauri.localhost", "http://localhost:5173"],
+  );
+});
+
+test("mint adds the origin claim only when origins are given", () => {
+  const pem = testKeyPair()
+    .privateKey.export({ type: "pkcs8", format: "pem" })
+    .toString();
+  const base = {
+    teamId: "ABCDE12345",
+    keyId: "KEYID12345",
+    privateKeyPem: pem,
+    ttlSeconds: 3600,
+  };
+  const open = mintMusicKitDeveloperToken(base);
+  assert.equal("origin" in decodePayload(open.token), false);
+  const scoped = mintMusicKitDeveloperToken({
+    ...base,
+    origins: ["http://tauri.localhost"],
+  });
+  assert.deepEqual(decodePayload(scoped.token).origin, [
+    "http://tauri.localhost",
+  ]);
+});
+
+function releaseFixture(lines) {
+  const root = tempRoot();
+  const outside = mkdtempSync(path.join(tmpdir(), "arlet-p8-"));
+  const p8Path = path.join(outside, "AuthKey_KEYID12345.p8");
+  writeFileSync(
+    p8Path,
+    testKeyPair()
+      .privateKey.export({ type: "pkcs8", format: "pem" })
+      .toString(),
+  );
+  const envText = lines(p8Path.replaceAll("\\", "/")).join("\n") + "\n";
+  writeFileSync(path.join(root, ".env"), envText);
+  return {
+    root,
+    envText,
+    cleanup() {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    },
+  };
+}
+
+// Failure modes: a release ships a dev-scoped or short-lived token because
+// the release mint honoured dev MUSICKIT_TOKEN_ORIGINS/TTL; a release machine
+// without the .p8 cannot release at all; a half-configured .p8 silently
+// falls back to a stale token; other .env lines are rewritten; the token is
+// returned for printing.
+test("release mint forces the release origin and maximum lifetime", () => {
+  const fixture = releaseFixture((p8) => [
+    "MUSICKIT_TEAM_ID=ABCDE12345",
+    "MUSICKIT_KEY_ID=KEYID12345",
+    `MUSICKIT_P8_PATH=${p8}`,
+    "MUSICKIT_TOKEN_ORIGINS=http://localhost:5173",
+    "MUSICKIT_TOKEN_TTL_SECONDS=3600",
+    "MUSICKIT_DEVELOPER_TOKEN=old",
+    "AFTER_PACK_LOC=C:/archive",
+  ]);
+  try {
+    const nowMs = 1_800_000_000_000;
+    const result = mintReleaseTokenIntoEnv({ root: fixture.root, nowMs });
+    assert.equal(result.wrote, true);
+    assert.equal("token" in result, false);
+    assert.equal(result.exp, 1_800_000_000 + MAX_TTL_SECONDS);
+    const envText = readFileSync(path.join(fixture.root, ".env"), "utf8");
+    const token = /^MUSICKIT_DEVELOPER_TOKEN=(.+)$/mu.exec(envText)[1];
+    assert.deepEqual(decodePayload(token).origin, [RELEASE_ORIGIN]);
+    assert.equal(
+      envText.replace(
+        /^MUSICKIT_DEVELOPER_TOKEN=.*$/mu,
+        "MUSICKIT_DEVELOPER_TOKEN=old",
+      ),
+      fixture.envText,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("release mint keeps the existing token when no .p8 is configured", () => {
+  const fixture = releaseFixture(() => ["MUSICKIT_DEVELOPER_TOKEN=pasted"]);
+  try {
+    assert.deepEqual(mintReleaseTokenIntoEnv({ root: fixture.root }), {
+      wrote: false,
+    });
+    assert.equal(
+      readFileSync(path.join(fixture.root, ".env"), "utf8"),
+      fixture.envText,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("release mint refuses a partially configured .p8", () => {
+  const fixture = releaseFixture((p8) => [
+    `MUSICKIT_P8_PATH=${p8}`,
+    "MUSICKIT_DEVELOPER_TOKEN=pasted",
+  ]);
+  try {
+    assert.throws(
+      () => mintReleaseTokenIntoEnv({ root: fixture.root }),
+      /MUSICKIT_TEAM_ID/u,
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("prerelease:prepare mints before the preflight token check", () => {
+  const scripts = JSON.parse(
+    readFileSync(
+      path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "..",
+        "package.json",
+      ),
+      "utf8",
+    ),
+  ).scripts;
+  assert.equal(
+    scripts["release:mint-token"],
+    "node scripts/mint-musickit-token.js --release",
+  );
+  const prepare = String(scripts["prerelease:prepare"]);
+  assert.ok(prepare.includes("npm run release:mint-token"));
+  assert.ok(
+    prepare.indexOf("release:mint-token") <
+      prepare.indexOf("release:preflight"),
   );
 });

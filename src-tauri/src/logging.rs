@@ -22,20 +22,66 @@ fn truncate_entry(entry: &str) -> String {
     if entry.len() <= MAX_LOG_ENTRY_BYTES {
         return entry.to_string();
     }
-    let truncated = &entry[..MAX_LOG_ENTRY_BYTES];
-    let boundary = truncated
-        .char_indices()
-        .last()
-        .map(|(i, _)| i)
-        .unwrap_or(MAX_LOG_ENTRY_BYTES);
+    // Slicing inside a multibyte char panics, and release builds abort.
+    let mut boundary = MAX_LOG_ENTRY_BYTES;
+    while !entry.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
     format!("{}… [truncated]", &entry[..boundary])
+}
+
+/// Keys that label opaque (non-JWT) tokens, matched case-insensitively.
+const TOKEN_KEYS: [&str; 9] = [
+    "music-user-token",
+    "music_user_token",
+    "musicusertoken",
+    "media-user-token",
+    "media_user_token",
+    "mediausertoken",
+    "developer-token",
+    "developer_token",
+    "developertoken",
+];
+
+fn is_value_end(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '"' | '\'' | '&' | ',' | ';' | '}')
+}
+
+fn redact_keyed_tokens(text: &str) -> String {
+    let mut result = text.to_string();
+    for key in TOKEN_KEYS {
+        let mut search_from = 0;
+        // ASCII lowercasing keeps byte offsets aligned with `result`.
+        while let Some(found) = result.to_ascii_lowercase()[search_from..].find(key) {
+            let key_end = search_from + found + key.len();
+            let rest = &result[key_end..];
+            let separator = rest
+                .char_indices()
+                .find(|(_, c)| !matches!(c, '"' | '\'' | ':' | '=') && !c.is_whitespace())
+                .map(|(i, _)| i)
+                .unwrap_or(rest.len());
+            let has_assignment = rest[..separator].contains([':', '=']);
+            let value_start = key_end + separator;
+            let value_end = result[value_start..]
+                .find(is_value_end)
+                .map(|i| value_start + i)
+                .unwrap_or(result.len());
+            if has_assignment && value_end > value_start {
+                result.replace_range(value_start..value_end, "[REDACTED]");
+                search_from = value_start + "[REDACTED]".len();
+            } else {
+                search_from = key_end;
+            }
+        }
+    }
+    result
 }
 
 fn redact_sensitive(text: &str) -> String {
     let patterns = [
         "eyJ", // JWT prefix (base64 of `{"` )
     ];
-    let mut result = text.to_string();
+    let mut result = redact_keyed_tokens(text);
     for pattern in patterns {
         // Loop: one entry can carry several tokens (dev token + user token).
         while let Some(start) = result.find(pattern) {
@@ -112,6 +158,31 @@ mod tests {
         assert!(result.ends_with("… [truncated]"));
     }
 
+    // Failure modes: a multibyte char straddling the byte limit panics (and
+    // aborts the release process); an all-multibyte entry never finds a
+    // boundary; a clipped body exceeds the limit; an entry exactly at the
+    // limit is clipped needlessly.
+    #[test]
+    fn truncate_entry_never_splits_multibyte_chars() {
+        for prefix_len in 0..4 {
+            let entry = format!(
+                "{}{}",
+                "a".repeat(prefix_len),
+                "€".repeat(MAX_LOG_ENTRY_BYTES)
+            );
+            let result = truncate_entry(&entry);
+            assert!(result.ends_with("… [truncated]"));
+            let body = result.trim_end_matches("… [truncated]");
+            assert!(body.len() <= MAX_LOG_ENTRY_BYTES);
+        }
+    }
+
+    #[test]
+    fn truncate_entry_keeps_entry_at_exact_limit() {
+        let exact = "a".repeat(MAX_LOG_ENTRY_BYTES);
+        assert_eq!(truncate_entry(&exact), exact);
+    }
+
     #[test]
     fn redact_jwt_tokens() {
         let text = "Authorization: Bearer eyJhbGciOiJFUzI1NiIsInR5cCI6IkpXVCJ9.payload";
@@ -126,6 +197,23 @@ mod tests {
         let result = redact_sensitive(text);
         assert!(!result.contains("eyJ"));
         assert_eq!(result.matches("[REDACTED]").count(), 2);
+    }
+
+    // Failure mode: Music User Tokens are not JWTs, so header, query, and
+    // JSON-keyed values slipped past the eyJ rule.
+    #[test]
+    fn redact_music_user_token_by_key() {
+        let token = "AqmL0f7xY2/Zp+Q9wR3kT8vN1bC4dE6gH5jK7mP0sU2yW==";
+        for text in [
+            format!("Music-User-Token: {token}"),
+            format!("media-user-token={token}&l=en"),
+            format!(r#"{{"musicUserToken":"{token}"}}"#),
+            format!("developerToken = '{token}'"),
+        ] {
+            let result = redact_sensitive(&text);
+            assert!(!result.contains(token), "leaked in {result}");
+            assert!(result.contains("[REDACTED]"));
+        }
     }
 
     #[test]

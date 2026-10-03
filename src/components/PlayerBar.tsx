@@ -12,7 +12,11 @@ import {
   VolumeX,
 } from "lucide-preact";
 import type { JSX } from "preact";
-import { useAppController, useAppState } from "../app/context.tsx";
+import {
+  useAppController,
+  useAppState,
+  usePlaybackPosition,
+} from "../app/context.tsx";
 import type { AppErrorCode } from "../domain/errors.ts";
 import { Artwork } from "./Artwork.tsx";
 import { IconButton } from "./IconButton.tsx";
@@ -48,6 +52,38 @@ function formatTime(seconds: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
+/** Re-renders on playback ticks without re-rendering the whole bar. */
+function PlaybackProgress({
+  hasTrack,
+  onSeek,
+}: {
+  hasTrack: boolean;
+  onSeek: (seconds: number) => void;
+}): JSX.Element {
+  const { positionSeconds, durationSeconds } = usePlaybackPosition();
+  const progress =
+    durationSeconds > 0
+      ? Math.min(100, Math.max(0, (positionSeconds / durationSeconds) * 100))
+      : 0;
+  return (
+    <div className="player-progress">
+      <span>{formatTime(positionSeconds)}</span>
+      <input
+        aria-label="Playback position"
+        type="range"
+        min="0"
+        max={String(Math.max(0, durationSeconds))}
+        step="1"
+        value={Math.min(durationSeconds, Math.max(0, positionSeconds))}
+        style={{ "--range-progress": `${progress}%` }}
+        disabled={!hasTrack || durationSeconds <= 0}
+        onChange={(event) => onSeek(Number(event.currentTarget.value))}
+      />
+      <span>{formatTime(durationSeconds)}</span>
+    </div>
+  );
+}
+
 export function PlayerBar(): JSX.Element {
   const state = useAppState();
   const controller = useAppController();
@@ -57,23 +93,9 @@ export function PlayerBar(): JSX.Element {
   const loading = playback.status === "loading";
   const canControl =
     state.initialization.status === "ready" && Boolean(current);
-  const progress =
-    playback.durationSeconds > 0
-      ? Math.min(
-          100,
-          Math.max(
-            0,
-            (playback.positionSeconds / playback.durationSeconds) * 100,
-          ),
-        )
-      : 0;
 
   const run = (action: () => Promise<void>): void => {
     void action().catch(() => undefined);
-  };
-
-  const onSeek = (event: JSX.TargetedEvent<HTMLInputElement>): void => {
-    run(() => controller.seek(Number(event.currentTarget.value)));
   };
 
   return (
@@ -141,24 +163,10 @@ export function PlayerBar(): JSX.Element {
             onClick={() => run(controller.next)}
           />
         </div>
-        <div className="player-progress">
-          <span>{formatTime(playback.positionSeconds)}</span>
-          <input
-            aria-label="Playback position"
-            type="range"
-            min="0"
-            max={String(Math.max(0, playback.durationSeconds))}
-            step="1"
-            value={Math.min(
-              playback.durationSeconds,
-              Math.max(0, playback.positionSeconds),
-            )}
-            style={{ "--range-progress": `${progress}%` }}
-            disabled={!current || playback.durationSeconds <= 0}
-            onChange={onSeek}
-          />
-          <span>{formatTime(playback.durationSeconds)}</span>
-        </div>
+        <PlaybackProgress
+          hasTrack={Boolean(current)}
+          onSeek={(seconds) => run(() => controller.seek(seconds))}
+        />
       </div>
 
       <div className="player-actions">

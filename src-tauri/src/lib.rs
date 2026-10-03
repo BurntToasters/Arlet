@@ -4,6 +4,7 @@ pub mod logging;
 pub mod music_diagnostic;
 pub mod pins;
 pub mod settings;
+pub mod token_policy;
 pub mod window_fx;
 pub mod window_snap;
 pub mod windows_media;

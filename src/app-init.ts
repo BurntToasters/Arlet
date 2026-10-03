@@ -23,7 +23,11 @@ interface NativeDiagnostics {
   debug: boolean;
 }
 
+/** Long sessions re-check so a music app left open for days still updates. */
+export const UPDATE_RECHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
 let diagnosticsStarted = false;
+let stopPeriodicUpdateChecks: (() => void) | undefined;
 let stopLifecycleDiagnostics: (() => void) | undefined;
 let stopNetworkDiagnostics: (() => void) | undefined;
 
@@ -66,13 +70,19 @@ export async function initializeApplication(
     }
   }
 
-  await logNativeDiagnostics(controller);
+  // Native diagnostics are informational; they must not delay settings or
+  // MusicKit startup.
+  const diagnosticsSettled = logNativeDiagnostics(controller);
   const settingsSettled = controller.loadSettings().catch((error: unknown) => {
     controller.log(
       `Settings initialization failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   });
-  await Promise.all([settingsSettled, controller.initialize()]);
+  await Promise.all([
+    diagnosticsSettled,
+    settingsSettled,
+    controller.initialize(),
+  ]);
   controller.log("Arlet shell ready. Sign in to begin listening.");
   controller.log(
     "Developer diagnostics: Ctrl+Shift+D (development builds only).",
@@ -81,16 +91,26 @@ export async function initializeApplication(
   // MusicKit are ready. The updater service no-ops in development builds and
   // coalesces this startup check with a user-triggered Settings check.
   if (!(options.isDevelopment ?? import.meta.env.DEV)) {
-    void controller.startupUpdateCheck().catch((error: unknown) => {
-      controller.log(
-        `Startup update check failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    });
+    const runUpdateCheck = (): void => {
+      void controller.startupUpdateCheck().catch((error: unknown) => {
+        controller.log(
+          `Startup update check failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    };
+    runUpdateCheck();
+    // Same silent path as startup: honours the auto-check setting, reuses a
+    // downloaded update, and opens the dialog only once an installer is ready.
+    stopPeriodicUpdateChecks?.();
+    const timer = setInterval(runUpdateCheck, UPDATE_RECHECK_INTERVAL_MS);
+    stopPeriodicUpdateChecks = () => clearInterval(timer);
   }
   return controller;
 }
 
 export function disposeApplication(): void {
+  stopPeriodicUpdateChecks?.();
+  stopPeriodicUpdateChecks = undefined;
   stopLifecycleDiagnostics?.();
   stopLifecycleDiagnostics = undefined;
   stopNetworkDiagnostics?.();

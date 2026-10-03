@@ -462,6 +462,9 @@ function cloneInitialState(): RuntimeAppState {
 
 let state: RuntimeAppState = cloneInitialState();
 const subscribers = new Set<() => void>();
+// Playback ticks arrive several times a second. They notify only this
+// channel so library views do not re-render while music plays.
+const positionSubscribers = new Set<() => void>();
 
 function notify(): void {
   for (const subscriber of subscribers) subscriber();
@@ -486,6 +489,11 @@ export function getState(): Readonly<RuntimeAppState> {
 export function subscribe(listener: () => void): () => void {
   subscribers.add(listener);
   return () => subscribers.delete(listener);
+}
+
+export function subscribePlaybackPosition(listener: () => void): () => void {
+  positionSubscribers.add(listener);
+  return () => positionSubscribers.delete(listener);
 }
 
 export function setAuthState(auth: AuthState): void {
@@ -816,14 +824,15 @@ export function setPlaybackPosition(
   positionSeconds: number,
   durationSeconds: number,
 ): void {
-  update({
+  state = {
     ...state,
     playback: {
       ...state.playback,
       positionSeconds: Math.max(0, positionSeconds),
       durationSeconds: Math.max(0, durationSeconds),
     },
-  });
+  };
+  for (const subscriber of positionSubscribers) subscriber();
 }
 
 export function setVolume(volume: number): void {

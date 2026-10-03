@@ -3,6 +3,23 @@
 // the diagnostics pane or local logs (plan section 18: auth data is toxic).
 
 const TOKEN_PREFIXES = ["eyJ"];
+// Music User Tokens are opaque (not JWTs), so they are caught by the key
+// that labels them and by exact value once the app has seen them.
+const TOKEN_KEY_PATTERN =
+  /((?:music|media)[-_]?user[-_]?token|developer[-_]?token)(["']?\s*[:=]\s*["']?)[^\s"'&,;}]+/gi;
+const MIN_REGISTERED_LENGTH = 16;
+const registeredValues = new Set<string>();
+
+/** Redacts this exact value from every later log line. */
+export function registerSensitiveValue(value: unknown): void {
+  if (typeof value === "string" && value.length >= MIN_REGISTERED_LENGTH) {
+    registeredValues.add(value);
+  }
+}
+
+export function clearSensitiveValues(): void {
+  registeredValues.clear();
+}
 
 function redactPrefix(text: string, prefix: string): string {
   let result = text;
@@ -31,6 +48,10 @@ function redactPrefix(text: string, prefix: string): string {
 
 export function redactSensitive(text: string): string {
   let result = text;
+  for (const value of registeredValues) {
+    result = result.split(value).join("[REDACTED]");
+  }
+  result = result.replace(TOKEN_KEY_PATTERN, "$1$2[REDACTED]");
   for (const prefix of TOKEN_PREFIXES) {
     result = redactPrefix(result, prefix);
   }

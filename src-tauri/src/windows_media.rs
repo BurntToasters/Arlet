@@ -15,16 +15,38 @@ pub struct NowPlayingPayload {
     pub previous_enabled: bool,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelinePayload {
+    pub position_seconds: f64,
+    pub duration_seconds: f64,
+}
+
+/// SMTC ticks are 100 ns. Returns `None` for unusable input so a bad tick
+/// never reaches the OS.
+pub fn timeline_ticks(payload: TimelinePayload) -> Option<(i64, i64)> {
+    let TimelinePayload {
+        position_seconds,
+        duration_seconds,
+    } = payload;
+    if !position_seconds.is_finite() || !duration_seconds.is_finite() || duration_seconds <= 0.0 {
+        return None;
+    }
+    let to_ticks = |seconds: f64| (seconds * 10_000_000.0).round() as i64;
+    let position = position_seconds.clamp(0.0, duration_seconds);
+    Some((to_ticks(position), to_ticks(duration_seconds)))
+}
+
 #[cfg(target_os = "windows")]
 mod platform {
-    use super::NowPlayingPayload;
+    use super::{NowPlayingPayload, TimelinePayload};
     use std::sync::{Mutex, OnceLock};
     use tauri::{Emitter, Manager, WebviewWindow};
     use windows::core::{Ref, HSTRING};
-    use windows::Foundation::{TypedEventHandler, Uri};
+    use windows::Foundation::{TimeSpan, TypedEventHandler, Uri};
     use windows::Media::{
         MediaPlaybackStatus, MediaPlaybackType, SystemMediaTransportControls,
-        SystemMediaTransportControlsButton,
+        SystemMediaTransportControlsButton, SystemMediaTransportControlsTimelineProperties,
     };
     use windows::Storage::Streams::RandomAccessStreamReference;
     use windows::Win32::System::WinRT::{
@@ -157,6 +179,42 @@ mod platform {
         display.Update().map_err(|error| error.to_string())
     }
 
+    /// Updates only an existing session; a timeline alone never creates one.
+    pub fn timeline(payload: TimelinePayload) -> Result<(), String> {
+        let Some((position, duration)) = super::timeline_ticks(payload) else {
+            return Ok(());
+        };
+        let controls = match session()
+            .lock()
+            .map_err(|_| "Windows media session lock poisoned".to_string())?
+            .as_ref()
+        {
+            Some(existing) => existing.controls.clone(),
+            None => return Ok(()),
+        };
+        let span = |ticks: i64| TimeSpan { Duration: ticks };
+        let properties =
+            SystemMediaTransportControlsTimelineProperties::new().map_err(|e| e.to_string())?;
+        properties
+            .SetStartTime(span(0))
+            .map_err(|e| e.to_string())?;
+        properties
+            .SetMinSeekTime(span(0))
+            .map_err(|e| e.to_string())?;
+        properties
+            .SetEndTime(span(duration))
+            .map_err(|e| e.to_string())?;
+        properties
+            .SetMaxSeekTime(span(duration))
+            .map_err(|e| e.to_string())?;
+        properties
+            .SetPosition(span(position))
+            .map_err(|e| e.to_string())?;
+        controls
+            .UpdateTimelineProperties(&properties)
+            .map_err(|e| e.to_string())
+    }
+
     pub fn clear(window: &WebviewWindow) -> Result<(), String> {
         let controls = match session()
             .lock()
@@ -206,7 +264,7 @@ pub fn update_windows_media_session(
 ) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        return platform::update(&window, payload);
+        platform::update(&window, payload)
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -216,10 +274,23 @@ pub fn update_windows_media_session(
 }
 
 #[tauri::command]
+pub fn update_windows_media_timeline(payload: TimelinePayload) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        platform::timeline(payload)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = payload;
+        Ok(())
+    }
+}
+
+#[tauri::command]
 pub fn clear_windows_media_session(window: WebviewWindow) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
-        return platform::clear(&window);
+        platform::clear(&window)
     }
     #[cfg(not(target_os = "windows"))]
     {
@@ -235,7 +306,31 @@ pub fn dispose() {
 
 #[cfg(test)]
 mod tests {
-    use super::NowPlayingPayload;
+    use super::{timeline_ticks, NowPlayingPayload, TimelinePayload};
+
+    fn timeline(position_seconds: f64, duration_seconds: f64) -> Option<(i64, i64)> {
+        timeline_ticks(TimelinePayload {
+            position_seconds,
+            duration_seconds,
+        })
+    }
+
+    // Failure modes: NaN/infinite ticks reach the OS; zero-length tracks
+    // publish an empty timeline; position past the end or negative.
+    #[test]
+    fn timeline_rejects_unusable_values() {
+        assert_eq!(timeline(f64::NAN, 10.0), None);
+        assert_eq!(timeline(1.0, f64::INFINITY), None);
+        assert_eq!(timeline(1.0, 0.0), None);
+        assert_eq!(timeline(1.0, -3.0), None);
+    }
+
+    #[test]
+    fn timeline_clamps_and_converts_to_ticks() {
+        assert_eq!(timeline(1.5, 10.0), Some((15_000_000, 100_000_000)));
+        assert_eq!(timeline(-2.0, 10.0), Some((0, 100_000_000)));
+        assert_eq!(timeline(99.0, 10.0), Some((100_000_000, 100_000_000)));
+    }
 
     #[test]
     fn payload_uses_frontend_wire_keys() {

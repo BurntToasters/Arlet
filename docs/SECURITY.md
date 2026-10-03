@@ -4,9 +4,11 @@
 
 Tauri capabilities are a real boundary, not documentation. Permissions are
 granted per window label in `src-tauri/capabilities/`; the default set covers
-only version, window management, updater, restart, notifications, settings,
-logging, window effects, and opening the diagnostic window. There is no
-`shell` plugin, no arbitrary command execution, and remote Apple origins get
+only version, window management, updater, restart, clipboard text, the
+library SQLite cache, settings, pins, logging, window effects, the Windows
+media session, and opening the diagnostic window. There is no `shell`,
+`dialog`, or `notification` plugin, no arbitrary command execution, and
+remote Apple origins get
 no filesystem/shell/updater access.
 
 The Phase 0 `music-diagnostic` window loads `https://music.apple.com/` with an
@@ -36,22 +38,35 @@ first.
   Media Services private key) and the **Music User Token** (the subscriber's,
   managed by MusicKit). Keep them conceptually separate everywhere.
 - **Never ship the `.p8` private key** in the app, installer, repo, bundle,
-  binary, or CI log. Production obtains short-lived developer tokens from a
-  small HTTPS token service (`DeveloperTokenProvider`; see
-  `src/musickit/token.ts`).
-- Local Phase 0 reads `MUSICKIT_DEVELOPER_TOKEN` from `.env` (gitignored;
-  copy `.env.example` → `.env`, same as postal-snap). `npm run
-phase0:mint-token` can mint that JWT from `MUSICKIT_TEAM_ID`,
-  `MUSICKIT_KEY_ID`, and an absolute `MUSICKIT_P8_PATH` **outside** the
-  repo; it never prints the JWT or `.p8`. `dotenv -e .env -- tauri
-dev` loads it into the Rust process. A debug-only `get_developer_token`
-  command hands it to MusicKit. Release builds refuse that command. Production
-  obtains short-lived tokens from a small HTTPS token service. The service
-  provider exists in `src/musickit/token.ts` but is not wired into
-  `src/musickit/bootstrap.ts` yet; release-mode MusicKit intentionally refuses
-  the debug token command. Hosting/configuring that service and adding its
-  exact origin to the release CSP are pre-release prerequisites. Do not publish
-  a release until this production path is wired and smoke-tested.
+  binary, or CI log. Only the signed developer JWT is shipped.
+- `MUSICKIT_DEVELOPER_TOKEN` lives in `.env` (gitignored; copy
+  `.env.example` → `.env`). `npm run phase0:mint-token` mints it from
+  `MUSICKIT_TEAM_ID`, `MUSICKIT_KEY_ID`, and an absolute `MUSICKIT_P8_PATH`
+  **outside** the repo; it never prints the JWT or `.p8`.
+- **Debug builds** read the token from the process environment at runtime
+  (`dotenv -e .env -- tauri dev`).
+- **Release builds** embed the token at compile time. `src-tauri/build.rs`
+  reads it from the release machine's `.env` and validates it with
+  `src-tauri/src/token_policy.rs` (ES256 JWT, integer `exp`, at least 30 days
+  left), or fails the build. At runtime `get_developer_token` serves only the
+  embedded token, never the user's environment, and reports an expired token
+  as "install the latest update". `release-preflight.js` runs the same check
+  before a draft release exists.
+- The embedded JWT can be extracted from the binary, as with any MusicKit web
+  app. Its lifetime is the exposure window: Apple caps it at 6 months, so a
+  new release must ship before the embedded token expires.
+- Mint release tokens with `MUSICKIT_TOKEN_ORIGINS=http://tauri.localhost`,
+  the bundled app's origin on Windows. Apple then refuses the token from other
+  web origins, so a leaked token cannot be dropped into someone else's site.
+  A native client can still forge the `Origin` header, so this raises the bar
+  rather than making the token secret. `build.rs` and `release:preflight`
+  reject any other origin list (dev or loopback origins widen exposure) and
+  warn when the claim is missing; the native E2E asserts the app's origin.
+- Mint on a machine that holds the `.p8`, and copy only the JWT to the
+  release machine.
+- `ARLET_SKIP_MUSICKIT_TOKEN=1` builds a release binary without a token for
+  unpublished CI smoke builds only. `tauri-windows-build.js` and the release
+  preflight refuse it.
 
 ## Logging
 
@@ -59,8 +74,11 @@ Auth data is toxic: Apple passwords, Music User Tokens, developer private
 keys, cookies, full `Authorization` headers, the updater private key, and
 token-service bearer values are never logged. Both the Rust logger
 (`src-tauri/src/logging.rs`) and the frontend (`src/platform/redact.ts`)
-redact JWT-shaped values; request logs record method/path/status/duration
-only. Both redactors have unit tests.
+redact JWT-shaped values and values labelled by a token key
+(`Music-User-Token`, `media-user-token`, `musicUserToken`, `developerToken`).
+The frontend also redacts the exact developer and Music User Token values
+once MusicKit has produced them. Request logs record method/path/status/
+duration only. Both redactors have unit tests.
 
 ## Signing separation
 

@@ -87,23 +87,29 @@ const schemaStatements = [
     ON music_page_items(scope, section, cursor, position)`,
 ];
 
-interface ResourceRow {
-  resource_type: string;
-  resource_id: string;
-  payload: string;
-}
-
 interface PageRow {
   cursor: string;
   next_cursor: string | null;
   updated_at: number;
 }
 
-interface PageItemRow {
+interface PageItemPayloadRow {
   cursor: string;
-  position: number;
-  resource_type: string;
-  resource_id: string;
+  payload: string;
+}
+
+/**
+ * Rows per multi-row INSERT. Six bound values per row stays under SQLite's
+ * historical 999-parameter limit.
+ */
+const ROWS_PER_STATEMENT = 150;
+
+function chunks<T>(values: readonly T[], size: number): T[][] {
+  const output: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    output.push(values.slice(index, index + size));
+  }
+  return output;
 }
 
 interface MetaRow {
@@ -124,10 +130,9 @@ function resourceType(value: unknown): string {
   return typeof type === "string" && type.length > 0 ? type : "resource";
 }
 
-function resourceId(value: unknown): string {
-  const record = asObject(value);
-  const id = record?.id;
-  return typeof id === "string" && id.length > 0 ? id : "unknown";
+function resourceId(value: unknown): string | undefined {
+  const id = asObject(value)?.id;
+  return typeof id === "string" && id.length > 0 ? id : undefined;
 }
 
 function pageCursor(cursor: string | undefined): string {
@@ -240,30 +245,36 @@ export class SqlLibraryCache implements LibraryCache {
     };
   }
 
+  /** One joined query per read; per-item lookups cost an IPC round trip each. */
   private async readItems<T>(
     database: SqlDatabase,
     scope: string,
     section: string,
     pages: PageRow[],
   ): Promise<T[]> {
+    if (pages.length === 0) return [];
+    const single = pages.length === 1;
+    const rows = await database.select<PageItemPayloadRow>(
+      `SELECT i.cursor, r.payload
+       FROM music_page_items i
+       JOIN music_resources r
+         ON r.scope = i.scope
+        AND r.resource_type = i.resource_type
+        AND r.resource_id = i.resource_id
+       WHERE i.scope = ? AND i.section = ?${single ? " AND i.cursor = ?" : ""}
+       ORDER BY i.cursor, i.position`,
+      single ? [scope, section, pages[0].cursor] : [scope, section],
+    );
+    const byCursor = new Map<string, PageItemPayloadRow[]>();
+    for (const row of rows) {
+      const list = byCursor.get(row.cursor);
+      if (list) list.push(row);
+      else byCursor.set(row.cursor, [row]);
+    }
     const output: T[] = [];
     for (const page of pages) {
-      const itemRows = await database.select<PageItemRow>(
-        `SELECT cursor, position, resource_type, resource_id
-         FROM music_page_items
-         WHERE scope = ? AND section = ? AND cursor = ?
-         ORDER BY position ASC`,
-        [scope, section, page.cursor],
-      );
-      for (const row of itemRows) {
-        const resources = await database.select<ResourceRow>(
-          `SELECT resource_type, resource_id, payload
-           FROM music_resources
-           WHERE scope = ? AND resource_type = ? AND resource_id = ?`,
-          [scope, row.resource_type, row.resource_id],
-        );
-        const resource = resources[0];
-        const parsed = resource ? parsePayload(resource.payload) : undefined;
+      for (const row of byCursor.get(page.cursor) ?? []) {
+        const parsed = parsePayload(row.payload);
         if (parsed !== undefined) output.push(parsed as T);
       }
     }
@@ -290,21 +301,43 @@ export class SqlLibraryCache implements LibraryCache {
       `DELETE FROM music_page_items WHERE scope = ? AND section = ? AND cursor = ?`,
       [scope, section, cursor],
     );
-    for (const [position, item] of page.items.entries()) {
-      const type = resourceType(item);
-      const id = resourceId(item);
+    const rows = page.items.map((item, position) => ({
+      position,
+      type: resourceType(item),
+      // Id-less items get a slot-scoped key so they cannot overwrite each other.
+      id: resourceId(item) ?? `slot:${section}:${cursor}:${position}`,
+      payload: JSON.stringify(item),
+    }));
+    // One upsert may not touch the same row twice; the last copy wins.
+    const resources = new Map(rows.map((row) => [`${row.type} ${row.id}`, row]));
+    for (const chunk of chunks([...resources.values()], ROWS_PER_STATEMENT)) {
       await database.execute(
         `INSERT INTO music_resources(scope, resource_type, resource_id, payload, updated_at)
-         VALUES (?, ?, ?, ?, ?)
+         VALUES ${chunk.map(() => "(?, ?, ?, ?, ?)").join(", ")}
          ON CONFLICT(scope, resource_type, resource_id) DO UPDATE SET
            payload = excluded.payload,
            updated_at = excluded.updated_at`,
-        [scope, type, id, JSON.stringify(item), updatedAt],
+        chunk.flatMap((row) => [
+          scope,
+          row.type,
+          row.id,
+          row.payload,
+          updatedAt,
+        ]),
       );
+    }
+    for (const chunk of chunks(rows, ROWS_PER_STATEMENT)) {
       await database.execute(
         `INSERT INTO music_page_items(scope, section, cursor, position, resource_type, resource_id)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [scope, section, cursor, position, type, id],
+         VALUES ${chunk.map(() => "(?, ?, ?, ?, ?, ?)").join(", ")}`,
+        chunk.flatMap((row) => [
+          scope,
+          section,
+          cursor,
+          row.position,
+          row.type,
+          row.id,
+        ]),
       );
     }
   }

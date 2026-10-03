@@ -2,23 +2,30 @@
 
 This document tracks our progress through the Arlet `plan.md` architecture brief to easily pick up where we left off.
 
-## 📌 Status (2026-09-11 — read first)
+## 📌 Status (2026-10-02 — read first)
 
-- [ ] **Commit review:** gate-session + phase0-preflight work is UNCOMMITTED.
-      `npm run test:all` green on dirty tree; commit then re-run for release
-      proof.
-- [ ] **Back up `.env` offline:** updater private key + password live only
-      there (gitignored). Required on the release VM.
-- [x] **Set `AFTER_PACK_LOC`:** this machine uses
-      `C:/Users/Burnt/Documents/Arlet-release-archive` (outside the repo).
-      Copy the same key to the release VM when cutting a stable release.
-- [ ] **Manual gate next:** `.env` token → `npm run tauri:dev` →
-      playback matrix → paste copied reports into feasibility docs (checklist
-      below). Phase 0 UI includes matrix checklist, clipboard export,
-      preview-vs-full label, and an unprivileged music.apple.com diagnostic
-      (Apple ID only; no developer token).
-- [ ] **Then:** gate PASS → Milestone 1 shell; gate FAIL → CastLabs spike,
-      keep portable layers (plan §4.5/§25).
+The Preact shell, library, search, browse, radio, playlists, queue, SMTC, and
+window materials are implemented; the 2026-09-11 notes below are history.
+
+- [x] **Pre-release audit fixes (2026-10-02):** release token embedding
+      (`build.rs` + `token_policy.rs`), log-truncation crash, registry Windows
+      build lookup (no PowerShell), SMTC dispose scoped to the main window +
+      timeline, corrupt-settings backup fallback, SQLite cache joins/batching,
+      playback-tick render channel, Music User Token redaction, controller
+      split, unused dialog/notification plugins removed, periodic update
+      checks, guarded `release:finalize`, Windows Clippy in CI, native E2E
+      (`npm run test:e2e:app`).
+- [ ] **Phase 0 matrix still open:** full protected track, seek, skip,
+      20 consecutive tracks, 2-hour session, logout/relogin
+      (`docs/MUSICKIT_TAURI_FEASIBILITY.md`). Run it on a signed release
+      build before publishing.
+- [ ] **Release VM `.env`:** `MUSICKIT_DEVELOPER_TOKEN` (≥ 30 days left),
+      updater key + password, `AZURE_*`, `GPG_KEY_ID`, `AFTER_PACK_LOC`.
+      Back up the updater key offline.
+- [ ] **Review `CHANGELOG.md` `v0.1.0`** wording before preflight.
+- [ ] **Final app icon:** current art is the temporary icon.
+- [ ] **Token expiry calendar:** the embedded token caps at 6 months; ship a
+      release before it expires.
 
 ## ✅ Phase 0 Scaffolding (Completed)
 
@@ -223,13 +230,14 @@ This document tracks our progress through the Arlet `plan.md` architecture brief
       `docs/MUSICKIT_NETWORK_SURFACE.md`; tighten CSP in `tauri.conf.json` if
       new hosts appear.
 
-## 🚀 Future Milestones (Pending Feasibility Gate)
+## 🚀 Milestones
 
-_See `plan.md` for full milestone details._
+_See `plan.md` for full milestone details. "Implemented" means code exists;
+protected playback still needs the Phase 0 matrix._
 
-- [ ] **Milestone 1:** Core structure (Navigation, Window management, layout shell)
-- [ ] **Milestone 2:** Playback & Queue (Robust state synchronization, media session integration)
-- [ ] **Milestone 3:** User Library (Albums, playlists, infinite scroll fetching)
-- [ ] **Milestone 4:** OS Integration (Windows SMTC, Mica effects refinement)
-- [ ] **Milestone 5:** Polish & Performance
-- [ ] **Milestone 6:** Release Engineering
+- [x] **Milestone 1:** Core structure (navigation, window management, shell) — implemented
+- [x] **Milestone 2:** Playback & Queue (state sync, media session) — implemented
+- [x] **Milestone 3:** User Library (albums, playlists, paged fetching, cache) — implemented
+- [x] **Milestone 4:** OS Integration (SMTC with timeline, Acrylic/Mica/Solid) — implemented
+- [ ] **Milestone 5:** Polish & Performance (list virtualization still open)
+- [ ] **Milestone 6:** Release Engineering — tooling done; first release pending

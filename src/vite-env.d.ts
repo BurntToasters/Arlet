@@ -19,6 +19,7 @@ declare namespace MusicKit {
     unauthorize(): Promise<void>;
     isAuthorized: boolean;
     musicUserToken: string;
+    developerToken?: string;
     setQueue(options: QueueOptions): Promise<void>;
     /** Recently loaded library songs exposed by MusicKit JS when available. */
     librarySongs?: MediaItem[];

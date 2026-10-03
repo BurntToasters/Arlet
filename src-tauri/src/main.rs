@@ -6,6 +6,7 @@ mod logging;
 mod music_diagnostic;
 mod pins;
 mod settings;
+mod token_policy;
 mod window_fx;
 mod window_snap;
 mod windows_media;
@@ -39,8 +40,6 @@ fn main() {
     }
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_sql::Builder::default().build());
 
@@ -93,7 +92,11 @@ fn main() {
         .on_window_event(|window, event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 window_snap::on_window_destroyed(window);
-                windows_media::dispose();
+                // Auth popups and the diagnostic window must not tear down
+                // the main window's media session.
+                if window.label() == auth_popup::MAIN_WINDOW_LABEL {
+                    windows_media::dispose();
+                }
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -114,6 +117,7 @@ fn main() {
             window_fx::supports_window_fx,
             window_snap::set_snap_overlay_bounds,
             windows_media::update_windows_media_session,
+            windows_media::update_windows_media_timeline,
             windows_media::clear_windows_media_session,
         ])
         .run(tauri::generate_context!())

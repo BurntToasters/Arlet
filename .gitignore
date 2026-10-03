@@ -44,6 +44,7 @@ src-tauri/.cargo/*
 !src-tauri/.cargo/audit.toml
 
 # Build outputs
+e2e-artifacts/
 dist/
 release/
 flatpak-build/

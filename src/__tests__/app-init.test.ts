@@ -38,13 +38,14 @@ describe("application startup wiring", () => {
       isDevelopment: false,
     });
 
-    expect(order.slice(0, 3)).toEqual([
+    // Settings and MusicKit start without waiting on native diagnostics.
+    expect(order.slice(0, 2)).toEqual(["loadSettings", "initialize"]);
+    const diagnosticsLog = order.indexOf(
       "log:Running outside the Tauri shell; native diagnostics unavailable.",
-      "loadSettings",
-      "initialize",
-    ]);
+    );
+    expect(diagnosticsLog).toBeGreaterThan(-1);
     expect(order.indexOf("startupUpdateCheck")).toBeGreaterThan(
-      order.indexOf("initialize"),
+      Math.max(order.indexOf("initialize"), diagnosticsLog),
     );
     expect(controller.startupUpdateCheck).toHaveBeenCalledOnce();
   });

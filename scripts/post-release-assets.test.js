@@ -158,8 +158,15 @@ test("package wiring keeps mirror before reset", () => {
   );
   assert.match(
     String(scripts["release:finalize"]),
-    /release:mirror.*git fetch.*git reset --hard.*git clean -fd/,
+    /release:mirror.*node scripts\/finalize-reset\.js/,
   );
+  // The reset itself is guarded and lives in finalize-reset.js.
+  const reset = readFileSync(
+    path.join(repoRoot, "scripts", "finalize-reset.js"),
+    "utf8",
+  );
+  assert.match(reset, /unsafeResetReasons[\s\S]*"reset", "--hard"/);
+  assert.match(reset, /"clean", "-fd"/);
   assert.match(
     String(scripts["release:win:continue"]),
     /release:sign:gpg.*release:finalize/,

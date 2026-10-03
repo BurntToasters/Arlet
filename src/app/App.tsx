@@ -1,7 +1,12 @@
 import { useEffect } from "preact/hooks";
 import type { JSX } from "preact";
 import type { HashRouter } from "../routing/router.ts";
-import { clearDiagnosticLogs, setUiState } from "../state.ts";
+import {
+  clearDiagnosticLogs,
+  getState,
+  setUiState,
+  subscribePlaybackPosition,
+} from "../state.ts";
 import type { AppController } from "./controller.ts";
 import {
   AppProvider,
@@ -22,8 +27,10 @@ import type { DiagnosticsDrawerController } from "../diagnostics/types.ts";
 import type { DiagnosticsStore } from "../diagnostics/store.ts";
 import {
   clearWindowsMediaSession,
+  createTimelineSync,
   listenWindowsMediaControls,
   updateWindowsMediaSession,
+  updateWindowsMediaTimeline,
 } from "../platform/windows-media.ts";
 
 export interface AppProps {
@@ -132,6 +139,16 @@ function AppLayout({
     state.playback.queueIndex,
     state.playback.queue.length,
   ]);
+
+  useEffect(() => {
+    const sync = createTimelineSync((timeline) => {
+      void updateWindowsMediaTimeline(timeline).catch(() => undefined);
+    });
+    return subscribePlaybackPosition(() => {
+      const { positionSeconds, durationSeconds, status } = getState().playback;
+      sync({ positionSeconds, durationSeconds, playing: status === "playing" });
+    });
+  }, []);
 
   return (
     <div className="app-shell">

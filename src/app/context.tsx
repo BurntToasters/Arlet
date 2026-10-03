@@ -1,7 +1,12 @@
 import { createContext } from "preact";
 import { useContext, useEffect, useState } from "preact/hooks";
 import type { ComponentChildren, Context, JSX } from "preact";
-import { getState, subscribe, type RuntimeAppState } from "../state.ts";
+import {
+  getState,
+  subscribe,
+  subscribePlaybackPosition,
+  type RuntimeAppState,
+} from "../state.ts";
 import type { AppController } from "./controller.ts";
 import type { HashRouter } from "../routing/router.ts";
 
@@ -38,6 +43,22 @@ export function useAppState(): Readonly<RuntimeAppState> {
   const [, setVersion] = useState(0);
   useEffect(() => subscribe(() => setVersion((version) => version + 1)), []);
   return getState();
+}
+
+export interface PlaybackPosition {
+  positionSeconds: number;
+  durationSeconds: number;
+}
+
+/** Subscribes only to playback ticks; see `setPlaybackPosition`. */
+export function usePlaybackPosition(): PlaybackPosition {
+  const [, setVersion] = useState(0);
+  useEffect(
+    () => subscribePlaybackPosition(() => setVersion((version) => version + 1)),
+    [],
+  );
+  const { positionSeconds, durationSeconds } = getState().playback;
+  return { positionSeconds, durationSeconds };
 }
 
 export function useOptionalAppController(): AppController | null {

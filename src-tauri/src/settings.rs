@@ -188,24 +188,41 @@ fn replace_existing_windows(
     }
 }
 
+fn is_settings_object(content: &str) -> bool {
+    content.len() <= MAX_SETTINGS_BYTES
+        && serde_json::from_str::<Value>(content).is_ok_and(|value| value.is_object())
+}
+
+fn read_valid_settings(path: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .filter(|content| is_settings_object(content))
+}
+
+/// A readable but corrupt file falls back to the backup instead of silently
+/// resetting every preference on the next save.
+fn read_settings_text(path: &std::path::Path) -> Result<String, String> {
+    match std::fs::read_to_string(path) {
+        Ok(content) if is_settings_object(&content) => Ok(content),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok("{}".to_string()),
+        Ok(_) => Ok(read_valid_settings(&backup_path(path)).unwrap_or_else(|| "{}".to_string())),
+        Err(e) => read_valid_settings(&backup_path(path))
+            .ok_or_else(|| format!("Settings and backup unreadable: {e}")),
+    }
+}
+
+fn write_settings_text(path: &std::path::Path, json: &str) -> Result<(), String> {
+    // Only a valid current file may replace the backup.
+    if read_valid_settings(path).is_some() {
+        let _ = std::fs::copy(path, backup_path(path));
+    }
+    atomic_write_text(path, json)
+}
+
 #[tauri::command]
 pub fn load_settings(app: tauri::AppHandle) -> Result<String, String> {
     let _guard = lock_settings()?;
-    let path = settings_path(&app)?;
-    match std::fs::read_to_string(&path) {
-        Ok(content) => Ok(content),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok("{}".to_string()),
-        Err(e) => {
-            let backup = backup_path(&path);
-            if backup.exists() {
-                match std::fs::read_to_string(&backup) {
-                    Ok(content) => return Ok(content),
-                    Err(_) => return Err(format!("Settings and backup unreadable: {e}")),
-                }
-            }
-            Err(e.to_string())
-        }
-    }
+    read_settings_text(&settings_path(&app)?)
 }
 
 #[tauri::command]
@@ -219,12 +236,7 @@ pub fn save_settings(app: tauri::AppHandle, json: String) -> Result<(), String> 
     }
     let _parsed: serde_json::Value =
         serde_json::from_str(&json).map_err(|e| format!("Invalid settings JSON: {e}"))?;
-    let path = settings_path(&app)?;
-    let backup = backup_path(&path);
-    if path.exists() {
-        let _ = std::fs::copy(&path, &backup);
-    }
-    atomic_write_text(&path, &json)
+    write_settings_text(&settings_path(&app)?, &json)
 }
 
 #[tauri::command]
@@ -270,6 +282,72 @@ mod tests {
         atomic_write_text(&path, "second").unwrap();
 
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn scoped_dir(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("arlet-settings-{name}-{}", std::process::id()))
+    }
+
+    // Failure modes: corrupt-but-readable JSON bypasses the backup and the
+    // user silently loses settings; a corrupt file then overwrites the good
+    // backup on the next save; a corrupt backup is returned as valid.
+    #[test]
+    fn corrupt_settings_fall_back_to_valid_backup() {
+        let dir = scoped_dir("corrupt-fallback");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, "{\"theme\":").unwrap();
+        std::fs::write(backup_path(&path), "{\"theme\":\"dark\"}").unwrap();
+        assert_eq!(read_settings_text(&path).unwrap(), "{\"theme\":\"dark\"}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_settings_and_backup_load_empty_object() {
+        let dir = scoped_dir("corrupt-both");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, "nope").unwrap();
+        assert_eq!(read_settings_text(&path).unwrap(), "{}");
+        std::fs::write(backup_path(&path), "[1,2]").unwrap();
+        assert_eq!(read_settings_text(&path).unwrap(), "{}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn valid_and_missing_settings_load_directly() {
+        let dir = scoped_dir("valid-missing");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("settings.json");
+        assert_eq!(read_settings_text(&path).unwrap(), "{}");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&path, "{\"volume\":0.5}").unwrap();
+        std::fs::write(backup_path(&path), "{\"volume\":0.1}").unwrap();
+        assert_eq!(read_settings_text(&path).unwrap(), "{\"volume\":0.5}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_settings_never_replace_good_backup() {
+        let dir = scoped_dir("backup-guard");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, "{broken").unwrap();
+        std::fs::write(backup_path(&path), "{\"theme\":\"light\"}").unwrap();
+        write_settings_text(&path, "{\"theme\":\"dark\"}").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(backup_path(&path)).unwrap(),
+            "{\"theme\":\"light\"}"
+        );
+        write_settings_text(&path, "{\"theme\":\"system\"}").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(backup_path(&path)).unwrap(),
+            "{\"theme\":\"dark\"}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
