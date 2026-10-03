@@ -12,6 +12,7 @@ import { Artwork } from "../components/Artwork.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import type { Track } from "../domain/music.ts";
 import type { RadioSectionState } from "../state.ts";
+import { reportActionError } from "../components/action-errors.ts";
 
 function StationCard({
   section,
@@ -121,7 +122,7 @@ export function RadioView(): JSX.Element {
           <button
             className="primary-button"
             type="button"
-            onClick={() => void controller.authorize().catch(() => undefined)}
+            onClick={() => void controller.authorize().catch(reportActionError)}
           >
             Sign in
           </button>
@@ -166,7 +167,7 @@ export function RadioView(): JSX.Element {
     const station = stations.find((item) => item.id === id);
     if (station) {
       void Promise.resolve(controller.playStation?.(station)).catch(
-        () => undefined,
+        reportActionError,
       );
     }
   };

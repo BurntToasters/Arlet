@@ -53,10 +53,15 @@ export function registerMusicKitEvents(
     }
     onStateChange?.();
   };
+  // Ticks arrive several times a second; listeners only care when the
+  // duration (and so the preview/full classification) changes.
+  let lastDuration: number | undefined;
   const onPlaybackTimeChange = (event: Record<string, unknown>): void => {
     const position = (event.currentPlaybackTime ?? 0) as number;
     const duration = (event.currentPlaybackDuration ?? 0) as number;
     setPlaybackPosition(position, duration);
+    if (duration === lastDuration) return;
+    lastDuration = duration;
     onStateChange?.();
   };
   const onMediaPlaybackError = (event: Record<string, unknown>): void => {

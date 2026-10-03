@@ -165,6 +165,35 @@ describe("queue resource helper", () => {
     expect(getState().playback.queueIndex).toBe(1);
   });
 
+  // Failure mode: every playback tick (several per second) rebuilds the
+  // diagnostics snapshot although only a duration change affects it.
+  it("reports playback ticks only when the duration changes", () => {
+    resetApplicationState();
+    const listeners = new Map<
+      string,
+      (event: Record<string, unknown>) => void
+    >();
+    const instance = {
+      addEventListener: vi.fn(
+        (name: string, callback: (event: Record<string, unknown>) => void) => {
+          listeners.set(name, callback);
+        },
+      ),
+      removeEventListener: vi.fn(),
+    } as unknown as MusicKit.MusicKitInstance;
+    const onStateChange = vi.fn();
+    const stop = registerMusicKitEvents(instance, onStateChange);
+    const tick = listeners.get(MusicKit.Events.playbackTimeDidChange);
+    for (const time of [1, 2, 3, 4]) {
+      tick?.({ currentPlaybackTime: time, currentPlaybackDuration: 200 });
+    }
+    expect(getState().playback.positionSeconds).toBe(4);
+    expect(onStateChange).toHaveBeenCalledOnce();
+    tick?.({ currentPlaybackTime: 0, currentPlaybackDuration: 30 });
+    expect(onStateChange).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
   it("registers and handles queueItemsDidChange", async () => {
     resetApplicationState();
     const listeners = new Map<

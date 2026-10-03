@@ -410,6 +410,9 @@ export function normalizeRecommendationGroups(
     : [];
 }
 
+/** 100 children per page; 50 pages is far beyond any real folder. */
+const MAX_FOLDER_PAGES = 50;
+
 function encodePathPart(value: string): string {
   return encodeURIComponent(value.trim());
 }
@@ -503,8 +506,11 @@ export function createAppleMusicLibraryClient(
     visited: Set<string>,
   ): Promise<LibraryItem[]> {
     const children: LibraryItem[] = [];
+    const seenCursors = new Set<string>();
     let cursor: string | undefined;
+    let pages = 0;
     do {
+      pages += 1;
       const raw = cursor
         ? await request(cursor)
         : await request(
@@ -526,7 +532,10 @@ export function createAppleMusicLibraryClient(
         }
       }
       cursor = nextValue(raw);
-    } while (cursor);
+      // A repeated or endless cursor must not hang the folder tree.
+      if (cursor && seenCursors.has(cursor)) break;
+      if (cursor) seenCursors.add(cursor);
+    } while (cursor && pages < MAX_FOLDER_PAGES);
     return children;
   }
 

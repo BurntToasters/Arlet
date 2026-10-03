@@ -271,13 +271,24 @@ describe("pins controller", () => {
     controller.dispose();
   });
 
-  it("clears pins on sign-out", async () => {
-    const { controller } = pinsController();
+  // Failure modes: the next Apple ID to sign in on this PC loads the previous
+  // account's pins from disk; audio keeps playing after the UI resets to idle.
+  it("clears pins on disk and stops playback on sign-out", async () => {
+    const calls: Array<{ command: string }> = [];
+    const { controller, music } = pinsController({ calls });
+    const stop = vi.fn();
+    Object.assign(music, { stop });
     await controller.initialize();
     setPins([pin("a"), pin("b", "catalog")]);
     await controller.signOut();
     expect(getState().pins).toEqual([]);
     expect(getState().auth.status).toBe("unauthorized");
+    expect(calls.map((call) => call.command)).toContain("delete_pins");
+    expect(stop).toHaveBeenCalled();
+    const unauthorize = vi.mocked(music.unauthorize);
+    expect(stop.mock.invocationCallOrder[0]).toBeLessThan(
+      unauthorize.mock.invocationCallOrder[0],
+    );
     controller.dispose();
   });
 });

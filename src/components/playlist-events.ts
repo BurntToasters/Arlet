@@ -2,7 +2,7 @@ import type { Track } from "../domain/music.ts";
 
 export const PLAYLIST_DIALOG_REQUEST = "arlet:playlist-dialog";
 
-export type PlaylistDialogMode = "picker" | "create";
+export type PlaylistDialogMode = "picker" | "create" | "folder";
 
 export interface PlaylistDialogRequestDetail {
   mode: PlaylistDialogMode;

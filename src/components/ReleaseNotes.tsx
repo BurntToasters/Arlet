@@ -19,11 +19,32 @@ function appendText(children: InlineChild[], value: string): void {
   }
 }
 
-function linkAt(source: string, start: number): LinkMatch | undefined {
+type Finder = (needle: string, from: number) => number;
+
+/**
+ * indexOf that remembers misses. Scans only move forward, so once a closer
+ * is missing it stays missing; without this, hostile input with thousands of
+ * unmatched openers rescans the rest of the text from every position.
+ */
+function createFinder(source: string): Finder {
+  const missing = new Set<string>();
+  return (needle, from) => {
+    if (missing.has(needle)) return -1;
+    const found = source.indexOf(needle, from);
+    if (found < 0) missing.add(needle);
+    return found;
+  };
+}
+
+function linkAt(
+  source: string,
+  start: number,
+  find: Finder,
+): LinkMatch | undefined {
   if (source[start] !== "[") return undefined;
-  const labelEnd = source.indexOf("]", start + 1);
+  const labelEnd = find("]", start + 1);
   if (labelEnd <= start + 1 || source[labelEnd + 1] !== "(") return undefined;
-  const destinationEnd = source.indexOf(")", labelEnd + 2);
+  const destinationEnd = find(")", labelEnd + 2);
   if (destinationEnd < 0) return undefined;
   const label = source.slice(start + 1, labelEnd);
   const destination = source.slice(labelEnd + 2, destinationEnd);
@@ -33,12 +54,13 @@ function linkAt(source: string, start: number): LinkMatch | undefined {
 
 function inlineChildren(source: string, keyPrefix: string): InlineChild[] {
   const children: InlineChild[] = [];
+  const find = createFinder(source);
   let index = 0;
   while (index < source.length) {
     // Keep HTML-like input as literal text, including any markdown-looking
     // characters inside the tag. JSX text nodes escape it automatically.
     if (source[index] === "<") {
-      const tagEnd = source.indexOf(">", index + 1);
+      const tagEnd = find(">", index + 1);
       if (tagEnd >= 0) {
         appendText(children, source.slice(index, tagEnd + 1));
         index = tagEnd + 1;
@@ -50,7 +72,7 @@ function inlineChildren(source: string, keyPrefix: string): InlineChild[] {
       let tickCount = 1;
       while (source[index + tickCount] === "`") tickCount += 1;
       const marker = "`".repeat(tickCount);
-      const codeEnd = source.indexOf(marker, index + tickCount);
+      const codeEnd = find(marker, index + tickCount);
       if (codeEnd > index + tickCount) {
         children.push(
           <code key={`${keyPrefix}-${children.length}-code`}>
@@ -65,7 +87,7 @@ function inlineChildren(source: string, keyPrefix: string): InlineChild[] {
     // Images intentionally stay literal: release notes never create image
     // elements or request remote resources.
     if (source[index] === "!" && source[index + 1] === "[") {
-      const image = linkAt(source, index + 1);
+      const image = linkAt(source, index + 1, find);
       if (image) {
         appendText(children, source.slice(index, image.end));
         index = image.end;
@@ -74,7 +96,7 @@ function inlineChildren(source: string, keyPrefix: string): InlineChild[] {
     }
 
     if (source[index] === "[") {
-      const link = linkAt(source, index);
+      const link = linkAt(source, index, find);
       if (link) {
         // Links are deliberately rendered as their label without navigation.
         children.push(
@@ -91,7 +113,7 @@ function inlineChildren(source: string, keyPrefix: string): InlineChild[] {
     if (marker === "*" || marker === "_") {
       const strongMarker = marker.repeat(2);
       if (source.startsWith(strongMarker, index)) {
-        const strongEnd = source.indexOf(strongMarker, index + 2);
+        const strongEnd = find(strongMarker, index + 2);
         if (strongEnd > index + 2) {
           const content = source.slice(index + 2, strongEnd);
           if (!/^\s|\s$/u.test(content)) {
@@ -109,7 +131,7 @@ function inlineChildren(source: string, keyPrefix: string): InlineChild[] {
         }
       }
 
-      const emphasisEnd = source.indexOf(marker, index + 1);
+      const emphasisEnd = find(marker, index + 1);
       if (
         emphasisEnd > index + 1 &&
         !/^\s|\s$/u.test(source.slice(index + 1, emphasisEnd))
@@ -134,10 +156,24 @@ function inlineChildren(source: string, keyPrefix: string): InlineChild[] {
 }
 
 const FENCE_PATTERN = /^\s*(`{3,}|~{3,})(.*)$/u;
-const HEADING_PATTERN = /^\s{0,3}(#{1,6})[ \t]+(.+?)\s*#*\s*$/u;
+// Linear: closing hashes are stripped by headingText, not by backtracking.
+const HEADING_PATTERN = /^\s{0,3}(#{1,6})[ \t]+(\S.*)$/u;
 const UNORDERED_ITEM_PATTERN = /^\s{0,3}[-+*][ \t]+(.+)$/u;
 const ORDERED_ITEM_PATTERN = /^\s{0,3}\d+[.)][ \t]+(.+)$/u;
 const QUOTE_PATTERN = /^\s{0,3}>[ \t]?(.*)$/u;
+/** Deeper `>` nesting renders as text instead of recursing. */
+const MAX_QUOTE_DEPTH = 6;
+
+/** Drops an optional closing `#` sequence, as CommonMark does. */
+function headingText(raw: string): string {
+  const text = raw.trimEnd();
+  let end = text.length;
+  while (end > 0 && text[end - 1] === "#") end -= 1;
+  if (end === text.length || (end > 0 && !/[ \t]/u.test(text[end - 1]))) {
+    return text;
+  }
+  return text.slice(0, end).trimEnd() || text;
+}
 
 function isBlockStart(line: string): boolean {
   return (
@@ -149,7 +185,11 @@ function isBlockStart(line: string): boolean {
   );
 }
 
-function renderBlocks(lines: string[], keyPrefix: string): JSX.Element[] {
+function renderBlocks(
+  lines: string[],
+  keyPrefix: string,
+  depth = 0,
+): JSX.Element[] {
   const elements: JSX.Element[] = [];
   let index = 0;
   while (index < lines.length) {
@@ -183,7 +223,7 @@ function renderBlocks(lines: string[], keyPrefix: string): JSX.Element[] {
     if (heading) {
       const level = heading[1].length;
       const content = inlineChildren(
-        heading[2],
+        headingText(heading[2]),
         `${keyPrefix}-${elements.length}-heading`,
       );
       const key = `${keyPrefix}-${elements.length}-heading`;
@@ -197,7 +237,8 @@ function renderBlocks(lines: string[], keyPrefix: string): JSX.Element[] {
       continue;
     }
 
-    const quote = QUOTE_PATTERN.exec(lines[index]);
+    const quote =
+      depth < MAX_QUOTE_DEPTH ? QUOTE_PATTERN.exec(lines[index]) : null;
     if (quote) {
       const quoteLines: string[] = [];
       while (index < lines.length) {
@@ -208,7 +249,11 @@ function renderBlocks(lines: string[], keyPrefix: string): JSX.Element[] {
       }
       elements.push(
         <blockquote key={`${keyPrefix}-${elements.length}-quote`}>
-          {renderBlocks(quoteLines, `${keyPrefix}-${elements.length}-quote`)}
+          {renderBlocks(
+            quoteLines,
+            `${keyPrefix}-${elements.length}-quote`,
+            depth + 1,
+          )}
         </blockquote>,
       );
       continue;

@@ -19,6 +19,7 @@ import type {
   UpdateState,
   WindowEffectPreference,
 } from "../state.ts";
+import { reportActionError } from "../components/action-errors.ts";
 
 function updateStatusCopy(updates: UpdateState): string {
   switch (updates.status) {
@@ -165,7 +166,9 @@ export function SettingsView(): JSX.Element {
               <button
                 className="secondary-button"
                 type="button"
-                onClick={() => void controller.signOut().catch(() => undefined)}
+                onClick={() =>
+                  void controller.signOut().catch(reportActionError)
+                }
               >
                 Sign out
               </button>
@@ -178,7 +181,7 @@ export function SettingsView(): JSX.Element {
                   authorizationPending
                 }
                 onClick={() =>
-                  void controller.authorize().catch(() => undefined)
+                  void controller.authorize().catch(reportActionError)
                 }
               >
                 {authorizationPending ? "Signing in…" : "Sign in"}
@@ -389,7 +392,7 @@ export function SettingsView(): JSX.Element {
               className="secondary-button"
               type="button"
               onClick={() =>
-                void controller.openMusicDiagnostic().catch(() => undefined)
+                void controller.openMusicDiagnostic().catch(reportActionError)
               }
             >
               Open music.apple.com diagnostic{" "}

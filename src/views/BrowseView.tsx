@@ -17,6 +17,7 @@ import { Artwork } from "../components/Artwork.tsx";
 import { SongRow } from "../components/SongRow.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import type { Album, Playlist, Track } from "../domain/music.ts";
+import { reportActionError } from "../components/action-errors.ts";
 
 function cardTrack(item: Album | Playlist): Track {
   return {
@@ -84,7 +85,7 @@ export function BrowseView(): JSX.Element {
           <button
             className="primary-button"
             type="button"
-            onClick={() => void controller.authorize().catch(() => undefined)}
+            onClick={() => void controller.authorize().catch(reportActionError)}
           >
             Sign in
           </button>
@@ -172,10 +173,12 @@ export function BrowseView(): JSX.Element {
                 onPlay={() =>
                   void controller
                     .playTracks(browse.songs, index)
-                    .catch(() => undefined)
+                    .catch(reportActionError)
                 }
                 onPlayNext={() =>
-                  void controller.playNextTracks([track]).catch(() => undefined)
+                  void controller
+                    .playNextTracks([track])
+                    .catch(reportActionError)
                 }
                 rowClassName="library-track-row"
                 numberClassName="library-track-number"

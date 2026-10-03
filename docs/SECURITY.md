@@ -4,10 +4,9 @@
 
 Tauri capabilities are a real boundary, not documentation. Permissions are
 granted per window label in `src-tauri/capabilities/`; the default set covers
-only version, window management, updater, restart, clipboard text, the
+only version, window management, updater, clipboard text, the
 library SQLite cache, settings, pins, logging, window effects, the Windows
-media session, and opening the diagnostic window. There is no `shell`,
-`dialog`, or `notification` plugin, no arbitrary command execution, and
+media session, and opening the diagnostic window. There is no `shell`, `dialog`, `notification`, or `process` plugin, no arbitrary command execution, and
 remote Apple origins get
 no filesystem/shell/updater access.
 
@@ -79,6 +78,12 @@ redact JWT-shaped values and values labelled by a token key
 The frontend also redacts the exact developer and Music User Token values
 once MusicKit has produced them. Request logs record method/path/status/
 duration only. Both redactors have unit tests.
+
+## Sign-out
+
+Signing out stops playback, revokes MusicKit authorization, clears the SQLite
+library cache, and deletes the local pinned-playlist file, so the next Apple ID
+on the same Windows account starts clean.
 
 ## Signing separation
 

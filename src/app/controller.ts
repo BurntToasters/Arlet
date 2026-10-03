@@ -51,6 +51,7 @@ import {
 } from "./settings.ts";
 import {
   MAX_PINS,
+  deletePins as deletePersistedPins,
   loadPins as loadPersistedPins,
   savePins as savePersistedPins,
 } from "./pins.ts";
@@ -88,6 +89,8 @@ import {
 import { createPlayback } from "./playback.ts";
 
 export type { DetailLoadOptions } from "./library-loader.ts";
+
+const VOLUME_SAVE_DELAY_MS = 300;
 
 export interface ControllerDependencies {
   initializeMusicKit?: typeof initializeMusicKit;
@@ -215,6 +218,8 @@ export function createAppController(
     dependencies.createLibraryClient ?? createAppleMusicLibraryClient;
   let music: MusicKit.MusicKitInstance | null = null;
   let volumeSaveQueue: Promise<void> = Promise.resolve();
+  let volumeSaveTimer: ReturnType<typeof setTimeout> | undefined;
+  let volumeSaveWaiters: Array<() => void> = [];
   let restoreAuthProbe: (() => void) | undefined;
   let stopMusicKitEvents: (() => void) | undefined;
   let stopThemeWatcher: (() => void) | undefined;
@@ -281,6 +286,22 @@ export function createAppController(
     } catch (error) {
       log(`Settings save failed: ${errorMessage(error)}`);
     }
+  };
+
+  /** Saves the latest settings once a volume drag settles. */
+  const flushVolumeSave = (): void => {
+    volumeSaveTimer = undefined;
+    const waiters = volumeSaveWaiters;
+    volumeSaveWaiters = [];
+    const settings = getState().settings;
+    volumeSaveQueue = volumeSaveQueue
+      .then(() => savePersistedSettings(settings, invokeFn))
+      .catch((error: unknown) => {
+        log(`Settings save failed: ${errorMessage(error)}`);
+      });
+    void volumeSaveQueue.then(() => {
+      for (const resolve of waiters) resolve();
+    });
   };
 
   const persistPins = async (
@@ -452,8 +473,21 @@ export function createAppController(
     async signOut(): Promise<void> {
       try {
         const instance = requireMusic();
+        // Sign-out resets the UI to idle; audio must not keep playing.
+        try {
+          instance.stop?.();
+        } catch (error) {
+          log(`Stop before sign-out failed: ${safeErrorMessage(error)}`);
+        }
         await unauthorize(instance);
         await clearLibraryCache();
+        // Pins are local and not tied to an Apple ID; the next account to
+        // sign in on this PC must not see them.
+        try {
+          await deletePersistedPins(invokeFn);
+        } catch (error) {
+          log(`Pinned playlists clear failed: ${safeErrorMessage(error)}`);
+        }
         discovery.resetSearch();
         resetState();
         setPins([]);
@@ -702,20 +736,12 @@ export function createAppController(
 
     async setVolume(volume: number): Promise<void> {
       const safeVolume = playback.applyPlaybackVolume(volume);
-      const settings: AppSettings = {
-        ...getState().settings,
-        volume: safeVolume,
-      };
-      setSettings(settings);
-      volumeSaveQueue = volumeSaveQueue
-        .catch(() => undefined)
-        .then(() => savePersistedSettings(settings, invokeFn));
-      const save = volumeSaveQueue;
-      try {
-        await save;
-      } catch (error) {
-        log(`Settings save failed: ${errorMessage(error)}`);
-      }
+      setSettings({ ...getState().settings, volume: safeVolume });
+      // Slider input fires many times a second; the audio follows each one,
+      // but settings are written once the drag settles.
+      if (volumeSaveTimer !== undefined) clearTimeout(volumeSaveTimer);
+      volumeSaveTimer = setTimeout(flushVolumeSave, VOLUME_SAVE_DELAY_MS);
+      await new Promise<void>((resolve) => volumeSaveWaiters.push(resolve));
     },
 
     async setTheme(theme: ThemePreference): Promise<void> {
@@ -799,6 +825,10 @@ export function createAppController(
     log,
 
     dispose(): void {
+      if (volumeSaveTimer !== undefined) {
+        clearTimeout(volumeSaveTimer);
+        flushVolumeSave();
+      }
       stopMusicKitEvents?.();
       stopMusicKitEvents = undefined;
       restoreAuthProbe?.();

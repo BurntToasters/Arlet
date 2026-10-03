@@ -27,6 +27,7 @@ import {
   type ResourceLike,
 } from "./LibraryView.tsx";
 import type { Track } from "../domain/music.ts";
+import { reportActionError } from "../components/action-errors.ts";
 
 type DetailKind = "album" | "artist" | "playlist";
 type DetailSource = "library" | "catalog";
@@ -50,8 +51,14 @@ interface DetailController {
   refreshCurrentData?: () => Promise<unknown>;
 }
 
+/** Background loads; their views render the error state. */
 function run(action: () => Promise<unknown> | undefined): void {
   void Promise.resolve(action()).catch(() => undefined);
+}
+
+/** User actions; failures surface as a toast. */
+function act(action: () => Promise<unknown> | undefined): void {
+  void Promise.resolve(action()).catch(reportActionError);
 }
 
 function callLoader(
@@ -226,12 +233,12 @@ export function LibraryDetailView({
   ]);
 
   const playTrack = (track: Track): void =>
-    run(() => controller.playTracks([track]));
+    act(() => controller.playTracks([track]));
   const playAll = (): void => {
     const tracks = resources
       .map(toTrack)
       .filter((track): track is Track => Boolean(track));
-    if (tracks.length) run(() => controller.playTracks(tracks));
+    if (tracks.length) act(() => controller.playTracks(tracks));
   };
 
   if (!authorized) {
@@ -248,7 +255,7 @@ export function LibraryDetailView({
               state.initialization.status !== "ready" ||
               state.auth.pending === true
             }
-            onClick={() => run(controller.authorize)}
+            onClick={() => act(controller.authorize)}
           >
             {state.auth.pending === true ? "Signing in…" : "Sign in"}
           </button>

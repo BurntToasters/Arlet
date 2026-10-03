@@ -39,14 +39,17 @@ fn main() {
         return;
     }
     let mut builder = tauri::Builder::default()
-        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_sql::Builder::default().build());
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            // A second launch brings the existing window back even when it
+            // is minimized or hidden; focus alone leaves it on the taskbar.
             if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
                 let _ = window.set_focus();
             }
         }));

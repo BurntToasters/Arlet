@@ -20,6 +20,7 @@ import {
 import type { AppErrorCode } from "../domain/errors.ts";
 import { Artwork } from "./Artwork.tsx";
 import { IconButton } from "./IconButton.tsx";
+import { reportActionError } from "./action-errors.ts";
 
 export function playerErrorLabel(code: AppErrorCode): string {
   switch (code) {
@@ -95,7 +96,7 @@ export function PlayerBar(): JSX.Element {
     state.initialization.status === "ready" && Boolean(current);
 
   const run = (action: () => Promise<void>): void => {
-    void action().catch(() => undefined);
+    void action().catch(reportActionError);
   };
 
   return (
@@ -181,7 +182,7 @@ export function PlayerBar(): JSX.Element {
                 controller.setShuffleMode?.(
                   playback.shuffleMode === "songs" ? "off" : "songs",
                 ),
-              ).catch(() => undefined)
+              ).catch(reportActionError)
             }
           />
         ) : null}

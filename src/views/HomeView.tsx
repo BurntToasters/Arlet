@@ -18,6 +18,7 @@ import {
 import { Artwork } from "../components/Artwork.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import { toResource, toTrack, type ResourceLike } from "./LibraryView.tsx";
+import { reportActionError } from "../components/action-errors.ts";
 
 type DiscoverySource = "library" | "catalog";
 type HomeStatus = "idle" | "loading" | "refreshing" | "success" | "error";
@@ -459,7 +460,7 @@ export function HomeView(): JSX.Element {
                     authorizationPending
                   }
                   onClick={() =>
-                    void controller.authorize().catch(() => undefined)
+                    void controller.authorize().catch(reportActionError)
                   }
                 >
                   <Headphones aria-hidden="true" size={17} strokeWidth={2} />
@@ -472,7 +473,7 @@ export function HomeView(): JSX.Element {
                 <button
                   className="quiet-button"
                   type="button"
-                    onClick={() => router.navigate({ kind: "browse" })}
+                  onClick={() => router.navigate({ kind: "browse" })}
                 >
                   Explore new music{" "}
                   <ArrowRight aria-hidden="true" size={16} strokeWidth={1.8} />

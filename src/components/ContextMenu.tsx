@@ -30,6 +30,7 @@ import {
   type ContextMenuRequestDetail,
 } from "./context-menu-events.ts";
 import { requestPlaylistDialog } from "./playlist-events.ts";
+import { reportActionError } from "./action-errors.ts";
 
 type ContextKind = "track" | "album" | "artist" | "playlist" | "folder";
 
@@ -157,12 +158,6 @@ function insertClipboardText(text: string): void {
     active.setSelectionRange(start + text.length, start + text.length);
     active.dispatchEvent(new Event("input", { bubbles: true }));
   }
-}
-
-function promptName(label: string): string | undefined {
-  const value = window.prompt(label);
-  const trimmed = value?.trim();
-  return trimmed ?? undefined;
 }
 
 function ContextMenuItem({ item }: { item: MenuItem }): JSX.Element {
@@ -503,8 +498,8 @@ function buildItems({
         icon: SkipForward,
         action: run(() => {
           const playNext = controller.playNextTracks;
-          if (playNext) void playNext([track]).catch(() => undefined);
-          else void statefulPlay(controller, track).catch(() => undefined);
+          if (playNext) void playNext([track]).catch(reportActionError);
+          else void statefulPlay(controller, track).catch(reportActionError);
         }),
       },
       {
@@ -513,8 +508,8 @@ function buildItems({
         icon: Forward,
         action: run(() => {
           const playLater = controller.playLaterTracks;
-          if (playLater) void playLater([track]).catch(() => undefined);
-          else void statefulPlay(controller, track).catch(() => undefined);
+          if (playLater) void playLater([track]).catch(reportActionError);
+          else void statefulPlay(controller, track).catch(reportActionError);
         }),
       },
       {
@@ -560,11 +555,12 @@ function buildItems({
       icon: pinned ? PinOff : Pin,
       disabled: pinned ? !controller.unpin : !controller.togglePin,
       action: run(() => {
-        if (pinned) void controller.unpin?.(playlistId).catch(() => undefined);
+        if (pinned)
+          void controller.unpin?.(playlistId).catch(reportActionError);
         else
           void controller
             .togglePin?.(playlistId, source)
-            .catch(() => undefined);
+            .catch(reportActionError);
       }),
     });
   }
@@ -586,11 +582,7 @@ function buildItems({
         label: "New playlist folder",
         icon: FolderPlus,
         disabled: !controller.createPlaylistFolder,
-        action: run(() => {
-          const name = promptName("Playlist folder name");
-          if (name && controller.createPlaylistFolder)
-            void controller.createPlaylistFolder(name).catch(() => undefined);
-        }),
+        action: run(() => requestPlaylistDialog("folder")),
       },
     );
   }

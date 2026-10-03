@@ -269,6 +269,36 @@ describe("MusicKit controller", () => {
     controller.dispose();
   });
 
+  // Failure modes: every slider input event writes settings to disk; the
+  // final drag value is lost; callers resolve before the value is saved.
+  it("coalesces a volume drag into one settings save of the final value", async () => {
+    vi.useFakeTimers();
+    try {
+      const savedSettings: string[] = [];
+      const invokeFn = vi.fn(
+        async (command: string, args?: Record<string, unknown>) => {
+          if (command === "save_settings") {
+            savedSettings.push(String(args?.json));
+          }
+          return undefined;
+        },
+      ) as unknown as InvokeFunction;
+      const controller = createAppController({ invokeFn });
+      const drags = [0.1, 0.2, 0.3, 0.4, 0.55].map((volume) =>
+        controller.setVolume(volume),
+      );
+      expect(getState().playback.volume).toBe(0.55);
+      expect(savedSettings).toHaveLength(0);
+      await vi.runAllTimersAsync();
+      await Promise.all(drags);
+      expect(savedSettings).toHaveLength(1);
+      expect(JSON.parse(savedSettings[0])).toMatchObject({ volume: 0.55 });
+      controller.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("discards stale search responses and queues the exact suffix", async () => {
     const instance = {
       isAuthorized: false,

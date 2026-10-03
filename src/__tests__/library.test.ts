@@ -365,3 +365,50 @@ describe("AppleMusicLibraryClient", () => {
     ).rejects.toThrow("Unsupported playlist track resource reference");
   });
 });
+
+// Failure modes: the folder-children loop follows a `next` cursor that
+// repeats (or never ends) and hangs the folder tree forever.
+describe("playlist folder pagination", () => {
+  const root = {
+    id: "p.playlistsroot",
+    type: "library-playlist-folders",
+    attributes: { name: "Playlists" },
+  };
+  const playlist = (id: string) => ({
+    id,
+    type: "library-playlists",
+    attributes: { name: id },
+  });
+
+  it("stops when Apple repeats a next cursor", async () => {
+    const { client, request } = clientWithRequest(async (path) => {
+      if (path === "/v1/me/library/playlist-folders") {
+        return { data: [root] };
+      }
+      return {
+        data: [playlist(`p-${request.mock.calls.length}`)],
+        next: "/v1/me/library/playlist-folders/p.playlistsroot/children?offset=100",
+      };
+    });
+    const result = await client.getRootPlaylistFolder();
+    // root lookup + first page + one page for the repeated cursor.
+    expect(request).toHaveBeenCalledTimes(3);
+    expect(result?.children).toHaveLength(2);
+  });
+
+  it("caps an endless chain of distinct cursors", async () => {
+    let page = 0;
+    const { client, request } = clientWithRequest(async (path) => {
+      if (path === "/v1/me/library/playlist-folders") {
+        return { data: [root] };
+      }
+      page += 1;
+      return {
+        data: [playlist(`p-${page}`)],
+        next: `/v1/me/library/playlist-folders/p.playlistsroot/children?offset=${page * 100}`,
+      };
+    });
+    await client.getRootPlaylistFolder();
+    expect(request.mock.calls.length).toBeLessThanOrEqual(1 + 50);
+  });
+});

@@ -21,6 +21,7 @@ import {
 import {
   assertReleaseTargetsCommit,
   assertBetaManifestVersionsMonotonic,
+  gpgSignInvocation,
   isTransactionalStagingAssetName,
   normalizeUpdaterSignature,
   parseReleaseVersion,
@@ -735,4 +736,25 @@ test("stable release policy remains enforced by direct release helpers", () => {
     () => assertStableReleaseOverridesAllowed({ FORCE_UPLOAD: "1" }, "0.1.0"),
     /FORCE_UPLOAD/,
   );
+});
+
+// Failure mode: GPG_PASSPHRASE on the gpg command line is readable by any
+// local process through the process list.
+test("gpg signing passes the passphrase on stdin, never in argv", () => {
+  const withPassphrase = gpgSignInvocation(
+    "release/Arlet.exe",
+    "KEY123",
+    "correct horse battery staple",
+  );
+  assert.equal(
+    withPassphrase.args.some((arg) => arg.includes("correct horse")),
+    false,
+  );
+  assert.ok(withPassphrase.args.includes("--passphrase-fd"));
+  assert.equal(withPassphrase.options.input, "correct horse battery staple\n");
+  assert.equal(withPassphrase.options.stdio[0], "pipe");
+
+  const agentOnly = gpgSignInvocation("release/Arlet.exe", "KEY123", "");
+  assert.equal(agentOnly.args.includes("--passphrase-fd"), false);
+  assert.equal(agentOnly.options.input, undefined);
 });

@@ -261,25 +261,46 @@ function sha256File(filePath) {
   return hash.digest("hex");
 }
 
-function gpgSign(filePath) {
-  if (!GPG_KEY_ID) {
-    throw new Error("GPG_KEY_ID is required to sign release artifacts.");
-  }
+/**
+ * The passphrase goes to gpg on stdin (`--passphrase-fd 0`); on the command
+ * line it would be readable through the process list. Without one, gpg-agent
+ * handles the key.
+ */
+export function gpgSignInvocation(filePath, keyId, passphrase) {
   const args = [
     "--batch",
     "--yes",
     "--armor",
     "--detach-sign",
     "--local-user",
-    GPG_KEY_ID,
+    keyId,
     "--output",
     `${filePath}.asc`,
     filePath,
   ];
-  const options = { cwd: root, stdio: "inherit" };
-  if (GPG_PASSPHRASE) {
-    args.unshift("--pinentry-mode", "loopback", "--passphrase", GPG_PASSPHRASE);
+  if (!passphrase) {
+    return { args, options: { cwd: root, stdio: "inherit" } };
   }
+  return {
+    args: ["--pinentry-mode", "loopback", "--passphrase-fd", "0", ...args],
+    options: {
+      cwd: root,
+      stdio: ["pipe", "inherit", "inherit"],
+      input: `${passphrase}
+`,
+    },
+  };
+}
+
+function gpgSign(filePath) {
+  if (!GPG_KEY_ID) {
+    throw new Error("GPG_KEY_ID is required to sign release artifacts.");
+  }
+  const { args, options } = gpgSignInvocation(
+    filePath,
+    GPG_KEY_ID,
+    GPG_PASSPHRASE,
+  );
   console.log(`[gpg-sign] Signing ${path.relative(root, filePath)}`);
   const result = spawnSync("gpg", args, options);
   if (result.error) throw result.error;

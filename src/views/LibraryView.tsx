@@ -25,6 +25,7 @@ import { SongRow } from "../components/SongRow.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import type { Track } from "../domain/music.ts";
 import type { LibrarySection } from "../routing/router.ts";
+import { reportActionError } from "../components/action-errors.ts";
 
 export interface ResourceLike {
   id: string;
@@ -373,8 +374,14 @@ function contextData(
   };
 }
 
+/** Background loads; their views render the error state. */
 function run(action: () => Promise<unknown> | undefined): void {
   void Promise.resolve(action()).catch(() => undefined);
+}
+
+/** User actions; failures surface as a toast. */
+function act(action: () => Promise<unknown> | undefined): void {
+  void Promise.resolve(action()).catch(reportActionError);
 }
 
 export function LibraryTrackRow({
@@ -396,7 +403,7 @@ export function LibraryTrackRow({
   const playNext =
     onPlayNext ??
     ((value: Track) => {
-      run(() => appController.playNextTracks([value]));
+      act(() => appController.playNextTracks([value]));
     });
   return (
     <SongRow
@@ -675,6 +682,9 @@ export function LibraryView({
       !authorized ||
       !collection.next ||
       collection.status === "loading" ||
+      // After a failed page load the trigger is still visible; observing
+      // again would retry in a tight loop. "Load more" stays the retry.
+      collection.error ||
       typeof IntersectionObserver === "undefined"
     ) {
       return undefined;
@@ -687,9 +697,15 @@ export function LibraryView({
     );
     observer.observe(target);
     return () => observer.disconnect();
-  }, [authorized, collection.next, collection.status, section]);
+  }, [
+    authorized,
+    collection.next,
+    collection.status,
+    collection.error,
+    section,
+  ]);
   const playTrack = (track: Track): void =>
-    run(() => controller.playTracks([track]));
+    act(() => controller.playTracks([track]));
   return (
     <>
       <div className="page-heading library-heading">
@@ -738,7 +754,7 @@ export function LibraryView({
                 state.initialization.status !== "ready" ||
                 state.auth.pending === true
               }
-              onClick={() => run(controller.authorize)}
+              onClick={() => act(controller.authorize)}
             >
               {state.auth.pending === true ? "Signing in…" : "Sign in"}
             </button>
@@ -762,7 +778,7 @@ export function LibraryView({
                     index={index}
                     onPlay={playTrack}
                     onPlayNext={(track) =>
-                      run(() => controller.playNextTracks?.([track]))
+                      act(() => controller.playNextTracks?.([track]))
                     }
                     disabled={!authorized}
                   />

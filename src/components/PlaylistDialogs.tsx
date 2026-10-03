@@ -35,6 +35,7 @@ interface PlaylistController {
     playlistId: string,
     tracks: readonly Track[],
   ) => Promise<unknown>;
+  createPlaylistFolder?: (name: string) => Promise<unknown>;
 }
 
 function recordValue(value: unknown): Record<string, unknown> | undefined {
@@ -123,7 +124,12 @@ export function PlaylistDialogs(): JSX.Element | null {
   useEffect(() => {
     const onRequest = (event: Event): void => {
       const detail = (event as CustomEvent<PlaylistDialogRequestDetail>).detail;
-      if (!detail || (detail.mode !== "picker" && detail.mode !== "create"))
+      if (
+        !detail ||
+        (detail.mode !== "picker" &&
+          detail.mode !== "create" &&
+          detail.mode !== "folder")
+      )
         return;
       setDialog({
         mode: detail.mode,
@@ -249,6 +255,26 @@ export function PlaylistDialogs(): JSX.Element | null {
   const submitCreate = (event: JSX.TargetedEvent<HTMLFormElement>): void => {
     event.preventDefault();
     const trimmed = name.trim();
+    if (dialog?.mode === "folder") {
+      if (!trimmed) {
+        setError("Folder name is required.");
+        return;
+      }
+      if (!controller.createPlaylistFolder) {
+        setError("Folder creation is not available.");
+        return;
+      }
+      setBusy(true);
+      setError(undefined);
+      void controller
+        .createPlaylistFolder(trimmed)
+        .then(() => closeDialog())
+        .catch((reason: unknown) => {
+          setBusy(false);
+          setError(errorMessage(reason));
+        });
+      return;
+    }
     if (!trimmed) {
       setError("Playlist name is required.");
       return;
@@ -274,6 +300,7 @@ export function PlaylistDialogs(): JSX.Element | null {
 
   if (!dialog) return null;
   const picker = dialog.mode === "picker";
+  const folder = dialog.mode === "folder";
   return (
     <div
       className="playlist-dialog-backdrop"
@@ -293,7 +320,11 @@ export function PlaylistDialogs(): JSX.Element | null {
           <div>
             <span className="eyebrow">Apple Music</span>
             <h2 id="playlist-dialog-title">
-              {picker ? "Add to playlist" : "New playlist"}
+              {picker
+                ? "Add to playlist"
+                : folder
+                  ? "New playlist folder"
+                  : "New playlist"}
             </h2>
           </div>
           <button
@@ -384,26 +415,28 @@ export function PlaylistDialogs(): JSX.Element | null {
                 value={name}
                 required
                 maxLength={255}
-                placeholder="Playlist name"
+                placeholder={folder ? "Folder name" : "Playlist name"}
                 onInput={(event) => {
                   setName(event.currentTarget.value);
                   setError(undefined);
                 }}
               />
             </label>
-            <label>
-              <span>
-                Description <small>(optional)</small>
-              </span>
-              <textarea
-                value={description}
-                rows={3}
-                maxLength={1000}
-                placeholder="What is this playlist for?"
-                onInput={(event) => setDescription(event.currentTarget.value)}
-              />
-            </label>
-            {dialog.tracks.length ? (
+            {folder ? null : (
+              <label>
+                <span>
+                  Description <small>(optional)</small>
+                </span>
+                <textarea
+                  value={description}
+                  rows={3}
+                  maxLength={1000}
+                  placeholder="What is this playlist for?"
+                  onInput={(event) => setDescription(event.currentTarget.value)}
+                />
+              </label>
+            )}
+            {!folder && dialog.tracks.length ? (
               <p className="playlist-dialog-seed">
                 {dialog.tracks.length === 1
                   ? "The selected song will be added."
@@ -428,7 +461,11 @@ export function PlaylistDialogs(): JSX.Element | null {
                 {dialog.fromPicker ? "Back to playlists" : "Cancel"}
               </button>
               <button className="primary-button" type="submit" disabled={busy}>
-                {busy ? "Creating…" : "Create playlist"}
+                {busy
+                  ? "Creating…"
+                  : folder
+                    ? "Create folder"
+                    : "Create playlist"}
               </button>
             </div>
           </form>

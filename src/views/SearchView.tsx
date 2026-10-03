@@ -17,6 +17,7 @@ import { Artwork } from "../components/Artwork.tsx";
 import { SongRow } from "../components/SongRow.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import type { Album, Artist, Playlist, Track } from "../domain/music.ts";
+import { reportActionError } from "../components/action-errors.ts";
 
 export function TrackRow({
   track,
@@ -223,7 +224,9 @@ export function SearchView(): JSX.Element {
               disabled={
                 state.initialization.status !== "ready" || authorizationPending
               }
-              onClick={() => void controller.authorize().catch(() => undefined)}
+              onClick={() =>
+                void controller.authorize().catch(reportActionError)
+              }
             >
               {authorizationPending ? "Signing in…" : "Sign in"}
             </button>
@@ -312,7 +315,7 @@ export function SearchView(): JSX.Element {
                         onClick={() =>
                           void controller
                             .playConsecutive()
-                            .catch(() => undefined)
+                            .catch(reportActionError)
                         }
                       >
                         Queue first {controller.consecutiveTrackTarget}
@@ -329,12 +332,12 @@ export function SearchView(): JSX.Element {
                         onPlay={() =>
                           void controller
                             .playFromSearch(index)
-                            .catch(() => undefined)
+                            .catch(reportActionError)
                         }
                         onPlayNext={() =>
                           void controller
                             .playNextTracks([track])
-                            .catch(() => undefined)
+                            .catch(reportActionError)
                         }
                       />
                     ))}

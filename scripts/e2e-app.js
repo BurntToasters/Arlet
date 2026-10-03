@@ -57,6 +57,21 @@ function dataDirs() {
 }
 
 function moveAside(stamp) {
+  // A crashed run leaves real data in a backup and test data in place.
+  // Moving again would bury that backup, so stop until it is restored.
+  for (const dir of dataDirs()) {
+    const parent = path.dirname(dir);
+    const stale = fs.existsSync(parent)
+      ? fs
+          .readdirSync(parent)
+          .filter((name) => name.startsWith(`${IDENTIFIER}.e2e-backup-`))
+      : [];
+    if (stale.length > 0) {
+      fail(
+        `previous E2E backup found: ${path.join(parent, stale[0])}. Delete ${dir} and rename the backup back to ${IDENTIFIER} first.`,
+      );
+    }
+  }
   const moved = [];
   for (const dir of dataDirs()) {
     if (!fs.existsSync(dir)) continue;
