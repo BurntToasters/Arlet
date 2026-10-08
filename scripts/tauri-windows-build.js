@@ -79,13 +79,17 @@ if (
   );
 }
 const bundles = valueAfter("--bundles") || "nsis";
+if (!/^[a-z0-9,-]+$/i.test(bundles)) {
+  throw new Error(`Invalid --bundles value "${bundles}".`);
+}
 
 function run(cmd, cmdArgs, options = {}) {
   console.log(`> ${cmd} ${cmdArgs.join(" ")}`);
   const result = spawnSync(cmd, cmdArgs, {
     cwd: root,
     stdio: "inherit",
-    shell: false,
+    // Node refuses to spawn .cmd shims without a shell (CVE-2024-27980).
+    shell: process.platform === "win32" && /\.cmd$/i.test(cmd),
     ...options,
   });
   if (result.error) throw result.error;

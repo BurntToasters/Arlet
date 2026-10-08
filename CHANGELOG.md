@@ -1,36 +1,43 @@
-# Changelog
+# ⬇️ Downloads
 
-Release notes are copied into GitHub drafts and updater manifests from the
-matching section below. Add a real section for the exact package version before
-running the release preflight.
+| <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                                    | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
+| :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.1.0/Arlet_0.1.0_x64-setup.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.1.0/Arlet_0.1.0_arm64-setup.exe) |                                                                                                         |                                                                                                           |
 
-<!--
-Use this shape for each release. Replace `vX.Y.Z` with the exact tag version;
-stable versions and `-beta.N` versions are supported.
+> Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
-## Changes in `vX.Y.Z`
+> [!IMPORTANT]
+> The `.sig` files in this repo are NOT normal gpg signatures — they are for Tauri V2's
+> updater to verify the integrity of updates before downloading and installing.
+>
+> The `.asc` files are my normal GPG signatures which you can verify using my GPG Public
+> Key: https://tuxedo.rosie.run/GPG/BurntToasters_0xF2FBC20F_public.asc.
+>
+> This app is currently unstable. Bugs, issues, and rough edges are expected.
 
-- Describe the user-visible changes for this release.
+### ℹ️ Enjoying Arlet? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 
-The section body ends at the next level-2 heading and must be non-empty and no
-larger than 64 KiB in UTF-8.
--->
+Arlet! An Apple Music client for Windows built on Tauri V2!
 
-## Changes in `v0.1.0`
+## Changes in `v0.1.0:`
 
-First public alpha of Arlet, an Apple Music client for Windows.
+### The first public alpha of Arlet :)
 
-- Sign in with your Apple Music account and play your music with MusicKit.
-- Home shows recently played playlists, heavy rotation, and recommendations.
-- Browse Apple Music charts and radio stations.
-- Search the Apple Music catalog and your library.
-- Library views for recently added, recently played, artists, albums, songs,
-  and playlists, with playlist folders. The library is cached for fast startup.
-- Create playlists and folders, add songs to playlists, and pin playlists to
-  the sidebar.
-- Queue controls: play now, play next, play later, shuffle, and repeat.
-- Windows media keys and the Windows media overlay show the current song and
-  its progress.
-- Light, dark, or system theme with Acrylic, Mica, or solid window material.
-- Automatic updates on the stable or beta channel.
-- Requires Windows 10 version 22H2 (build 19045) or newer.
+- **NEW - Sign in:** Sign in with your Apple Music account and play your music with MusicKit.
+- **NEW - Home:** Home shows recently played playlists, heavy rotation, and recommendations.
+- **NEW - Browse:** Browse Apple Music charts and radio stations.
+- **NEW - Search:** Search the Apple Music catalog and your library.
+- **NEW - Library:** Library views for recently added, recently played, artists, albums, songs, and playlists, with playlist folders.
+  - The library is cached for fast startup.
+- **NEW - Playlists:** Create playlists and folders, add songs to playlists, and pin playlists to the sidebar.
+- **NEW - Queue:** Play now, play next, play later, shuffle, and repeat.
+- **Windows:** Media keys and the Windows media overlay show the current song and its progress.
+- **UI:** Light, dark, or system theme with Acrylic, Mica, or solid window material.
+- **Updater:** Automatic updates on the stable or beta channel.
+
+## ℹ️ Release Info
+
+- **GPG Signed:** My public key is attached to every release to ensure authenticity.
+- **GPG Key:** You can get my public GPG key here: https://tuxedo.rosie.run/GPG/BurntToasters_0xF2FBC20F_public.asc.
+- **Code Signing:** Windows releases are fully signed using Azure Artifact Signing.
+- **Windows installers:** Separate x64 and Arm64 installers are provided for their respective architectures.

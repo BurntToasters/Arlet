@@ -60,3 +60,7 @@ src-tauri/windows/shell/out/
 src-tauri/windows/shell/build-*/
 src-tauri/windows/shell/msix_identity.manifest
 src-tauri/windows/shell/msix_extract_identity.manifest
+
+# Dependency update locks
+.npm-safe-update.lock
+.cargo-safe-update.lock

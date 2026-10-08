@@ -6,7 +6,12 @@ import { spawnSync, execSync } from "node:child_process";
 
 function run(cmd, args) {
   console.log(`> ${cmd} ${args.join(" ")}`);
-  const res = spawnSync(cmd, args, { stdio: "inherit", shell: false });
+  const res = spawnSync(cmd, args, {
+    stdio: "inherit",
+    // Node refuses to spawn .cmd shims without a shell (CVE-2024-27980).
+    shell: process.platform === "win32" && /\.cmd$/i.test(cmd),
+  });
+  if (res.error) console.error(res.error);
   if (res.status !== 0) {
     console.error(`Command failed: ${cmd} ${args.join(" ")}`);
     process.exit(res.status || 1);

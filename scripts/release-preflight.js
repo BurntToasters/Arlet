@@ -12,7 +12,7 @@ import {
   porcelainPaths,
 } from "./release-session.js";
 import { assertStableReleaseOverridesAllowed } from "./release-policy.cjs";
-import { readChangelogSection } from "./changelog.cjs";
+import { validateChangelogForVersion } from "./changelog.cjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(scriptDir, "..");
@@ -67,11 +67,13 @@ function checkVersionSync() {
 }
 
 function checkChangelog(version) {
-  try {
-    readChangelogSection(path.join(root, "CHANGELOG.md"), version);
-  } catch (error) {
+  const errors = validateChangelogForVersion(
+    fs.readFileSync(path.join(root, "CHANGELOG.md"), "utf8"),
+    version,
+  );
+  if (errors.length > 0) {
     throw new Error(
-      `Release notes are invalid for ${version}: ${error instanceof Error ? error.message : String(error)}`,
+      `Release notes are invalid for ${version}:\n${errors.join("\n")}`,
     );
   }
 }

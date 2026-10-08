@@ -84,24 +84,31 @@ canonical text in `scripts/license-texts/`. Add the missing text there.
 ## Release notes contract
 
 Author release notes in the root [`CHANGELOG.md`](../CHANGELOG.md) before
-running `npm run release:preflight`. The package version must have exactly one
-heading in this form:
+running `npm run release:preflight`. The file follows the BCLS standard
+(`../BCLS/STANDARD.md`, kind `binary`), the same as Zinnia: downloads table,
+`> [!IMPORTANT]` signing callout, support link, `## Changes in` sections, and
+the `## ℹ️ Release Info` footer. The package version must have exactly one
+heading in this form, with the colon inside the backticks:
 
 ```markdown
-## Changes in `v1.2.3`
+## Changes in `v1.2.3:`
 
-- User-visible change.
+- **UI:** User-visible change.
 ```
 
 Stable versions (`vX.Y.Z`) and beta versions (`vX.Y.Z-beta.N`) are supported.
-The section body is trimmed, ends at the next level-2 heading, must be
-non-empty, and must not exceed 64 KiB in UTF-8. CRLF files are normalized to
-LF. The heading itself is not included in the release notes.
 
-The preflight validates the section for the current `package.json` version
-before checking release state. Both the GitHub draft body and every generated
-updater manifest read that same local section; manifest generation does not
-call `gh release view` or use another release API to source notes.
+- **GitHub draft body:** the whole `CHANGELOG.md`, set by `npm run
+release:draft`. `npm run release:verify:draft` (and `release:publish`) fail
+  if the draft body no longer matches the file.
+- **Updater notes:** only the version section. It is trimmed, ends at the next
+  level-2 heading, must be non-empty, and must not exceed 64 KiB in UTF-8.
+  CRLF files are normalized to LF. The heading itself is not included.
+
+The preflight also requires download links containing `/download/vX.Y.Z/`,
+rejects `(add release notes)` placeholders, and on stable versions rejects the
+Beta callout and beta download links. Manifest generation reads the local file
+and does not call `gh release view` or another release API to source notes.
 
 ## Standard flow (Windows release VM)
 
