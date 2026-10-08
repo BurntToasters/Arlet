@@ -285,6 +285,12 @@
           "markdownDescription": "Enables the open_music_diagnostic command without any pre-configured scope."
         },
         {
+          "description": "Enables the open_support_page command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-support-page",
+          "markdownDescription": "Enables the open_support_page command without any pre-configured scope."
+        },
+        {
           "description": "Enables the reset_settings command without any pre-configured scope.",
           "type": "string",
           "const": "allow-reset-settings",
@@ -439,6 +445,12 @@
           "type": "string",
           "const": "deny-open-music-diagnostic",
           "markdownDescription": "Denies the open_music_diagnostic command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_support_page command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-support-page",
+          "markdownDescription": "Denies the open_support_page command without any pre-configured scope."
         },
         {
           "description": "Denies the reset_settings command without any pre-configured scope.",

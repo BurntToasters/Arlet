@@ -97,13 +97,27 @@ export function syncNpmLockfileVersion(lockText, version) {
   return `${JSON.stringify(parsed, null, 2)}\n`;
 }
 
-const RELEASE_ASSET_URL =
-  /\/releases\/download\/v[^/\s)"]+\/Arlet_[^_\s)"]+_(x64|arm64)-setup\.exe/g;
+// Any installer link form Arlet has used: versioned build names
+// (Arlet_<v>_<arch>-setup.exe) or fixed names (Arlet-Windows-<arch>.exe),
+// under a tag or under /latest/. See release-assets.cjs.
+const INSTALLER_URL =
+  /\/releases\/(?:download\/v[^/\s)"]+|latest\/download)\/Arlet(?:_[^_\s)"]+_(x64|arm64)-setup|-Windows-(x64|arm64))\.exe/g;
 
+/** Installer links pinned to the release tag (CHANGELOG release body). */
 function pointAssetsAt(text, version) {
   return text.replace(
-    RELEASE_ASSET_URL,
-    `/releases/download/v${version}/Arlet_${version}_$1-setup.exe`,
+    INSTALLER_URL,
+    (_match, builtArch, fixedArch) =>
+      `/releases/download/v${version}/Arlet-Windows-${builtArch ?? fixedArch}.exe`,
+  );
+}
+
+/** Installer links that always serve the newest release (README buttons). */
+function pointAssetsAtLatest(text) {
+  return text.replace(
+    INSTALLER_URL,
+    (_match, builtArch, fixedArch) =>
+      `/releases/latest/download/Arlet-Windows-${builtArch ?? fixedArch}.exe`,
   );
 }
 
@@ -145,8 +159,12 @@ export function syncChangelogForVersion(changelog, version) {
 export const README_DOWNLOADS_START = "<!-- arlet-downloads:start -->";
 export const README_DOWNLOADS_END = "<!-- arlet-downloads:end -->";
 
-/** Points the README download buttons (between the markers) at `version`. */
-export function syncReadmeDownloads(readme, version) {
+/**
+ * Keeps the README download buttons (between the markers) on the fixed
+ * /releases/latest/download/ names, so they never point at an unpublished
+ * version. The version argument is unused; it mirrors the CHANGELOG sync.
+ */
+export function syncReadmeDownloads(readme, _version) {
   const start = readme.indexOf(README_DOWNLOADS_START);
   const end = readme.indexOf(README_DOWNLOADS_END, start);
   if (start === -1 || end === -1) {
@@ -156,7 +174,7 @@ export function syncReadmeDownloads(readme, version) {
   }
   return (
     readme.slice(0, start) +
-    pointAssetsAt(readme.slice(start, end), version) +
+    pointAssetsAtLatest(readme.slice(start, end)) +
     readme.slice(end)
   );
 }

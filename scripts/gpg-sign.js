@@ -36,6 +36,11 @@ const {
   uploadReleaseAsset,
 } = require("./github-cli.cjs");
 const { selectDraftRelease } = require("./release-draft-metadata.cjs");
+const {
+  builtInstallerName,
+  publishedInstallerArch,
+  publishedNameForBuilt,
+} = require("./release-assets.cjs");
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(scriptDir, "..");
@@ -164,10 +169,9 @@ export function isGitHubConflict(error) {
   return error?.statusCode === 409 || error?.statusCode === 422;
 }
 
+/** Updater targets for a published installer name (release-assets.cjs). */
 function resolveUpdaterTargets(name) {
-  if (!/^Arlet_[^/\\]+_(?:x64|arm64)-setup\.exe$/i.test(String(name))) {
-    return [];
-  }
+  if (!publishedInstallerArch(name)) return [];
   return [{ os: "windows", installer: "nsis" }];
 }
 
@@ -213,8 +217,9 @@ function findArtifacts() {
   return [...new Set(results)].sort();
 }
 
+/** Tauri's build output name; the build set must be exactly this version. */
 function expectedInstallerName(arch) {
-  return `Arlet_${VERSION}_${arch}-setup.exe`;
+  return builtInstallerName(VERSION, arch);
 }
 
 function assertSignedInstallerSet(artifacts) {
@@ -311,7 +316,15 @@ function stageReleaseFiles(artifacts) {
   fs.mkdirSync(releaseDir, { recursive: true });
   const staged = [];
   for (const artifact of artifacts) {
-    const destination = path.join(releaseDir, path.basename(artifact));
+    // Like Zinnia's cleanArtifactName: upload under the fixed published name
+    // (Arlet-Windows-<arch>.exe[.sig]); the build set was already checked.
+    const publishedName = publishedNameForBuilt(path.basename(artifact));
+    if (!publishedName) {
+      throw new Error(
+        `Cannot map build output to a published installer name: ${path.basename(artifact)}`,
+      );
+    }
+    const destination = path.join(releaseDir, publishedName);
     fs.copyFileSync(artifact, destination);
     staged.push(destination);
   }

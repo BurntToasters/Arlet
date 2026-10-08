@@ -1,8 +1,8 @@
 # ⬇️ Downloads
 
-| <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                                    | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
-| :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.1.2/Arlet_0.1.2_x64-setup.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.1.2/Arlet_0.1.2_arm64-setup.exe) |                                                                                                         |                                                                                                           |
+| <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                            | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
+| :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.1.3/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.1.3/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -19,38 +19,25 @@
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
 
-## Changes in `v0.1.2:`
+## Changes in `v0.1.3:`
 
-- **UI:** The song that is playing now is highlighted in playlists, albums, your library, search, and Browse. Animated bars replace its track number while it plays.
-- **Fix - Queue:** Fixed an issue where the queue could stay on the previous song after a song from your library started playing.
-- **Codebase:** Release builds now check with Apple that the MusicKit developer token works before anything is built.
+- **NEW - Support Me:** A small `Support Me` link with a heart sits above `Settings` in the sidebar. It opens https://rosie.run/support in your browser.
+- **NEW - Window position:** Arlet now opens at the size and position you left it, including maximized. It falls back to the default if that spot is on a monitor that is no longer connected, and `Reset settings` forgets it.
+- **Logo:** The title bar now shows the current Arlet icon instead of the old one.
+- **Windows:** Installers are now named `Arlet-Windows-x64.exe` and `Arlet-Windows-arm64.exe`, so download links always point at the latest release.
+- **Fix - UI:** Fixed an issue where a red outline sometimes appeared around the main part of the window after using the keyboard.
+- **Fix - Search:** The `Apple Music` / `Your Library` switch is now centered with the rest of the Search page.
+- **Fix - Settings:** The `Open-source licenses` and `Reset settings` windows now dim the whole app instead of a band down the middle.
+- **UI:** `Settings` > `Appearance` now only shows a window material message when Windows can't use the one you picked.
+- **Testing:** End-to-end tests now check that dialogs dim the whole window and that the page outline stays hidden.
 
-## Changes in `v0.1.1:`
+## Click below for the full `v0` Changelog
 
-### IMPORTANT: v0.1.0 could not load your library. Update now!
+<details>
+<summary>Full v0 changelog</summary>
 
-Sorry about this one! In v0.1.0, signing in worked, but Home, Library, and every other part of your Apple Music library failed with a `403` error. v0.1.1 fixes it. If you are on v0.1.0, Arlet downloads this update in the background and asks you to restart when it is ready.
-
-- **Fix - Library:** Fixed an issue where Home, Library, Recently Played, Recommendations, and playlists failed to load with a `403` error after signing in.
-- **NEW - Reset settings:** `Settings` > `Reset` restores the default theme, window material, volume, and update settings, then restarts Arlet.
-  - You stay signed in, and your pinned playlists and library are kept. Use `Sign out` in `Settings` to sign out.
-- **Testing:** End-to-end tests now cover the settings reset and check that release builds use a developer token that can load your library.
-
-## Changes in `v0.1.0:`
-
-### The first public alpha of Arlet :)
-
-- **NEW - Sign in:** Sign in with your Apple Music account and play your music with MusicKit.
-- **NEW - Home:** Home shows recently played playlists, heavy rotation, and recommendations.
-- **NEW - Browse:** Browse Apple Music charts and radio stations.
-- **NEW - Search:** Search the Apple Music catalog and your library.
-- **NEW - Library:** Library views for recently added, recently played, artists, albums, songs, and playlists, with playlist folders.
-  - The library is cached for fast startup.
-- **NEW - Playlists:** Create playlists and folders, add songs to playlists, and pin playlists to the sidebar.
-- **NEW - Queue:** Play now, play next, play later, shuffle, and repeat.
-- **Windows:** Media keys and the Windows media overlay show the current song and its progress.
-- **UI:** Light, dark, or system theme with Acrylic, Mica, or solid window material.
-- **Updater:** Automatic updates on the stable or beta channel.
+Nothing yet :)
+</details>
 
 ## ℹ️ Release Info
 

@@ -59,6 +59,7 @@ fn main() {
         "get_app_info",
         "get_developer_token",
         "get_beta_updater_target",
+        "open_support_page",
         "open_music_diagnostic",
         "load_settings",
         "save_settings",

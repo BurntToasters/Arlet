@@ -3,9 +3,10 @@
 // tooling; implementation is original and scoped to Windows NSIS.
 //
 // Tauri does not emit `latest-*.json` itself: this step builds them from the
-// signed `-setup.exe` + `-setup.exe.sig` pairs so the updater has versioned
-// metadata to poll. Asset URLs are deterministic
-// (`.../releases/download/<tag>/<name>`), so manifests are generated BEFORE
+// signed `-setup.exe` + `-setup.exe.sig` build pairs so the updater has
+// versioned metadata to poll. URLs use the published fixed names
+// (`.../releases/download/<tag>/Arlet-Windows-<arch>.exe`, see
+// release-assets.cjs) and are deterministic, so manifests are generated BEFORE
 // signing/upload and get checksummed + GPG-signed like any other artifact.
 //
 // Usage: npm run release:updater-manifests (after both arch builds)
@@ -16,6 +17,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { validateUpdaterManifest } from "./validate-updater-manifest.js";
 import { assertStableReleaseOverridesAllowed } from "./release-policy.cjs";
 import { readChangelogSection } from "./changelog.cjs";
+import releaseAssets from "./release-assets.cjs";
+
+const {
+  UPDATER_ARCH,
+  builtInstallerInfo,
+  publishedInstallerArch,
+  publishedInstallerName,
+} = releaseAssets;
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
@@ -27,10 +36,10 @@ const TAG_NAME = `v${VERSION}`;
 const REPO_OWNER = process.env.GH_REPO_OWNER || "BurntToasters";
 const REPO_NAME = process.env.GH_REPO_NAME || "Arlet";
 
-const ARCH_FROM_INSTALLER = [
-  { pattern: /_x64-/i, arch: "x86_64" },
-  { pattern: /_arm64-/i, arch: "aarch64" },
-];
+/** Installer arch ("x64"/"arm64") for a built or published installer name. */
+function installerArch(fileName) {
+  return builtInstallerInfo(fileName)?.arch ?? publishedInstallerArch(fileName);
+}
 
 export const REQUIRED_STABLE_MANIFEST_NAMES = [
   "latest-windows-x86_64.json",
@@ -50,17 +59,13 @@ export const REQUIRED_MANIFEST_NAMES = [
 ];
 
 export function platformForInstaller(fileName) {
-  for (const { pattern, arch } of ARCH_FROM_INSTALLER) {
-    if (pattern.test(fileName)) return `windows-${arch}`;
-  }
-  return null;
+  const arch = archForInstaller(fileName);
+  return arch ? `windows-${arch}` : null;
 }
 
 export function archForInstaller(fileName) {
-  for (const { pattern, arch } of ARCH_FROM_INSTALLER) {
-    if (pattern.test(fileName)) return arch;
-  }
-  return null;
+  const arch = installerArch(fileName);
+  return arch ? UPDATER_ARCH[arch] : null;
 }
 
 // `tauri signer sign` normally writes the minisign envelope as a base64
@@ -148,7 +153,7 @@ export function buildManifests(
       throw new Error(`Duplicate installer for architecture ${arch}: ${exe}`);
     }
     installersByArch.set(arch, {
-      url: `https://github.com/${owner}/${repo}/releases/download/${tag}/${path.basename(exe)}`,
+      url: `https://github.com/${owner}/${repo}/releases/download/${tag}/${publishedInstallerName(installerArch(path.basename(exe)))}`,
       signature: normalizeUpdaterSignature(readSig(sig)),
     });
   }

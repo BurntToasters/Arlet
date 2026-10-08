@@ -37,6 +37,7 @@ const {
 } = require("./github-cli.cjs");
 const { readChangelogReleaseBody } = require("./changelog.cjs");
 const { selectDraftRelease } = require("./release-draft-metadata.cjs");
+const { publishedInstallerArch } = require("./release-assets.cjs");
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(scriptDir, "..");
@@ -70,19 +71,14 @@ export function requiredDraftManifestNames() {
   return [...REQUIRED_MANIFEST_NAMES].sort();
 }
 
-export function requiredDraftInstallerNames(
-  assetNames = [],
-  version = VERSION,
-) {
-  const escapedVersion = String(version).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/**
+ * Published installers in the draft (Arlet-Windows-<arch>.exe). The names are
+ * fixed; the draft tag and the manifest URLs bind them to the version.
+ */
+export function requiredDraftInstallerNames(assetNames = []) {
   return [
     ...new Set(
-      assetNames.filter((name) =>
-        new RegExp(
-          `^Arlet_${escapedVersion}_(?:x64|arm64)-setup\\.exe$`,
-          "i",
-        ).test(String(name)),
-      ),
+      assetNames.filter((name) => Boolean(publishedInstallerArch(name))),
     ),
   ].sort();
 }
@@ -268,7 +264,7 @@ export function assertDraftReleaseShape({
   }
   const installers = requiredDraftInstallerNames(assetNames, version);
   const arches = new Set(
-    installers.map((name) => (/_arm64-/i.test(name) ? "arm64" : "x64")),
+    installers.map((name) => publishedInstallerArch(name)),
   );
   if (!arches.has("x64") || !arches.has("arm64")) {
     throw new Error(

@@ -9,4 +9,5 @@ pub mod token_policy;
 pub mod webview_recovery;
 pub mod window_fx;
 pub mod window_snap;
+pub mod window_state;
 pub mod windows_media;

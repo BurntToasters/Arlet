@@ -16,6 +16,7 @@ mod token_policy;
 mod webview_recovery;
 mod window_fx;
 mod window_snap;
+mod window_state;
 mod windows_media;
 
 use std::sync::Mutex;
@@ -64,6 +65,7 @@ fn main() {
     builder
         .manage(LogFileLock(Mutex::new(())))
         .manage(library_cache::LibraryCacheState::default())
+        .manage(window_state::WindowStateCache::default())
         .setup(|app| {
             let window = auth_popup::create_main_window(app)?;
             // The config is declaratively frameless; repeat the setting while
@@ -90,7 +92,12 @@ fn main() {
             if let Err(error) = webview_recovery::install(&window) {
                 eprintln!("Unable to install WebView2 crash recovery: {error}");
             }
+            // Positioned while still hidden, so there is no visible jump.
+            let restored = window_state::restore(&window);
             window.show()?;
+            if let Some(state) = restored {
+                window_state::settle_after_show(&window, state);
+            }
             #[cfg(debug_assertions)]
             if music_diagnostic::should_auto_open_music_diagnostic(
                 std::env::var(music_diagnostic::AUTO_OPEN_ENV)
@@ -102,7 +109,18 @@ fn main() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            if window.label() == auth_popup::MAIN_WINDOW_LABEL
+                && matches!(
+                    event,
+                    tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)
+                )
+            {
+                window_state::record(window);
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) {
+                if window.label() == auth_popup::MAIN_WINDOW_LABEL {
+                    window_state::persist(window);
+                }
                 window_snap::on_window_destroyed(window);
                 // Auth popups and the diagnostic window must not tear down
                 // the main window's media session.
@@ -115,6 +133,7 @@ fn main() {
             commands::get_app_info,
             commands::get_developer_token,
             commands::get_beta_updater_target,
+            commands::open_support_page,
             music_diagnostic::open_music_diagnostic,
             settings::load_settings,
             settings::save_settings,
