@@ -226,7 +226,7 @@ $client = New-Object ArletE2eWindow+RECT
     ["-NoProfile", "-NonInteractive", "-Command", script],
     { encoding: "utf8" },
   ).stdout.trim();
-  const [x, y, width, height] = out.split(/s+/u).map(Number);
+  const [x, y, width, height] = out.split(/\s+/u).map(Number);
   return { x, y, width, height };
 }
 

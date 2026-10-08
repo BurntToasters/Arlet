@@ -93,8 +93,11 @@ fn main() {
                 eprintln!("Unable to install WebView2 crash recovery: {error}");
             }
             // Positioned while still hidden, so there is no visible jump.
-            window_state::restore(&window);
+            let restored = window_state::restore(&window);
             window.show()?;
+            if let Some(state) = restored {
+                window_state::settle_after_show(&window, state);
+            }
             #[cfg(debug_assertions)]
             if music_diagnostic::should_auto_open_music_diagnostic(
                 std::env::var(music_diagnostic::AUTO_OPEN_ENV)

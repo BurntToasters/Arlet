@@ -103,34 +103,36 @@ fn monitor_rects(window: &WebviewWindow) -> Vec<Rect> {
         .collect()
 }
 
-/// Applies the saved geometry to the still-hidden main window.
-pub fn restore(window: &WebviewWindow) {
+/// Applies the saved geometry to the still-hidden main window. Call
+/// [`settle_after_show`] with the result once the window is shown.
+pub fn restore(window: &WebviewWindow) -> Option<WindowState> {
     let app = window.app_handle();
-    let Some(path) = state_path(app) else { return };
-    let Ok(metadata) = std::fs::metadata(&path) else {
-        return;
-    };
-    if metadata.len() > MAX_FILE_BYTES {
-        return;
+    let path = state_path(app)?;
+    if std::fs::metadata(&path).ok()?.len() > MAX_FILE_BYTES {
+        return None;
     }
-    let Some(saved) = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|text| parse_state(&text))
-    else {
-        return;
-    };
-    let Some(state) = usable_state(saved, &monitor_rects(window)) else {
-        return;
-    };
+    let saved = parse_state(&std::fs::read_to_string(&path).ok()?)?;
+    let state = usable_state(saved, &monitor_rects(window))?;
     let _ = window.set_size(PhysicalSize::new(state.width, state.height));
     let _ = window.set_position(PhysicalPosition::new(state.x, state.y));
-    if state.maximized {
-        let _ = window.maximize();
-    }
     if let Some(cache) = app.try_state::<WindowStateCache>() {
         if let Ok(mut current) = cache.0.lock() {
             *current = Some(state);
         }
+    }
+    Some(state)
+}
+
+/// Showing the frameless window recomputes its frame, and Windows adds the
+/// caption height to a size set while hidden (+30 px per launch otherwise).
+/// Re-apply the saved size, then maximize if the window was maximized.
+pub fn settle_after_show(window: &WebviewWindow, state: WindowState) {
+    let expected = PhysicalSize::new(state.width, state.height);
+    if window.inner_size().is_ok_and(|size| size != expected) {
+        let _ = window.set_size(expected);
+    }
+    if state.maximized {
+        let _ = window.maximize();
     }
 }
 

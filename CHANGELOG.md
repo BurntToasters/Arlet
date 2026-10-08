@@ -22,6 +22,9 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 ## Changes in `v0.1.3:`
 
 - **NEW - Support Me:** A small `Support Me` link with a heart sits above `Settings` in the sidebar. It opens https://rosie.run/support in your browser.
+- **NEW - Window position:** Arlet now opens at the size and position you left it, including maximized. It falls back to the default if that spot is on a monitor that is no longer connected, and `Reset settings` forgets it.
+- **Logo:** The title bar now shows the current Arlet icon instead of the old one.
+- **Windows:** Installers are now named `Arlet-Windows-x64.exe` and `Arlet-Windows-arm64.exe`, so download links always point at the latest release.
 - **Fix - UI:** Fixed an issue where a red outline sometimes appeared around the main part of the window after using the keyboard.
 - **Fix - Search:** The `Apple Music` / `Your Library` switch is now centered with the rest of the Search page.
 - **Fix - Settings:** The `Open-source licenses` and `Reset settings` windows now dim the whole app instead of a band down the middle.
