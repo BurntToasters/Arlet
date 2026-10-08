@@ -134,6 +134,27 @@ if (!skipSigning) {
   if (!existsSync(path.join(root, bundleDir))) {
     throw new Error(`Expected bundle output missing: ${bundleDir}`);
   }
+  // Like Zinnia: Tauri's signCommand signs the copy packed into the installer,
+  // not target/<triple>/release/*.exe, so finalize those runtime executables.
+  const releaseDir = path.join(root, "src-tauri", "target", target, "release");
+  const runtimeExecutables = readdirSync(releaseDir, { withFileTypes: true })
+    .filter(
+      (entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".exe"),
+    )
+    .map((entry) => path.join(releaseDir, entry.name));
+  if (!runtimeExecutables.length) {
+    throw new Error(`No Windows runtime executables found under ${releaseDir}`);
+  }
+  for (const executable of runtimeExecutables) {
+    console.log(
+      `[tauri-windows-build] Finalizing Authenticode signature: ${executable}`,
+    );
+    powershell("windows-artifact-sign.ps1", [
+      "-FilePath",
+      executable,
+      "-SkipIfSigned",
+    ]);
+  }
   // Safety net only: signCommand already signs during bundling, so files
   // carrying a valid signature are skipped rather than dual-signed.
   const signTargets = [path.join(bundleDir, "nsis")];
