@@ -1,0 +1,20 @@
+/* Offline cached-library notice. */
+.offline-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 13px;
+}
+.offline-banner > svg {
+  flex: none;
+  color: var(--text-muted);
+}
+.offline-banner span {
+  flex: 1;
+}

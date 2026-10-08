@@ -1,0 +1,45 @@
+/* Embedded-token expiry warning; above the player, left of the toasts. */
+.token-expiry-notice {
+  position: fixed;
+  z-index: 44;
+  bottom: calc(var(--player-height) + 12px);
+  left: calc(var(--sidebar-width) + 16px);
+  display: flex;
+  max-width: min(460px, calc(100vw - 32px));
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 10px 10px 12px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-md);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-popover);
+  color: var(--text);
+  font-size: 13px;
+}
+.token-expiry-notice > svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--danger);
+}
+.token-expiry-notice button {
+  display: grid;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+  place-items: center;
+}
+@media (max-width: 760px) {
+  .token-expiry-notice {
+    left: 16px;
+  }
+}
+.licenses-intro {
+  margin: 0 0 12px;
+  color: var(--text-muted);
+  font-size: 13px;
+}

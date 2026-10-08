@@ -1,0 +1,115 @@
+/* Connection status popover */
+.titlebar-status-wrap {
+  position: relative;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+}
+
+.titlebar-status {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 6px;
+  margin-left: 10px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  transition:
+    background var(--duration-fast) var(--ease-standard),
+    border-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.titlebar-status:hover,
+.titlebar-status[aria-expanded="true"] {
+  border-color: var(--border);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.titlebar-status .status-dot {
+  flex: 0 0 auto;
+}
+
+.connection-popover {
+  position: absolute;
+  top: calc(100% + 7px);
+  left: 6px;
+  display: grid;
+  width: min(306px, calc(100vw - 20px));
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-solid) 96%, transparent);
+  box-shadow: var(--shadow-popover);
+  backdrop-filter: blur(22px) saturate(1.15);
+}
+
+.connection-popover-heading {
+  display: grid;
+  gap: 2px;
+}
+
+.connection-popover-heading .eyebrow {
+  margin-bottom: 2px;
+}
+
+.connection-popover-heading strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connection-popover-heading small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.connection-popover-meta {
+  display: grid;
+  gap: 7px;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.connection-popover-meta span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.connection-popover-actions {
+  display: grid;
+  gap: 2px;
+  padding-top: 3px;
+  border-top: 1px solid var(--border);
+}
+
+.connection-popover-actions button {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 8px;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-align: left;
+}
+
+.connection-popover-actions button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}

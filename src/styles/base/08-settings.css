@@ -1,0 +1,173 @@
+/* Settings */
+.settings-layout {
+  display: grid;
+  gap: 13px;
+}
+.settings-section {
+  padding: 22px 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-raised) 70%, transparent);
+}
+.settings-section-heading {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.settings-section-heading h2 {
+  font-size: 16px;
+  letter-spacing: -0.02em;
+}
+.settings-section-heading p {
+  margin: 3px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.settings-icon {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--surface-active);
+  color: var(--accent-strong);
+}
+.account-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 13px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+.account-card-copy {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 3px;
+}
+.account-card-copy strong {
+  font-size: 13px;
+}
+.account-card-copy span {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.settings-fields {
+  display: grid;
+  gap: 8px;
+  margin-top: 20px;
+}
+.settings-field {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+.settings-field > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.settings-field select {
+  min-width: 168px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: 0;
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 12px;
+}
+.effect-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  color: var(--success);
+  font-size: 11px;
+}
+.effect-status small {
+  flex-basis: 100%;
+  padding-left: 21px;
+  color: var(--text-muted);
+}
+.settings-toggle-field input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.settings-field-help {
+  margin: 10px 1px 0;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.update-dev-note {
+  margin: 10px 1px 0;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+.update-status {
+  display: flex;
+  min-height: 24px;
+  align-items: center;
+  gap: 7px;
+  margin-top: 14px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.update-status-ready {
+  color: var(--accent-strong);
+}
+.update-status-up-to-date {
+  color: var(--success);
+}
+.update-status-error {
+  color: var(--danger);
+}
+.update-progress {
+  height: 4px;
+  margin-top: 5px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--surface-subtle);
+}
+.update-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width var(--duration-normal) var(--ease-standard);
+}
+.update-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 13px;
+}
+.comfort-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 18px;
+  padding: 11px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.settings-developer .secondary-button {
+  margin-top: 18px;
+}

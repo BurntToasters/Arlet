@@ -23,18 +23,20 @@ frontend (src/, TS)  ──invoke()──▶  Rust commands (src-tauri/src/)
 `main.rs` is glue only (state registration, builder, command registry). Logic is
 split into focused modules:
 
-| Module                | Responsibility                                               |
-| --------------------- | ------------------------------------------------------------ |
-| `commands.rs`         | App information (registry build lookup) and token serving    |
-| `token_policy.rs`     | Developer-token validation shared with `build.rs` embedding  |
-| `pins.rs`             | Validated local playlist pins next to settings               |
-| `windows_media.rs`    | System Media Transport Controls session and timeline         |
-| `music_diagnostic.rs` | Unprivileged `music.apple.com` webview (Phase 0 DRM probe)   |
-| `auth_popup.rs`       | Main-window creation and Apple auth popup allowlist          |
-| `settings.rs`         | Settings load/save/reset with backup and startup parsing     |
-| `logging.rs`          | Rolling local diagnostics log with sensitive-value redaction |
-| `window_fx.rs`        | Windows Acrylic/Mica effects with Solid fallback             |
-| `window_snap.rs`      | Native Windows Snap Layout maximize-button overlay           |
+| Module                | Responsibility                                                |
+| --------------------- | ------------------------------------------------------------- |
+| `commands.rs`         | App information (registry build lookup) and token serving     |
+| `token_policy.rs`     | Developer-token validation shared with `build.rs` embedding   |
+| `library_cache.rs`    | SQLite library cache behind fixed commands; schema migrations |
+| `webview_recovery.rs` | Reloads/restarts after WebView2 process failures              |
+| `pins.rs`             | Validated local playlist pins next to settings                |
+| `windows_media.rs`    | System Media Transport Controls session and timeline          |
+| `music_diagnostic.rs` | Unprivileged `music.apple.com` webview (Phase 0 DRM probe)    |
+| `auth_popup.rs`       | Main-window creation and Apple auth popup allowlist           |
+| `settings.rs`         | Settings load/save/reset with backup and startup parsing      |
+| `logging.rs`          | Rolling local diagnostics log with sensitive-value redaction  |
+| `window_fx.rs`        | Windows Acrylic/Mica effects with Solid fallback              |
+| `window_snap.rs`      | Native Windows Snap Layout maximize-button overlay            |
 
 ## Frontend (`src/`)
 
@@ -46,32 +48,32 @@ invoking native commands directly.
 
 ### Module layout
 
-| Path                        | Responsibility                                                       |
-| --------------------------- | -------------------------------------------------------------------- |
-| `main.tsx`                  | Preact mount, router/store/controller creation, boot                 |
-| `main.ts`                   | Compatibility entry that delegates to `main.tsx`                     |
-| `app/App.tsx`               | Shell composition and development diagnostics wiring                 |
-| `app/context.tsx`           | Preact contexts and application-state subscription                   |
-| `app/controller.ts`         | Composition root: MusicKit lifecycle, auth, settings, pins           |
-| `app/library-loader.ts`     | Library, Home, and detail loading with SQLite stale-while-revalidate |
-| `app/discovery.ts`          | Browse charts, radio shelves, catalog/library search                 |
-| `app/playback.ts`           | Queue and transport commands over MusicKit                           |
-| `app/controller-support.ts` | Shared response normalizers and error helpers                        |
-| `library/cache.ts`          | SQLite library cache (joined reads, batched writes)                  |
-| `app-init.ts`               | Native environment, settings, and diagnostics startup                |
-| `state.ts`                  | Explicit renderable application state and subscriptions              |
-| `domain/`                   | Internal `Track`, `Album`, and `PlaybackState` types                 |
-| `components/`               | Titlebar, sidebar, player, queue, artwork, and diagnostics UI        |
-| `views/`                    | Home, search, settings, route, and placeholder views                 |
-| `routing/router.ts`         | Hash routes and browser-history navigation                           |
-| `musickit/`                 | MusicKit bootstrap, auth, catalog, normalization, events, player     |
-| `musickit/token.ts`         | Native token provider (env in debug, embedded in release)            |
-| `musickit/preview.ts`       | Preview/full-track classification helper                             |
-| `musickit/errors.ts`        | Map failures to typed `AppErrorCode` values                          |
-| `diagnostics/`              | Sanitized bounded store, native adapter, lifecycle/network hooks     |
-| `platform/`                 | Native window/settings bridges and sensitive-value redaction         |
-| `phase0/`                   | Feasibility checklist, network capture, lifecycle probes, reports    |
-| `styles/`                   | Theme tokens, shell layout, accessibility, and responsive CSS        |
+| Path                        | Responsibility                                                         |
+| --------------------------- | ---------------------------------------------------------------------- |
+| `main.tsx`                  | Preact mount, router/store/controller creation, boot                   |
+| `main.ts`                   | Compatibility entry that delegates to `main.tsx`                       |
+| `app/App.tsx`               | Shell composition and development diagnostics wiring                   |
+| `app/context.tsx`           | Preact contexts and application-state subscription                     |
+| `app/controller.ts`         | Composition root: MusicKit lifecycle, auth, settings, pins             |
+| `app/library-loader.ts`     | Library, Home, and detail loading; cache-first, offline read-only mode |
+| `app/discovery.ts`          | Browse charts, radio shelves, catalog/library search                   |
+| `app/playback.ts`           | Queue and transport commands over MusicKit                             |
+| `app/controller-support.ts` | Shared response normalizers and error helpers                          |
+| `library/cache.ts`          | Client for the Rust library-cache commands (memory cache in tests)     |
+| `app-init.ts`               | Native environment, settings, and diagnostics startup                  |
+| `state.ts`                  | Explicit renderable application state and subscriptions                |
+| `domain/`                   | Internal `Track`, `Album`, and `PlaybackState` types                   |
+| `components/`               | Titlebar, sidebar, player, queue, artwork, and diagnostics UI          |
+| `views/`                    | Home, search, settings, route, and placeholder views                   |
+| `routing/router.ts`         | Hash routes and browser-history navigation                             |
+| `musickit/`                 | MusicKit bootstrap, auth, catalog, normalization, events, player       |
+| `musickit/token.ts`         | Native token provider (env in debug, embedded in release)              |
+| `musickit/preview.ts`       | Preview/full-track classification helper                               |
+| `musickit/errors.ts`        | Map failures to typed `AppErrorCode` values                            |
+| `diagnostics/`              | Sanitized bounded store, native adapter, lifecycle/network hooks       |
+| `platform/`                 | Native window/settings bridges and sensitive-value redaction           |
+| `phase0/`                   | Feasibility checklist, network capture, lifecycle probes, reports      |
+| `styles/`                   | `tokens.css` plus `base.css`, an ordered index of `styles/base/*`      |
 
 ### Apple Music Integration
 

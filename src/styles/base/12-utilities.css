@@ -1,0 +1,17 @@
+.sidebar-scrim {
+  display: none;
+}
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes status-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}

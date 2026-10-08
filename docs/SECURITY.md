@@ -5,7 +5,8 @@
 Tauri capabilities are a real boundary, not documentation. Permissions are
 granted per window label in `src-tauri/capabilities/`; the default set covers
 only version, window management, updater, clipboard text, the
-library SQLite cache, settings, pins, logging, window effects, the Windows
+library cache (fixed Rust commands, no SQL), settings, pins, logging, window
+effects, the Windows
 media session, and opening the diagnostic window. There is no `shell`, `dialog`, `notification`, or `process` plugin, no arbitrary command execution, and
 remote Apple origins get
 no filesystem/shell/updater access.
@@ -78,6 +79,17 @@ redact JWT-shaped values and values labelled by a token key
 The frontend also redacts the exact developer and Music User Token values
 once MusicKit has produced them. Request logs record method/path/status/
 duration only. Both redactors have unit tests.
+
+## Third-party script
+
+MusicKit JS loads from Apple's CDN at runtime and runs in the main webview, so
+it can call every command the main window is granted. It cannot be pinned with
+Subresource Integrity because Apple updates it in place. The mitigation is to
+keep the grant small: the webview has no generic SQL, filesystem, shell,
+dialog, notification, or process access, and the library cache is reachable
+only through fixed, size-bounded commands (`src-tauri/src/library_cache.rs`).
+Clipboard read remains for paste in the context menu. Tauri's isolation
+pattern is the next step if the grant ever needs to grow.
 
 ## Sign-out
 

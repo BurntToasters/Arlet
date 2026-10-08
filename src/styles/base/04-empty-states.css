@@ -1,0 +1,49 @@
+/* Empty states */
+.empty-state {
+  display: flex;
+  min-height: 320px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  padding: 32px 20px;
+  text-align: center;
+}
+
+.empty-state.compact {
+  min-height: 190px;
+  padding: 22px 16px;
+}
+
+.empty-icon {
+  display: inline-flex;
+  width: 58px;
+  height: 58px;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-radius: 18px;
+  background: var(--surface-active);
+  color: var(--accent-strong);
+}
+
+.empty-state.compact .empty-icon {
+  width: 44px;
+  height: 44px;
+  margin-bottom: 10px;
+  border-radius: 14px;
+}
+.empty-state h2 {
+  margin: 0 0 6px;
+  font-size: 17px;
+  letter-spacing: -0.02em;
+}
+.empty-state p {
+  max-width: 410px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.empty-action {
+  margin-top: 18px;
+}

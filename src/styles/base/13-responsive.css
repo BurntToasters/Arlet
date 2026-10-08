@@ -1,0 +1,230 @@
+@media (max-width: 980px) {
+  :root {
+    --sidebar-width: 72px;
+  }
+  .sidebar {
+    align-items: center;
+    padding-right: 10px;
+    padding-left: 10px;
+  }
+  .sidebar-search {
+    width: 42px;
+    justify-content: center;
+    padding: 0;
+  }
+  .sidebar-search input,
+  .sidebar-search kbd,
+  .sidebar-heading,
+  .sidebar-link span,
+  .account-copy {
+    display: none;
+  }
+  .sidebar-link {
+    width: 42px;
+    justify-content: center;
+    padding: 0;
+  }
+  .sidebar-group {
+    justify-items: center;
+  }
+  .sidebar-nav {
+    width: 100%;
+  }
+  .sidebar-footer {
+    width: 100%;
+    justify-items: center;
+  }
+  .account-link {
+    padding: 4px;
+  }
+  .content-scroll {
+    padding-right: 42px;
+    padding-left: 42px;
+  }
+  .player-bar {
+    grid-template-columns: minmax(145px, 1fr) minmax(260px, 1.35fr) minmax(
+        130px,
+        1fr
+      );
+    gap: 12px;
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+  .player-actions .volume-control {
+    min-width: 70px;
+  }
+}
+
+@media (max-width: 720px) {
+  :root {
+    --player-height: 106px;
+  }
+  .app-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .mobile-menu-button {
+    display: inline-flex;
+  }
+  .titlebar-brand {
+    min-width: 62px;
+  }
+  .titlebar-navigation,
+  .titlebar-status,
+  .titlebar-debug {
+    display: none;
+  }
+  .window-control {
+    width: 40px;
+  }
+  .sidebar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(270px, 82vw);
+    transform: translateX(-102%);
+    border-right: 1px solid var(--border-strong);
+    background: var(--surface-solid);
+    box-shadow: var(--shadow-popover);
+    transition: transform var(--duration-normal) var(--ease-standard);
+  }
+  .sidebar.is-open {
+    transform: translateX(0);
+  }
+  .sidebar.is-open ~ .sidebar-scrim {
+    display: block;
+    position: absolute;
+    z-index: 9;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.25);
+  }
+  .sidebar.is-open .sidebar-search {
+    width: auto;
+    justify-content: flex-start;
+    padding: 0 9px;
+  }
+  .sidebar.is-open .sidebar-search input,
+  .sidebar.is-open .sidebar-search kbd,
+  .sidebar.is-open .sidebar-heading,
+  .sidebar.is-open .sidebar-link span,
+  .sidebar.is-open .account-copy {
+    display: block;
+  }
+  .sidebar.is-open .sidebar-link {
+    width: 100%;
+    justify-content: flex-start;
+    padding: 0 10px;
+  }
+  .sidebar.is-open .sidebar-group {
+    justify-items: stretch;
+  }
+  .sidebar.is-open .account-link {
+    width: 100%;
+  }
+  .content-scroll {
+    padding: 28px 20px 30px;
+  }
+  .home-date {
+    display: none;
+  }
+  .home-heading-actions {
+    padding-bottom: 0;
+  }
+  .welcome-card {
+    min-height: 300px;
+  }
+  .welcome-copy {
+    padding: 27px 25px;
+  }
+  .welcome-art {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 46%;
+    height: 48%;
+    opacity: 0.58;
+  }
+  .orb-one {
+    width: 150px;
+    height: 150px;
+    right: -15%;
+  }
+  .orb-three {
+    right: 60%;
+  }
+  .search-row {
+    grid-template-columns: 40px minmax(0, 1fr);
+    gap: 8px;
+  }
+  .search-row .song-row-artwork {
+    grid-column: 1;
+    width: 40px;
+    height: 40px;
+  }
+  .search-row .search-row-copy {
+    grid-column: 2;
+  }
+  .search-row-number {
+    display: none;
+  }
+  .search-row-duration,
+  .search-row .explicit-badge {
+    display: none;
+  }
+  .queue-drawer {
+    top: 8px;
+    right: 8px;
+    bottom: 8px;
+    width: min(var(--queue-width), calc(100vw - 16px));
+  }
+  .diagnostics-drawer {
+    right: 0;
+    left: 0;
+    height: min(
+      68vh,
+      max(0px, calc(100vh - var(--titlebar-height) - var(--player-height)))
+    );
+    max-height: calc(100% - var(--titlebar-height) - var(--player-height));
+  }
+  .diagnostics-checklist {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .player-bar {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-rows: 42px 35px;
+    gap: 6px 12px;
+    padding: 9px 14px 10px;
+  }
+  .player-track {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .player-center {
+    display: contents;
+  }
+  .transport-controls {
+    position: absolute;
+    top: 12px;
+    right: 13px;
+  }
+  .player-progress {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+  .player-actions {
+    position: absolute;
+    top: 13px;
+    right: 112px;
+  }
+  .player-actions .player-error,
+  .volume-control,
+  .player-actions .icon-button {
+    display: none;
+  }
+  .player-actions .icon-button:last-child {
+    display: inline-flex;
+  }
+}

@@ -5,17 +5,13 @@
 // Pass --require-complete for a fail-closed release compliance gate.
 
 import { spawnSync } from "node:child_process";
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  licenseTextFromTemplates,
+  readLicenseTextsFromDir,
+} from "./license-texts.js";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(scriptDir);
@@ -28,7 +24,11 @@ const unresolvedOutputPath = join(
 );
 const requireComplete = process.argv.includes("--require-complete");
 
-function runCargoMetadata() {
+// Only crates compiled into the shipped Windows binaries need notices;
+// macOS/Linux/Android-only crates in the lockfile never ship.
+const SHIPPED_TARGETS = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"];
+
+function runCargoMetadata(target) {
   const result = spawnSync(
     "cargo",
     [
@@ -38,6 +38,8 @@ function runCargoMetadata() {
       "--format-version",
       "1",
       "--locked",
+      "--filter-platform",
+      target,
     ],
     { cwd: repoRoot, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 },
   );
@@ -76,63 +78,6 @@ function computeReachableIds(metadata) {
   return { reachable, members };
 }
 
-function hasLicenseTerms(text) {
-  return /permission is hereby granted|licensed under|general public license|mozilla public license|redistribution and use/i.test(
-    text,
-  );
-}
-
-function isWithin(root, candidate) {
-  const rel = relative(root, candidate);
-  return rel === "" || (!rel.startsWith("..") && !rel.includes(`..${sep}`));
-}
-
-function isRealPathWithin(root, candidate) {
-  try {
-    return isWithin(realpathSync(root), realpathSync(candidate));
-  } catch {
-    return false;
-  }
-}
-
-function readLicenseTextsFromDir(packageDir, licenseFile = null) {
-  const realDir = realpathSync(packageDir);
-  const names = new Set(
-    readdirSync(packageDir).filter((name) =>
-      /^(licen[cs]e|copying|notice|authors|copyright)(?:[._-].*)?$/i.test(name),
-    ),
-  );
-  if (typeof licenseFile === "string" && licenseFile.trim()) {
-    const filePath = resolve(packageDir, licenseFile);
-    if (
-      isWithin(packageDir, filePath) &&
-      existsSync(filePath) &&
-      isRealPathWithin(realDir, filePath)
-    ) {
-      names.add(relative(packageDir, filePath));
-    }
-  }
-  const sections = [];
-  for (const name of [...names].sort()) {
-    const filePath = resolve(packageDir, name);
-    if (
-      !isWithin(packageDir, filePath) ||
-      !existsSync(filePath) ||
-      !isRealPathWithin(realDir, filePath)
-    ) {
-      continue;
-    }
-    const stat = lstatSync(filePath);
-    if (!stat.isFile() || stat.isSymbolicLink()) continue;
-    const text = readFileSync(filePath, "utf8").trim();
-    const attributionOnly = /^(authors|copyright)(?:[._-].*)?$/i.test(name);
-    if (text && (!attributionOnly || hasLicenseTerms(text))) {
-      sections.push(`--- ${name} ---\n${text}`);
-    }
-  }
-  return sections.length > 0 ? sections.join("\n\n") : null;
-}
-
 function spdxReferences(licenses) {
   const identifiers = licenses.match(/[A-Za-z0-9.-]+(?:\+)?/g) ?? [];
   return [...new Set(identifiers)]
@@ -158,11 +103,21 @@ function toEntry(pkg) {
     );
   }
   let licenseText = null;
+  let licenseTextStatus = "not-packaged";
   if (typeof pkg.manifest_path === "string") {
     licenseText = readLicenseTextsFromDir(
       dirname(pkg.manifest_path),
       pkg.license_file,
     );
+    if (licenseText) licenseTextStatus = "bundled";
+  }
+  if (!licenseText) {
+    const holder =
+      Array.isArray(pkg.authors) && pkg.authors.length > 0
+        ? pkg.authors.join(", ")
+        : `the ${pkg.name} authors`;
+    licenseText = licenseTextFromTemplates(licenses, holder);
+    if (licenseText) licenseTextStatus = "spdx-template";
   }
   const entry = {
     licenses,
@@ -172,7 +127,7 @@ function toEntry(pkg) {
         : null,
     packageManager: "cargo",
     licenseText,
-    licenseTextStatus: licenseText ? "bundled" : "not-packaged",
+    licenseTextStatus,
     licenseReferences: licenseText ? [] : spdxReferences(licenses),
   };
   if (Array.isArray(pkg.authors) && pkg.authors.length > 0) {
@@ -188,9 +143,16 @@ function toEntry(pkg) {
 }
 
 function main() {
-  const metadata = runCargoMetadata();
-  const { reachable, members } = computeReachableIds(metadata);
-  const packages = Array.isArray(metadata.packages) ? metadata.packages : [];
+  const reachable = new Set();
+  let members = new Set();
+  let packages = [];
+  for (const target of SHIPPED_TARGETS) {
+    const metadata = runCargoMetadata(target);
+    const ids = computeReachableIds(metadata);
+    for (const id of ids.reachable) reachable.add(id);
+    members = ids.members;
+    packages = Array.isArray(metadata.packages) ? metadata.packages : packages;
+  }
   const entries = {};
   for (const pkg of packages) {
     if (
@@ -226,7 +188,7 @@ function main() {
   const missing = Object.keys(unresolved).length;
   if (missing > 0) {
     const message =
-      `${missing} package license text(s) not found in crates.io packages. ` +
+      `${missing} package license text(s) neither packaged nor covered by scripts/license-texts/. ` +
       `Report: ${unresolvedOutputPath}. SPDX links are informational only.`;
     if (requireComplete) {
       console.error(`[licenses:cargo] FAILED: ${message}`);

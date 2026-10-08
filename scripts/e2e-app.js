@@ -10,6 +10,7 @@
 // that Apple accepts it from the release origin (catalog request, no sign-in).
 
 import { spawn, spawnSync } from "node:child_process";
+import { DatabaseSync } from "node:sqlite";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -110,6 +111,59 @@ function seedCorruptSettings() {
       volume: 0.37,
     }),
   );
+}
+
+const CACHE_SCOPE = "current-account";
+
+/** A cache written by the former SQL plugin: same tables, user_version 0. */
+function seedLegacyCache() {
+  const db = new DatabaseSync(path.join(dataDirs()[0], "arlet-library.db"));
+  try {
+    db.exec(`
+      CREATE TABLE music_resources (scope TEXT NOT NULL, resource_type TEXT NOT NULL,
+        resource_id TEXT NOT NULL, payload TEXT NOT NULL, updated_at INTEGER NOT NULL,
+        PRIMARY KEY (scope, resource_type, resource_id));
+      CREATE TABLE music_pages (scope TEXT NOT NULL, section TEXT NOT NULL,
+        cursor TEXT NOT NULL, next_cursor TEXT, updated_at INTEGER NOT NULL,
+        PRIMARY KEY (scope, section, cursor));
+      CREATE TABLE music_page_items (scope TEXT NOT NULL, section TEXT NOT NULL,
+        cursor TEXT NOT NULL, position INTEGER NOT NULL, resource_type TEXT NOT NULL,
+        resource_id TEXT NOT NULL, PRIMARY KEY (scope, section, cursor, position));
+      CREATE TABLE cache_meta (scope TEXT PRIMARY KEY, storefront TEXT, last_refresh_at INTEGER);
+    `);
+    const item = {
+      id: "cached-1",
+      type: "library-songs",
+      resourceType: "library-songs",
+      title: "Cached Song",
+      artistName: "Cache Artist",
+    };
+    db.prepare("INSERT INTO music_resources VALUES (?, ?, ?, ?, ?)").run(
+      CACHE_SCOPE,
+      "library-songs",
+      item.id,
+      JSON.stringify(item),
+      1,
+    );
+    db.prepare("INSERT INTO music_pages VALUES (?, 'songs', '', NULL, 1)").run(
+      CACHE_SCOPE,
+    );
+    db.prepare(
+      "INSERT INTO music_page_items VALUES (?, 'songs', '', 0, 'library-songs', ?)",
+    ).run(CACHE_SCOPE, item.id);
+    db.prepare("INSERT INTO cache_meta VALUES (?, 'us', 1)").run(CACHE_SCOPE);
+  } finally {
+    db.close();
+  }
+}
+
+async function waitFor(page, expression, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await page.evaluate(`return Boolean(${expression});`)) return true;
+    await sleep(250);
+  }
+  return false;
 }
 
 async function sleep(ms) {
@@ -216,6 +270,7 @@ async function run() {
   let page;
   try {
     seedCorruptSettings();
+    seedLegacyCache();
     child = spawn(EXE, [], {
       env: {
         ...process.env,
@@ -362,11 +417,130 @@ async function run() {
       notify: notify.error,
     });
 
+    // 9. Library cache: legacy database readable, fixed commands work, and
+    // the generic SQL plugin is gone from the webview.
+    const legacy = await settle(page, "library_cache_read_section", {
+      scope: CACHE_SCOPE,
+      section: "songs",
+    });
+    const written = await settle(page, "library_cache_write_page", {
+      scope: CACHE_SCOPE,
+      section: "e2e",
+      page: { items: [{ id: "w1", type: "songs" }], updatedAt: 2 },
+    });
+    const readBack = await settle(page, "library_cache_read_page", {
+      scope: CACHE_SCOPE,
+      section: "e2e",
+    });
+    const sql = await settle(page, "plugin:sql|execute", {
+      db: "sqlite:x.db",
+      query: "SELECT 1",
+      values: [],
+    });
+    check(
+      "library cache migrates legacy data and serves fixed commands only",
+      legacy.ok &&
+        legacy.value?.items?.[0]?.id === "cached-1" &&
+        written.ok &&
+        readBack.value?.items?.[0]?.id === "w1" &&
+        !sql.ok,
+      { legacy: legacy.ok, written: written.ok, sql: sql.error },
+    );
+
+    // 10. Licenses dialog lists the bundled inventories.
+    await page.evaluate(`location.hash = "#/settings";`);
+    await waitFor(
+      page,
+      `[...document.querySelectorAll("button")].find((b) => b.textContent.includes("Open-source licenses"))`,
+      10_000,
+    );
+    await page.evaluate(
+      `[...document.querySelectorAll("button")].find((b) => b.textContent.includes("Open-source licenses"))?.click();`,
+    );
+    await waitFor(
+      page,
+      `document.querySelectorAll(".licenses-entry").length > 50`,
+      10_000,
+    );
+    const licenses = await page.evaluate(
+      `return document.querySelectorAll(".licenses-entry").length;`,
+    );
+    check("licenses dialog lists bundled packages", licenses > 50, {
+      licenses,
+    });
+
     const shot = await page.send("Page.captureScreenshot", { format: "png" });
     fs.writeFileSync(
       path.join(artifactDir, "screenshot.png"),
       Buffer.from(shot.data, "base64"),
     );
+
+    // 11. Offline: with Apple's CDN unreachable MusicKit cannot start; the
+    // cached library must still render, read-only, with a reconnect banner.
+    await page.send("Network.enable");
+    await page.send("Network.setBlockedURLs", {
+      urls: ["*js-cdn.music.apple.com*"],
+    });
+    // Reload on the library route: Settings has no offline banner.
+    await page.evaluate(`location.hash = "#/library/songs";`);
+    await page.send("Page.reload", { ignoreCache: true });
+    await sleep(1000);
+    const banner = await waitFor(
+      page,
+      `document.querySelector(".offline-banner")`,
+      45_000,
+    );
+    const cachedRow = await waitFor(
+      page,
+      `document.body.textContent.includes("Cached Song")`,
+      10_000,
+    );
+    check(
+      "offline shows the cached library with a banner",
+      banner && cachedRow,
+      {
+        banner,
+        cachedRow,
+      },
+    );
+    const offlineShot = await page.send("Page.captureScreenshot", {
+      format: "png",
+    });
+    fs.writeFileSync(
+      path.join(artifactDir, "screenshot-offline.png"),
+      Buffer.from(offlineShot.data, "base64"),
+    );
+    await page.send("Network.setBlockedURLs", { urls: [] });
+
+    // 12. Renderer crash: the window reloads instead of staying blank.
+    void page.send("Page.crash").catch(() => undefined);
+    page.close();
+    await sleep(3000);
+    const revived = await findPageTarget(Date.now() + 30_000);
+    page = connect(revived.webSocketDebuggerUrl);
+    await page.opened;
+    const recovered = await waitFor(
+      page,
+      `document.querySelector(".app-shell .player-bar")`,
+      30_000,
+    );
+    check("renderer crash reloads the window", recovered);
+
+    // Stop the app, then confirm the cache file was migrated in place.
+    page.close();
+    page = undefined;
+    spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+      stdio: "ignore",
+    });
+    await sleep(1500);
+    const db = new DatabaseSync(path.join(dataDirs()[0], "arlet-library.db"), {
+      readOnly: true,
+    });
+    const version = db.prepare("PRAGMA user_version").get().user_version;
+    db.close();
+    check("legacy cache database migrated to schema 1", version === 1, {
+      version,
+    });
   } finally {
     page?.close();
     if (child?.pid) {

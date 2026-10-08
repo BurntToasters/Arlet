@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-library-cache-read-section"
+description = "Enables the library_cache_read_section command without any pre-configured scope."
+commands.allow = ["library_cache_read_section"]
+
+[[permission]]
+identifier = "deny-library-cache-read-section"
+description = "Denies the library_cache_read_section command without any pre-configured scope."
+commands.deny = ["library_cache_read_section"]

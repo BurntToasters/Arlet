@@ -36,6 +36,14 @@ Failure modes it covers:
 7. Removed plugins (`dialog`, `notification`) are still reachable.
 8. The app does not run on `http://tauri.localhost`, so origin-scoped
    tokens would break.
+9. A cache written by the former SQL plugin is lost on upgrade, the fixed
+   cache commands fail, or the generic SQL plugin is still reachable.
+10. The open-source licenses dialog is empty.
+11. With Apple's CDN unreachable, the cached library is not shown.
+12. A renderer crash leaves a blank window.
+
+It also writes `screenshot-offline.png`. CI runs this gate on Windows x64 and
+uploads the report as the `e2e-report` artifact.
 
 `npm run test:e2e:app:real` embeds the real `MUSICKIT_DEVELOPER_TOKEN` from
 `.env` instead and adds a check that Apple's catalog API accepts it from the

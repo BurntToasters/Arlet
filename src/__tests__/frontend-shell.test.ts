@@ -25,6 +25,7 @@ import { registerMusicKitEvents } from "../musickit/events.ts";
 import { DiagnosticsStore } from "../diagnostics/store.ts";
 import { TrackRow } from "../views/SearchView.tsx";
 import { RouteView } from "../views/RouteView.tsx";
+import { readShellStyles } from "./read-styles.ts";
 
 afterEach(() => {
   resetApplicationState();
@@ -140,10 +141,7 @@ describe("settings", () => {
   });
 
   it("leaves the document transparent for native material effects", () => {
-    const styles = readFileSync(
-      resolve(process.cwd(), "src/styles/base.css"),
-      "utf8",
-    );
+    const styles = readShellStyles();
     expect(styles).toContain(':root[data-window-effect="acrylic"] body');
     expect(styles).toContain(':root[data-window-effect="mica"] #app');
     expect(styles).toContain(':root[data-window-effect="solid"] .app-shell');

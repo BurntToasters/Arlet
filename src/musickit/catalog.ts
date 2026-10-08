@@ -5,6 +5,7 @@ import type {
   Station,
   Track,
 } from "../domain/music.ts";
+import { mapErrorToCode } from "./errors.ts";
 import {
   normalizeAlbumResource,
   normalizeArtistResource,
@@ -115,9 +116,153 @@ function limitSearchGroups(
 export type MusicKitMusicRequest = (
   path: string,
   query?: Record<string, unknown>,
+  options?: Record<string, unknown>,
 ) => Promise<unknown>;
 
+/** Backoff for HTTP 429 on reads; Retry-After wins, capped at 10 s. */
+export const RATE_LIMIT_RETRY_DELAYS_MS = [1_000, 3_000] as const;
+const MAX_RETRY_AFTER_MS = 10_000;
+
+export interface MusicRequestOptions {
+  sleep?: (ms: number) => Promise<void>;
+  /** Preferred UI languages, most preferred first. */
+  languages?: () => readonly string[];
+}
+
+function isRateLimited(error: unknown): boolean {
+  const record = asRecord(error);
+  if (record?.status === 429 || record?.statusCode === 429) return true;
+  return mapErrorToCode(error) === "RATE_LIMITED";
+}
+
+function retryAfterMs(error: unknown): number | undefined {
+  const headers = asRecord(asRecord(error)?.response)?.headers as
+    { get?: (name: string) => string | null } | undefined;
+  const seconds = Number(headers?.get?.("retry-after"));
+  return Number.isFinite(seconds) && seconds >= 0
+    ? Math.min(seconds * 1000, MAX_RETRY_AFTER_MS)
+    : undefined;
+}
+
+/** Best supported tag for the user's languages, exact match first. */
+function pickLanguage(
+  preferred: readonly string[],
+  supported: readonly string[],
+): string | undefined {
+  const lower = supported.map((tag) => tag.toLowerCase());
+  for (const language of preferred) {
+    const exact = lower.indexOf(language.toLowerCase());
+    if (exact >= 0) return supported[exact];
+  }
+  for (const language of preferred) {
+    const primary = language.split("-")[0]?.toLowerCase();
+    const index = lower.findIndex((tag) => tag.split("-")[0] === primary);
+    if (index >= 0) return supported[index];
+  }
+  return undefined;
+}
+
+/**
+ * Wraps MusicKit's request function: rate-limited reads are retried with
+ * bounded backoff, and catalog reads carry `l` for the user's language when
+ * the storefront supports it (otherwise Apple's default applies).
+ */
+export function createMusicRequest(
+  instance: MusicKit.MusicKitInstance,
+  options: MusicRequestOptions = {},
+): MusicKitMusicRequest {
+  const raw = rawMusicKitMusicRequest(instance);
+  const sleep =
+    options.sleep ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const languages =
+    options.languages ??
+    (() =>
+      typeof navigator === "undefined"
+        ? []
+        : navigator.languages?.length
+          ? navigator.languages
+          : [navigator.language]);
+  let language: Promise<string | undefined> | undefined;
+
+  const withRetry = async (
+    path: string,
+    query?: Record<string, unknown>,
+    requestOptions?: Record<string, unknown>,
+  ): Promise<unknown> => {
+    const method = String(requestOptions?.method ?? "GET").toUpperCase();
+    const call = (): Promise<unknown> =>
+      requestOptions !== undefined
+        ? raw(path, query, requestOptions)
+        : query !== undefined
+          ? raw(path, query)
+          : raw(path);
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        return await call();
+      } catch (error) {
+        const delay = RATE_LIMIT_RETRY_DELAYS_MS[attempt];
+        if (method !== "GET" || delay === undefined || !isRateLimited(error)) {
+          throw error;
+        }
+        await sleep(retryAfterMs(error) ?? delay);
+      }
+    }
+  };
+
+  const resolveLanguage = (): Promise<string | undefined> => {
+    language ??= (async () => {
+      const storefront = String(instance.storefrontId ?? "").trim();
+      if (!storefront) return undefined;
+      try {
+        const resource = asRecord(
+          (
+            asRecord(
+              await withRetry(
+                `/v1/storefronts/${encodeURIComponent(storefront)}`,
+              ),
+            )?.data as unknown[] | undefined
+          )?.[0],
+        );
+        const supported = asRecord(resource?.attributes)?.supportedLanguageTags;
+        return Array.isArray(supported)
+          ? pickLanguage(
+              languages(),
+              supported.filter((tag): tag is string => typeof tag === "string"),
+            )
+          : undefined;
+      } catch {
+        language = undefined;
+        return undefined;
+      }
+    })();
+    return language;
+  };
+
+  return async (path, query, requestOptions) => {
+    if (path.startsWith("/v1/catalog/") && query?.l === undefined) {
+      const tag = await resolveLanguage();
+      if (tag)
+        return withRetry(path, { ...(query ?? {}), l: tag }, requestOptions);
+    }
+    return withRetry(path, query, requestOptions);
+  };
+}
+
+const musicRequests = new WeakMap<object, MusicKitMusicRequest>();
+
 export function resolveMusicKitMusicRequest(
+  instance: MusicKit.MusicKitInstance,
+): MusicKitMusicRequest {
+  let request = musicRequests.get(instance);
+  if (!request) {
+    request = createMusicRequest(instance);
+    musicRequests.set(instance, request);
+  }
+  return request;
+}
+
+function rawMusicKitMusicRequest(
   instance: MusicKit.MusicKitInstance,
 ): MusicKitMusicRequest {
   const api = instance.api as unknown;

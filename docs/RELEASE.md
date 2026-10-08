@@ -56,6 +56,14 @@ Azure signing, and live updater feeds remain explicit release-environment gates.
    available only for beta/local recovery; stable runs require the canonical
    repository.
 
+## License notices
+
+`release:licenses` regenerates the npm and cargo inventories that ship in the
+app (Settings → Open-source licenses). The cargo step runs with
+`--require-complete`: it covers only crates compiled for the Windows targets
+and fails when a crate ships no license file and its SPDX expression has no
+canonical text in `scripts/license-texts/`. Add the missing text there.
+
 ## Version and branch policy
 
 - `x.y.z-beta.n` releases from `beta`; `x.y.z` releases from `main`.

@@ -1,18 +1,23 @@
 import {
   Check,
+  ClipboardCopy,
   Download,
   ExternalLink,
   Info,
+  LifeBuoy,
   LoaderCircle,
   MonitorCog,
   Moon,
   Palette,
   RefreshCw,
+  Scale,
   Sun,
   UserRound,
 } from "lucide-preact";
 import type { JSX } from "preact";
+import { useEffect, useState } from "preact/hooks";
 import { useAppController, useAppState } from "../app/context.tsx";
+import { LicensesDialog } from "../components/LicensesDialog.tsx";
 import type {
   ThemePreference,
   UpdateChannel,
@@ -100,6 +105,18 @@ export function SettingsView(): JSX.Element {
   const authorized = state.auth.status === "authorized";
   const authorizationPending = state.auth.pending === true;
   const account = readAccountSummary(state);
+  const [licensesOpen, setLicensesOpen] = useState(false);
+  const [reportCopied, setReportCopied] = useState(false);
+  useEffect(() => {
+    if (!reportCopied) return undefined;
+    const timer = window.setTimeout(() => setReportCopied(false), 2500);
+    return () => window.clearTimeout(timer);
+  }, [reportCopied]);
+  const copyReport = (): void => {
+    void Promise.resolve(controller.copyDiagnosticsReport?.())
+      .then(() => setReportCopied(true))
+      .catch(reportActionError);
+  };
 
   const updateTheme = (event: JSX.TargetedEvent<HTMLSelectElement>): void => {
     void controller.setTheme(event.currentTarget.value as ThemePreference);
@@ -371,6 +388,43 @@ export function SettingsView(): JSX.Element {
           </div>
         </section>
 
+        <section className="settings-section" aria-labelledby="support-heading">
+          <div className="settings-section-heading">
+            <span className="settings-icon">
+              <LifeBuoy aria-hidden="true" size={19} strokeWidth={1.8} />
+            </span>
+            <div>
+              <h2 id="support-heading">Support</h2>
+              <p>
+                Attach the diagnostics report to bug reports. Tokens and account
+                data are removed.
+              </p>
+            </div>
+          </div>
+          <div className="settings-actions">
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={copyReport}
+            >
+              {reportCopied ? (
+                <Check aria-hidden="true" size={15} strokeWidth={1.8} />
+              ) : (
+                <ClipboardCopy aria-hidden="true" size={15} strokeWidth={1.8} />
+              )}
+              {reportCopied ? "Copied" : "Copy diagnostics report"}
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => setLicensesOpen(true)}
+            >
+              <Scale aria-hidden="true" size={15} strokeWidth={1.8} />
+              Open-source licenses
+            </button>
+          </div>
+        </section>
+
         {import.meta.env.DEV ? (
           <section
             className="settings-section settings-developer"
@@ -401,6 +455,9 @@ export function SettingsView(): JSX.Element {
           </section>
         ) : null}
       </div>
+      {licensesOpen ? (
+        <LicensesDialog onClose={() => setLicensesOpen(false)} />
+      ) : null}
     </>
   );
 }

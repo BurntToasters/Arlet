@@ -26,6 +26,8 @@ import { EmptyState } from "./EmptyState.tsx";
 import type { Track } from "../domain/music.ts";
 import type { LibrarySection } from "../routing/router.ts";
 import { reportActionError } from "../components/action-errors.ts";
+import { OfflineBanner } from "../components/OfflineBanner.tsx";
+import { VirtualList } from "../components/VirtualList.tsx";
 
 export interface ResourceLike {
   id: string;
@@ -618,6 +620,8 @@ export function LibraryView({
   const authorized =
     state.auth.status === "authorized" &&
     state.initialization.status === "ready";
+  const offline = state.library.offline;
+  const canView = authorized || offline;
   const folderItems =
     section === "playlists" ? readPlaylistFolderItems(state) : [];
   const resources = useMemo(() => {
@@ -645,13 +649,13 @@ export function LibraryView({
       : resources;
 
   useEffect(() => {
-    if (!authorized || !extendedController.loadLibrarySection) return;
+    if (!canView || !extendedController.loadLibrarySection) return;
     run(() => extendedController.loadLibrarySection?.(section));
     if (section === "playlists" && extendedController.loadPlaylistFolder) {
       run(() => extendedController.loadPlaylistFolder?.());
     }
   }, [
-    authorized,
+    canView,
     extendedController.loadLibrarySection,
     extendedController.loadPlaylistFolder,
     section,
@@ -718,7 +722,9 @@ export function LibraryView({
           {collection.source === "cache" ||
           collection.stale ||
           collection.isStale ? (
-            <span className="library-source-badge">Cached · updating</span>
+            <span className="library-source-badge">
+              {offline ? "Cached" : "Cached · updating"}
+            </span>
           ) : null}
           {formatUpdated(collection.lastUpdatedAt) ? (
             <span className="library-updated">
@@ -741,7 +747,8 @@ export function LibraryView({
         </div>
       </div>
 
-      {!authorized ? (
+      {offline ? <OfflineBanner /> : null}
+      {!canView ? (
         <EmptyState
           icon={Music2}
           title="Sign in to view your library"
@@ -770,10 +777,12 @@ export function LibraryView({
           {trackResources.length &&
           !["artists", "albums", "playlists"].includes(section) ? (
             <section className="library-list-panel" aria-label={copy.title}>
-              <ol className="library-track-list">
-                {trackResources.map((resource, index) => (
+              <VirtualList
+                className="library-track-list"
+                items={trackResources}
+                getKey={(resource) => resource.id}
+                renderRow={(resource, index) => (
                   <LibraryTrackRow
-                    key={resource.id}
                     resource={resource}
                     index={index}
                     onPlay={playTrack}
@@ -782,8 +791,8 @@ export function LibraryView({
                     }
                     disabled={!authorized}
                   />
-                ))}
-              </ol>
+                )}
+              />
             </section>
           ) : null}
           {recentCards.length ? (

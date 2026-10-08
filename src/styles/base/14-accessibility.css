@@ -1,0 +1,60 @@
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+@media (forced-colors: active) {
+  :root {
+    --border: CanvasText;
+    --border-strong: CanvasText;
+    --accent: Highlight;
+    --accent-strong: Highlight;
+    --accent-ink: HighlightText;
+  }
+  .app-shell,
+  .sidebar,
+  .queue-drawer,
+  .player-bar,
+  .settings-section,
+  .search-results-panel,
+  .welcome-card,
+  .context-menu,
+  .playlist-dialog {
+    background: Canvas;
+  }
+  .context-menu,
+  .playlist-dialog,
+  .playlist-dialog-option,
+  .playlist-dialog-form input,
+  .playlist-dialog-form textarea,
+  .playlist-dialog-search {
+    border-color: CanvasText;
+    color: CanvasText;
+  }
+  .context-menu-item,
+  .song-row-action,
+  .queue-row-more {
+    color: ButtonText;
+  }
+  .context-menu-item:hover:not(:disabled),
+  .context-menu-item:focus-visible:not(:disabled),
+  .song-row-action:hover:not(:disabled),
+  .song-row-action:focus-visible:not(:disabled),
+  .queue-row-more:hover:not(:disabled),
+  .queue-row-more:focus-visible:not(:disabled) {
+    background: Highlight;
+    color: HighlightText;
+  }
+  .sidebar-link.is-active,
+  .icon-button.is-active {
+    outline: 1px solid Highlight;
+  }
+  .artwork {
+    forced-color-adjust: none;
+  }
+}

@@ -82,3 +82,19 @@ export function createServiceTokenProvider(
     },
   };
 }
+
+/** Expiry (epoch ms) of a developer JWT; undefined when unreadable. */
+export function developerTokenExpiry(token: unknown): number | undefined {
+  if (typeof token !== "string") return undefined;
+  const payload = token.split(".")[1];
+  if (!payload || !/^[A-Za-z0-9_-]+$/u.test(payload)) return undefined;
+  try {
+    const base64 = payload.replace(/-/gu, "+").replace(/_/gu, "/");
+    const exp = (JSON.parse(atob(base64)) as { exp?: unknown }).exp;
+    return typeof exp === "number" && Number.isFinite(exp)
+      ? exp * 1000
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}

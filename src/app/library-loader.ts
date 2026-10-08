@@ -20,6 +20,7 @@ import {
   setLibraryCollectionState,
   setLibraryDetailState,
   setLibraryHydrated,
+  setLibraryOffline,
   type HomeState,
   type LibraryDetailState,
   type LibraryEntity,
@@ -40,6 +41,9 @@ import {
   type ControllerContext,
   type LibraryMethod,
 } from "./controller-support.ts";
+
+const OFFLINE_MESSAGE =
+  "You're offline. Reconnect to load the latest from Apple Music.";
 
 export interface DetailLoadOptions {
   refresh?: boolean;
@@ -160,6 +164,67 @@ export function createLibraryLoader(
     }
   };
 
+  const isOffline = (): boolean => getState().library.offline;
+
+  /**
+   * MusicKit loads from Apple's CDN, so offline it never starts. When the
+   * cache holds a signed-in library (sign-out clears it), show that instead.
+   */
+  const enterOfflineMode = async (): Promise<boolean> => {
+    try {
+      await ensureLibraryCache();
+      const meta = await libraryCache.getMeta(LIBRARY_CACHE_SCOPE);
+      if (!meta?.storefront && !meta?.lastRefreshAt) return false;
+      setLibraryOffline(true);
+      return true;
+    } catch (error) {
+      log(`Offline library unavailable: ${safeErrorMessage(error)}`);
+      return false;
+    }
+  };
+
+  /** Cache-only detail read for offline mode; never touches the network. */
+  const loadOfflineDetail = async (
+    kind: DetailKind | "playlistFolder",
+    cacheSection: string,
+    id?: string,
+    source?: MusicSource,
+  ): Promise<void> => {
+    const cached = await libraryCache.readSection<LibraryEntity>(
+      LIBRARY_CACHE_SCOPE,
+      cacheSection,
+    );
+    if (!cached?.items.length) {
+      setLibraryDetailState(
+        kind,
+        {
+          status: "error",
+          source: "none",
+          error: OFFLINE_MESSAGE,
+          stale: false,
+        },
+        id,
+        source,
+      );
+      return;
+    }
+    setLibraryDetailState(
+      kind,
+      kind === "playlistFolder"
+        ? {
+            status: "success",
+            source: "cache",
+            item: cached.items[0],
+            items: cached.items.slice(1),
+            lastUpdatedAt: cached.updatedAt,
+            stale: true,
+          }
+        : cachedDetailPatch(kind, cached, undefined),
+      id,
+      source,
+    );
+  };
+
   const requireLibrary = (): AppleMusicLibraryClient => {
     requireMusic();
     if (getState().auth.status !== "authorized") {
@@ -226,6 +291,7 @@ export function createLibraryLoader(
   const refreshLibrarySection = async (
     section: LibrarySection,
   ): Promise<void> => {
+    if (isOffline()) throw new Error(OFFLINE_MESSAGE);
     const requestId = (libraryRequests.get(section) ?? 0) + 1;
     libraryRequests.set(section, requestId);
     const current = getState().library.collections[section];
@@ -281,6 +347,7 @@ export function createLibraryLoader(
   const loadHome = async (
     options: { refresh?: boolean } = {},
   ): Promise<void> => {
+    if (isOffline()) throw new Error(OFFLINE_MESSAGE);
     requireLibrary();
     const current = getState().home;
     if (!options.refresh && current.status === "success") return;
@@ -367,6 +434,10 @@ export function createLibraryLoader(
     section: LibrarySection,
     options: { refresh?: boolean; cursor?: string } = {},
   ): Promise<void> => {
+    if (isOffline()) {
+      await hydrateLibrarySection(section);
+      return;
+    }
     requireLibrary();
     if (options.cursor) {
       await loadMoreLibrarySection(section, options.cursor);
@@ -389,6 +460,7 @@ export function createLibraryLoader(
     section: LibrarySection,
     cursorOverride?: string,
   ): Promise<void> => {
+    if (isOffline()) return;
     const client = requireLibrary();
     const current = getState().library.collections[section];
     const cursor = cursorOverride ?? current.next;
@@ -502,6 +574,15 @@ export function createLibraryLoader(
       isCurrent: () => boolean,
     ) => Promise<DetailResult | undefined>,
   ): Promise<void> => {
+    if (isOffline()) {
+      await loadOfflineDetail(
+        kind,
+        detailCacheSection(kind, id, source),
+        id,
+        source,
+      );
+      return;
+    }
     const client =
       source === "library" ? requireLibrary() : requireMusicClient();
     const cacheSection = detailCacheSection(kind, id, source);
@@ -684,8 +765,12 @@ export function createLibraryLoader(
     });
 
   const loadPlaylistFolder = async (id?: string): Promise<void> => {
-    const client = requireLibrary();
     const section = `playlist-folder:${id ?? "root"}`;
+    if (isOffline()) {
+      await loadOfflineDetail("playlistFolder", section);
+      return;
+    }
+    const client = requireLibrary();
     setLibraryDetailState("playlistFolder", {
       status: "loading",
       error: undefined,
@@ -774,6 +859,7 @@ export function createLibraryLoader(
       libraryClient = client;
     },
     requireLibrary,
+    enterOfflineMode,
     ensureLibraryCache,
     clearLibraryCache,
     loadLibrarySection,

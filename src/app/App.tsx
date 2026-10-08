@@ -24,6 +24,7 @@ import { UpdateReadyModal } from "../components/UpdateReadyModal.tsx";
 import { ContextMenu } from "../components/ContextMenu.tsx";
 import { PlaylistDialogs } from "../components/PlaylistDialogs.tsx";
 import { ActionToasts } from "../components/ActionToasts.tsx";
+import { TokenExpiryNotice } from "../components/TokenExpiryNotice.tsx";
 import type { DiagnosticsDrawerController } from "../diagnostics/types.ts";
 import type { DiagnosticsStore } from "../diagnostics/store.ts";
 import {
@@ -188,6 +189,7 @@ function AppLayout({
       <ContextMenu />
       <PlaylistDialogs />
       <ActionToasts />
+      <TokenExpiryNotice />
     </div>
   );
 }

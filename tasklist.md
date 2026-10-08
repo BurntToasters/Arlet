@@ -15,6 +15,14 @@ window materials are implemented; the 2026-09-11 notes below are history.
       split, unused dialog/notification plugins removed, periodic update
       checks, guarded `release:finalize`, Windows Clippy in CI, native E2E
       (`npm run test:e2e:app`).
+- [x] **Long-term audit fixes (2026-10-03):** SQL plugin replaced by fixed Rust
+      cache commands with schema migrations; Rust toolchain pinned (1.98.1);
+      offline cached library; Settings → Support (diagnostics report,
+      open-source licenses); fail-closed license gate; native E2E in CI; 429
+      retry and catalog language; token-expiry notice; `base.css` split;
+      list virtualization; WebView2 crash recovery.
+- [ ] **Test policy:** AGENTS.md says never write unit tests after code; the
+      repo has ~260. Owner decision pending.
 - [ ] **Phase 0 matrix still open:** full protected track, seek, skip,
       20 consecutive tracks, 2-hour session, logout/relogin
       (`docs/MUSICKIT_TAURI_FEASIBILITY.md`). Run it on a signed release
@@ -239,5 +247,5 @@ protected playback still needs the Phase 0 matrix._
 - [x] **Milestone 2:** Playback & Queue (state sync, media session) — implemented
 - [x] **Milestone 3:** User Library (albums, playlists, paged fetching, cache) — implemented
 - [x] **Milestone 4:** OS Integration (SMTC with timeline, Acrylic/Mica/Solid) — implemented
-- [ ] **Milestone 5:** Polish & Performance (list virtualization still open)
+- [x] **Milestone 5:** Polish & Performance (virtualized lists, offline cache, crash recovery)
 - [ ] **Milestone 6:** Release Engineering — tooling done; first release pending

@@ -19,6 +19,7 @@ import { Artwork } from "../components/Artwork.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import { toResource, toTrack, type ResourceLike } from "./LibraryView.tsx";
 import { reportActionError } from "../components/action-errors.ts";
+import { OfflineBanner } from "../components/OfflineBanner.tsx";
 
 type DiscoverySource = "library" | "catalog";
 type HomeStatus = "idle" | "loading" | "refreshing" | "success" | "error";
@@ -408,6 +409,7 @@ export function HomeView(): JSX.Element {
 
   return (
     <>
+      {state.library.offline ? <OfflineBanner /> : null}
       <div className="page-heading home-heading">
         <div>
           <span className="eyebrow">Your music, your space</span>

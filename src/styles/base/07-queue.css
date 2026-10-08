@@ -1,0 +1,110 @@
+/* Queue */
+.queue-drawer {
+  position: absolute;
+  z-index: 15;
+  top: 12px;
+  right: 13px;
+  bottom: 12px;
+  display: flex;
+  width: var(--queue-width);
+  min-width: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--surface-solid) 91%, transparent);
+  box-shadow: var(--shadow-popover);
+  backdrop-filter: blur(24px) saturate(1.15);
+}
+
+.queue-header {
+  display: flex;
+  min-height: 76px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 14px 12px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.queue-header h2 {
+  font-size: 19px;
+}
+.queue-header .eyebrow {
+  margin-bottom: 3px;
+}
+.queue-list {
+  padding: 7px;
+  overflow: auto;
+}
+.queue-row {
+  display: grid;
+  width: 100%;
+  min-height: 57px;
+  grid-template-columns: 20px 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 7px;
+  border-radius: var(--radius-sm);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+.queue-row-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  border-radius: var(--radius-sm);
+}
+.queue-row-shell.is-active {
+  background: var(--surface-active);
+}
+.queue-row:hover {
+  background: var(--surface-hover);
+}
+.queue-row.is-active {
+  background: var(--surface-active);
+}
+.queue-index {
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-align: center;
+}
+.queue-index svg {
+  display: block;
+}
+.queue-row.is-active .queue-index {
+  color: var(--accent-strong);
+  font-size: 15px;
+}
+.queue-row .artwork-sm {
+  width: 34px;
+  height: 34px;
+}
+.queue-copy strong {
+  font-size: 12px;
+  font-weight: 620;
+}
+.queue-copy small {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.now-playing-label {
+  color: var(--accent-strong);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.queue-row-more {
+  align-self: center;
+  margin-right: 4px;
+}
+.queue-empty {
+  padding-right: 26px;
+  padding-left: 26px;
+}
+.queue-empty p {
+  font-size: 11px;
+}

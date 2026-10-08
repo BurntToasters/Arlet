@@ -1,0 +1,43 @@
+/* Settings update card: compact rhythm keeps the status and action together. */
+.settings-section[aria-labelledby="updates-heading"] {
+  padding-top: 18px;
+  padding-bottom: 18px;
+}
+
+.settings-section[aria-labelledby="updates-heading"] .settings-fields {
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.settings-section[aria-labelledby="updates-heading"] .settings-field {
+  min-height: 40px;
+}
+
+.settings-section[aria-labelledby="updates-heading"] .settings-field-help,
+.settings-section[aria-labelledby="updates-heading"] .update-dev-note {
+  margin-top: 6px;
+}
+
+.update-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.update-footer .update-status {
+  min-width: 0;
+  margin-top: 0;
+}
+
+.update-footer .update-status span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.update-footer .update-actions {
+  flex: 0 0 auto;
+  margin-top: 0;
+}

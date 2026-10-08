@@ -203,6 +203,8 @@ export interface LibraryDetailsState {
 export interface LibraryState {
   account: AccountSummary;
   hydrated: boolean;
+  /** MusicKit could not start; views show the cached library read-only. */
+  offline: boolean;
   collections: Record<LibrarySection, LibraryCollectionState>;
   details: LibraryDetailsState;
 }
@@ -267,6 +269,8 @@ export interface AppState {
 
 export interface RuntimeAppState extends AppState {
   initialization: InitializationState;
+  /** Embedded MusicKit developer token expiry (epoch ms), when known. */
+  developerTokenExpiresAt?: number;
   navigation: Route;
   search: SearchState;
   settings: AppSettings;
@@ -376,6 +380,7 @@ export function createInitialLibraryState(): LibraryState {
       label: "Apple Music account",
     },
     hydrated: false,
+    offline: false,
     collections,
     details: {
       album: emptyLibraryDetail(),
@@ -531,6 +536,17 @@ export function setAccountSummary(patch: Partial<AccountSummary>): void {
         ...account,
       },
     },
+  });
+}
+
+export function setDeveloperTokenExpiry(expiresAt: number | undefined): void {
+  update({ ...state, developerTokenExpiresAt: expiresAt });
+}
+
+export function setLibraryOffline(offline: boolean): void {
+  update({
+    ...state,
+    library: { ...state.library, offline },
   });
 }
 

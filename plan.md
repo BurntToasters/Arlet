@@ -1,5 +1,10 @@
 # Arlet Plan — Windows Apple Music Client (Tauri v2)
 
+> **Frozen (2026-10-03).** This is the original design brief, kept for its
+> rationale. It is not updated. Current status lives in `tasklist.md`, the
+> code layout in `ARCHITECTURE.md`, and policies in `docs/`. Where this file
+> disagrees with them, they win.
+
 > **Status:** Architecture / implementation brief for a coding agent  
 > **Primary target:** Windows 11 desktop  
 > **Framework:** Tauri v2 + vanilla TypeScript + Vite + Rust  

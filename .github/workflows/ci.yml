@@ -21,7 +21,7 @@ permissions:
 env:
   NODE_VERSION: "24.16.0"
   NPM_VERSION: "12.0.2"
-  RUST_VERSION: "stable"
+  RUST_VERSION: "1.98.1"
   CARGO_AUDIT_VERSION: "0.22.2"
 
 jobs:
@@ -113,6 +113,18 @@ jobs:
       # The Ubuntu gate cannot see cfg(windows) code, so lint it here.
       - name: Windows clippy
         run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+      # Drives the real release binary (synthetic MusicKit token) through
+      # WebView2's DevTools Protocol. x64 only to bound CI time.
+      - name: Native app E2E
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: npm run test:e2e:app
+      - name: Upload E2E report
+        if: always() && matrix.target == 'x86_64-pc-windows-msvc'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-report
+          path: e2e-artifacts/
+          if-no-files-found: ignore
 
   security-audit:
     runs-on: ubuntu-latest

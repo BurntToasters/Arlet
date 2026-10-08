@@ -1,0 +1,58 @@
+/* Failed user actions; sits above the player, below modals and menus. */
+.action-toasts {
+  position: fixed;
+  z-index: 45;
+  right: 16px;
+  bottom: calc(var(--player-height) + 12px);
+  display: grid;
+  width: min(360px, calc(100vw - 32px));
+  gap: 8px;
+  pointer-events: none;
+}
+.action-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 10px 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-popover);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.4;
+  pointer-events: auto;
+  animation: action-toast-in var(--duration-normal) var(--ease-standard);
+}
+.action-toast > svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--danger);
+}
+.action-toast-message {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.action-toast button {
+  display: grid;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+  place-items: center;
+}
+.action-toast button:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+@keyframes action-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}

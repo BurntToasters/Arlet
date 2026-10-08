@@ -28,6 +28,8 @@ import {
 } from "./LibraryView.tsx";
 import type { Track } from "../domain/music.ts";
 import { reportActionError } from "../components/action-errors.ts";
+import { OfflineBanner } from "../components/OfflineBanner.tsx";
+import { VirtualList } from "../components/VirtualList.tsx";
 
 type DetailKind = "album" | "artist" | "playlist";
 type DetailSource = "library" | "catalog";
@@ -165,17 +167,19 @@ function TrackList({
 }): JSX.Element {
   return (
     <section className="library-list-panel" aria-label="Tracks">
-      <ol className="library-track-list">
-        {resources.map((resource, index) => (
+      <VirtualList
+        className="library-track-list"
+        items={resources}
+        getKey={(resource) => resource.id}
+        renderRow={(resource, index) => (
           <LibraryTrackRow
-            key={resource.id}
             resource={resource}
             index={index}
             onPlay={onPlay}
             disabled={!canPlay}
           />
-        ))}
-      </ol>
+        )}
+      />
     </section>
   );
 }
@@ -210,11 +214,12 @@ export function LibraryDetailView({
   const authorized =
     state.auth.status === "authorized" &&
     state.initialization.status === "ready";
+  const offline = state.library.offline;
   const loading =
     detail.status === "loading" && !resource && resources.length === 0;
 
   useEffect(() => {
-    if (!authorized) return;
+    if (!authorized && !offline) return;
     const loader =
       kind === "album"
         ? extendedController.loadAlbum
@@ -224,6 +229,7 @@ export function LibraryDetailView({
     callLoader(loader, id, source);
   }, [
     authorized,
+    offline,
     extendedController.loadAlbum,
     extendedController.loadArtist,
     extendedController.loadPlaylist,
@@ -241,7 +247,7 @@ export function LibraryDetailView({
     if (tracks.length) act(() => controller.playTracks(tracks));
   };
 
-  if (!authorized) {
+  if (!authorized && !offline) {
     return (
       <EmptyState
         icon={copy.icon}
@@ -306,6 +312,7 @@ export function LibraryDetailView({
   const isArtist = kind === "artist";
   return (
     <>
+      {offline ? <OfflineBanner /> : null}
       <section
         className="library-detail-hero"
         {...(resource ? detailContext(resource, kind) : {})}

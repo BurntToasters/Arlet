@@ -22,11 +22,11 @@ function instanceWithMusic(
 }
 
 describe("resolveMusicKitMusicRequest", () => {
-  it("uses api.music on MusicKit v3", () => {
+  it("uses api.music on MusicKit v3", async () => {
     const music = vi.fn();
     const request = resolveMusicKitMusicRequest(instanceWithMusic(music));
-    void request("/v1/catalog/us/search");
-    expect(music).toHaveBeenCalledWith("/v1/catalog/us/search");
+    await request("/v1/catalog/us/search");
+    expect(music).toHaveBeenLastCalledWith("/v1/catalog/us/search");
   });
 
   it("falls back to api.v3.music", () => {

@@ -1,0 +1,145 @@
+/* Windows chrome */
+.titlebar {
+  z-index: 20;
+  display: flex;
+  flex: 0 0 var(--titlebar-height);
+  align-items: center;
+  min-height: var(--titlebar-height);
+  padding-left: 14px;
+  user-select: none;
+}
+
+.titlebar-brand,
+.titlebar-status,
+.titlebar-spacer {
+  display: flex;
+  align-items: center;
+}
+
+.titlebar-brand {
+  gap: 8px;
+  min-width: 86px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.brand-mark {
+  display: block;
+  width: 18px;
+  height: 18px;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+.titlebar-navigation {
+  display: flex;
+  gap: 1px;
+  margin-left: 7px;
+}
+
+.titlebar-nav-button {
+  width: 27px !important;
+  height: 27px !important;
+  min-height: 27px !important;
+}
+
+.titlebar-status {
+  gap: 6px;
+  margin-left: 14px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.titlebar-status svg {
+  opacity: 0.65;
+}
+
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.status-ready {
+  background: var(--success);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 14%, transparent);
+}
+.status-error {
+  background: var(--danger);
+}
+.status-loading {
+  background: var(--accent);
+  animation: status-pulse 1.4s ease-in-out infinite;
+}
+
+.titlebar-spacer {
+  flex: 1;
+  align-self: stretch;
+}
+
+.icon-button,
+.window-control,
+.mobile-menu-button {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  transition:
+    background var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.icon-button:hover:not(:disabled),
+.mobile-menu-button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.icon-button.is-active,
+.icon-button[aria-pressed="true"] {
+  background: var(--surface-active);
+  color: var(--accent-strong);
+}
+
+.titlebar-debug {
+  margin-right: 6px;
+}
+
+.window-controls {
+  display: flex;
+  align-self: stretch;
+}
+
+.window-control {
+  width: 46px;
+  height: 100%;
+  min-height: 0;
+  border-radius: 0;
+  color: var(--text-muted);
+}
+
+.window-control:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.window-control[data-snap-hover="true"] {
+  background: var(--surface-hover);
+}
+
+.window-control-close:hover:not(:disabled) {
+  background: #c42d38;
+  color: #fff;
+}
+
+.mobile-menu-button {
+  display: none;
+  margin-right: 8px;
+}

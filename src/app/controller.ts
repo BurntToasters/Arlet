@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import {
   authorize,
   installAuthPopupProbe,
@@ -6,6 +7,7 @@ import {
   unauthorize,
 } from "../musickit/auth.ts";
 import { initializeMusicKit } from "../musickit/bootstrap.ts";
+import { developerTokenExpiry } from "../musickit/token.ts";
 import type {
   loadBrowseCharts,
   loadRadioStations,
@@ -28,6 +30,7 @@ import {
   setAuthState,
   setAuthPending,
   setCurrentTrack,
+  setDeveloperTokenExpiry,
   setInitializationState,
   setPins,
   setSettings,
@@ -62,6 +65,7 @@ import type {
   Track,
 } from "../domain/music.ts";
 import type { DiagnosticsStore } from "../diagnostics/store.ts";
+import { createSupportReport } from "../diagnostics/support-report.ts";
 import type { GateEnvironment } from "../phase0/gate-session.ts";
 import { redactSensitive, registerSensitiveValue } from "../platform/redact.ts";
 import { createUpdaterService, type UpdaterService } from "../updater.ts";
@@ -106,6 +110,7 @@ export interface ControllerDependencies {
   searchMusicResources?: typeof searchMusicResources;
   loadBrowseCharts?: typeof loadBrowseCharts;
   loadRadioStations?: typeof loadRadioStations;
+  writeClipboardText?: (text: string) => Promise<void>;
 }
 
 export interface AppController {
@@ -191,6 +196,8 @@ export interface AppController {
   closeDiagnostics(): void;
   openMusicDiagnostic(): Promise<string>;
   setDiagnosticsEnvironment(environment: GateEnvironment): void;
+  /** Copies a redacted support report for bug reports (release builds). */
+  copyDiagnosticsReport?(): Promise<void>;
   log(message: string): void;
   dispose(): void;
   readonly consecutiveTrackTarget: number;
@@ -346,6 +353,7 @@ export function createAppController(
       const instance = await initialize();
       music = instance;
       registerSensitiveValue(instance.developerToken);
+      setDeveloperTokenExpiry(developerTokenExpiry(instance.developerToken));
       registerSensitiveValue(instance.musicUserToken);
       playback.applyPlaybackVolume(getState().settings.volume);
       try {
@@ -397,6 +405,9 @@ export function createAppController(
       const message = safeErrorMessage(error);
       setInitializationState({ status: "error", message });
       log(`MusicKit init failed: ${message}`);
+      if (await library.enterOfflineMode()) {
+        log("Showing the cached library offline.");
+      }
     }
   };
 
@@ -820,6 +831,15 @@ export function createAppController(
 
     setDiagnosticsEnvironment(environment: GateEnvironment): void {
       diagnosticsStore?.setMetadata({ environment });
+    },
+
+    async copyDiagnosticsReport(): Promise<void> {
+      if (!diagnosticsStore) {
+        throw new Error("Diagnostics are unavailable in this session.");
+      }
+      const write = dependencies.writeClipboardText ?? writeText;
+      await write(createSupportReport(diagnosticsStore.getSnapshot()));
+      log("Diagnostics report copied to the clipboard.");
     },
 
     log,

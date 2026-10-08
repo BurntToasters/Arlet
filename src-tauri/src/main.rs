@@ -2,11 +2,13 @@
 
 mod auth_popup;
 mod commands;
+mod library_cache;
 mod logging;
 mod music_diagnostic;
 mod pins;
 mod settings;
 mod token_policy;
+mod webview_recovery;
 mod window_fx;
 mod window_snap;
 mod windows_media;
@@ -38,9 +40,7 @@ fn main() {
         eprintln!("{error}");
         return;
     }
-    let mut builder = tauri::Builder::default()
-        .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_sql::Builder::default().build());
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_clipboard_manager::init());
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
@@ -58,6 +58,7 @@ fn main() {
 
     builder
         .manage(LogFileLock(Mutex::new(())))
+        .manage(library_cache::LibraryCacheState::default())
         .setup(|app| {
             let window = auth_popup::create_main_window(app)?;
             // The config is declaratively frameless; repeat the setting while
@@ -80,6 +81,9 @@ fn main() {
                 if let Err(solid_error) = window_fx::apply_solid(&window, dark) {
                     eprintln!("Unable to apply solid startup fallback: {solid_error}");
                 }
+            }
+            if let Err(error) = webview_recovery::install(&window) {
+                eprintln!("Unable to install WebView2 crash recovery: {error}");
             }
             window.show()?;
             #[cfg(debug_assertions)]
@@ -116,6 +120,13 @@ fn main() {
             logging::append_local_log,
             logging::get_log_dir,
             logging::clear_logs,
+            library_cache::library_cache_read_page,
+            library_cache::library_cache_read_section,
+            library_cache::library_cache_write_page,
+            library_cache::library_cache_clear_section,
+            library_cache::library_cache_set_meta,
+            library_cache::library_cache_get_meta,
+            library_cache::library_cache_clear,
             window_fx::set_window_fx,
             window_fx::supports_window_fx,
             window_snap::set_snap_overlay_bounds,

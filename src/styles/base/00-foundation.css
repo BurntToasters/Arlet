@@ -1,0 +1,164 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  min-width: 320px;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-ui);
+  color: var(--text);
+  background: var(--surface-base);
+  font-size: 14px;
+  line-height: 1.45;
+  text-rendering: optimizeLegibility;
+}
+
+/* Native Acrylic/Mica needs a transparent document behind the Tauri window.
+   The applied effect is set by App after the native adapter responds. */
+:root[data-window-effect="acrylic"] body,
+:root[data-window-effect="acrylic"] #app,
+:root[data-window-effect="mica"] body,
+:root[data-window-effect="mica"] #app {
+  background: transparent;
+}
+
+button,
+input,
+select {
+  font: inherit;
+}
+
+button {
+  border: 0;
+}
+
+button:not(:disabled),
+select:not(:disabled),
+input:not(:disabled) {
+  cursor: pointer;
+}
+
+button:disabled,
+input:disabled,
+select:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
+button,
+input,
+select {
+  color: inherit;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button:focus:not(:focus-visible),
+input:focus:not(:focus-visible),
+select:focus:not(:focus-visible) {
+  outline: none;
+}
+
+button svg,
+input + svg {
+  flex: 0 0 auto;
+}
+
+#app,
+.app-shell {
+  width: 100%;
+  height: 100%;
+}
+
+.app-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--surface-glass);
+  isolation: isolate;
+}
+
+:root[data-window-effect="acrylic"] .app-shell,
+:root[data-window-effect="mica"] .app-shell {
+  background: transparent;
+}
+
+:root[data-window-effect="solid"] body,
+:root[data-window-effect="solid"] #app,
+:root[data-window-effect="solid"] .app-shell {
+  background: var(--surface-base);
+}
+
+.app-shell::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background:
+    radial-gradient(
+      circle at 82% 5%,
+      color-mix(in srgb, var(--accent) 8%, transparent),
+      transparent 35%
+    ),
+    linear-gradient(
+      140deg,
+      color-mix(in srgb, var(--surface-base) 90%, transparent),
+      transparent 72%
+    );
+  content: "";
+  pointer-events: none;
+}
+
+:root[data-window-effect="mica"] .app-shell::before {
+  background:
+    radial-gradient(
+      circle at 82% 5%,
+      color-mix(in srgb, var(--accent) 8%, transparent),
+      transparent 35%
+    ),
+    linear-gradient(
+      140deg,
+      color-mix(in srgb, var(--surface-base) 24%, transparent),
+      transparent 72%
+    );
+}
+
+/* Acrylic's broad desktop colors can expose 8-bit gradient steps. A tiny
+   monochrome noise layer follows the native Acrylic recipe and dithers those
+   steps without changing layout or softening text. */
+:root[data-window-effect="acrylic"] .app-shell::before {
+  background:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128' viewBox='0 0 128 128'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.72' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='.022'/%3E%3C/svg%3E")
+      0 0 / 128px 128px repeat,
+    radial-gradient(
+      circle at 82% 5%,
+      color-mix(in srgb, var(--accent) 8%, transparent),
+      transparent 35%
+    ),
+    linear-gradient(
+      140deg,
+      color-mix(in srgb, var(--surface-base) 28%, transparent),
+      transparent 72%
+    ),
+    linear-gradient(
+      color-mix(in srgb, var(--surface-base) 8%, transparent),
+      color-mix(in srgb, var(--surface-base) 8%, transparent)
+    );
+  background-blend-mode: soft-light, normal, normal, normal;
+}

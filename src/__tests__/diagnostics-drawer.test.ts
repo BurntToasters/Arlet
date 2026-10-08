@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { h } from "preact";
 import { render } from "preact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +11,7 @@ import {
   getState,
   resetApplicationState,
 } from "../state.ts";
+import { readShellStyles } from "./read-styles.ts";
 
 describe("DiagnosticsDrawer", () => {
   let root: HTMLDivElement;
@@ -139,10 +138,7 @@ describe("DiagnosticsDrawer", () => {
   });
 
   it("is styled as a bottom drawer above the player surface", () => {
-    const styles = readFileSync(
-      resolve(process.cwd(), "src/styles/base.css"),
-      "utf8",
-    );
+    const styles = readShellStyles();
     const drawerStart = styles.indexOf(".diagnostics-drawer {");
     const headerStart = styles.indexOf(".diagnostics-header {");
     const drawerRules = styles.slice(drawerStart, headerStart);
