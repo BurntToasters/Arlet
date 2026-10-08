@@ -1,7 +1,47 @@
-# Arlet
+<p align="center">
+  <img src="src-tauri/icons/64x64.png" width="64" height="64" alt="Arlet app icon" />
+</p>
 
-A better Windows Apple Music client, built with Tauri v2 and MusicKit on the
-Web. Arlet is in alpha development.
+<h1 align="center">Arlet</h1>
+
+<p align="center">
+  A better Windows Apple Music client, built with Tauri v2 and MusicKit on the
+  Web. Arlet is in alpha development.
+</p>
+
+<!-- arlet-downloads:start -->
+<p align="center">
+  <a href="https://github.com/BurntToasters/Arlet/releases/download/v0.1.2/Arlet_0.1.2_x64-setup.exe"><img src="https://img.shields.io/badge/Download-Windows_x64-e8584c?style=for-the-badge" alt="Download Arlet for Windows x64" /></a>
+  <a href="https://github.com/BurntToasters/Arlet/releases/download/v0.1.2/Arlet_0.1.2_arm64-setup.exe"><img src="https://img.shields.io/badge/Download-Windows_Arm64-e8584c?style=for-the-badge" alt="Download Arlet for Windows Arm64" /></a>
+</p>
+<!-- arlet-downloads:end -->
+
+<p align="center">
+  <sub>Windows 10 22H2 or newer. <a href="https://github.com/BurntToasters/Arlet/releases/latest">All releases and signatures</a></sub>
+</p>
+
+## Screenshots
+
+<p align="center">
+  <img src="media/arlet2.png" width="900" alt="Arlet's Recently Added page: a grid of album and playlist artwork from the Apple Music library" />
+  <br />
+  <sub>Your library: recently added albums and playlists.</sub>
+</p>
+
+<table>
+  <tr>
+    <td width="50%" align="center">
+      <img src="media/arlet1.png" alt="Arlet's Browse page listing Apple Music top songs with artwork, artists, and durations" />
+      <br />
+      <sub>Browse Apple Music charts.</sub>
+    </td>
+    <td width="50%" align="center">
+      <img src="media/arlet3.png" alt="Arlet's Settings page with account, update channel, theme, and window material options" />
+      <br />
+      <sub>Settings: account, updates, theme, and Mica or Acrylic.</sub>
+    </td>
+  </tr>
+</table>
 
 ## Requirements
 

@@ -96,3 +96,67 @@ export function syncNpmLockfileVersion(lockText, version) {
   parsed.packages[""].version = version;
   return `${JSON.stringify(parsed, null, 2)}\n`;
 }
+
+const RELEASE_ASSET_URL =
+  /\/releases\/download\/v[^/\s)"]+\/Arlet_[^_\s)"]+_(x64|arm64)-setup\.exe/g;
+
+function pointAssetsAt(text, version) {
+  return text.replace(
+    RELEASE_ASSET_URL,
+    `/releases/download/v${version}/Arlet_${version}_$1-setup.exe`,
+  );
+}
+
+const CHANGELOG_TABLE_START = "# ⬇️ Downloads";
+const CHANGELOG_TABLE_END = "\n> Arlet requires";
+export const CHANGELOG_INTRO_ANCHOR =
+  "Arlet! An Apple Music client for Windows built on Tauri V2!\n\n";
+
+/**
+ * Like Zinnia: point the CHANGELOG download table at `version` and add a
+ * placeholder section when it is missing. The release preflight rejects the
+ * placeholder, so notes must be written before a release.
+ */
+export function syncChangelogForVersion(changelog, version) {
+  const start = changelog.indexOf(CHANGELOG_TABLE_START);
+  const end = changelog.indexOf(CHANGELOG_TABLE_END, start);
+  if (start === -1 || end === -1) {
+    throw new Error(
+      `CHANGELOG.md download table markers not found ("${CHANGELOG_TABLE_START}" ... "${CHANGELOG_TABLE_END.trim()}").`,
+    );
+  }
+  let updated =
+    changelog.slice(0, start) +
+    pointAssetsAt(changelog.slice(start, end), version) +
+    changelog.slice(end);
+  const heading = `## Changes in \`v${version}:\``;
+  if (!updated.includes(heading)) {
+    if (!updated.includes(CHANGELOG_INTRO_ANCHOR)) {
+      throw new Error("CHANGELOG.md intro anchor not found.");
+    }
+    updated = updated.replace(
+      CHANGELOG_INTRO_ANCHOR,
+      `${CHANGELOG_INTRO_ANCHOR}${heading}\n\n- **Fix:** (add release notes)\n\n`,
+    );
+  }
+  return updated;
+}
+
+export const README_DOWNLOADS_START = "<!-- arlet-downloads:start -->";
+export const README_DOWNLOADS_END = "<!-- arlet-downloads:end -->";
+
+/** Points the README download buttons (between the markers) at `version`. */
+export function syncReadmeDownloads(readme, version) {
+  const start = readme.indexOf(README_DOWNLOADS_START);
+  const end = readme.indexOf(README_DOWNLOADS_END, start);
+  if (start === -1 || end === -1) {
+    throw new Error(
+      `README.md download markers not found (${README_DOWNLOADS_START} ... ${README_DOWNLOADS_END}).`,
+    );
+  }
+  return (
+    readme.slice(0, start) +
+    pointAssetsAt(readme.slice(start, end), version) +
+    readme.slice(end)
+  );
+}

@@ -13,6 +13,7 @@ import type {
 import type { AppErrorCode } from "./domain/errors.ts";
 import type { Route } from "./routing/router.ts";
 import { redactSensitive } from "./platform/redact.ts";
+import { isSameTrack } from "./domain/music.ts";
 
 export type ThemePreference = "system" | "light" | "dark";
 export type WindowEffectPreference = "acrylic" | "mica" | "solid";
@@ -814,17 +815,22 @@ export function setCurrentTrack(
   track: Track | undefined,
   explicitQueueIndex?: number,
 ): void {
+  // MusicKit may report a library song by its catalog ID, so match either.
   const isNewTrack =
-    track !== undefined && track.id !== state.playback.current?.id;
+    track !== undefined && !isSameTrack(track, state.playback.current);
+  const queue = state.playback.queue;
+  const exactIndex = track
+    ? queue.findIndex((item) => item.id === track.id)
+    : -1;
   const queueIndex =
     track &&
     explicitQueueIndex !== undefined &&
     explicitQueueIndex >= 0 &&
     explicitQueueIndex < state.playback.queue.length
       ? explicitQueueIndex
-      : track
-        ? state.playback.queue.findIndex((item) => item.id === track.id)
-        : -1;
+      : exactIndex >= 0
+        ? exactIndex
+        : queue.findIndex((item) => isSameTrack(item, track));
   update({
     ...state,
     playback: {

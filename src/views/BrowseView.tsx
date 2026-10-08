@@ -181,9 +181,9 @@ export function BrowseView(): JSX.Element {
                     .catch(reportActionError)
                 }
                 rowClassName="library-track-row"
-                numberClassName="library-track-number"
-                copyClassName="library-track-copy"
-                durationClassName="library-track-duration"
+                numberClassName="library-row-number"
+                copyClassName="library-row-copy"
+                durationClassName="library-row-duration"
                 contextData={{
                   "data-context-kind": "track",
                   "data-context-id": track.id,

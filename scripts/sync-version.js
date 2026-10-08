@@ -7,7 +7,9 @@ import {
   readCargoLockPackageVersion,
   readCargoManifestVersion,
   syncCargoManifestVersion,
+  syncChangelogForVersion,
   syncNpmLockfileVersion,
+  syncReadmeDownloads,
   updateCargoLockPackageVersion,
 } from "./sync-version-helpers.js";
 
@@ -109,6 +111,21 @@ planText(npmLockPath, nextNpmLock, () => {
   const lock = readJson(npmLockPath);
   return lock.version === version && lock.packages?.[""]?.version === version;
 });
+
+const changelogPath = path.join(root, "CHANGELOG.md");
+planText(
+  changelogPath,
+  syncChangelogForVersion(readRequired(changelogPath), version),
+  () =>
+    fs.readFileSync(changelogPath, "utf8").includes(`/download/v${version}/`),
+);
+
+const readmePath = path.join(root, "README.md");
+planText(
+  readmePath,
+  syncReadmeDownloads(readRequired(readmePath), version),
+  () => fs.readFileSync(readmePath, "utf8").includes(`/download/v${version}/`),
+);
 
 if (checkOnly) {
   if (changes.length) {
