@@ -3,14 +3,11 @@
 // is original. Syncs the current branch to its upstream and installs deps.
 
 import { spawnSync, execSync } from "node:child_process";
+import npmCli from "./npm-cli.cjs";
 
 function run(cmd, args) {
   console.log(`> ${cmd} ${args.join(" ")}`);
-  const res = spawnSync(cmd, args, {
-    stdio: "inherit",
-    // Node refuses to spawn .cmd shims without a shell (CVE-2024-27980).
-    shell: process.platform === "win32" && /\.cmd$/i.test(cmd),
-  });
+  const res = spawnSync(cmd, args, { stdio: "inherit", shell: false });
   if (res.error) console.error(res.error);
   if (res.status !== 0) {
     console.error(`Command failed: ${cmd} ${args.join(" ")}`);
@@ -23,8 +20,9 @@ try {
   run("git", ["reset", "--hard", "@{u}"]);
   run("git", ["clean", "-fd"]);
   run("git", ["pull"]);
-  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-  run(npm, ["ci", "--ignore-scripts"]);
+  // Runs npm-cli.js through node (npm_execpath), so no .cmd shim or shell.
+  const npm = npmCli.npmInvocation();
+  run(npm.command, [...npm.prefixArgs, "ci", "--ignore-scripts"]);
 
   const branch = execSync("git rev-parse --abbrev-ref HEAD", {
     encoding: "utf8",
