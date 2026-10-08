@@ -46,7 +46,7 @@ windows = { version = "0.61", features = [
 ] }
 
 [dev-dependencies]
-minisign-verify = "0.2.5"
+minisign-verify = "0.3.0"
 
 [features]
 default = []
