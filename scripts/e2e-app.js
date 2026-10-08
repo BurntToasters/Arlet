@@ -189,6 +189,49 @@ function killArlet() {
   spawnSync("taskkill", ["/IM", "arlet.exe", "/T", "/F"], { stdio: "ignore" });
 }
 
+// Physical pixels; deliberately not the 1000x700 default window.
+const SEEDED_WINDOW_STATE = {
+  x: 150,
+  y: 110,
+  width: 1100,
+  height: 760,
+  maximized: false,
+};
+
+/**
+ * The main window's geometry as Arlet stores it: frame position
+ * (GetWindowRect, which Tauri's outer_position reads) and client size
+ * (GetClientRect, Tauri's inner_size). The page's screenX/innerHeight measure
+ * the webview instead and differ by the invisible resize border.
+ */
+function nativeWindowGeometry() {
+  const script = `
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class ArletE2eWindow {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+}
+"@
+$handle = (Get-Process -Name arlet | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1).MainWindowHandle
+$frame = New-Object ArletE2eWindow+RECT
+$client = New-Object ArletE2eWindow+RECT
+[void][ArletE2eWindow]::GetWindowRect($handle, [ref]$frame)
+[void][ArletE2eWindow]::GetClientRect($handle, [ref]$client)
+"{0} {1} {2} {3}" -f $frame.Left, $frame.Top, $client.Right, $client.Bottom`;
+  const out = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    { encoding: "utf8" },
+  ).stdout.trim();
+  const [x, y, width, height] = out.split(/s+/u).map(Number);
+  return { x, y, width, height };
+}
+
+const near = (actual, expected) => Math.abs(actual - expected) <= 2;
+
 async function sleep(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -294,6 +337,10 @@ async function run() {
   try {
     seedCorruptSettings();
     seedLegacyCache();
+    fs.writeFileSync(
+      path.join(dataDirs()[0], "window-state.json"),
+      JSON.stringify(SEEDED_WINDOW_STATE),
+    );
     child = spawn(EXE, [], {
       env: {
         ...process.env,
@@ -315,6 +362,25 @@ async function run() {
       if (!shell) await sleep(250);
     }
     check("shell renders", shell);
+    // Not clicked: that would open the tester's browser. The URL is fixed in
+    // Rust (commands::SUPPORT_URL) and the command takes no input.
+    const support = await page.evaluate(
+      `return Boolean(document.querySelector(".sidebar-footer .sidebar-support")?.textContent.includes("Support Me"));`,
+    );
+    check("sidebar shows the Support Me link", support);
+
+    // Failure modes: the saved geometry is ignored, or applied after the
+    // window is shown (visible jump). The window starts hidden, so reading
+    // it after "shell renders" sees only the final geometry.
+    const restoredGeometry = nativeWindowGeometry();
+    check(
+      "window opens at the saved size and position",
+      near(restoredGeometry.x, SEEDED_WINDOW_STATE.x) &&
+        near(restoredGeometry.y, SEEDED_WINDOW_STATE.y) &&
+        near(restoredGeometry.width, SEEDED_WINDOW_STATE.width) &&
+        near(restoredGeometry.height, SEEDED_WINDOW_STATE.height),
+      { saved: SEEDED_WINDOW_STATE, actual: restoredGeometry },
+    );
 
     // MusicKit sign-in and storage are keyed to the release origin.
     const origin = await page.evaluate("return location.origin;");
@@ -506,6 +572,48 @@ async function run() {
     check("licenses dialog lists bundled packages", licenses > 50, {
       licenses,
     });
+    // Failure mode: a dialog rendered inside a page picks up the 960px page
+    // column rule and dims only a band of the window (0.1.2).
+    const backdrop = await page.evaluate(`
+      const rect = document.querySelector(".playlist-dialog-backdrop")?.getBoundingClientRect();
+      return rect ? { left: rect.left, top: rect.top, width: rect.width, height: rect.height, windowWidth: innerWidth, windowHeight: innerHeight } : null;`);
+    check(
+      "licenses dialog dims the whole window",
+      Boolean(backdrop) &&
+        backdrop.left === 0 &&
+        backdrop.top === 0 &&
+        backdrop.width === backdrop.windowWidth &&
+        backdrop.height === backdrop.windowHeight,
+      backdrop,
+    );
+
+    // Failure mode: after keyboard input, focusing the page <main> (done on
+    // every navigation) drew the accent focus ring around the page (0.1.2).
+    await page.evaluate(
+      `document.querySelector("[aria-label='Close licenses']")?.click(); return true;`,
+    );
+    await page.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key: "Shift",
+      code: "ShiftLeft",
+      windowsVirtualKeyCode: 16,
+    });
+    await page.send("Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key: "Shift",
+      code: "ShiftLeft",
+      windowsVirtualKeyCode: 16,
+    });
+    const mainFocus = await page.evaluate(`
+      const main = document.querySelector("main.content-area");
+      main.focus();
+      const style = getComputedStyle(main);
+      return { focused: document.activeElement === main, focusVisible: main.matches(":focus-visible"), outline: style.outlineStyle };`);
+    check(
+      "page focus after keyboard input draws no focus ring",
+      mainFocus.focused && mainFocus.outline === "none",
+      mainFocus,
+    );
 
     const shot = await page.send("Page.captureScreenshot", { format: "png" });
     fs.writeFileSync(
@@ -682,9 +790,53 @@ async function run() {
       Buffer.from(resetShot.data, "base64"),
     );
 
-    // Stop the app, then confirm the cache file was migrated in place.
+    // Reset deleted the saved geometry, and the closing window (reset
+    // pending) must not have written it back.
+    const windowStateFile = path.join(dataDirs()[0], "window-state.json");
+    const resetGeometry = nativeWindowGeometry();
+    check(
+      "reset forgets the saved window size and position",
+      !fs.existsSync(windowStateFile) &&
+        !near(resetGeometry.width, SEEDED_WINDOW_STATE.width),
+      { stateFileExists: fs.existsSync(windowStateFile), resetGeometry },
+    );
+
+    // Resize, then close normally: the new geometry is saved for next launch.
+    const resized = await settle(page, "plugin:window|set_size", {
+      label: "main",
+      value: { Physical: { width: 1060, height: 740 } },
+    });
+    await sleep(800);
+    const beforeClose = nativeWindowGeometry();
+    void settle(page, "plugin:window|close", { label: "main" }).catch(
+      () => undefined,
+    );
     page.close();
     page = undefined;
+    const closeDeadline = Date.now() + 15_000;
+    while (Date.now() < closeDeadline && !fs.existsSync(windowStateFile)) {
+      await sleep(250);
+    }
+    let savedAfterClose = null;
+    try {
+      savedAfterClose = JSON.parse(fs.readFileSync(windowStateFile, "utf8"));
+    } catch {
+      // Left null so the check fails with the detail below.
+    }
+    check(
+      "closing the window saves its size and position",
+      resized.ok &&
+        Boolean(savedAfterClose) &&
+        savedAfterClose.width === beforeClose.width &&
+        savedAfterClose.height === beforeClose.height &&
+        beforeClose.width === 1060 &&
+        beforeClose.height === 740 &&
+        savedAfterClose.x === beforeClose.x &&
+        savedAfterClose.y === beforeClose.y,
+      { resized: resized.ok, beforeClose, savedAfterClose },
+    );
+
+    // Stop the app, then confirm the cache file was migrated in place.
     killArlet();
     await sleep(1500);
     const db = new DatabaseSync(path.join(dataDirs()[0], "arlet-library.db"), {

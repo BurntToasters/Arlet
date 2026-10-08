@@ -5,20 +5,45 @@
 <h1 align="center">Arlet</h1>
 
 <p align="center">
-  A better Windows Apple Music client, built with Tauri v2 and MusicKit on the
-  Web. Arlet is in alpha development.
+  An unofficial <strong>Apple Music client for Windows</strong> 10 and 11: a
+  fast, native-feeling desktop app built with Tauri v2, Rust, and MusicKit.
+  Arlet is in alpha development.
 </p>
 
 <!-- arlet-downloads:start -->
 <p align="center">
-  <a href="https://github.com/BurntToasters/Arlet/releases/download/v0.1.2/Arlet_0.1.2_x64-setup.exe"><img src="https://img.shields.io/badge/Download-Windows_x64-e8584c?style=for-the-badge" alt="Download Arlet for Windows x64" /></a>
-  <a href="https://github.com/BurntToasters/Arlet/releases/download/v0.1.2/Arlet_0.1.2_arm64-setup.exe"><img src="https://img.shields.io/badge/Download-Windows_Arm64-e8584c?style=for-the-badge" alt="Download Arlet for Windows Arm64" /></a>
+  <a href="https://github.com/BurntToasters/Arlet/releases/latest/download/Arlet-Windows-x64.exe"><img src="https://img.shields.io/badge/Download-Windows_x64-e8584c?style=for-the-badge" alt="Download Arlet for Windows x64" /></a>
+  <a href="https://github.com/BurntToasters/Arlet/releases/latest/download/Arlet-Windows-arm64.exe"><img src="https://img.shields.io/badge/Download-Windows_Arm64-e8584c?style=for-the-badge" alt="Download Arlet for Windows Arm64" /></a>
 </p>
 <!-- arlet-downloads:end -->
 
 <p align="center">
   <sub>Windows 10 22H2 or newer. <a href="https://github.com/BurntToasters/Arlet/releases/latest">All releases and signatures</a></sub>
 </p>
+
+## Features
+
+- **Your Apple Music library on the Windows desktop:** recently added,
+  recently played, artists, albums, songs, and playlists with folders, cached
+  for a fast start.
+- **Home and Browse:** recently played playlists, heavy rotation, personal
+  recommendations, Apple Music charts, and radio stations.
+- **Search** the full Apple Music catalog or just your library.
+- **Playlists:** create playlists and folders, add songs, and pin favorites to
+  the sidebar.
+- **Queue control:** play now, play next, play later, shuffle, and repeat.
+- **Built for Windows:** media keys and the Windows media overlay, light and
+  dark themes, and Mica or Acrylic window materials.
+- **Automatic, signed updates** on a stable or beta channel. Installers are
+  Authenticode-signed and GPG-signed.
+
+## Install
+
+1. Download the installer for your PC above (x64 for most PCs, Arm64 for
+   Snapdragon and other Arm devices).
+2. Run it. Arlet installs for your user account only, no administrator
+   rights needed.
+3. Sign in with the Apple ID that has your Apple Music subscription.
 
 ## Screenshots
 
@@ -70,3 +95,15 @@
 - [docs/SECURITY.md](docs/SECURITY.md): capabilities, tokens, logging.
 - [docs/RELEASE.md](docs/RELEASE.md): release machine setup and flow.
 - [docs/TESTING.md](docs/TESTING.md): test boundaries and E2E.
+
+## Disclaimer
+
+Arlet is an independent, unofficial project. It is not affiliated with,
+endorsed by, or sponsored by Apple Inc. Apple Music and MusicKit are
+trademarks of Apple Inc. An active Apple Music subscription is required for
+full-length playback.
+
+## License
+
+Arlet is free software under the
+[GNU General Public License v3.0 only](LICENSE).

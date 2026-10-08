@@ -153,11 +153,11 @@ test("manifest validation rejects obsolete pubdate and malformed feed targets", 
     pub_date: "2026-09-13T00:00:00.000Z",
     platforms: {
       "windows-x86_64": {
-        url: "https://github.com/BurntToasters/Arlet/releases/download/v0.1.0/Arlet_0.1.0_x64-setup.exe",
+        url: "https://github.com/BurntToasters/Arlet/releases/download/v0.1.0/Arlet-Windows-x64.exe",
         signature,
       },
       "windows-x86_64-nsis": {
-        url: "https://github.com/BurntToasters/Arlet/releases/download/v0.1.0/Arlet_0.1.0_x64-setup.exe",
+        url: "https://github.com/BurntToasters/Arlet/releases/download/v0.1.0/Arlet-Windows-x64.exe",
         signature,
       },
     },
@@ -194,18 +194,18 @@ test("manifest target bindings reject cross-architecture and unexpected installe
     notes: "notes",
     platforms: {
       "windows-x86_64": {
-        url: "https://github.com/BurntToasters/Arlet/releases/download/v0.1.0/Arlet_0.1.0_arm64-setup.exe",
+        url: "https://github.com/BurntToasters/Arlet/releases/download/v0.1.0/Arlet-Windows-arm64.exe",
         signature,
       },
       "windows-x86_64-nsis": {
-        url: "https://github.com/BurntToasters/Arlet/releases/download/v0.1.0/Arlet_0.1.0_arm64-setup.exe",
+        url: "https://github.com/BurntToasters/Arlet/releases/download/v0.1.0/Arlet-Windows-arm64.exe",
         signature,
       },
     },
   };
   assert.ok(
     validateUpdaterManifest(base, "latest-windows-x86_64.json").some((error) =>
-      error.includes("must reference Arlet_0.1.0_x64-setup.exe"),
+      error.includes("must reference Arlet-Windows-x64.exe"),
     ),
   );
   assert.throws(
@@ -213,13 +213,13 @@ test("manifest target bindings reject cross-architecture and unexpected installe
       assertManifestAssetReferences(
         base,
         "latest-windows-x86_64.json",
-        ["Arlet_0.1.0_arm64-setup.exe", "Arlet_0.1.0_arm64-setup.exe.sig"],
+        ["Arlet-Windows-arm64.exe", "Arlet-Windows-arm64.exe.sig"],
         {
           tag: "v0.1.0",
-          signatures: new Map([["Arlet_0.1.0_arm64-setup.exe", signature]]),
+          signatures: new Map([["Arlet-Windows-arm64.exe", signature]]),
         },
       ),
-    /must reference Arlet_0.1.0_x64-setup\.exe/,
+    /must reference Arlet-Windows-x64.exe/,
   );
   assert.throws(
     () =>
@@ -232,23 +232,20 @@ test("manifest target bindings reject cross-architecture and unexpected installe
               {
                 ...entry,
                 url: entry.url.replace(
-                  "Arlet_0.1.0_arm64-setup.exe",
-                  "Arlet_0.1.0_x86-setup.exe",
+                  "Arlet-Windows-arm64.exe",
+                  "Arlet-Windows-x86.exe",
                 ),
               },
             ]),
           ),
         },
       ]),
-    /must reference Arlet_0.1.0_x64-setup\.exe/,
+    /must reference Arlet-Windows-x64.exe/,
   );
 });
 
 test("draft verification download plan contains each path once for sidecar reuse", () => {
-  const installers = [
-    "Arlet_0.1.0_x64-setup.exe",
-    "Arlet_0.1.0_arm64-setup.exe",
-  ];
+  const installers = ["Arlet-Windows-x64.exe", "Arlet-Windows-arm64.exe"];
   const plan = draftVerificationDownloadNames({
     installers,
     manifests: [...REQUIRED_MANIFEST_NAMES],
@@ -349,10 +346,7 @@ test("beta live manifests must agree and candidate versions are monotonic", () =
 });
 
 test("draft gate requires both installers, sidecars, and all feed manifests", () => {
-  const installers = [
-    "Arlet_0.1.0_x64-setup.exe",
-    "Arlet_0.1.0_arm64-setup.exe",
-  ];
+  const installers = ["Arlet-Windows-x64.exe", "Arlet-Windows-arm64.exe"];
   const assets = [
     ...installers,
     ...installers.flatMap((name) => [
@@ -454,11 +448,11 @@ test("draft manifest references require matching artifact and updater sidecar", 
     notes: "notes",
     platforms: {
       "windows-x86_64": {
-        url: "https://github.com/BurntToasters/Arlet/releases/download/v0.1.0/Arlet_0.1.0_x64-setup.exe",
+        url: "https://github.com/BurntToasters/Arlet/releases/download/v0.1.0/Arlet-Windows-x64.exe",
         signature,
       },
       "windows-x86_64-nsis": {
-        url: "https://github.com/BurntToasters/Arlet/releases/download/v0.1.0/Arlet_0.1.0_x64-setup.exe",
+        url: "https://github.com/BurntToasters/Arlet/releases/download/v0.1.0/Arlet-Windows-x64.exe",
         signature,
       },
     },
@@ -467,10 +461,10 @@ test("draft manifest references require matching artifact and updater sidecar", 
     assertManifestAssetReferences(
       manifest,
       "latest-windows-x86_64.json",
-      ["Arlet_0.1.0_x64-setup.exe", "Arlet_0.1.0_x64-setup.exe.sig"],
+      ["Arlet-Windows-x64.exe", "Arlet-Windows-x64.exe.sig"],
       {
         tag: "v0.1.0",
-        signatures: new Map([["Arlet_0.1.0_x64-setup.exe", signature]]),
+        signatures: new Map([["Arlet-Windows-x64.exe", signature]]),
       },
     ),
   );
@@ -479,7 +473,7 @@ test("draft manifest references require matching artifact and updater sidecar", 
       assertManifestAssetReferences(
         manifest,
         "latest-windows-x86_64.json",
-        ["Arlet_0.1.0_x64-setup.exe"],
+        ["Arlet-Windows-x64.exe"],
         { tag: "v0.1.0" },
       ),
     /missing updater sidecar/,

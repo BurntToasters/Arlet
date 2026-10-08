@@ -131,6 +131,16 @@
   stroke-width: 2.2;
 }
 
+/* Quiet until hovered: a soft heart, not a call to action. */
+.sidebar-support svg {
+  color: color-mix(in srgb, var(--accent) 70%, var(--text-muted));
+}
+
+.sidebar-support:hover svg {
+  color: var(--accent-strong);
+  fill: currentColor;
+}
+
 .sidebar-footer {
   display: grid;
   gap: 6px;
@@ -211,6 +221,16 @@
   width: min(100%, 960px);
   margin-right: auto;
   margin-left: auto;
+}
+
+/* Dialogs rendered by a page (Settings: licenses, reset) are overlays, not
+   page blocks: cover the whole window instead of the 960px column. */
+.content-scroll > .playlist-dialog-backdrop,
+.content-scroll > .update-modal-scrim {
+  position: fixed;
+  z-index: 110;
+  width: auto;
+  margin: 0;
 }
 
 .page-heading,

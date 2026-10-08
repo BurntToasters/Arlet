@@ -9,6 +9,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import releaseAssets from "./release-assets.cjs";
+
+const { publishedInstallerName } = releaseAssets;
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(scriptDir, "..");
@@ -66,7 +69,9 @@ export function expectedInstallerForUpdaterTarget(target, version) {
   const normalizedVersion = String(version || "");
   if (!match || !UPDATER_VERSION_PATTERN.test(normalizedVersion)) return null;
   const architecture = match[1] === "x86_64" ? "x64" : "arm64";
-  return `Arlet_${normalizedVersion}_${architecture}-setup.exe`;
+  // Fixed published name; the manifest URL's /download/v<version>/ path is
+  // what binds it to this version (release-assets.cjs).
+  return publishedInstallerName(architecture);
 }
 
 export function assertUpdaterTargetArtifact(
@@ -181,6 +186,16 @@ export function validateUpdaterManifest(manifest, label = "manifest") {
         if (expected && artifactName !== expected) {
           errors.push(
             `${label}: ${key}.url must reference ${expected} (got ${artifactName})`,
+          );
+        }
+        // Installer names carry no version, so the release tag in the path
+        // is what binds the download to manifest.version.
+        const tag = decodeURIComponent(
+          new URL(entry.url).pathname.split("/").at(-2) || "",
+        );
+        if (expected && tag !== `v${manifest.version}`) {
+          errors.push(
+            `${label}: ${key}.url must point at release v${manifest.version} (got ${tag})`,
           );
         }
       } catch {

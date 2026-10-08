@@ -111,7 +111,7 @@ test("manifests carry deterministic URLs and valid shape", () => {
     }
     assert.match(
       manifests["latest-windows-x86_64.json"].platforms["windows-x86_64"].url,
-      /releases\/download\/v0\.1\.0\/Arlet_0\.1\.0_x64-setup\.exe$/,
+      /releases\/download\/v0\.1\.0\/Arlet-Windows-x64\.exe$/,
     );
   } finally {
     rmSync(root, { recursive: true, force: true });

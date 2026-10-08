@@ -124,7 +124,10 @@ const readmePath = path.join(root, "README.md");
 planText(
   readmePath,
   syncReadmeDownloads(readRequired(readmePath), version),
-  () => fs.readFileSync(readmePath, "utf8").includes(`/download/v${version}/`),
+  () =>
+    fs
+      .readFileSync(readmePath, "utf8")
+      .includes("/releases/latest/download/Arlet-Windows-x64.exe"),
 );
 
 if (checkOnly) {

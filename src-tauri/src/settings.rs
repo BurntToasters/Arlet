@@ -245,6 +245,11 @@ pub fn save_settings(app: tauri::AppHandle, json: String) -> Result<(), String> 
     write_settings_text(&settings_path(&app)?, &json)
 }
 
+/// True once settings were reset in this process (restart pending).
+pub fn reset_pending() -> bool {
+    RESET_PENDING.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 #[tauri::command]
 /// Restores default settings and restarts Arlet. Sign-in (WebView2 storage),
 /// pins, and the library cache are kept; Settings has a separate sign-out.
@@ -259,6 +264,9 @@ pub fn reset_settings(app: tauri::AppHandle) -> Result<(), String> {
                 std::fs::remove_file(&file).map_err(|e| e.to_string())?;
             }
         }
+        // Window size and position reset too; RESET_PENDING stops the closing
+        // window from writing them back.
+        crate::window_state::remove_saved_state(&app)?;
     }
     app.request_restart();
     Ok(())

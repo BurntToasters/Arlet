@@ -61,10 +61,12 @@ select {
   color: inherit;
 }
 
+/* tabindex="-1" marks programmatic focus targets (the page <main> and its
+   <h1> after navigation). They are not Tab stops, so no focus ring. */
 button:focus-visible,
 input:focus-visible,
 select:focus-visible,
-[tabindex]:focus-visible {
+[tabindex]:not([tabindex="-1"]):focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }

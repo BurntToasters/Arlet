@@ -1,7 +1,9 @@
 [package]
 name = "arlet"
-version = "0.1.2"
-description = "A Windows-first Apple Music client built with Tauri v2."
+version = "0.1.3"
+description = "Unofficial Apple Music client for Windows 10 and 11, built with Tauri v2 and MusicKit."
+repository = "https://github.com/BurntToasters/Arlet"
+homepage = "https://github.com/BurntToasters/Arlet#readme"
 license = "GPL-3.0-only"
 authors = ["BurntToasters <code@rosie.run>"]
 edition = "2021"
@@ -39,6 +41,7 @@ windows = { version = "0.62", features = [
     "Win32_Storage_FileSystem",
     "Win32_UI_Controls",
     "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
     "Foundation",
     "Media",

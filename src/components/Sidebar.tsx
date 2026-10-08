@@ -2,6 +2,7 @@ import { useEffect, useState } from "preact/hooks";
 import {
   Album,
   Clock3,
+  Heart,
   History as HistoryIcon,
   House,
   ListMusic,
@@ -16,6 +17,8 @@ import type { LucideIcon } from "lucide-preact";
 import type { JSX } from "preact";
 import { useAppRouter, useAppState } from "../app/context.tsx";
 import { setUiState } from "../state.ts";
+import { openSupportPage } from "../platform/support.ts";
+import { reportActionError } from "./action-errors.ts";
 import type { PinnedPlaylist } from "../domain/music.ts";
 import type { LibrarySection, Route } from "../routing/router.ts";
 
@@ -331,6 +334,16 @@ export function Sidebar(): JSX.Element {
       </nav>
 
       <div className="sidebar-footer">
+        <button
+          className="sidebar-link sidebar-support"
+          type="button"
+          aria-label="Support me (opens rosie.run/support in your browser)"
+          title="Support me"
+          onClick={() => void openSupportPage().catch(reportActionError)}
+        >
+          <Heart aria-hidden="true" size={18} strokeWidth={1.8} />
+          <span>Support Me</span>
+        </button>
         <button
           className={`sidebar-link ${state.navigation.kind === "settings" ? "is-active" : ""}`.trim()}
           type="button"

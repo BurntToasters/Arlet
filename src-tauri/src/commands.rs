@@ -140,6 +140,46 @@ pub fn get_developer_token() -> Result<String, String> {
     )
 }
 
+/// The only page `open_support_page` opens. The command takes no input, so
+/// web content that can invoke it cannot pick a different URL.
+pub const SUPPORT_URL: &str = "https://rosie.run/support";
+
+#[tauri::command]
+pub fn open_support_page() -> Result<(), String> {
+    open_in_default_browser(SUPPORT_URL)
+}
+
+#[cfg(windows)]
+fn open_in_default_browser(url: &str) -> Result<(), String> {
+    use windows::core::{w, HSTRING, PCWSTR};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            &HSTRING::from(url),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // ShellExecuteW reports success with a value above 32.
+    if result.0 as isize > 32 {
+        Ok(())
+    } else {
+        Err(format!(
+            "Could not open the default browser (code {}).",
+            result.0 as isize
+        ))
+    }
+}
+
+#[cfg(not(windows))]
+fn open_in_default_browser(_url: &str) -> Result<(), String> {
+    Err("Opening the browser is supported on Windows only.".to_string())
+}
+
 pub fn beta_updater_target_for_arch(arch: &str) -> Result<String, String> {
     match arch {
         "x86_64" | "aarch64" => Ok(format!("windows-beta-{arch}-nsis")),
@@ -334,6 +374,13 @@ mod tests {
     #[test]
     fn beta_target_rejects_unpublished_architectures() {
         assert!(super::beta_updater_target_for_arch("x86").is_err());
+    }
+
+    // Failure mode: the support link is pointed at a non-HTTPS or different
+    // host by an edit; the command itself takes no URL input.
+    #[test]
+    fn support_url_is_the_https_support_page() {
+        assert_eq!(super::SUPPORT_URL, "https://rosie.run/support");
     }
 
     #[test]

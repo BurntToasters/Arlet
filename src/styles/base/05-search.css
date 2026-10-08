@@ -15,7 +15,8 @@
 .search-source-tabs {
   display: flex;
   gap: 4px;
-  margin: -8px 0 16px;
+  /* Auto inline margins keep the page column centering (02-layout.css). */
+  margin: -8px auto 16px;
   padding: 3px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);

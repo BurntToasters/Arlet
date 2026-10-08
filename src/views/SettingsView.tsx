@@ -351,20 +351,23 @@ export function SettingsView(): JSX.Element {
               </select>
             </label>
           </div>
-          <div className="effect-status" role="status">
-            {state.windowEffect.fallbackReason ? (
-              <Info aria-hidden="true" size={15} strokeWidth={1.8} />
-            ) : (
-              <Check aria-hidden="true" size={15} strokeWidth={1.8} />
-            )}
-            <span>
-              Requested {state.windowEffect.requested}; using{" "}
-              {state.windowEffect.applied}.
-            </span>
-            {state.windowEffect.fallbackReason ? (
-              <small>{state.windowEffect.fallbackReason}</small>
-            ) : null}
-          </div>
+          {/* Release builds speak up only when Windows forced a fallback. */}
+          {state.windowEffect.fallbackReason || import.meta.env.DEV ? (
+            <div className="effect-status" role="status">
+              {state.windowEffect.fallbackReason ? (
+                <Info aria-hidden="true" size={15} strokeWidth={1.8} />
+              ) : (
+                <Check aria-hidden="true" size={15} strokeWidth={1.8} />
+              )}
+              <span>
+                Requested {state.windowEffect.requested}; using{" "}
+                {state.windowEffect.applied}.
+              </span>
+              {state.windowEffect.fallbackReason ? (
+                <small>{state.windowEffect.fallbackReason}</small>
+              ) : null}
+            </div>
+          ) : null}
         </section>
 
         <section
