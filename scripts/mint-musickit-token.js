@@ -13,8 +13,6 @@ import { parseEnvFile, repoRoot } from "./phase0-preflight.js";
 export const TOKEN_ENV_KEY = "MUSICKIT_DEVELOPER_TOKEN";
 export const MAX_TTL_SECONDS = 180 * 24 * 60 * 60;
 export const DEFAULT_TTL_SECONDS = 120 * 24 * 60 * 60;
-// Mirrors RELEASE_ORIGIN in src-tauri/src/token_policy.rs.
-export const RELEASE_ORIGIN = "http://tauri.localhost";
 const MINT_INPUT_KEYS = [
   "MUSICKIT_TEAM_ID",
   "MUSICKIT_KEY_ID",
@@ -177,9 +175,11 @@ export function mintDeveloperTokenIntoEnv(options = {}) {
 }
 
 /**
- * Release step: with the .p8 configured, mint a fresh 180-day token scoped to
- * the release origin (dev MUSICKIT_TOKEN_ORIGINS/TTL are ignored). Without it,
- * keep the pasted MUSICKIT_DEVELOPER_TOKEN; the preflight validates either.
+ * Release step: with the .p8 configured, mint a fresh 180-day token with no
+ * origin claim (dev MUSICKIT_TOKEN_ORIGINS/TTL are ignored). Apple answers
+ * /v1/me library requests from an origin-restricted token with 403. Without
+ * the .p8, keep the pasted MUSICKIT_DEVELOPER_TOKEN; the preflight validates
+ * either.
  */
 export function mintReleaseTokenIntoEnv(options = {}) {
   const root = options.root ?? repoRoot;
@@ -192,7 +192,7 @@ export function mintReleaseTokenIntoEnv(options = {}) {
     root,
     env: {
       ...env,
-      MUSICKIT_TOKEN_ORIGINS: RELEASE_ORIGIN,
+      MUSICKIT_TOKEN_ORIGINS: "",
       MUSICKIT_TOKEN_TTL_SECONDS: String(MAX_TTL_SECONDS),
     },
   });
@@ -209,7 +209,7 @@ if (isMain()) {
       const result = mintReleaseTokenIntoEnv();
       console.log(
         result.wrote
-          ? `release:mint-token: minted ${result.key} for ${RELEASE_ORIGIN}, exp ${new Date(result.exp * 1000).toISOString()}.`
+          ? `release:mint-token: minted ${result.key} without an origin claim, exp ${new Date(result.exp * 1000).toISOString()}.`
           : "release:mint-token: no .p8 configured; keeping MUSICKIT_DEVELOPER_TOKEN from .env.",
       );
       process.exit(0);

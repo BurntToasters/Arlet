@@ -55,13 +55,12 @@ first.
 - The embedded JWT can be extracted from the binary, as with any MusicKit web
   app. Its lifetime is the exposure window: Apple caps it at 6 months, so a
   new release must ship before the embedded token expires.
-- Mint release tokens with `MUSICKIT_TOKEN_ORIGINS=http://tauri.localhost`,
-  the bundled app's origin on Windows. Apple then refuses the token from other
-  web origins, so a leaked token cannot be dropped into someone else's site.
-  A native client can still forge the `Origin` header, so this raises the bar
-  rather than making the token secret. `build.rs` and `release:preflight`
-  reject any other origin list (dev or loopback origins widen exposure) and
-  warn when the claim is missing; the native E2E asserts the app's origin.
+- Release tokens carry no `origin` claim. An origin-restricted token
+  (`http://tauri.localhost`) still passes catalog requests, but Apple answers
+  every `/v1/me` library request with 403, so the app cannot load a user's
+  library. `build.rs` and `release:preflight` reject any `origin` claim and
+  the native E2E checks the embedded token has none. The claim only limited
+  browsers anyway: a native client can forge the `Origin` header.
 - Mint on a machine that holds the `.p8`, and copy only the JWT to the
   release machine.
 - `ARLET_SKIP_MUSICKIT_TOKEN=1` builds a release binary without a token for

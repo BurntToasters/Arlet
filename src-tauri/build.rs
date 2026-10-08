@@ -44,12 +44,6 @@ fn embed_release_token() {
         "cargo:warning=Embedded MusicKit developer token; expires in {} days.",
         check.exp.saturating_sub(now) / 86_400
     );
-    if !check.origin_restricted {
-        println!(
-            "cargo:warning=MusicKit token has no origin claim; mint it with MUSICKIT_TOKEN_ORIGINS={} so a leaked token is refused on other web origins.",
-            token_policy::RELEASE_ORIGIN
-        );
-    }
 }
 
 fn main() {

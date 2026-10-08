@@ -11,7 +11,6 @@ import {
   mintDeveloperTokenIntoEnv,
   mintMusicKitDeveloperToken,
   mintReleaseTokenIntoEnv,
-  RELEASE_ORIGIN,
   parseTokenOrigins,
   TOKEN_ENV_KEY,
   upsertEnvKey,
@@ -212,12 +211,13 @@ function releaseFixture(lines) {
   };
 }
 
-// Failure modes: a release ships a dev-scoped or short-lived token because
-// the release mint honoured dev MUSICKIT_TOKEN_ORIGINS/TTL; a release machine
+// Failure modes: a release ships an origin-restricted token (Apple then
+// refuses every /v1/me library request with 403) or a short-lived token
+// because the release mint honoured dev MUSICKIT_TOKEN_ORIGINS/TTL; a release machine
 // without the .p8 cannot release at all; a half-configured .p8 silently
 // falls back to a stale token; other .env lines are rewritten; the token is
 // returned for printing.
-test("release mint forces the release origin and maximum lifetime", () => {
+test("release mint drops every origin claim and forces maximum lifetime", () => {
   const fixture = releaseFixture((p8) => [
     "MUSICKIT_TEAM_ID=ABCDE12345",
     "MUSICKIT_KEY_ID=KEYID12345",
@@ -235,7 +235,7 @@ test("release mint forces the release origin and maximum lifetime", () => {
     assert.equal(result.exp, 1_800_000_000 + MAX_TTL_SECONDS);
     const envText = readFileSync(path.join(fixture.root, ".env"), "utf8");
     const token = /^MUSICKIT_DEVELOPER_TOKEN=(.+)$/mu.exec(envText)[1];
-    assert.deepEqual(decodePayload(token).origin, [RELEASE_ORIGIN]);
+    assert.equal("origin" in decodePayload(token), false);
     assert.equal(
       envText.replace(
         /^MUSICKIT_DEVELOPER_TOKEN=.*$/mu,

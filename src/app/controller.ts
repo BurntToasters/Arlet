@@ -48,6 +48,7 @@ import {
   applyWindowEffect,
   darkModeForTheme,
   loadSettings as loadPersistedSettings,
+  resetSettings as resetPersistedSettings,
   saveSettings as savePersistedSettings,
   watchSystemTheme,
   type InvokeFunction,
@@ -119,6 +120,8 @@ export interface AppController {
   loadPins(): Promise<void>;
   authorize(): Promise<void>;
   signOut(): Promise<void>;
+  /** Restores default settings and restarts Arlet; sign-in and pins stay. */
+  resetSettingsAndRestart(): Promise<void>;
   loadLibrarySection(
     section: LibrarySection,
     options?: { refresh?: boolean; cursor?: string },
@@ -479,6 +482,21 @@ export function createAppController(
       } finally {
         if (authorizationStarted) setAuthPending(false);
       }
+    },
+
+    async resetSettingsAndRestart(): Promise<void> {
+      // A debounced volume save would write the old settings back after the
+      // reset, so drop it and let any save already running finish first.
+      if (volumeSaveTimer !== undefined) {
+        clearTimeout(volumeSaveTimer);
+        volumeSaveTimer = undefined;
+      }
+      const waiters = volumeSaveWaiters;
+      volumeSaveWaiters = [];
+      for (const resolve of waiters) resolve();
+      await volumeSaveQueue;
+      log("Resetting settings to defaults and restarting.");
+      await resetPersistedSettings(invokeFn);
     },
 
     async signOut(): Promise<void> {

@@ -33,6 +33,12 @@ test("checkMusicKitToken rejects tokens build.rs would refuse", () => {
     {
       MUSICKIT_DEVELOPER_TOKEN: token({
         exp: NOW + 90 * DAY,
+        origin: ["http://tauri.localhost"],
+      }),
+    },
+    {
+      MUSICKIT_DEVELOPER_TOKEN: token({
+        exp: NOW + 90 * DAY,
         origin: ["http://localhost:5173"],
       }),
     },
@@ -61,20 +67,10 @@ test("checkMusicKitToken rejects tokens build.rs would refuse", () => {
   }
 });
 
-test("checkMusicKitToken reports origin restriction", () => {
-  const scoped = checkMusicKitToken(
-    {
-      MUSICKIT_DEVELOPER_TOKEN: token({
-        exp: NOW + 90 * DAY,
-        origin: ["http://tauri.localhost"],
-      }),
-    },
-    NOW,
-  );
-  assert.deepEqual(scoped, { exp: NOW + 90 * DAY, originRestricted: true });
+test("checkMusicKitToken accepts a token without an origin claim", () => {
   const open = checkMusicKitToken(
     { MUSICKIT_DEVELOPER_TOKEN: token({ exp: NOW + 90 * DAY }) },
     NOW,
   );
-  assert.deepEqual(open, { exp: NOW + 90 * DAY, originRestricted: false });
+  assert.deepEqual(open, { exp: NOW + 90 * DAY });
 });

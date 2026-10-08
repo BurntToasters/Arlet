@@ -5,6 +5,9 @@ use serde_json::Value;
 use tauri::{Manager, Theme, WebviewWindow};
 
 static SETTINGS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Set once settings are reset; the old in-memory settings must not be
+/// written back before (or if) the restart happens.
+static RESET_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 const MAX_SETTINGS_BYTES: usize = 512 * 1024;
 pub const SETTINGS_SCHEMA_VERSION: u64 = 1;
@@ -228,6 +231,9 @@ pub fn load_settings(app: tauri::AppHandle) -> Result<String, String> {
 #[tauri::command]
 pub fn save_settings(app: tauri::AppHandle, json: String) -> Result<(), String> {
     let _guard = lock_settings()?;
+    if RESET_PENDING.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err("Settings were reset; Arlet is restarting.".to_string());
+    }
     if json.len() > MAX_SETTINGS_BYTES {
         return Err(format!(
             "Settings payload too large ({} bytes, max {MAX_SETTINGS_BYTES})",
@@ -240,17 +246,21 @@ pub fn save_settings(app: tauri::AppHandle, json: String) -> Result<(), String> 
 }
 
 #[tauri::command]
+/// Restores default settings and restarts Arlet. Sign-in (WebView2 storage),
+/// pins, and the library cache are kept; Settings has a separate sign-out.
 pub fn reset_settings(app: tauri::AppHandle) -> Result<(), String> {
-    let _guard = lock_settings()?;
-    let path = settings_path(&app)?;
-    if path.exists() {
-        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    {
+        let _guard = lock_settings()?;
+        RESET_PENDING.store(true, std::sync::atomic::Ordering::SeqCst);
+        let path = settings_path(&app)?;
+        // The backup goes too, or the next start would restore from it.
+        for file in [backup_path(&path), path] {
+            if file.exists() {
+                std::fs::remove_file(&file).map_err(|e| e.to_string())?;
+            }
+        }
     }
-    let backup = backup_path(&path);
-    if backup.exists() {
-        std::fs::remove_file(&backup).map_err(|e| e.to_string())?;
-    }
-    crate::pins::remove_pins_for_app(&app);
+    app.request_restart();
     Ok(())
 }
 

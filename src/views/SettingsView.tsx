@@ -10,6 +10,7 @@ import {
   Moon,
   Palette,
   RefreshCw,
+  RotateCcw,
   Scale,
   Sun,
   UserRound,
@@ -18,6 +19,7 @@ import type { JSX } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { useAppController, useAppState } from "../app/context.tsx";
 import { LicensesDialog } from "../components/LicensesDialog.tsx";
+import { ResetSettingsDialog } from "../components/ResetSettingsDialog.tsx";
 import type {
   ThemePreference,
   UpdateChannel,
@@ -106,6 +108,7 @@ export function SettingsView(): JSX.Element {
   const authorizationPending = state.auth.pending === true;
   const account = readAccountSummary(state);
   const [licensesOpen, setLicensesOpen] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
   const [reportCopied, setReportCopied] = useState(false);
   useEffect(() => {
     if (!reportCopied) return undefined;
@@ -425,6 +428,29 @@ export function SettingsView(): JSX.Element {
           </div>
         </section>
 
+        <section className="settings-section" aria-labelledby="reset-heading">
+          <div className="settings-section-heading">
+            <span className="settings-icon">
+              <RotateCcw aria-hidden="true" size={19} strokeWidth={1.8} />
+            </span>
+            <div>
+              <h2 id="reset-heading">Reset</h2>
+              <p>
+                Restore default settings and restart Arlet. You stay signed in,
+                and pinned playlists are kept.
+              </p>
+            </div>
+          </div>
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => setResetOpen(true)}
+          >
+            <RotateCcw aria-hidden="true" size={15} strokeWidth={1.8} />
+            Reset settings…
+          </button>
+        </section>
+
         {import.meta.env.DEV ? (
           <section
             className="settings-section settings-developer"
@@ -457,6 +483,12 @@ export function SettingsView(): JSX.Element {
       </div>
       {licensesOpen ? (
         <LicensesDialog onClose={() => setLicensesOpen(false)} />
+      ) : null}
+      {resetOpen ? (
+        <ResetSettingsDialog
+          onCancel={() => setResetOpen(false)}
+          onConfirm={controller.resetSettingsAndRestart}
+        />
       ) : null}
     </>
   );

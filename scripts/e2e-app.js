@@ -35,7 +35,7 @@ function syntheticToken() {
   const encode = (value) =>
     Buffer.from(JSON.stringify(value)).toString("base64url");
   const exp = Math.floor(Date.now() / 1000) + 120 * 24 * 60 * 60;
-  return `${encode({ alg: "ES256", kid: "E2ETEST" })}.${encode({ iss: "E2E", iat: 0, exp, origin: [RELEASE_ORIGIN] })}.${Buffer.from("e2e-signature").toString("base64url")}`;
+  return `${encode({ alg: "ES256", kid: "E2ETEST" })}.${encode({ iss: "E2E", iat: 0, exp })}.${Buffer.from("e2e-signature").toString("base64url")}`;
 }
 
 function build(token) {
@@ -166,6 +166,29 @@ async function waitFor(page, expression, timeoutMs) {
   return false;
 }
 
+// Mirrors DEFAULT_SETTINGS in src/state.ts.
+const DEFAULT_SETTINGS_FOR_E2E = {
+  schemaVersion: 1,
+  theme: "system",
+  windowEffect: "acrylic",
+  autoCheckUpdates: true,
+  updateChannel: "auto",
+  volume: 1,
+};
+
+function processAlive(pid) {
+  const out = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/NH"], {
+    encoding: "utf8",
+  }).stdout;
+  return new RegExp(`\\b${pid}\\b`, "u").test(out);
+}
+
+// The settings reset restarts Arlet as a new process outside the original
+// child's tree; run() refuses to start while any other Arlet is open.
+function killArlet() {
+  spawnSync("taskkill", ["/IM", "arlet.exe", "/T", "/F"], { stdio: "ignore" });
+}
+
 async function sleep(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -293,7 +316,7 @@ async function run() {
     }
     check("shell renders", shell);
 
-    // Origin-scoped tokens only work if the app really runs on RELEASE_ORIGIN.
+    // MusicKit sign-in and storage are keyed to the release origin.
     const origin = await page.evaluate("return location.origin;");
     check(`app origin is ${RELEASE_ORIGIN}`, origin === RELEASE_ORIGIN, {
       origin,
@@ -341,6 +364,21 @@ async function run() {
       "release serves build-embedded token",
       served.ok && served.value === token && served.value !== RUNTIME_ENV_TOKEN,
       { ok: served.ok, matchesEmbedded: served.value === token },
+    );
+    // Apple answers /v1/me library requests from an origin-restricted
+    // developer token with 403, so the shipped token must carry no origin.
+    let servedOrigin = "unreadable";
+    try {
+      servedOrigin =
+        JSON.parse(Buffer.from(String(served.value).split(".")[1], "base64url"))
+          .origin ?? null;
+    } catch {
+      // Left as "unreadable" so the check fails.
+    }
+    check(
+      "embedded token has no origin claim (library requests need this)",
+      served.ok && servedOrigin === null,
+      { origin: servedOrigin },
     );
 
     // 6. Windows build via registry, async command.
@@ -526,12 +564,128 @@ async function run() {
     );
     check("renderer crash reloads the window", recovered);
 
+    // 13. Reset settings: Cancel changes nothing; confirming restores
+    // defaults and restarts, keeping sign-in storage and pins.
+    // Failure modes: Cancel resets anyway; the .bak or a pending save brings
+    // old settings back; sign-in (WebView2 storage) or pins are wiped; the
+    // app never restarts; saves stay blocked in the restarted process.
+    const settingsFile = path.join(dataDirs()[0], "settings.json");
+    const pinsPayload = JSON.stringify({
+      schemaVersion: 1,
+      pins: [{ id: "p.e2eResetPin", source: "library" }],
+    });
+    await settle(page, "save_settings", {
+      json: JSON.stringify({ ...DEFAULT_SETTINGS_FOR_E2E, theme: "dark" }),
+    });
+    await settle(page, "save_pins", { json: pinsPayload });
+    await page.evaluate(
+      "localStorage.setItem('arlet-e2e-signin-marker', 'kept'); return true;",
+    );
+    await page.evaluate(
+      "document.querySelector('button[aria-label=Settings]').click(); return true;",
+    );
+    const openReset = `
+      const button = [...document.querySelectorAll("button")].find(
+        (candidate) => candidate.textContent.trim() === "Reset settings…",
+      );
+      button?.click();
+      return Boolean(button);`;
+    const clickInDialog = (label) => `
+      const button = [...document.querySelectorAll("[role=alertdialog] button")].find(
+        (candidate) => candidate.textContent.trim() === ${JSON.stringify(label)},
+      );
+      button?.click();
+      return Boolean(button);`;
+    const resetButtonFound = await waitFor(
+      page,
+      `[...document.querySelectorAll("button")].some((b) => b.textContent.trim() === "Reset settings…")`,
+      10_000,
+    );
+    await page.evaluate(openReset);
+    const dialogShown = await waitFor(
+      page,
+      `document.querySelector("[role=alertdialog]")`,
+      5_000,
+    );
+    await page.evaluate(clickInDialog("Cancel"));
+    await sleep(500);
+    const afterCancel = {
+      dialogClosed: !(await page.evaluate(
+        "return Boolean(document.querySelector('[role=alertdialog]'));",
+      )),
+      settingsKept: fs.existsSync(settingsFile),
+    };
+    check(
+      "reset settings dialog opens and Cancel changes nothing",
+      resetButtonFound &&
+        dialogShown &&
+        afterCancel.dialogClosed &&
+        afterCancel.settingsKept,
+      { resetButtonFound, dialogShown, ...afterCancel },
+    );
+
+    await page.evaluate(openReset);
+    await waitFor(page, `document.querySelector("[role=alertdialog]")`, 5_000);
+    await page.evaluate(clickInDialog("Reset and restart"));
+    page.close();
+    page = undefined;
+    // request_restart exits this process and starts a new one with the same
+    // environment, so the debugging port comes back on the new webview.
+    const restartDeadline = Date.now() + 30_000;
+    while (Date.now() < restartDeadline && processAlive(child.pid)) {
+      await sleep(250);
+    }
+    const oldProcessExited = !processAlive(child.pid);
+    await sleep(1000);
+    const restarted = await findPageTarget(Date.now() + 30_000);
+    page = connect(restarted.webSocketDebuggerUrl);
+    await page.opened;
+    const restartedShell = await waitFor(
+      page,
+      `document.querySelector(".app-shell .player-bar")`,
+      30_000,
+    );
+    await sleep(1000);
+    const afterReset = await page.evaluate(`
+      return {
+        theme: document.documentElement.dataset.theme ?? "system",
+        volume: document.querySelector("input[aria-label=Volume]")?.value ?? null,
+        signInMarker: localStorage.getItem("arlet-e2e-signin-marker"),
+      };`);
+    const pinsAfter = await settle(page, "load_pins");
+    const saveAfter = await settle(page, "save_settings", {
+      json: JSON.stringify(DEFAULT_SETTINGS_FOR_E2E),
+    });
+    check(
+      "reset restores defaults, restarts, and keeps sign-in and pins",
+      oldProcessExited &&
+        restartedShell &&
+        afterReset.theme === "system" &&
+        Number(afterReset.volume) === 1 &&
+        afterReset.signInMarker === "kept" &&
+        pinsAfter.ok &&
+        String(pinsAfter.value).includes("p.e2eResetPin") &&
+        saveAfter.ok,
+      {
+        oldProcessExited,
+        restartedShell,
+        ...afterReset,
+        pinsKept: String(pinsAfter.value ?? "").includes("p.e2eResetPin"),
+        saveAfterRestart: saveAfter.ok,
+      },
+    );
+    const resetShot = await page.send("Page.captureScreenshot", {
+      format: "png",
+    });
+    fs.writeFileSync(
+      path.join(artifactDir, "screenshot-after-reset.png"),
+      Buffer.from(resetShot.data, "base64"),
+    );
+
     // Stop the app, then confirm the cache file was migrated in place.
     page.close();
     page = undefined;
-    spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
-      stdio: "ignore",
-    });
+    killArlet();
     await sleep(1500);
     const db = new DatabaseSync(path.join(dataDirs()[0], "arlet-library.db"), {
       readOnly: true,
@@ -544,9 +698,7 @@ async function run() {
   } finally {
     page?.close();
     if (child?.pid) {
-      spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
-        stdio: "ignore",
-      });
+      killArlet();
       await sleep(1500);
     }
     restore(moved);

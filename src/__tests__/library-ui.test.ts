@@ -37,6 +37,7 @@ function testController(): AppController {
     loadPins: vi.fn(async () => undefined),
     authorize: vi.fn(async () => undefined),
     signOut: vi.fn(async () => undefined),
+    resetSettingsAndRestart: vi.fn(async () => undefined),
     loadLibrarySection: vi.fn(async () => undefined),
     loadMoreLibrarySection: vi.fn(async () => undefined),
     refreshLibrarySection: vi.fn(async () => undefined),
