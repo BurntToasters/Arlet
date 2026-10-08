@@ -47,8 +47,10 @@ uploads the report as the `e2e-report` artifact.
 
 `npm run test:e2e:app:real` embeds the real `MUSICKIT_DEVELOPER_TOKEN` from
 `.env` instead and adds a check that Apple's catalog API accepts it from the
-release origin and that it carries no `origin` claim. Library (`/v1/me`)
-requests need a signed-in user, so confirm them by hand on an installed build.
+release origin and that it carries no `origin` claim. That proves the token
+on this machine; `release:preflight` checks the release VM's token against
+Apple separately. Library (`/v1/me`) requests need a signed-in user, so
+confirm them by hand on an installed build.
 The E2E binary then contains that token; it stays in `src-tauri/target/e2e`.
 
 It does not sign in to Apple Music or play protected audio.

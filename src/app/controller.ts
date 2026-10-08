@@ -65,6 +65,7 @@ import type {
   Station,
   Track,
 } from "../domain/music.ts";
+import { isSameTrack } from "../domain/music.ts";
 import type { DiagnosticsStore } from "../diagnostics/store.ts";
 import { createSupportReport } from "../diagnostics/support-report.ts";
 import type { GateEnvironment } from "../phase0/gate-session.ts";
@@ -331,11 +332,13 @@ export function createAppController(
   const syncPlaybackDiagnostics = (): void => {
     if (!diagnosticsStore) return;
     const snapshot = getState();
-    const currentId = snapshot.playback.current?.id;
+    const current = snapshot.playback.current;
     const catalogTrack =
-      snapshot.playback.queue.find((track) => track.id === currentId) ??
-      discovery.lastSearchTracks().find((track) => track.id === currentId) ??
-      snapshot.playback.current;
+      snapshot.playback.queue.find((track) => isSameTrack(track, current)) ??
+      discovery
+        .lastSearchTracks()
+        .find((track) => isSameTrack(track, current)) ??
+      current;
     diagnosticsStore.setMetadata({
       tracksPlayed: snapshot.tracksPlayed,
       playbackStatus: snapshot.playback.status,

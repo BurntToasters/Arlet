@@ -46,13 +46,23 @@ Azure signing, and live updater feeds remain explicit release-environment gates.
    - With only some set, it fails rather than reuse a stale token.
 
    `build.rs` and `release:preflight` then refuse a missing token, a
-   non-ES256 JWT, fewer than 30 days left, or any `origin` claim. Apple
-   accepts an origin-restricted token for catalog requests but answers every
-   `/v1/me` library request with 403, even from `http://tauri.localhost`
-   (found on the first 0.1.0 build). Ship a release
-   before the embedded token expires or MusicKit stops working for users.
-   Verify a new key once with `npm run test:e2e:app:real`, then sign in to an
-   installed build and open Library.
+   non-ES256 JWT, fewer than 30 days left, or any `origin` claim. The
+   preflight then sends the token to Apple's catalog API and stops unless
+   Apple answers 200.
+
+   0.1.0 failed every library (`/v1/me`) request for two reasons, fixed in
+   0.1.1:
+   - Its token had `origin: ["http://tauri.localhost"]`. Apple accepts such a
+     token for catalog requests but refuses library requests, even from that
+     origin. Release tokens now carry no `origin` claim.
+   - Its Media Services key was created the same morning. A new key passes
+     catalog requests right away, but library requests failed for about two
+     hours. Create a new key at least a day before releasing with it.
+
+   The `origin` check catches the first. Nothing automated catches the
+   second: library requests need a signed-in user. Before publishing, sign in to a build that
+   embeds the release token and open Library. Ship a release before the
+   embedded token expires or MusicKit stops working for users.
 
 6. **GitHub CLI.** `gh auth login` with rights to create/edit releases in
    `BurntToasters/Arlet`. `GH_REPO_OWNER`/`GH_REPO_NAME` retargeting is

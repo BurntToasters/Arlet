@@ -1,4 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Arlet ships only on Windows. Linux CI checks that the crate builds and the
+// portable unit tests pass, but helpers whose callers are `#[cfg(windows)]`
+// (WebView2 recovery, SMTC timeline, the build check) are unused there.
+// Windows clippy, where they are used, still reports real dead code.
+#![cfg_attr(not(windows), allow(dead_code))]
 
 mod auth_popup;
 mod commands;

@@ -176,9 +176,8 @@ export function mintDeveloperTokenIntoEnv(options = {}) {
 
 /**
  * Release step: with the .p8 configured, mint a fresh 180-day token with no
- * origin claim (dev MUSICKIT_TOKEN_ORIGINS/TTL are ignored). Apple answers
- * /v1/me library requests from an origin-restricted token with 403. Without
- * the .p8, keep the pasted MUSICKIT_DEVELOPER_TOKEN; the preflight validates
+ * origin claim (dev MUSICKIT_TOKEN_ORIGINS/TTL are ignored). Without the
+ * .p8, keep the pasted MUSICKIT_DEVELOPER_TOKEN; the preflight validates
  * either.
  */
 export function mintReleaseTokenIntoEnv(options = {}) {

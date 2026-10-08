@@ -24,3 +24,11 @@ export function syncNpmLockfileVersion(
   lockText: string,
   version: string,
 ): string;
+export const CHANGELOG_INTRO_ANCHOR: string;
+export const README_DOWNLOADS_START: string;
+export const README_DOWNLOADS_END: string;
+export function syncChangelogForVersion(
+  changelog: string,
+  version: string,
+): string;
+export function syncReadmeDownloads(readme: string, version: string): string;

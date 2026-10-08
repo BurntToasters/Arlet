@@ -193,11 +193,11 @@ function checkMusicKitToken(
       `MUSICKIT_DEVELOPER_TOKEN expires in ${Math.max(0, Math.floor(remaining / 86400))} day(s); mint a new one (npm run phase0:mint-token).`,
     );
   }
-  // Apple answers /v1/me library requests from an origin-restricted token
-  // with 403, even from the release origin (mirrors build.rs).
+  // Apple refuses library (/v1/me) requests from an origin-restricted token,
+  // even from the release origin (0.1.0). Mirrors build.rs.
   if (payload.origin !== undefined) {
     throw new Error(
-      "MUSICKIT_DEVELOPER_TOKEN has an origin claim; Apple then refuses library (/v1/me) requests with 403. Mint the release token without MUSICKIT_TOKEN_ORIGINS.",
+      "MUSICKIT_DEVELOPER_TOKEN has an origin claim; Apple then refuses library (/v1/me) requests. Mint the release token without MUSICKIT_TOKEN_ORIGINS.",
     );
   }
   return { exp: payload.exp };
@@ -226,7 +226,38 @@ function checkArm64Clang() {
   }
 }
 
-function runPreflight() {
+// The static checks cannot tell whether Apple accepts the token: a JWT
+// signed with a key Apple rejects (wrong key ID, no Media Services) still
+// lets MusicKit configure and sign in, then every API call fails. Fails
+// closed and never prints the token.
+async function checkMusicKitTokenAcceptedByApple(
+  env = process.env,
+  fetchFn = globalThis.fetch,
+) {
+  const token = String(env.MUSICKIT_DEVELOPER_TOKEN ?? "").trim();
+  let response;
+  try {
+    response = await fetchFn(
+      "https://api.music.apple.com/v1/catalog/us/search?term=hello&types=songs&limit=1",
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(20_000),
+      },
+    );
+  } catch (error) {
+    const reason = error instanceof Error ? error.name : "request failed";
+    throw new Error(
+      `Could not reach the Apple Music API to verify MUSICKIT_DEVELOPER_TOKEN (${reason}).`,
+    );
+  }
+  if (response.status !== 200) {
+    throw new Error(
+      `Apple Music API rejected MUSICKIT_DEVELOPER_TOKEN (HTTP ${response.status}). Check that MUSICKIT_KEY_ID and MUSICKIT_P8_PATH name a Media Services key in the MUSICKIT_TEAM_ID team, then run npm run release:mint-token.`,
+    );
+  }
+}
+
+async function runPreflight() {
   const version = String(packageJson.version ?? "");
   checkChangelog(version);
   assertStableReleaseOverridesAllowed(process.env, version);
@@ -269,6 +300,7 @@ function runPreflight() {
   checkArm64Clang();
   checkCredentialLeaks();
   checkMusicKitToken();
+  await checkMusicKitTokenAcceptedByApple();
   console.log(
     `release-preflight: ok (${version}, ${expectedBranch}@${head.slice(0, 12)})`,
   );
@@ -280,14 +312,17 @@ function isDirectExecution() {
 }
 
 if (isDirectExecution()) {
-  try {
-    runPreflight();
-  } catch (error) {
+  runPreflight().catch((error) => {
     console.error(
       `release-preflight: FAILED: ${error instanceof Error ? error.message : String(error)}`,
     );
     process.exit(1);
-  }
+  });
 }
 
-export { checkChangelog, checkMusicKitToken, expectedReleaseBranch };
+export {
+  checkChangelog,
+  checkMusicKitToken,
+  checkMusicKitTokenAcceptedByApple,
+  expectedReleaseBranch,
+};

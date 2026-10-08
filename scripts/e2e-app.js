@@ -365,8 +365,8 @@ async function run() {
       served.ok && served.value === token && served.value !== RUNTIME_ENV_TOKEN,
       { ok: served.ok, matchesEmbedded: served.value === token },
     );
-    // Apple answers /v1/me library requests from an origin-restricted
-    // developer token with 403, so the shipped token must carry no origin.
+    // Apple refuses library (/v1/me) requests from an origin-restricted
+    // token (0.1.0), so the shipped token must carry none.
     let servedOrigin = "unreadable";
     try {
       servedOrigin =
@@ -376,7 +376,7 @@ async function run() {
       // Left as "unreadable" so the check fails.
     }
     check(
-      "embedded token has no origin claim (library requests need this)",
+      "embedded token has no origin claim",
       served.ok && servedOrigin === null,
       { origin: servedOrigin },
     );

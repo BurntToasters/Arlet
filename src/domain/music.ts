@@ -148,3 +148,17 @@ export interface PlaybackState {
   };
   error?: PlayerError;
 }
+
+/**
+ * True when two tracks are the same song. Library rows carry `i.…` IDs while
+ * MusicKit's now-playing item may carry the catalog ID, so either ID counts.
+ * Empty IDs never match.
+ */
+export function isSameTrack(
+  a: Pick<Track, "id" | "catalogId"> | undefined,
+  b: Pick<Track, "id" | "catalogId"> | undefined,
+): boolean {
+  if (!a || !b) return false;
+  const ids = new Set([a.id, a.catalogId].filter(Boolean));
+  return [b.id, b.catalogId].some((id) => Boolean(id) && ids.has(id));
+}

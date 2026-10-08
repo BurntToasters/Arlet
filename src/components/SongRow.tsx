@@ -2,6 +2,7 @@ import { MoreHorizontal, Play, SkipForward } from "lucide-preact";
 import type { JSX } from "preact";
 import { Artwork } from "./Artwork.tsx";
 import { requestContextMenu } from "./context-menu-events.ts";
+import { useNowPlayingStatus } from "./now-playing.ts";
 import type { Track } from "../domain/music.ts";
 
 function formatDuration(durationMs?: number): string {
@@ -37,18 +38,42 @@ export function SongRow({
   contextData,
 }: SongRowProps): JSX.Element {
   const trackLabel = `${track.title} by ${track.artistName}`;
+  const nowPlaying = useNowPlayingStatus(track);
+  const current = nowPlaying !== "none";
   return (
     <li>
-      <div className="song-row-shell" {...contextData}>
+      <div
+        className={current ? "song-row-shell is-current" : "song-row-shell"}
+        {...contextData}
+      >
         <button
           className={rowClassName}
           type="button"
           disabled={disabled}
-          aria-label={`Play ${trackLabel}`}
+          aria-label={
+            current
+              ? `Play ${trackLabel} (${nowPlaying === "playing" ? "now playing" : "paused"})`
+              : `Play ${trackLabel}`
+          }
+          aria-current={current ? "true" : undefined}
           onClick={onPlay}
         >
           <span className={numberClassName} aria-hidden="true">
-            {String(index + 1).padStart(2, "0")}
+            {current ? (
+              <span
+                className={
+                  nowPlaying === "playing"
+                    ? "now-playing-bars is-playing"
+                    : "now-playing-bars"
+                }
+              >
+                <span />
+                <span />
+                <span />
+              </span>
+            ) : (
+              String(index + 1).padStart(2, "0")
+            )}
           </span>
           <span className="song-row-artwork">
             <Artwork track={track} size="sm" alt="" />
