@@ -108,12 +108,6 @@ fn remove_pins_files(path: &std::path::Path) {
     }
 }
 
-pub(crate) fn remove_pins_for_app(app: &tauri::AppHandle) {
-    if let Ok(dir) = app.path().app_data_dir() {
-        remove_pins_files(&dir.join("pins.json"));
-    }
-}
-
 #[tauri::command]
 pub fn load_pins(app: tauri::AppHandle) -> Result<String, String> {
     let _guard = lock_pins()?;

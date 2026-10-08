@@ -1,6 +1,6 @@
 [package]
 name = "arlet"
-version = "0.1.0"
+version = "0.1.1"
 description = "A Windows-first Apple Music client built with Tauri v2."
 license = "GPL-3.0-only"
 authors = ["BurntToasters <code@rosie.run>"]

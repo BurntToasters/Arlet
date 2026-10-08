@@ -70,12 +70,12 @@ pub const RELEASE_ORIGIN: &str = "http://tauri.localhost";
 #[derive(Debug)]
 pub struct EmbedCheck {
     pub exp: u64,
-    /// True when the JWT carries an `origin` claim limited to the release app.
-    pub origin_restricted: bool,
 }
 
 /// Release builds refuse tokens that expire within the minimum window or
-/// whose `origin` claim is anything other than exactly the release app.
+/// carry any `origin` claim: Apple accepts an origin-restricted token for
+/// catalog requests from `http://tauri.localhost` but answers every
+/// `/v1/me` (library) request with 403.
 #[allow(dead_code)] // Used by build.rs.
 pub fn validate_for_embed(token: &str, now: u64) -> Result<EmbedCheck, String> {
     let exp = token_expiry(token)?;
@@ -87,23 +87,13 @@ pub fn validate_for_embed(token: &str, now: u64) -> Result<EmbedCheck, String> {
         ));
     }
     let payload = decode_json_segment(token.trim().split('.').nth(1).unwrap_or(""), "payload")?;
-    let origin_restricted = match payload.get("origin") {
-        None => false,
-        Some(serde_json::Value::Array(origins))
-            if origins.len() == 1 && origins[0].as_str() == Some(RELEASE_ORIGIN) =>
-        {
-            true
-        }
-        Some(_) => {
-            return Err(format!(
-                "MusicKit developer token origin claim must be exactly [\"{RELEASE_ORIGIN}\"] for release builds. Mint with MUSICKIT_TOKEN_ORIGINS={RELEASE_ORIGIN}."
-            ))
-        }
-    };
-    Ok(EmbedCheck {
-        exp,
-        origin_restricted,
-    })
+    if payload.get("origin").is_some() {
+        return Err(
+            "MusicKit developer token has an origin claim; Apple then refuses library (/v1/me) requests with 403. Mint the release token without MUSICKIT_TOKEN_ORIGINS."
+                .to_string(),
+        );
+    }
+    Ok(EmbedCheck { exp })
 }
 
 #[cfg(test)]
@@ -200,12 +190,12 @@ mod tests {
         es256(&format!(r#"{{"exp":{},"origin":{origin}}}"#, NOW * 2))
     }
 
-    // Failure modes: a malformed `origin` claim; a release token whose
-    // origins omit the bundled app (MusicKit refuses it in release); extra
-    // dev/loopback origins that widen where a leaked release token works.
+    // Failure modes: any `origin` claim, including exactly the release app,
+    // makes Apple refuse every /v1/me library request with 403 (0.1.0 draft).
     #[test]
-    fn embed_rejects_origins_that_do_not_match_the_release_app() {
+    fn embed_rejects_every_origin_claim() {
         for origin in [
+            r#"["http://tauri.localhost"]"#,
             r#""http://tauri.localhost""#,
             r#"[]"#,
             r#"[42]"#,
@@ -223,17 +213,14 @@ mod tests {
     }
 
     #[test]
-    fn embed_reports_whether_the_token_is_origin_restricted() {
-        let restricted = validate_for_embed(&with_origin(r#"["http://tauri.localhost"]"#), NOW)
-            .expect("release origin accepted");
-        assert!(restricted.origin_restricted);
+    fn embed_accepts_a_token_without_origin_claim() {
         let open = validate_for_embed(&es256(&format!(r#"{{"exp":{}}}"#, NOW * 2)), NOW)
             .expect("unrestricted token accepted");
-        assert!(!open.origin_restricted);
+        assert_eq!(open.exp, NOW * 2);
     }
 
     // Failure mode: the app's real origin drifts (https scheme or a
-    // localhost-server plugin) and every origin-restricted token breaks.
+    // localhost-server plugin) and MusicKit storage and sign-in move with it.
     #[test]
     fn release_origin_matches_tauri_config() {
         let config: serde_json::Value =

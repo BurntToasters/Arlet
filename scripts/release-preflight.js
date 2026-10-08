@@ -152,8 +152,6 @@ function checkCredentialLeaks() {
 }
 
 const MIN_TOKEN_REMAINING_SECONDS = 30 * 24 * 60 * 60;
-// Mirrors RELEASE_ORIGIN in src-tauri/src/token_policy.rs.
-const RELEASE_ORIGIN = "http://tauri.localhost";
 
 /**
  * Early copy of the build.rs embed gate so an expiring token fails before a
@@ -195,20 +193,14 @@ function checkMusicKitToken(
       `MUSICKIT_DEVELOPER_TOKEN expires in ${Math.max(0, Math.floor(remaining / 86400))} day(s); mint a new one (npm run phase0:mint-token).`,
     );
   }
-  const origin = payload.origin;
-  if (
-    origin !== undefined &&
-    !(
-      Array.isArray(origin) &&
-      origin.length === 1 &&
-      origin[0] === RELEASE_ORIGIN
-    )
-  ) {
+  // Apple answers /v1/me library requests from an origin-restricted token
+  // with 403, even from the release origin (mirrors build.rs).
+  if (payload.origin !== undefined) {
     throw new Error(
-      `MUSICKIT_DEVELOPER_TOKEN origin claim must be exactly ["${RELEASE_ORIGIN}"] for release builds. Mint with MUSICKIT_TOKEN_ORIGINS=${RELEASE_ORIGIN}.`,
+      "MUSICKIT_DEVELOPER_TOKEN has an origin claim; Apple then refuses library (/v1/me) requests with 403. Mint the release token without MUSICKIT_TOKEN_ORIGINS.",
     );
   }
-  return { exp: payload.exp, originRestricted: origin !== undefined };
+  return { exp: payload.exp };
 }
 
 function checkWindowsTargets() {
@@ -276,11 +268,7 @@ function runPreflight() {
   checkWindowsTargets();
   checkArm64Clang();
   checkCredentialLeaks();
-  if (!checkMusicKitToken().originRestricted) {
-    console.warn(
-      `release-preflight: warning: MusicKit token has no origin claim; mint it with MUSICKIT_TOKEN_ORIGINS=${RELEASE_ORIGIN}.`,
-    );
-  }
+  checkMusicKitToken();
   console.log(
     `release-preflight: ok (${version}, ${expectedBranch}@${head.slice(0, 12)})`,
   );

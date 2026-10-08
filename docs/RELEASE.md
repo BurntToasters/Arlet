@@ -37,19 +37,22 @@ Azure signing, and live updater feeds remain explicit release-environment gates.
    `MUSICKIT_DEVELOPER_TOKEN` from the release VM's `.env`.
    `prerelease:prepare` runs `release:mint-token` before the preflight:
    - With `MUSICKIT_TEAM_ID`, `MUSICKIT_KEY_ID`, and `MUSICKIT_P8_PATH` set
-     (the `.p8` outside the repo), it mints a fresh 180-day token scoped to
-     `http://tauri.localhost` into `.env` on every release. Dev
+     (the `.p8` outside the repo), it mints a fresh 180-day token with no
+     `origin` claim into `.env` on every release. Dev
      `MUSICKIT_TOKEN_ORIGINS`/`MUSICKIT_TOKEN_TTL_SECONDS` are ignored.
    - With none of them set, it keeps the pasted token, so the `.p8` can stay
-     off the release VM. Mint elsewhere with
-     `MUSICKIT_TOKEN_ORIGINS=http://tauri.localhost` and paste the JWT.
+     off the release VM. Mint elsewhere with `MUSICKIT_TOKEN_ORIGINS` blank
+     and paste the JWT.
    - With only some set, it fails rather than reuse a stale token.
 
    `build.rs` and `release:preflight` then refuse a missing token, a
-   non-ES256 JWT, fewer than 30 days left, or any origin list other than
-   `["http://tauri.localhost"]` (a missing claim warns). Ship a release
+   non-ES256 JWT, fewer than 30 days left, or any `origin` claim. Apple
+   accepts an origin-restricted token for catalog requests but answers every
+   `/v1/me` library request with 403, even from `http://tauri.localhost`
+   (found on the first 0.1.0 build). Ship a release
    before the embedded token expires or MusicKit stops working for users.
-   Verify a new key or origin setup once with `npm run test:e2e:app:real`.
+   Verify a new key once with `npm run test:e2e:app:real`, then sign in to an
+   installed build and open Library.
 
 6. **GitHub CLI.** `gh auth login` with rights to create/edit releases in
    `BurntToasters/Arlet`. `GH_REPO_OWNER`/`GH_REPO_NAME` retargeting is

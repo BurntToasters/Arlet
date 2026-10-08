@@ -215,6 +215,7 @@ test("manifest target bindings reject cross-architecture and unexpected installe
         "latest-windows-x86_64.json",
         ["Arlet_0.1.0_arm64-setup.exe", "Arlet_0.1.0_arm64-setup.exe.sig"],
         {
+          tag: "v0.1.0",
           signatures: new Map([["Arlet_0.1.0_arm64-setup.exe", signature]]),
         },
       ),
@@ -467,14 +468,20 @@ test("draft manifest references require matching artifact and updater sidecar", 
       manifest,
       "latest-windows-x86_64.json",
       ["Arlet_0.1.0_x64-setup.exe", "Arlet_0.1.0_x64-setup.exe.sig"],
-      { signatures: new Map([["Arlet_0.1.0_x64-setup.exe", signature]]) },
+      {
+        tag: "v0.1.0",
+        signatures: new Map([["Arlet_0.1.0_x64-setup.exe", signature]]),
+      },
     ),
   );
   assert.throws(
     () =>
-      assertManifestAssetReferences(manifest, "latest-windows-x86_64.json", [
-        "Arlet_0.1.0_x64-setup.exe",
-      ]),
+      assertManifestAssetReferences(
+        manifest,
+        "latest-windows-x86_64.json",
+        ["Arlet_0.1.0_x64-setup.exe"],
+        { tag: "v0.1.0" },
+      ),
     /missing updater sidecar/,
   );
 });
