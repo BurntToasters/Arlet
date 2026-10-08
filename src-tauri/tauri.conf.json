@@ -71,7 +71,7 @@
         "https://github.com/BurntToasters/Arlet/releases/download/v{{current_version}}/latest-{{target}}-{{arch}}.json",
         "https://github.com/BurntToasters/Arlet/releases/download/v{{current_version}}/latest-{{target}}.json"
       ],
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEY1RTNFOTE4NzJGNjk2ODcKUldTSGx2WnlHT25qOWY0a2V3YjdvSENXaEJ4WHhsQUd0VTRMOGJ1aHJSNkVDb3YyNG1wMW5ZWUgK"
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDExREM4NjYyQkFGNUU0RjgKUldUNDVQVzZZb2JjRVZSVVZmaXpleWFoQmU1TnFMdjI4Q2ltR2p6M2NRUFVUM3BUaXArM3ZETWwK"
     }
   }
 }
