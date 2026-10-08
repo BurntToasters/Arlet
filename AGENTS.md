@@ -22,10 +22,14 @@ changes scoped to the requested subsystem.
   only after the installer is ready.
 - Release notes come from updater manifest `notes` through Tauri
   `Update.body`. Do not add a separate GitHub API request.
-- Author each release in `CHANGELOG.md` under exact heading
-  ``## Changes in `vX.Y.Z` `` or ``## Changes in `vX.Y.Z-beta.N` ``.
-- Release tooling extracts only that section, stops at the next level-two
-  heading, and rejects missing, duplicate, empty, or over-64-KiB notes.
+- Author `CHANGELOG.md` in BCLS format (see `../BCLS/STANDARD.md`), like
+  Zinnia: downloads table, signing callout, ``## Changes in `vX.Y.Z:` `` or
+  ``## Changes in `vX.Y.Z-beta.N:` `` (colon inside the backticks),
+  carry-forward sections, and `## ℹ️ Release Info`.
+- The GitHub draft body is the whole `CHANGELOG.md`. Updater `notes` are only
+  the version section, which stops at the next level-two heading. Tooling
+  rejects missing, duplicate, empty, or over-64-KiB sections, download links
+  without `/download/vX.Y.Z/`, and beta callouts or beta links on stable.
 - Treat release-note Markdown as untrusted. Keep rendering dependency-free,
   avoid `dangerouslySetInnerHTML`, and never make rendered links navigable.
 - Preserve stable/beta target behavior and signed-updater verification when

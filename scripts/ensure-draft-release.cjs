@@ -7,7 +7,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { assertGitHubCliAuthenticated, githubApi } = require("./github-cli.cjs");
-const { readChangelogSection } = require("./changelog.cjs");
+const { readChangelogReleaseBody } = require("./changelog.cjs");
 const { assertStableReleaseOverridesAllowed } = require("./release-policy.cjs");
 
 try {
@@ -105,11 +105,14 @@ function assertNoMisnamedVersionDrafts(releases) {
   }
 }
 
+// Like Zinnia, the draft body is the whole BCLS CHANGELOG.md (downloads,
+// carry-forward sections, release info). Updater manifests use only the
+// version section.
 function releaseNotes({
   changelogPath = CHANGELOG_PATH,
   version = VERSION,
 } = {}) {
-  return readChangelogSection(changelogPath, version);
+  return readChangelogReleaseBody(changelogPath, version);
 }
 
 function patchDraft(release, commit, notes = releaseNotes()) {

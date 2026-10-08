@@ -35,6 +35,7 @@ const {
   githubApi,
   githubApiToFile,
 } = require("./github-cli.cjs");
+const { readChangelogReleaseBody } = require("./changelog.cjs");
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(scriptDir, "..");
@@ -484,10 +485,28 @@ export function verifyDetachedGpgSignature(
   return true;
 }
 
+/** The draft body must be the full BCLS CHANGELOG.md set by release:draft. */
+export function assertDraftNotesMatchChangelog(
+  release,
+  changelogPath = path.join(root, "CHANGELOG.md"),
+  version = VERSION,
+) {
+  const expected = readChangelogReleaseBody(changelogPath, version).trim();
+  const actual = String(release?.body ?? "")
+    .replace(/\r\n?/g, "\n")
+    .trim();
+  if (actual !== expected) {
+    throw new Error(
+      `Draft ${TAG_NAME} release notes do not match CHANGELOG.md; re-run npm run release:draft.`,
+    );
+  }
+}
+
 async function verifyDraft({ verifyArtifacts = false } = {}) {
   assertStableReleaseOverridesAllowed(process.env, VERSION);
   assertGitHubCliAuthenticated();
   const release = getDraftRelease();
+  assertDraftNotesMatchChangelog(release);
   const assets = listReleaseAssets(release.id);
   const assetNames = assets.map((asset) => asset.name);
   const headCommit = currentReleaseCommit();
