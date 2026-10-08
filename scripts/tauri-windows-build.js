@@ -78,6 +78,14 @@ if (
     `Unsupported --target "${target}" (expected x86_64-pc-windows-msvc or aarch64-pc-windows-msvc).`,
   );
 }
+if (
+  target === "aarch64-pc-windows-msvc" &&
+  spawnSync("clang", ["--version"], { stdio: "ignore" }).status !== 0
+) {
+  throw new Error(
+    "clang is not on PATH; the ARM64 build needs it. Run `npm run wc` and build from inside that shell.",
+  );
+}
 const bundles = valueAfter("--bundles") || "nsis";
 if (!/^[a-z0-9,-]+$/i.test(bundles)) {
   throw new Error(`Invalid --bundles value "${bundles}".`);

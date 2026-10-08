@@ -221,6 +221,19 @@ function checkWindowsTargets() {
   }
 }
 
+// The ARM64 build compiles `ring` with clang, found only on the VS developer
+// shell PATH (`npm run wc`). Fail before tests and the draft, not mid-build.
+function checkArm64Clang() {
+  if (process.platform !== "win32") return;
+  try {
+    execFileSync("clang", ["--version"], { stdio: "ignore" });
+  } catch {
+    throw new Error(
+      "clang is not on PATH; the ARM64 build needs it. Run `npm run wc` and release from inside that shell (VS needs the C++ Clang tools component).",
+    );
+  }
+}
+
 function runPreflight() {
   const version = String(packageJson.version ?? "");
   checkChangelog(version);
@@ -261,6 +274,7 @@ function runPreflight() {
   checkVersionSync();
   checkUpdaterPubkey();
   checkWindowsTargets();
+  checkArm64Clang();
   checkCredentialLeaks();
   if (!checkMusicKitToken().originRestricted) {
     console.warn(
