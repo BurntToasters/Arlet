@@ -36,6 +36,7 @@ const {
   githubApiToFile,
 } = require("./github-cli.cjs");
 const { readChangelogReleaseBody } = require("./changelog.cjs");
+const { selectDraftRelease } = require("./release-draft-metadata.cjs");
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(scriptDir, "..");
@@ -354,21 +355,18 @@ function getDraftRelease() {
     );
   } catch (error) {
     if (error?.statusCode !== 404) throw error;
+    const releases = [];
     for (let page = 1; page <= 20; page += 1) {
-      const releases = githubApi(
+      const batch = githubApi(
         "GET",
         `/repos/${REPO}/releases?per_page=100&page=${page}`,
       );
-      if (!Array.isArray(releases)) break;
-      const placeholder = releases.find(
-        (release) =>
-          release?.draft &&
-          release.name === VERSION &&
-          /^untagged-[0-9a-f]{20}$/i.test(String(release.tag_name || "")),
-      );
-      if (placeholder) return placeholder;
-      if (releases.length < 100) break;
+      if (!Array.isArray(batch) || batch.length === 0) break;
+      releases.push(...batch);
+      if (batch.length < 100) break;
     }
+    const draft = selectDraftRelease(releases, TAG_NAME);
+    if (draft) return draft;
     throw error;
   }
 }
