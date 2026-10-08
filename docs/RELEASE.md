@@ -113,8 +113,9 @@ and does not call `gh release view` or another release API to source notes.
 ## Standard flow (Windows release VM)
 
 ```text
-npm run release:prepare          # bootstrap + full test:all + clean artifacts dir
-npm run release:win              # warning + token mint + preflight + full win run (or release:win:resume to continue)
+npm run r                        # sync the VM to origin/main
+npm run release:win              # prerelease:prepare (warning + token mint + preflight + licenses), then release:prepare steps (bootstrap + full test:all + clean artifacts + build session), then release:win:continue
+npm run release:win:resume       # after a failure: prerelease:prepare + release:win:continue, reusing the build session (valid 24 h)
 ```
 
 `release:win:continue` runs: session verify → licenses → draft (single

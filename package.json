@@ -83,7 +83,7 @@
     "release:verify:draft": "dotenv -e .env -- node scripts/verify-release-draft.js",
     "release:verify:published": "dotenv -e .env -- node scripts/verify-release-published.js",
     "release:win:continue": "npm run release:session:verify && npm run release:licenses && npm run release:draft && npm run rust:targets:win && npm run build:win:prepared && npm run release:updater-manifests && npm run release:sign:gpg && npm run release:finalize && npm run release:verify:draft",
-    "release:win:resume": "node scripts/run-release.js win --resume",
+    "release:win:resume": "npm run prerelease:prepare && npm run release:win:continue",
     "release:win": "node scripts/run-release.js win",
     "gitprune": "git remote prune origin",
     "gitprune:force": "git fetch --prune origin"
