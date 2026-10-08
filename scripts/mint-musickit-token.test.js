@@ -211,8 +211,7 @@ function releaseFixture(lines) {
   };
 }
 
-// Failure modes: a release ships an origin-restricted token (Apple then
-// refuses every /v1/me library request with 403) or a short-lived token
+// Failure modes: a release ships an origin-restricted or short-lived token
 // because the release mint honoured dev MUSICKIT_TOKEN_ORIGINS/TTL; a release machine
 // without the .p8 cannot release at all; a half-configured .p8 silently
 // falls back to a stale token; other .env lines are rewritten; the token is

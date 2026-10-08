@@ -73,9 +73,9 @@ pub struct EmbedCheck {
 }
 
 /// Release builds refuse tokens that expire within the minimum window or
-/// carry any `origin` claim: Apple accepts an origin-restricted token for
-/// catalog requests from `http://tauri.localhost` but answers every
-/// `/v1/me` (library) request with 403.
+/// carry any `origin` claim. Apple accepts an origin-restricted token for
+/// catalog requests but refuses `/v1/me` (library) requests, even from
+/// `http://tauri.localhost`: 0.1.0 shipped one and cannot load libraries.
 #[allow(dead_code)] // Used by build.rs.
 pub fn validate_for_embed(token: &str, now: u64) -> Result<EmbedCheck, String> {
     let exp = token_expiry(token)?;
@@ -89,7 +89,7 @@ pub fn validate_for_embed(token: &str, now: u64) -> Result<EmbedCheck, String> {
     let payload = decode_json_segment(token.trim().split('.').nth(1).unwrap_or(""), "payload")?;
     if payload.get("origin").is_some() {
         return Err(
-            "MusicKit developer token has an origin claim; Apple then refuses library (/v1/me) requests with 403. Mint the release token without MUSICKIT_TOKEN_ORIGINS."
+            "MusicKit developer token has an origin claim; Apple then refuses library (/v1/me) requests. Mint the release token without MUSICKIT_TOKEN_ORIGINS."
                 .to_string(),
         );
     }
@@ -190,8 +190,8 @@ mod tests {
         es256(&format!(r#"{{"exp":{},"origin":{origin}}}"#, NOW * 2))
     }
 
-    // Failure modes: any `origin` claim, including exactly the release app,
-    // makes Apple refuse every /v1/me library request with 403 (0.1.0 draft).
+    // Failure mode: a release embeds an origin-restricted token, including
+    // one scoped exactly to the release app; Apple refuses its library calls.
     #[test]
     fn embed_rejects_every_origin_claim() {
         for origin in [
