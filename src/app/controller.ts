@@ -103,6 +103,7 @@ import {
 import { createPlayback } from "./playback.ts";
 import type { QueueEditTier } from "../musickit/queue-edit.ts";
 import { createRatings, type RatingTarget } from "./ratings.ts";
+import { createPlaybackSession } from "./playback-session.ts";
 import {
   createTrackNavigationResolver,
   type TrackNavigation,
@@ -243,6 +244,8 @@ export interface AppController {
   /** Rejects when the runtime has no writable autoplay; saves only on success. */
   setAutoplay?(enabled: boolean): Promise<void>;
   setCloseToTray?(enabled: boolean): Promise<void>;
+  /** Turning this off deletes the saved queue. */
+  setRestoreSession(enabled: boolean): Promise<void>;
   setUpdateChannel(channel: UpdateChannel): Promise<void>;
   startupUpdateCheck(): Promise<void>;
   checkForUpdates(): Promise<void>;
@@ -338,6 +341,13 @@ export function createAppController(
     return playback.playTracks(tracks, startIndex);
   };
   const playCollection = collections.play;
+  const playbackSession = createPlaybackSession({
+    invokeFn,
+    now,
+    log,
+    playTracks,
+    seek: playback.seek,
+  });
   const updater =
     dependencies.updater ??
     createUpdaterService({
@@ -439,6 +449,7 @@ export function createAppController(
   };
 
   const initializeController = async (): Promise<void> => {
+    playbackSession.start();
     setInitializationState({ status: "loading" });
     log("Initializing MusicKit…");
     try {
@@ -495,6 +506,8 @@ export function createAppController(
         if (storefront) setAccountSummary({ storefront });
         log("Already authorized from previous session.");
       }
+      // Not awaited: a restored queue must never hold up the update check.
+      playbackSession.tryRestore();
       syncPlaybackDiagnostics();
       ratings.syncCurrentTrack();
     } catch (error) {
@@ -513,6 +526,7 @@ export function createAppController(
     async loadSettings(): Promise<void> {
       const settings = await loadPersistedSettings(invokeFn);
       setSettings(settings);
+      playbackSession.markSettingsLoaded();
       playback.applyPlaybackVolume(settings.volume);
       if (music) applyAutoplaySetting(music);
       updater.configure(settings);
@@ -548,8 +562,10 @@ export function createAppController(
         // Start both operations immediately: the in-memory library is cleared
         // synchronously, the persisted cache is purged, and MusicKit can open
         // its popup without an extra event-loop delay.
-        const [, userToken] = await Promise.all([
+        // The saved queue may belong to the previous account, so drop it too.
+        const [, , userToken] = await Promise.all([
           clearLibraryCache(),
+          playbackSession.clear(),
           authorize(instance),
         ]);
         registerSensitiveValue(userToken);
@@ -616,6 +632,7 @@ export function createAppController(
         } catch (error) {
           log(`Pinned playlists clear failed: ${safeErrorMessage(error)}`);
         }
+        await playbackSession.clear();
         discovery.resetSearch();
         resetState();
         setPins([]);
@@ -906,9 +923,15 @@ export function createAppController(
       await playTracks(tracks.slice(0, CONSECUTIVE_TRACK_TARGET));
     },
 
-    togglePlayback: playback.togglePlayback,
+    async togglePlayback(): Promise<void> {
+      if (await playbackSession.resumePendingRestore()) return;
+      return playback.togglePlayback();
+    },
 
-    play: playback.play,
+    async play(): Promise<void> {
+      if (await playbackSession.resumePendingRestore()) return;
+      return playback.play();
+    },
 
     pause: playback.pause,
 
@@ -1006,6 +1029,14 @@ export function createAppController(
       sleepTimer.cancel();
     },
 
+    async setRestoreSession(enabled: boolean): Promise<void> {
+      await persistSettings({
+        ...getState().settings,
+        restoreSession: enabled,
+      });
+      if (!enabled) await playbackSession.clear();
+    },
+
     async setUpdateChannel(channel: UpdateChannel): Promise<void> {
       const settings: AppSettings = {
         ...getState().settings,
@@ -1073,6 +1104,7 @@ export function createAppController(
     log,
 
     dispose(): void {
+      playbackSession.stop();
       collections.invalidate();
       sleepTimer.cancel();
       trackNavigation.clear();

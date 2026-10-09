@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-save-playback-session"
+description = "Enables the save_playback_session command without any pre-configured scope."
+commands.allow = ["save_playback_session"]
+
+[[permission]]
+identifier = "deny-save-playback-session"
+description = "Denies the save_playback_session command without any pre-configured scope."
+commands.deny = ["save_playback_session"]

@@ -266,11 +266,11 @@ export async function runDesktop({ page, check }) {
     );
     await waitFor(
       page,
-      "window.__ARLET_E2E_MUSIC__.snapshot().transitions.some((t) => t.type === 'seek' && t.seconds === 10)",
+      "window.__ARLET_E2E_MUSIC__.snapshot().transitions.some((t) => t.type === 'seekToTime' && t.seconds === 10)",
       3000,
     );
     const seeksBefore = await page.evaluate(
-      "return window.__ARLET_E2E_MUSIC__.snapshot().transitions.filter((t) => t.type === 'seek').length;",
+      "return window.__ARLET_E2E_MUSIC__.snapshot().transitions.filter((t) => t.type === 'seekToTime').length;",
     );
     const emitted = await page.evaluate(`
       const events = window.__ARLET_E2E_TAURI_EVENTS__;
@@ -281,12 +281,12 @@ export async function runDesktop({ page, check }) {
       return true;`);
     const seekApplied = await waitFor(
       page,
-      "window.__ARLET_E2E_MUSIC__.snapshot().transitions.some((t) => t.type === 'seek' && t.seconds === 180)",
+      "window.__ARLET_E2E_MUSIC__.snapshot().transitions.some((t) => t.type === 'seekToTime' && t.seconds === 180)",
       3000,
     );
     await new Promise((resolve) => setTimeout(resolve, 300));
     const seeks = await page.evaluate(
-      "return window.__ARLET_E2E_MUSIC__.snapshot().transitions.filter((t) => t.type === 'seek').map((t) => t.seconds);",
+      "return window.__ARLET_E2E_MUSIC__.snapshot().transitions.filter((t) => t.type === 'seekToTime').map((t) => t.seconds);",
     );
     check(
       "system seek clamps to the duration and drops NaN or negative requests",

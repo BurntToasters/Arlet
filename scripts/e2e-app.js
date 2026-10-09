@@ -24,6 +24,7 @@ import { runTransport } from "./e2e-transport.js";
 import { runQueueEdit } from "./e2e-queue-edit.js";
 import { runNowPlaying } from "./e2e-now-playing.js";
 import { desktopEventRecorderSource, runDesktop } from "./e2e-desktop.js";
+import { runSessionRestore } from "./e2e-session-restore.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IDENTIFIER = "run.rosie.arlet";
@@ -922,9 +923,11 @@ async function run() {
         ["library-actions", runLibraryActions],
         ["now-playing", runNowPlaying],
         ["desktop", runDesktop],
+        // Last: it signs out at the end.
+        ["session-restore", runSessionRestore],
       ]) {
         try {
-          await scenario({ page, check });
+          await scenario({ page, check, dataDir: dataDirs()[0] });
         } catch (error) {
           check(`${name} completes`, false, String(error?.message ?? error));
         } finally {
