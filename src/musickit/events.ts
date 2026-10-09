@@ -113,6 +113,16 @@ export function registerMusicKitEvents(
     });
   }
 
+  // Shuffle moves the queue position after reordering the items.
+  const queuePositionDidChange = (MusicKit.Events as Record<string, unknown>)
+    .queuePositionDidChange;
+  if (typeof queuePositionDidChange === "string") {
+    listeners.push({
+      name: queuePositionDidChange,
+      callback: () => onQueueItemsChange({}),
+    });
+  }
+
   for (const name of [
     (MusicKit.Events as Record<string, unknown>).shuffleModeDidChange,
     (MusicKit.Events as Record<string, unknown>).repeatModeDidChange,

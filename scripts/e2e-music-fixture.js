@@ -13,6 +13,7 @@ function installMusicKitFixture() {
     playbackTimeDidChange: "playbackTimeDidChange",
     mediaPlaybackError: "mediaPlaybackError",
     queueItemsDidChange: "queueItemsDidChange",
+    queuePositionDidChange: "queuePositionDidChange",
     shuffleModeDidChange: "shuffleModeDidChange",
     repeatModeDidChange: "repeatModeDidChange",
   };
@@ -265,13 +266,18 @@ function installMusicKitFixture() {
       item.type = "songs";
       delete item.attributes.playParams;
     }
+    // Long text must truncate instead of widening rows.
+    if (index === 2) {
+      item.attributes.name = `${"A Very Long Song Title ".repeat(8)}(Remastered)`;
+      item.attributes.albumName = `${"An Extremely Long Album Name ".repeat(8)}(Deluxe)`;
+    }
     return item;
   });
   const bigPlaylist = {
     id: "playlist-big",
     type: "library-playlists",
     attributes: {
-      name: "Big Playlist",
+      name: "Big Playlist With A Very Long Name That Keeps Going To Test Truncation",
       artistName: "Arlet E2E",
       trackCount: BIG_PLAYLIST_SIZE,
       canEdit: true,
@@ -627,7 +633,7 @@ function installMusicKitFixture() {
     repeatMode: 0,
     volume: 1,
     get nowPlayingItem() {
-      return currentItem();
+      return state.playingOverride ?? currentItem();
     },
     get nowPlayingItemIndex() {
       return state.queue.length ? state.queueIndex : -1;
@@ -663,7 +669,7 @@ function installMusicKitFixture() {
       return currentItem();
     },
     get nowPlayingItem() {
-      return currentItem();
+      return state.playingOverride ?? currentItem();
     },
     get volume() {
       return player.volume;
@@ -875,6 +881,29 @@ function installMusicKitFixture() {
       state.queue[state.queueIndex] = bare;
       state.transitions.push({ type: "providerBareMedia", id: bare.id });
       syncProviderQueue(true, true);
+      return true;
+    },
+    // Mirrors MusicKit turning shuffle on mid-song: the current item moves to
+    // the front and items are published while the position is still stale;
+    // the position moves afterwards. The playing item never changes.
+    shuffleLikeMusicKit() {
+      const playing = currentItem();
+      if (!playing) return false;
+      const staleIndex = state.queueIndex;
+      const others = state.queue.filter((_, index) => index !== staleIndex);
+      others.reverse();
+      state.playingOverride = playing;
+      state.queue = [playing, ...others];
+      player.shuffle = true;
+      state.transitions.push({ type: "shuffleReorder", staleIndex });
+      emit(events.queueItemsDidChange, {
+        items: state.queue,
+        currentItemIndex: staleIndex,
+      });
+      state.queueIndex = 0;
+      state.playingOverride = undefined;
+      emit(events.queuePositionDidChange, { position: 0 });
+      emit(events.shuffleModeDidChange, { shuffle: true });
       return true;
     },
     // MusicKit publishes an MKError when a song fails as it starts playing.

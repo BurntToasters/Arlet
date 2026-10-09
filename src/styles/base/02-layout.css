@@ -5,6 +5,8 @@
   flex: 1 1 auto;
   min-height: 0;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  /* An auto row grows with the sidebar and slides under the player bar. */
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .sidebar {
@@ -80,6 +82,8 @@
 
 .sidebar-group {
   display: grid;
+  /* Without a bounded column a long pin name widens the whole list. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 2px;
 }
 
@@ -95,6 +99,7 @@
 .sidebar-link {
   display: flex;
   width: 100%;
+  min-width: 0;
   min-height: 34px;
   align-items: center;
   gap: 11px;
@@ -106,6 +111,14 @@
   transition:
     background var(--duration-fast) var(--ease-standard),
     color var(--duration-fast) var(--ease-standard);
+}
+
+/* Long names end in an ellipsis; the button title shows the full name. */
+.sidebar-link > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sidebar-link:hover {
@@ -212,7 +225,9 @@
   width: 100%;
   height: 100%;
   padding: clamp(28px, 5vw, 58px) clamp(24px, 5vw, 76px) 52px;
-  overflow: auto;
+  /* Pages wrap or truncate; nothing here scrolls sideways. */
+  overflow-x: hidden;
+  overflow-y: auto;
   scrollbar-color: color-mix(in srgb, var(--text-muted) 38%, transparent)
     transparent;
 }
