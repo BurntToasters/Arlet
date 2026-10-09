@@ -69,6 +69,7 @@ function testController(): AppController {
     setTheme: vi.fn(async () => undefined),
     setWindowEffect: vi.fn(async () => undefined),
     setAutoCheckUpdates: vi.fn(async () => undefined),
+    setRestoreSession: vi.fn(async () => undefined),
     setUpdateChannel: vi.fn(async () => undefined),
     startupUpdateCheck: vi.fn(async () => undefined),
     checkForUpdates: vi.fn(async () => undefined),

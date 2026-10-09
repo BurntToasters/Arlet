@@ -448,6 +448,7 @@ function installMusicKitFixture() {
       return selectIndex(index, "previous");
     },
     async seekToTime(time) {
+      state.transitions.push({ type: "seekToTime", time });
       emit(events.playbackTimeDidChange, {
         currentPlaybackTime: time,
         currentPlaybackDuration: 180,

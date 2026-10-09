@@ -11,6 +11,7 @@ mod library_cache;
 mod logging;
 mod music_diagnostic;
 mod pins;
+mod playback_session;
 mod settings;
 mod token_policy;
 mod webview_recovery;
@@ -141,6 +142,9 @@ fn main() {
             pins::load_pins,
             pins::save_pins,
             pins::delete_pins,
+            playback_session::load_playback_session,
+            playback_session::save_playback_session,
+            playback_session::delete_playback_session,
             logging::append_local_log,
             logging::get_log_dir,
             logging::clear_logs,

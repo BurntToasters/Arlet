@@ -5,6 +5,7 @@ import {
   ExternalLink,
   Info,
   LifeBuoy,
+  ListMusic,
   LoaderCircle,
   MonitorCog,
   Moon,
@@ -312,6 +313,40 @@ export function SettingsView(): JSX.Element {
               </button>
             </div>
           </div>
+        </section>
+
+        <section
+          className="settings-section"
+          aria-labelledby="playback-heading"
+        >
+          <div className="settings-section-heading">
+            <span className="settings-icon">
+              <ListMusic aria-hidden="true" size={19} strokeWidth={1.8} />
+            </span>
+            <div>
+              <h2 id="playback-heading">Playback</h2>
+              <p>Keep your place between launches.</p>
+            </div>
+          </div>
+          <div className="settings-fields">
+            <label className="settings-field settings-toggle-field">
+              <span>
+                <ListMusic aria-hidden="true" size={16} strokeWidth={1.8} />{" "}
+                Resume where I left off
+              </span>
+              <input
+                type="checkbox"
+                checked={settings.restoreSession}
+                onChange={(event) =>
+                  void controller.setRestoreSession(event.currentTarget.checked)
+                }
+              />
+            </label>
+          </div>
+          <p className="settings-field-help">
+            Restores the last queue and position after restart, paused. Turning
+            this off deletes the saved queue.
+          </p>
         </section>
 
         <section

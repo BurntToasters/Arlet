@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { MUSIC_FIXTURE_SEED, musicFixtureSource } from "./e2e-music-fixture.js";
 import { runPlaylistPlayback } from "./e2e-playlist-playback.js";
 import { runSongNavigation } from "./e2e-song-navigation.js";
+import { runSessionRestore } from "./e2e-session-restore.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IDENTIFIER = "run.rosie.arlet";
@@ -872,9 +873,11 @@ async function run() {
       for (const [name, scenario] of [
         ["playlist-playback", runPlaylistPlayback],
         ["song-navigation", runSongNavigation],
+        // Last: it signs out at the end.
+        ["session-restore", runSessionRestore],
       ]) {
         try {
-          await scenario({ page, check });
+          await scenario({ page, check, dataDir: dataDirs()[0] });
         } catch (error) {
           check(`${name} completes`, false, String(error?.message ?? error));
         } finally {

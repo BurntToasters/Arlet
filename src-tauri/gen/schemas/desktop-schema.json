@@ -201,6 +201,12 @@
           "markdownDescription": "Enables the delete_pins command without any pre-configured scope."
         },
         {
+          "description": "Enables the delete_playback_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-playback-session",
+          "markdownDescription": "Enables the delete_playback_session command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_app_info command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-app-info",
@@ -273,6 +279,12 @@
           "markdownDescription": "Enables the load_pins command without any pre-configured scope."
         },
         {
+          "description": "Enables the load_playback_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-load-playback-session",
+          "markdownDescription": "Enables the load_playback_session command without any pre-configured scope."
+        },
+        {
           "description": "Enables the load_settings command without any pre-configured scope.",
           "type": "string",
           "const": "allow-load-settings",
@@ -301,6 +313,12 @@
           "type": "string",
           "const": "allow-save-pins",
           "markdownDescription": "Enables the save_pins command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the save_playback_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-save-playback-session",
+          "markdownDescription": "Enables the save_playback_session command without any pre-configured scope."
         },
         {
           "description": "Enables the save_settings command without any pre-configured scope.",
@@ -361,6 +379,12 @@
           "type": "string",
           "const": "deny-delete-pins",
           "markdownDescription": "Denies the delete_pins command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the delete_playback_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-playback-session",
+          "markdownDescription": "Denies the delete_playback_session command without any pre-configured scope."
         },
         {
           "description": "Denies the get_app_info command without any pre-configured scope.",
@@ -435,6 +459,12 @@
           "markdownDescription": "Denies the load_pins command without any pre-configured scope."
         },
         {
+          "description": "Denies the load_playback_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-load-playback-session",
+          "markdownDescription": "Denies the load_playback_session command without any pre-configured scope."
+        },
+        {
           "description": "Denies the load_settings command without any pre-configured scope.",
           "type": "string",
           "const": "deny-load-settings",
@@ -463,6 +493,12 @@
           "type": "string",
           "const": "deny-save-pins",
           "markdownDescription": "Denies the save_pins command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the save_playback_session command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-save-playback-session",
+          "markdownDescription": "Denies the save_playback_session command without any pre-configured scope."
         },
         {
           "description": "Denies the save_settings command without any pre-configured scope.",
