@@ -4,7 +4,7 @@ import type { Track } from "../domain/music.ts";
 
 export interface ArtworkProps {
   track?: Pick<Track, "title" | "artistName" | "artwork"> | null;
-  size?: "sm" | "md" | "lg" | "hero";
+  size?: "sm" | "md" | "lg" | "xl" | "hero";
   alt?: string;
   className?: string;
 }

@@ -64,6 +64,14 @@ function positiveNumber(value: unknown): number | undefined {
     : undefined;
 }
 
+function lyricsFlag(attributes: UnknownRecord | undefined): {
+  hasLyrics?: boolean;
+} {
+  return typeof attributes?.hasLyrics === "boolean"
+    ? { hasLyrics: attributes.hasLyrics }
+    : {};
+}
+
 function resourceId(resource: AppleMusicResource): string | undefined {
   return stringValue(asRecord(resource)?.id);
 }
@@ -361,6 +369,7 @@ export function normalizeTrack(item: MusicKit.MediaItem): Track {
     ...(stringValue(playParams?.catalogId)
       ? { catalogId: stringValue(playParams?.catalogId) }
       : {}),
+    ...lyricsFlag(attributes),
   };
 }
 
@@ -386,6 +395,7 @@ export function normalizeCatalogSong(resource: CatalogSongResource): Track {
       attributes.durationInMillis > 0
         ? attributes.durationInMillis
         : undefined,
+    ...lyricsFlag(attributes),
   };
 }
 
@@ -421,6 +431,7 @@ function normalizeResourceTrack(
       type === "music-videos" ||
       type === "library-music-videos",
   };
+  Object.assign(track, lyricsFlag(attributes));
   const explicit = stringValue(attributes.contentRating);
   if (explicit) track.explicit = explicit.toLowerCase() === "explicit";
   const catalogId =

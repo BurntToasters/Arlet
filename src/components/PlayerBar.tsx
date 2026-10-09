@@ -1,12 +1,7 @@
 import {
   CircleAlert,
   ListMusic,
-  LoaderCircle,
-  Pause,
-  Play,
   Repeat,
-  SkipBack,
-  SkipForward,
   Shuffle,
   Volume2,
   VolumeX,
@@ -17,14 +12,15 @@ import {
   useAppController,
   useAppRouter,
   useAppState,
-  usePlaybackPosition,
 } from "../app/context.tsx";
 import type { AppErrorCode } from "../domain/errors.ts";
 import type { Track } from "../domain/music.ts";
 import type { TrackNavigation } from "../musickit/song-navigation.ts";
+import { setUiState } from "../state.ts";
 import { Artwork } from "./Artwork.tsx";
 import { IconButton } from "./IconButton.tsx";
 import { reportActionError } from "./action-errors.ts";
+import { PlaybackProgress, TransportControls } from "./TransportControls.tsx";
 
 export function playerErrorLabel(code: AppErrorCode): string {
   switch (code) {
@@ -49,44 +45,6 @@ export function playerErrorLabel(code: AppErrorCode): string {
     case "UNKNOWN":
       return "Error";
   }
-}
-
-function formatTime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
-  const total = Math.floor(seconds);
-  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
-}
-
-/** Re-renders on playback ticks without re-rendering the whole bar. */
-function PlaybackProgress({
-  hasTrack,
-  onSeek,
-}: {
-  hasTrack: boolean;
-  onSeek: (seconds: number) => void;
-}): JSX.Element {
-  const { positionSeconds, durationSeconds } = usePlaybackPosition();
-  const progress =
-    durationSeconds > 0
-      ? Math.min(100, Math.max(0, (positionSeconds / durationSeconds) * 100))
-      : 0;
-  return (
-    <div className="player-progress">
-      <span>{formatTime(positionSeconds)}</span>
-      <input
-        aria-label="Playback position"
-        type="range"
-        min="0"
-        max={String(Math.max(0, durationSeconds))}
-        step="1"
-        value={Math.min(durationSeconds, Math.max(0, positionSeconds))}
-        style={{ "--range-progress": `${progress}%` }}
-        disabled={!hasTrack || durationSeconds <= 0}
-        onChange={(event) => onSeek(Number(event.currentTarget.value))}
-      />
-      <span>{formatTime(durationSeconds)}</span>
-    </div>
-  );
 }
 
 export function PlayerBar(): JSX.Element {
@@ -192,11 +150,19 @@ export function PlayerBar(): JSX.Element {
             : undefined
         }
       >
-        <Artwork
-          track={current}
-          size="sm"
-          alt={current ? `${current.title} artwork` : "No song playing"}
-        />
+        <button
+          className="player-artwork-button"
+          type="button"
+          aria-label="Open Now Playing"
+          disabled={!current}
+          onClick={() => setUiState({ nowPlayingOpen: true })}
+        >
+          <Artwork
+            track={current}
+            size="sm"
+            alt={current ? `${current.title} artwork` : "No song playing"}
+          />
+        </button>
         <div className="player-track-copy">
           <strong title={current?.title}>
             {current?.title && navigation.album ? (
@@ -245,51 +211,14 @@ export function PlayerBar(): JSX.Element {
       </div>
 
       <div className="player-center">
-        <div className="transport-controls">
-          <IconButton
-            icon={SkipBack}
-            label="Previous track"
-            disabled={!canControl}
-            onClick={() => run(controller.previous)}
-          />
-          <button
-            className="play-button"
-            type="button"
-            aria-label={playing ? "Pause" : "Play"}
-            aria-pressed={playing}
-            disabled={!canControl || loading}
-            onClick={() => run(controller.togglePlayback)}
-          >
-            {loading ? (
-              <LoaderCircle
-                className="spin"
-                aria-hidden="true"
-                size={18}
-                strokeWidth={2}
-              />
-            ) : playing ? (
-              <Pause
-                aria-hidden="true"
-                size={18}
-                fill="currentColor"
-                strokeWidth={1.8}
-              />
-            ) : (
-              <Play
-                aria-hidden="true"
-                size={18}
-                fill="currentColor"
-                strokeWidth={1.8}
-              />
-            )}
-          </button>
-          <IconButton
-            icon={SkipForward}
-            label="Next track"
-            disabled={!canControl}
-            onClick={() => run(controller.next)}
-          />
-        </div>
+        <TransportControls
+          canControl={canControl}
+          playing={playing}
+          loading={loading}
+          onPrevious={() => run(controller.previous)}
+          onTogglePlayback={() => run(controller.togglePlayback)}
+          onNext={() => run(controller.next)}
+        />
         <PlaybackProgress
           hasTrack={Boolean(current)}
           onSeek={(seconds) => run(() => controller.seek(seconds))}

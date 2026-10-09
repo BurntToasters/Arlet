@@ -49,6 +49,25 @@ function installMusicKitFixture() {
     track("album-d", "Album Track D", "Fixture Album"),
   ];
 
+  // Lyrics fixtures. "song-a" serves hostile TTML, "song-c" is denied with 403,
+  // and "song-e" has lyrics but is never requested once the 403 disables them.
+  const LYRICS_SONGS = new Set(["song-a", "song-c", "song-e"]);
+  for (const item of [...playlistItems, ...albumItems]) {
+    if (LYRICS_SONGS.has(item.id)) item.attributes.hasLyrics = true;
+  }
+  const LYRICS_TTML = `<?xml version="1.0" encoding="UTF-8"?>
+<tt xmlns="http://www.w3.org/ns/ttml" xmlns:itunes="http://music.apple.com/lyric-ttml-internal" itunes:timing="Line">
+<head><metadata><script>window.__ARLET_TTML_SENTINEL = true</script></metadata></head>
+<body><div>
+<p begin="00:00:01.000" end="00:00:04.000">Opening line</p>
+<p begin="bad-time" end="00:00:08.000"><img src="x" onerror="window.__ARLET_TTML_SENTINEL = true"/>Unsynced hostile line</p>
+<p begin="6.5s" end="00:00:09.000">Offset line</p>
+<p begin="00:10.000" end="00:00:14.000"><![CDATA[<b>Markup stays text</b>]]></p>
+<p begin="20.000" end="00:00:22.000">Script line<script>window.__ARLET_TTML_SENTINEL = true</script></p>
+<p begin="00:00:40.000" end="00:00:45.000">Chorus line at forty</p>
+<p begin="00:50.000" end="00:55.000">Final line</p>
+</div></body></tt>`;
+
   const navTrack = (id, name, relationships) => {
     const resource = track(id, name, "Navigation Album");
     resource.attributes.playParams = { id, kind: "song", catalogId: id };
@@ -222,6 +241,15 @@ function installMusicKitFixture() {
         next: secondAlbumPage,
       };
     }
+    const lyricsMatch = pathname.match(
+      /^\/v1\/catalog\/us\/songs\/([^/]+)\/lyrics$/u,
+    );
+    if (lyricsMatch) {
+      const id = decodeURIComponent(lyricsMatch[1]);
+      return {
+        data: [{ id, type: "lyrics", attributes: { ttml: LYRICS_TTML } }],
+      };
+    }
     const songMatch = pathname.match(
       /^\/v1\/(?:me\/library|catalog\/us)\/songs\/([^/]+)$/u,
     );
@@ -296,6 +324,12 @@ function installMusicKitFixture() {
     if (shouldReject) {
       request.error = `Fixture request rejected: ${pathText}`;
       throw new Error(request.error);
+    }
+    if (/^\/v1\/catalog\/us\/songs\/song-c\/lyrics$/u.test(pathText)) {
+      request.error = "Fixture lyrics forbidden";
+      const error = new Error(request.error);
+      error.status = 403;
+      throw error;
     }
     const response = responseFor(pathText);
     request.completedAt = Date.now();
@@ -606,6 +640,13 @@ function installMusicKitFixture() {
           },
         }),
       );
+      return true;
+    },
+    setPlaybackTime(seconds) {
+      emit(events.playbackTimeDidChange, {
+        currentPlaybackTime: seconds,
+        currentPlaybackDuration: 180,
+      });
       return true;
     },
     snapshot() {
