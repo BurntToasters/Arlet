@@ -119,9 +119,15 @@ fn main() {
                 window_state::record(window);
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == auth_popup::MAIN_WINDOW_LABEL && tray::should_hide_on_close() {
-                    api.prevent_close();
-                    let _ = window.hide();
+                if window.label() == auth_popup::MAIN_WINDOW_LABEL {
+                    if tray::should_hide_on_close() {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    } else {
+                        // A shown-again window may move without a final Moved
+                        // event; capture the geometry it closes at.
+                        window_state::record(window);
+                    }
                 }
             }
             if matches!(event, tauri::WindowEvent::Destroyed) {
