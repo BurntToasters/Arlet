@@ -5,6 +5,7 @@ import {
   ArrowRight,
   Clipboard,
   Copy,
+  Disc3,
   FolderPlus,
   Forward,
   ListPlus,
@@ -19,11 +20,13 @@ import {
   Settings,
   SkipForward,
   SquareStack,
+  UserRound,
 } from "lucide-preact";
 import type { LucideIcon } from "lucide-preact";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useAppController, useAppRouter } from "../app/context.tsx";
-import type { Track } from "../domain/music.ts";
+import type { MusicEntityRef, MusicSource, Track } from "../domain/music.ts";
+import type { TrackNavigation } from "../musickit/song-navigation.ts";
 import type { Route } from "../routing/router.ts";
 import {
   CONTEXT_MENU_REQUEST,
@@ -45,6 +48,12 @@ interface ContextTarget {
   catalogId?: string;
   source?: "library" | "catalog";
   route?: Route;
+  albumRef?: MusicEntityRef;
+  artistRefs?: MusicEntityRef[];
+  parentKind?: "album" | "playlist";
+  parentId?: string;
+  parentSource?: MusicSource;
+  parentIndex?: number;
 }
 
 interface MenuItem {
@@ -53,12 +62,14 @@ interface MenuItem {
   shortcut?: string;
   icon: LucideIcon;
   disabled?: boolean;
+  targetId?: string;
   action: () => void;
 }
 
 interface MenuState {
   x: number;
   y: number;
+  requestId: number;
   target: ContextTarget;
   items: MenuItem[];
 }
@@ -69,12 +80,61 @@ function closestContextTarget(node: EventTarget | null): HTMLElement | null {
     : null;
 }
 
+function parseEntityRef(value: unknown): MusicEntityRef | undefined {
+  let candidate = value;
+  if (typeof candidate === "string") {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return undefined;
+    }
+  }
+  if (!candidate || typeof candidate !== "object") return undefined;
+  const record = candidate as Record<string, unknown>;
+  if (typeof record.id !== "string" || !record.id.trim()) return undefined;
+  const type = typeof record.type === "string" ? record.type : "";
+  const source =
+    record.source === "catalog" || type.startsWith("catalog")
+      ? "catalog"
+      : "library";
+  const name =
+    typeof record.name === "string" && record.name.trim()
+      ? record.name.trim()
+      : undefined;
+  return { id: record.id, source, ...(name ? { name } : {}) };
+}
+
+function parseEntityRefs(value: unknown): MusicEntityRef[] {
+  let candidate = value;
+  if (typeof candidate === "string") {
+    try {
+      candidate = JSON.parse(candidate) as unknown;
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(candidate)) return [];
+  return candidate
+    .map(parseEntityRef)
+    .filter((ref): ref is MusicEntityRef => ref !== undefined);
+}
+
 function parseTarget(node: HTMLElement | null): ContextTarget {
   if (!node) return {};
   const kind = node.dataset.contextKind as ContextKind | undefined;
   const routeKind = node.dataset.contextRouteKind as Route["kind"] | undefined;
   const source =
-    node.dataset.contextSource === "catalog" ? "catalog" : undefined;
+    node.dataset.contextSource === "catalog"
+      ? "catalog"
+      : node.dataset.contextSource === "library"
+        ? "library"
+        : undefined;
+  const parentKind =
+    node.dataset.contextParentKind === "album" ||
+    node.dataset.contextParentKind === "playlist"
+      ? node.dataset.contextParentKind
+      : undefined;
+  const parentIndex = Number(node.dataset.contextParentIndex);
   let route: Route | undefined;
   if (
     routeKind === "album" ||
@@ -84,11 +144,21 @@ function parseTarget(node: HTMLElement | null): ContextTarget {
     const id = node.dataset.contextId;
     if (id) {
       route =
-        routeKind !== "artist" && source === "catalog"
+        source === "catalog"
           ? { kind: routeKind, id, source }
           : { kind: routeKind, id };
     }
   }
+  const rawAlbumRef = parseEntityRef(node.dataset.contextAlbumRef);
+  const albumRef =
+    rawAlbumRef ??
+    (node.dataset.contextAlbumId
+      ? parseEntityRef({
+          id: node.dataset.contextAlbumId,
+          name: node.dataset.contextAlbum,
+          source: node.dataset.contextAlbumSource,
+        })
+      : undefined);
   return {
     kind,
     id: node.dataset.contextId ?? node.dataset.contextTrackId,
@@ -100,6 +170,16 @@ function parseTarget(node: HTMLElement | null): ContextTarget {
     catalogId: node.dataset.contextCatalogId,
     source,
     route,
+    albumRef,
+    artistRefs: parseEntityRefs(node.dataset.contextArtistRefs),
+    parentKind,
+    parentId: node.dataset.contextParentId,
+    parentSource:
+      node.dataset.contextParentSource === "catalog" ? "catalog" : "library",
+    parentIndex:
+      Number.isInteger(parentIndex) && parentIndex >= 0
+        ? parentIndex
+        : undefined,
   };
 }
 
@@ -115,6 +195,8 @@ function targetTrack(target: ContextTarget): Track | undefined {
       : undefined,
     resourceType: target.resourceType,
     catalogId: target.catalogId,
+    albumRef: target.albumRef,
+    artistRefs: target.artistRefs,
   };
 }
 
@@ -168,6 +250,7 @@ function ContextMenuItem({ item }: { item: MenuItem }): JSX.Element {
       type="button"
       role="menuitem"
       data-menu-item={item.id}
+      data-menu-target-id={item.targetId}
       disabled={item.disabled}
       onClick={item.action}
     >
@@ -183,72 +266,98 @@ export function ContextMenu(): JSX.Element | null {
   const router = useAppRouter();
   const menuRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
+  const menuRequestRef = useRef(0);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const extendedController = controller as unknown as AppControllerWithContext;
 
   useEffect(() => {
-    const open = ({
-      target: eventTarget,
-      x,
-      y,
-      restoreFocus,
-    }: ContextMenuRequestDetail): void => {
+    const showMenu = (
+      eventTarget: HTMLElement,
+      x: number,
+      y: number,
+      options: {
+        restoreFocus?: HTMLElement;
+        editable: boolean;
+        selected: boolean;
+      },
+    ): void => {
       const contextNode = closestContextTarget(eventTarget) ?? eventTarget;
       const target = parseTarget(contextNode);
       const track = targetTrack(target);
       restoreFocusRef.current =
-        restoreFocus ??
+        options.restoreFocus ??
         (document.activeElement instanceof HTMLElement
           ? document.activeElement
           : null);
-      setMenu({
-        x,
-        y,
-        target,
-        items: buildItems({
+      const requestId = ++menuRequestRef.current;
+      const close = (): void => {
+        if (menuRequestRef.current === requestId) menuRequestRef.current += 1;
+        setMenu(null);
+      };
+      const restoreFocus = (): void => restoreFocusRef.current?.focus();
+      const makeItems = (navigation?: TrackNavigation): MenuItem[] =>
+        buildItems({
           controller: extendedController,
           router,
           target,
           track,
-          editable: false,
-          selected: false,
-          close: () => setMenu(null),
-          restoreFocus: () => restoreFocusRef.current?.focus(),
+          navigation,
+          editable: options.editable,
+          selected: options.selected,
+          close,
+          restoreFocus,
           restoreTarget: restoreFocusRef.current ?? undefined,
-        }),
+        });
+      setMenu({
+        x,
+        y,
+        requestId,
+        target,
+        items: makeItems(),
       });
       setPosition({ x, y });
+      if (track && extendedController.resolveTrackNavigation) {
+        void extendedController
+          .resolveTrackNavigation(track)
+          .then((navigation) => {
+            if (menuRequestRef.current !== requestId) return;
+            setMenu((current) =>
+              current?.requestId === requestId
+                ? { ...current, items: makeItems(navigation) }
+                : current,
+            );
+          })
+          .catch((error: unknown) => {
+            if (menuRequestRef.current === requestId) reportActionError(error);
+          });
+      }
+    };
+    const open = ({
+      target,
+      x,
+      y,
+      restoreFocus,
+    }: ContextMenuRequestDetail): void => {
+      showMenu(target, x, y, {
+        restoreFocus,
+        editable: false,
+        selected: false,
+      });
     };
     const onContextMenu = (event: MouseEvent): void => {
       event.preventDefault();
       const eventTarget =
         event.target instanceof HTMLElement ? event.target : document.body;
-      const contextNode = closestContextTarget(event.target) ?? eventTarget;
-      const target = parseTarget(contextNode);
-      const track = targetTrack(target);
-      restoreFocusRef.current =
-        eventTarget.closest<HTMLElement>("button, [tabindex]") ??
-        (document.activeElement instanceof HTMLElement
-          ? document.activeElement
-          : null);
-      setMenu({
-        x: event.clientX,
-        y: event.clientY,
-        target,
-        items: buildItems({
-          controller: extendedController,
-          router,
-          target,
-          track,
-          editable: isEditableTarget(event.target),
-          selected: hasSelection(),
-          close: () => setMenu(null),
-          restoreFocus: () => restoreFocusRef.current?.focus(),
-          restoreTarget: restoreFocusRef.current ?? undefined,
-        }),
+      showMenu(eventTarget, event.clientX, event.clientY, {
+        restoreFocus:
+          eventTarget.closest<HTMLElement>("button, [tabindex]") ??
+          (document.activeElement instanceof HTMLElement
+            ? document.activeElement
+            : undefined),
+        editable: isEditableTarget(event.target),
+        selected: hasSelection(),
       });
-      setPosition({ x: event.clientX, y: event.clientY });
     };
     const onRequest = (event: Event): void => {
       const detail = (event as CustomEvent<ContextMenuRequestDetail>).detail;
@@ -264,7 +373,10 @@ export function ContextMenu(): JSX.Element | null {
 
   useEffect(() => {
     if (!menu) return undefined;
-    const close = (): void => setMenu(null);
+    const close = (): void => {
+      menuRequestRef.current += 1;
+      setMenu(null);
+    };
     const onPointerDown = (event: PointerEvent): void => {
       if (
         !(event.target instanceof Node) ||
@@ -319,7 +431,7 @@ export function ContextMenu(): JSX.Element | null {
       window.removeEventListener("resize", close);
       window.removeEventListener("blur", close);
     };
-  }, [menu]);
+  }, [menu?.requestId]);
 
   useEffect(() => {
     if (!menu || !menuRef.current) return;
@@ -356,6 +468,16 @@ export function ContextMenu(): JSX.Element | null {
 
 interface AppControllerWithContext extends Record<string, unknown> {
   playTracks?: (tracks: readonly Track[], startIndex?: number) => Promise<void>;
+  playAlbum?: (
+    id: string,
+    source?: MusicSource,
+    startIndex?: number,
+  ) => Promise<void>;
+  playPlaylist?: (
+    id: string,
+    source?: MusicSource,
+    startIndex?: number,
+  ) => Promise<void>;
   playNextTracks?: (tracks: readonly Track[]) => Promise<void>;
   playLaterTracks?: (tracks: readonly Track[]) => Promise<void>;
   refreshCurrentData?: () => Promise<void>;
@@ -369,6 +491,7 @@ interface AppControllerWithContext extends Record<string, unknown> {
   isPinned?: (id: string) => boolean;
   togglePin?: (id: string, source?: "library" | "catalog") => Promise<void>;
   unpin?: (id: string) => Promise<void>;
+  resolveTrackNavigation?: (track: Track) => Promise<TrackNavigation>;
 }
 
 function buildItems({
@@ -376,6 +499,7 @@ function buildItems({
   router,
   target,
   track,
+  navigation,
   editable,
   selected,
   close,
@@ -386,6 +510,7 @@ function buildItems({
   router: ReturnType<typeof useAppRouter>;
   target: ContextTarget;
   track?: Track;
+  navigation?: TrackNavigation;
   editable: boolean;
   selected: boolean;
   close: () => void;
@@ -485,12 +610,33 @@ function buildItems({
   }
 
   if (track) {
+    const playNow = (): void => {
+      const parentAction =
+        target.parentKind === "playlist"
+          ? controller.playPlaylist
+          : target.parentKind === "album"
+            ? controller.playAlbum
+            : undefined;
+      if (
+        target.parentId &&
+        target.parentIndex !== undefined &&
+        typeof parentAction === "function"
+      ) {
+        void parentAction(
+          target.parentId,
+          target.parentSource,
+          target.parentIndex,
+        ).catch(reportActionError);
+        return;
+      }
+      void statefulPlay(controller, track).catch(reportActionError);
+    };
     items.push(
       {
         id: "play-now",
         label: "Play now",
         icon: Play,
-        action: run(() => void statefulPlay(controller, track)),
+        action: run(playNow),
       },
       {
         id: "play-next",
@@ -523,6 +669,48 @@ function buildItems({
         }),
       },
     );
+
+    const trackNavigation = navigation ?? {
+      album: track.albumRef,
+      artists: track.artistRefs ?? [],
+    };
+    if (trackNavigation.album) {
+      const album = trackNavigation.album;
+      items.push({
+        id: "go-to-album",
+        label: album.name ? `Go to album: ${album.name}` : "Go to album",
+        icon: Disc3,
+        targetId: album.id,
+        action: run(() =>
+          router.navigate({
+            kind: "album",
+            id: album.id,
+            ...(album.source === "catalog" ? { source: "catalog" } : {}),
+          }),
+        ),
+      });
+    }
+    const artistCounts = new Map<string, number>();
+    for (const artist of trackNavigation.artists) {
+      artistCounts.set(artist.id, (artistCounts.get(artist.id) ?? 0) + 1);
+    }
+    for (const artist of trackNavigation.artists) {
+      items.push({
+        id: `go-to-artist-${encodeURIComponent(artist.id)}${
+          artistCounts.get(artist.id) === 1 ? "" : `-${artist.source}`
+        }`,
+        label: artist.name ? `Go to artist: ${artist.name}` : "Go to artist",
+        icon: UserRound,
+        targetId: artist.id,
+        action: run(() =>
+          router.navigate({
+            kind: "artist",
+            id: artist.id,
+            ...(artist.source === "catalog" ? { source: "catalog" } : {}),
+          }),
+        ),
+      });
+    }
   }
 
   if (target.route) {
@@ -560,6 +748,25 @@ function buildItems({
         else
           void controller
             .togglePin?.(playlistId, source)
+            .catch(reportActionError);
+      }),
+    });
+  }
+
+  if (target.kind === "playlist" && target.id) {
+    const source =
+      target.source ??
+      (target.route?.kind === "playlist" ? target.route.source : undefined) ??
+      "library";
+    items.push({
+      id: "play-now",
+      label: "Play now",
+      icon: Play,
+      disabled: !controller.playPlaylist,
+      action: run(() => {
+        if (controller.playPlaylist)
+          void controller
+            .playPlaylist(target.id as string, source, 0)
             .catch(reportActionError);
       }),
     });

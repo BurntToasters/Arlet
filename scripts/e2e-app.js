@@ -16,6 +16,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { MUSIC_FIXTURE_SEED, musicFixtureSource } from "./e2e-music-fixture.js";
+import { runPlaylistPlayback } from "./e2e-playlist-playback.js";
+import { runSongNavigation } from "./e2e-song-navigation.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IDENTIFIER = "run.rosie.arlet";
@@ -51,10 +54,18 @@ function build(token) {
 }
 
 function dataDirs() {
-  return [
-    path.join(process.env.APPDATA ?? "", IDENTIFIER),
-    path.join(process.env.LOCALAPPDATA ?? "", IDENTIFIER),
-  ];
+  return ["APPDATA", "LOCALAPPDATA"].map((name) => {
+    const parent = process.env[name];
+    if (!parent || !path.isAbsolute(parent)) fail(`${name} must be absolute`);
+    const target = path.resolve(parent, IDENTIFIER);
+    if (
+      path.dirname(target) !== path.resolve(parent) ||
+      path.basename(target) !== IDENTIFIER
+    ) {
+      fail(`unsafe E2E data directory: ${target}`);
+    }
+    return target;
+  });
 }
 
 function moveAside(stamp) {
@@ -334,6 +345,7 @@ async function run() {
   const moved = moveAside(stamp);
   let child;
   let page;
+  let musicRuntimeCapabilities;
   try {
     seedCorruptSettings();
     seedLegacyCache();
@@ -387,6 +399,29 @@ async function run() {
     check(`app origin is ${RELEASE_ORIGIN}`, origin === RELEASE_ORIGIN, {
       origin,
     });
+    musicRuntimeCapabilities = await page.evaluate(`
+      const deadline = Date.now() + 12000;
+      while (Date.now() < deadline) {
+        try {
+          const music = window.MusicKit?.getInstance?.();
+          if (music) return {
+            loaded: true,
+            playerIndexSelection: typeof music.player?.changeToMediaAtIndex === "function",
+            instanceIndexSelection: typeof music.changeToMediaAtIndex === "function",
+          };
+        } catch { /* MusicKit can load before its instance is configured. */ }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return { loaded: false };
+    `);
+    if (musicRuntimeCapabilities.loaded) {
+      check(
+        "live MusicKit exposes indexed queue selection",
+        musicRuntimeCapabilities.playerIndexSelection ||
+          musicRuntimeCapabilities.instanceIndexSelection,
+        musicRuntimeCapabilities,
+      );
+    }
 
     if (realToken) {
       const catalog = await page.evaluate(`
@@ -801,6 +836,68 @@ async function run() {
       { stateFileExists: fs.existsSync(windowStateFile), resetGeometry },
     );
 
+    // Exercise application behavior with a deterministic provider. The
+    // fixture is injected only by DevTools; production code has no test hook.
+    await page.send("Network.enable");
+    await page.send("Network.setBlockedURLs", {
+      urls: ["*js-cdn.music.apple.com*"],
+    });
+    await page.send("Page.enable");
+    const fixtureScript = await page.send(
+      "Page.addScriptToEvaluateOnNewDocument",
+      { source: musicFixtureSource },
+    );
+    await page.evaluate('location.hash = "#/home";');
+    await page.send("Page.reload", { ignoreCache: true });
+    await sleep(1000);
+    const fixtureReady = await waitFor(
+      page,
+      "window.__ARLET_E2E_MUSIC__ && document.querySelector('.app-shell .player-bar')",
+      30_000,
+    );
+    check("deterministic MusicKit fixture starts", fixtureReady, {
+      seed: MUSIC_FIXTURE_SEED,
+      state: fixtureReady
+        ? undefined
+        : await page.evaluate(
+            `return JSON.stringify({fixture:!!window.__ARLET_E2E_MUSIC__,mk:typeof window.MusicKit,shell:!!document.querySelector('.app-shell'),bar:!!document.querySelector('.player-bar'),hash:location.hash,text:document.body.innerText.slice(0,300)})`,
+          ),
+    });
+    if (fixtureReady) {
+      for (const [name, scenario] of [
+        ["playlist-playback", runPlaylistPlayback],
+        ["song-navigation", runSongNavigation],
+      ]) {
+        try {
+          await scenario({ page, check });
+        } catch (error) {
+          check(`${name} completes`, false, String(error?.message ?? error));
+        } finally {
+          const screenshot = await page.send("Page.captureScreenshot", {
+            format: "png",
+          });
+          fs.writeFileSync(
+            path.join(artifactDir, `screenshot-${name}.png`),
+            Buffer.from(screenshot.data, "base64"),
+          );
+          const trace = await page.evaluate(
+            "return window.__ARLET_E2E_MUSIC__.snapshot();",
+          );
+          fs.writeFileSync(
+            path.join(artifactDir, `${name}-trace.json`),
+            `${JSON.stringify(trace, null, 2)}\n`,
+          );
+        }
+      }
+    }
+    await page.send("Page.removeScriptToEvaluateOnNewDocument", {
+      identifier: fixtureScript.identifier,
+    });
+    await page.send("Network.setBlockedURLs", { urls: [] });
+    if (fs.existsSync(logFile)) {
+      fs.copyFileSync(logFile, path.join(artifactDir, "arlet.log"));
+    }
+
     // Resize, then close normally: the new geometry is saved for next launch.
     const resized = await settle(page, "plugin:window|set_size", {
       label: "main",
@@ -847,6 +944,8 @@ async function run() {
     check("legacy cache database migrated to schema 1", version === 1, {
       version,
     });
+  } catch (error) {
+    check("native E2E completes", false, String(error?.message ?? error));
   } finally {
     page?.close();
     if (child?.pid) {
@@ -877,6 +976,8 @@ async function run() {
     host: `${os.type()} ${os.release()} ${os.arch()}`,
     binary: { path: path.relative(root, EXE), sha256: exeHash },
     tokenMode: realToken ? "real" : "synthetic",
+    musicFixtureSeed: MUSIC_FIXTURE_SEED,
+    musicRuntimeCapabilities,
     checks,
   };
   fs.writeFileSync(

@@ -55,6 +55,38 @@ The E2E binary then contains that token; it stays in `src-tauri/target/e2e`.
 
 It does not sign in to Apple Music or play protected audio.
 
+## Song navigation and playlist playback
+
+The native E2E gate also reloads the production frontend with a deterministic
+MusicKit fixture injected through WebView2 DevTools. The application still
+uses its real components, controller, request adapter, router, and playback
+event handlers. The fixture replaces the external provider only; it does not
+prove protected Apple Music audio playback.
+
+Failure scenarios to cover before changing production code:
+
+- A song title opens the wrong album or single, or navigation interrupts playback.
+- Multiple artists collapse into one destination, or punctuation in an artist
+  name creates invented artists.
+- Catalog and library IDs use the wrong route or lookup endpoint; absent
+  relationships cause guessed links, repeated requests, or an unhandled error.
+- A late lookup changes a newer song's links or a closed/replaced context menu.
+- Player links or context-menu actions cannot be reached by keyboard.
+- Starting a middle playlist row queues only that song or discards earlier
+  songs from shuffle; duplicate occurrences select the wrong position.
+- Playback stops after the selected song, queue display disagrees with the
+  provider, or next/previous and repeat settings change unexpectedly.
+- Playlist pagination is truncated, loops forever, or replaces a working queue
+  after a page request fails.
+- Context-menu Play now loses playlist context; Play next or Play later adds
+  the entire playlist instead of the selected song.
+
+The report records the fixture seed and per-scenario results. Additional
+artifacts retain navigation/playback screenshots and provider queue transitions
+so the fixture run is repeatable and auditable. Run `npm run test:e2e:app` on
+Windows with every existing Arlet instance closed. A separate signed-in check
+must confirm real track completion, shuffle, and repeat on Apple Music.
+
 ## Release-only evidence
 
 The following checks require a Windows release environment and are kept out of

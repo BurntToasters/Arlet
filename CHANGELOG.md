@@ -2,7 +2,7 @@
 
 | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                            | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
 | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.1.3/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.1.3/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.0/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.0/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -18,6 +18,17 @@
 ### ℹ️ Enjoying Arlet? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
+
+## Changes in `v0.2.0:`
+
+- **NEW - Go to album:** Click the song title at the bottom left to open the album or single it belongs to.
+- **NEW - Go to artist:** Each credited artist under the title is its own link, so songs with several artists take you to the right page.
+- **NEW - Context menus:** Every song menu now has `Go to album` and `Go to artist` actions. Playing songs and menus never change what is playing when you navigate.
+- **Fix - Playlists:** Playing a song in a playlist now keeps going through the rest of the playlist instead of stopping after that one song. With shuffle on, the song you picked plays first and the whole playlist is shuffled in after it.
+- **Fix - Albums:** Playing a song from an album detail page now continues through the album the same way.
+- **Fix - Play now:** `Play now` from a song's menu in a playlist or album starts that exact entry in the full list, including songs that appear more than once.
+- **Playback:** Repeat and shuffle settings carry over when you start a song from a playlist. `Play next` and `Play later` still add only the song you chose.
+- **Testing:** End-to-end tests now cover playlist and album playback, shuffle and repeat, song navigation, and failed lookups, and save a repeatable report with screenshots.
 
 ## Changes in `v0.1.3:`
 

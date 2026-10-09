@@ -24,6 +24,7 @@ import { Artwork } from "../components/Artwork.tsx";
 import { SongRow } from "../components/SongRow.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import type { Track } from "../domain/music.ts";
+import { normalizeTrackNavigation } from "../musickit/normalize.ts";
 import type { LibrarySection } from "../routing/router.ts";
 import { reportActionError } from "../components/action-errors.ts";
 import { OfflineBanner } from "../components/OfflineBanner.tsx";
@@ -38,6 +39,8 @@ export interface ResourceLike {
   artistId?: string;
   albumTitle?: string;
   albumId?: string;
+  albumRef?: Track["albumRef"];
+  artistRefs?: Track["artistRefs"];
   artwork?: Track["artwork"];
   durationMs?: number;
   explicit?: boolean;
@@ -209,6 +212,7 @@ export function toResource(value: unknown): ResourceLike | undefined {
     type,
     kind,
     title,
+    ...normalizeTrackNavigation(raw),
     artistName: stringValue(
       raw.artistName,
       attributes.artistName,
@@ -261,6 +265,8 @@ export function toTrack(value: unknown): Track | undefined {
     title: resource.title,
     artistName: resource.artistName ?? "Unknown artist",
     albumTitle: resource.albumTitle,
+    albumRef: resource.albumRef,
+    artistRefs: resource.artistRefs,
     artwork: resource.artwork,
     durationMs: resource.durationMs,
     explicit: resource.explicit,
@@ -392,12 +398,14 @@ export function LibraryTrackRow({
   onPlay,
   onPlayNext,
   disabled,
+  contextData: collectionContext,
 }: {
   resource: ResourceLike;
   index: number;
-  onPlay: (track: Track) => void;
+  onPlay: (track: Track, index: number) => void;
   onPlayNext?: (track: Track) => void;
   disabled: boolean;
+  contextData?: Record<string, string>;
 }): JSX.Element {
   const appController = useAppController();
   const track = toTrack(resource);
@@ -411,14 +419,14 @@ export function LibraryTrackRow({
     <SongRow
       track={track}
       index={index}
-      onPlay={() => onPlay(track)}
+      onPlay={() => onPlay(track, index)}
       onPlayNext={() => playNext(track)}
       disabled={disabled}
       rowClassName="library-track-row"
       numberClassName="library-row-number"
       copyClassName="library-row-copy"
       durationClassName="library-row-duration"
-      contextData={contextData(resource, "track")}
+      contextData={{ ...contextData(resource, "track"), ...collectionContext }}
     />
   );
 }

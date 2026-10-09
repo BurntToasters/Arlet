@@ -52,6 +52,20 @@ export function QueueDrawer(): JSX.Element | null {
                   data-context-id={track.id}
                   data-context-title={track.title}
                   data-context-artist={track.artistName}
+                  {...(track.albumRef
+                    ? {
+                        "data-context-album-ref": JSON.stringify(
+                          track.albumRef,
+                        ),
+                      }
+                    : {})}
+                  {...(track.artistRefs?.length
+                    ? {
+                        "data-context-artist-refs": JSON.stringify(
+                          track.artistRefs,
+                        ),
+                      }
+                    : {})}
                   {...(track.albumTitle
                     ? { "data-context-album": track.albumTitle }
                     : {})}

@@ -3,8 +3,11 @@ use url::Url;
 
 pub const WINDOW_LABEL: &str = "music-diagnostic";
 pub const DIAGNOSTIC_URL: &str = "https://music.apple.com/";
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub const AUTO_OPEN_ENV: &str = "ARLET_OPEN_MUSIC_DIAGNOSTIC";
 
+// Only debug builds auto-open the diagnostic window (see main.rs).
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub fn should_auto_open_music_diagnostic(value: Option<&str>) -> bool {
     matches!(value.map(str::trim), Some("1"))
 }

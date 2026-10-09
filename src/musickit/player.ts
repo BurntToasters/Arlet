@@ -1,6 +1,6 @@
-import type { Track } from "../domain/music.ts";
+import { isSameTrack, type Track } from "../domain/music.ts";
 import { normalizeTrack } from "./normalize.ts";
-import { setCurrentTrack, setQueue } from "../state.ts";
+import { getState, setCurrentTrack, setQueue } from "../state.ts";
 
 export const CONSECUTIVE_TRACK_TARGET = 20;
 
@@ -20,6 +20,34 @@ function playerRecord(
   instance: MusicKit.MusicKitInstance,
 ): Record<string, unknown> {
   return (instance.player ?? instance) as unknown as Record<string, unknown>;
+}
+
+/**
+ * Move within the provider-owned queue without rebuilding it. MusicKit JS
+ * exposes this on Player in current runtimes and on the instance in some
+ * compatible builds, so keep both shapes behind feature detection.
+ */
+export async function changeToMediaAtIndex(
+  instance: MusicKit.MusicKitInstance,
+  index: number,
+): Promise<boolean> {
+  const player = playerRecord(instance);
+  const method = player.changeToMediaAtIndex;
+  if (typeof method === "function") {
+    await (method as (index: number) => Promise<unknown>).call(player, index);
+    return true;
+  }
+
+  const instanceRecord = instance as unknown as Record<string, unknown>;
+  const instanceMethod = instanceRecord.changeToMediaAtIndex;
+  if (typeof instanceMethod === "function") {
+    await (instanceMethod as (index: number) => Promise<unknown>).call(
+      instance,
+      index,
+    );
+    return true;
+  }
+  return false;
 }
 
 function writableProperty(
@@ -203,7 +231,51 @@ export function syncMusicKitQueue(
 ): boolean {
   const snapshot = readMusicKitQueue(instance, event);
   if (!snapshot) return false;
-  const tracks = snapshot.items.map((item) => normalizeTrack(item));
+  const previous = getState().playback.queue;
+  const claimedPrevious = new Set<number>();
+  const previousByTrackId = new Map<string, number[]>();
+  previous.forEach((candidate, candidateIndex) => {
+    for (const id of new Set([candidate.id, candidate.catalogId])) {
+      if (!id) continue;
+      const bucket = previousByTrackId.get(id);
+      if (bucket) bucket.push(candidateIndex);
+      else previousByTrackId.set(id, [candidateIndex]);
+    }
+  });
+  const tracks = snapshot.items.map((item, index) => {
+    const normalized = normalizeTrack(item);
+    const samePosition = previous[index];
+    let previousIndex =
+      samePosition &&
+      !claimedPrevious.has(index) &&
+      isSameTrack(normalized, samePosition)
+        ? index
+        : -1;
+    if (previousIndex < 0) {
+      for (const id of new Set([normalized.id, normalized.catalogId])) {
+        const match = id
+          ? previousByTrackId
+              .get(id)
+              ?.find((candidateIndex) => !claimedPrevious.has(candidateIndex))
+          : undefined;
+        if (match !== undefined && (previousIndex < 0 || match < previousIndex))
+          previousIndex = match;
+      }
+    }
+
+    if (previousIndex < 0) return normalized;
+    claimedPrevious.add(previousIndex);
+    const existing = previous[previousIndex];
+    return {
+      ...normalized,
+      ...(normalized.albumRef || !existing.albumRef
+        ? {}
+        : { albumRef: existing.albumRef }),
+      ...(normalized.artistRefs?.length || !existing.artistRefs?.length
+        ? {}
+        : { artistRefs: existing.artistRefs }),
+    };
+  });
   setQueue(tracks, snapshot.index);
   const current = tracks[snapshot.index];
   setCurrentTrack(current, snapshot.index);

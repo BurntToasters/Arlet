@@ -33,6 +33,13 @@ export interface MusicResourceRef {
   type: PlaylistTrackResourceType;
 }
 
+/** A routable album or artist relationship carried by a song. */
+export interface MusicEntityRef {
+  id: MusicId;
+  name?: string;
+  source: MusicSource;
+}
+
 export interface Artwork {
   url: string;
   width: number;
@@ -44,6 +51,8 @@ export interface Track {
   title: string;
   artistName: string;
   albumTitle?: string;
+  albumRef?: MusicEntityRef;
+  artistRefs?: MusicEntityRef[];
   artwork?: Artwork;
   durationMs?: number;
   explicit?: boolean;

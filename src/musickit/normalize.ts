@@ -3,6 +3,7 @@ import type {
   Artist,
   Artwork,
   LibraryItem,
+  MusicEntityRef,
   MusicResourceRef,
   MusicResourceType,
   MusicSource,
@@ -88,6 +89,172 @@ function relationshipsOf(resource: AppleMusicResource): UnknownRecord {
 function relationshipData(resource: AppleMusicResource, name: string): unknown {
   const relationship = asRecord(relationshipsOf(resource)[name]);
   return relationship?.data;
+}
+
+function sourceFromType(value: unknown, fallback: MusicSource): MusicSource {
+  const source = stringValue(value);
+  if (source === "library" || source === "catalog") return source;
+  if (source?.startsWith("library-")) return "library";
+  if (
+    source?.startsWith("catalog-") ||
+    source === "albums" ||
+    source === "artists"
+  ) {
+    return "catalog";
+  }
+  return fallback;
+}
+
+function entityRef(
+  value: unknown,
+  fallbackSource: MusicSource,
+  fallbackName?: string,
+): MusicEntityRef | undefined {
+  const record = asRecord(value);
+  const id = stringValue(record?.id);
+  if (!id) return undefined;
+  const attributes = asRecord(record?.attributes);
+  const name =
+    stringValue(record?.name, record?.title, attributes?.name) ?? fallbackName;
+  return {
+    id,
+    ...(name ? { name } : {}),
+    source: sourceFromType(record?.source ?? record?.type, fallbackSource),
+  };
+}
+
+function relationValues(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  return value === undefined || value === null ? [] : [value];
+}
+
+function relationRefs(
+  resource: AppleMusicResource,
+  name: string,
+  fallbackSource: MusicSource,
+  fallbackNames: string[],
+): MusicEntityRef[] {
+  return relationValues(relationshipData(resource, name))
+    .map((value, index) =>
+      entityRef(value, fallbackSource, fallbackNames[index]),
+    )
+    .filter((value): value is MusicEntityRef => value !== undefined);
+}
+
+function resourceWithRelationships(value: unknown): {
+  resource: AppleMusicResource;
+  included: unknown[];
+} {
+  const root = asRecord(value);
+  const data = root?.data;
+  const firstData = Array.isArray(data) ? data[0] : data;
+  const candidate = asRecord(firstData);
+  const resource =
+    candidate && typeof candidate.id === "string"
+      ? (candidate as AppleMusicResource)
+      : ((root ?? {}) as AppleMusicResource);
+  const included = Array.isArray(root?.included) ? root.included : [];
+  return { resource, included };
+}
+
+function nameFromIncluded(
+  ref: MusicEntityRef,
+  included: unknown[],
+): string | undefined {
+  for (const value of included) {
+    const record = asRecord(value);
+    if (
+      stringValue(record?.id) === ref.id &&
+      sourceFromType(record?.type, ref.source) === ref.source
+    ) {
+      return stringValue(asRecord(record?.attributes)?.name);
+    }
+  }
+  return undefined;
+}
+
+/** Extract routable IDs only from real song relationships or carried refs. */
+export function normalizeTrackNavigation(
+  value: unknown,
+): Pick<Track, "albumRef" | "artistRefs"> {
+  const root = asRecord(value);
+  const { resource, included } = resourceWithRelationships(value);
+  const attributes = attributesOf(resource);
+  const resourceRecord = asRecord(resource) ?? {};
+  const trackRecord = resourceRecord;
+  const type =
+    resourceType(resource) ??
+    (stringValue(trackRecord.resourceType) as MusicResourceType | undefined);
+  const fallbackSource = resourceSource(type);
+  const albumFallbackName =
+    stringValue(
+      trackRecord.albumTitle,
+      trackRecord.albumName,
+      root?.albumTitle,
+      root?.albumName,
+      attributes.albumName,
+    ) ?? undefined;
+  const carriedAlbum = entityRef(
+    trackRecord.albumRef ?? root?.albumRef,
+    fallbackSource,
+    albumFallbackName,
+  );
+  const relatedAlbums = relationRefs(
+    resource,
+    "albums",
+    fallbackSource,
+    albumFallbackName ? [albumFallbackName] : [],
+  );
+  const legacyAlbum = relationRefs(
+    resource,
+    "album",
+    fallbackSource,
+    albumFallbackName ? [albumFallbackName] : [],
+  );
+  let albumRef = carriedAlbum ?? relatedAlbums[0] ?? legacyAlbum[0];
+  if (albumRef && !albumRef.name) {
+    albumRef = {
+      ...albumRef,
+      name: nameFromIncluded(albumRef, included) ?? albumFallbackName,
+    };
+    if (!albumRef.name) delete albumRef.name;
+  }
+
+  const rawArtists = trackRecord.artistRefs ?? root?.artistRefs;
+  const carriedArtists = Array.isArray(rawArtists)
+    ? rawArtists
+        .map((ref) => entityRef(ref, fallbackSource))
+        .filter((ref): ref is MusicEntityRef => ref !== undefined)
+    : [];
+  const relatedArtists = relationRefs(resource, "artists", fallbackSource, []);
+  const artistRefs = carriedArtists.length ? carriedArtists : relatedArtists;
+  const fallbackArtistName =
+    artistRefs.length === 1
+      ? stringValue(
+          trackRecord.artistName,
+          root?.artistName,
+          attributes.artistName,
+        )
+      : undefined;
+  const uniqueArtists = new Map<string, MusicEntityRef>();
+  for (const ref of artistRefs) {
+    const key = `${ref.source}:${ref.id}`;
+    const name =
+      ref.name ?? nameFromIncluded(ref, included) ?? fallbackArtistName;
+    const named = name ? { ...ref, name } : ref;
+    const existing = uniqueArtists.get(key);
+    if (!existing || (!existing.name && named.name))
+      uniqueArtists.set(key, named);
+  }
+  const normalizedArtists = [...uniqueArtists.values()];
+  return {
+    ...(albumRef ? { albumRef } : {}),
+    ...(normalizedArtists.length
+      ? {
+          artistRefs: normalizedArtists,
+        }
+      : {}),
+  };
 }
 
 function firstResourceId(value: unknown): string | undefined {
@@ -187,6 +354,7 @@ export function normalizeTrack(item: MusicKit.MediaItem): Track {
     title,
     artistName,
     albumTitle: albumName,
+    ...normalizeTrackNavigation(item),
     artwork: normalizeArtwork(item),
     durationMs: catalogDurationMs(item),
     ...(type ? { resourceType: type } : {}),
@@ -210,6 +378,7 @@ export function normalizeCatalogSong(resource: CatalogSongResource): Track {
     title,
     artistName,
     albumTitle: stringValue(attributes.albumName),
+    ...normalizeTrackNavigation(resource),
     artwork,
     durationMs:
       typeof attributes.durationInMillis === "number" &&
@@ -238,6 +407,7 @@ function normalizeResourceTrack(
     title: stringValue(attributes.name) ?? "Unknown Title",
     artistName: stringValue(attributes.artistName) ?? "Unknown Artist",
     albumTitle: stringValue(attributes.albumName),
+    ...normalizeTrackNavigation(resource),
     artwork: artworkFromUnknown(attributes.artwork),
     durationMs,
     resourceType: type,

@@ -12,12 +12,16 @@ import {
   VolumeX,
 } from "lucide-preact";
 import type { JSX } from "preact";
+import { useEffect, useState } from "preact/hooks";
 import {
   useAppController,
+  useAppRouter,
   useAppState,
   usePlaybackPosition,
 } from "../app/context.tsx";
 import type { AppErrorCode } from "../domain/errors.ts";
+import type { Track } from "../domain/music.ts";
+import type { TrackNavigation } from "../musickit/song-navigation.ts";
 import { Artwork } from "./Artwork.tsx";
 import { IconButton } from "./IconButton.tsx";
 import { reportActionError } from "./action-errors.ts";
@@ -88,12 +92,81 @@ function PlaybackProgress({
 export function PlayerBar(): JSX.Element {
   const state = useAppState();
   const controller = useAppController();
+  const router = useAppRouter();
   const playback = state.playback;
   const current = playback.current;
   const playing = playback.status === "playing";
   const loading = playback.status === "loading";
   const canControl =
     state.initialization.status === "ready" && Boolean(current);
+  const [resolvedNavigation, setResolvedNavigation] = useState<{
+    track: Track;
+    value: TrackNavigation;
+  }>();
+
+  useEffect(() => {
+    let active = true;
+    if (!current) {
+      setResolvedNavigation(undefined);
+      return () => {
+        active = false;
+      };
+    }
+    const resolve = controller.resolveTrackNavigation;
+    if (!resolve) {
+      setResolvedNavigation({
+        track: current,
+        value: {
+          album: current.albumRef,
+          artists: current.artistRefs ?? [],
+        },
+      });
+      return () => {
+        active = false;
+      };
+    }
+    void resolve(current)
+      .then((value) => {
+        if (active) setResolvedNavigation({ track: current, value });
+      })
+      .catch((error: unknown) => {
+        if (active) reportActionError(error);
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    controller,
+    current,
+    current?.id,
+    current?.catalogId,
+    current?.albumTitle,
+    current?.artistName,
+    current?.albumRef?.id,
+    JSON.stringify(current?.artistRefs ?? []),
+  ]);
+
+  const navigation =
+    current &&
+    resolvedNavigation &&
+    resolvedNavigation.track.id === current.id &&
+    resolvedNavigation.track.catalogId === current.catalogId
+      ? resolvedNavigation.value
+      : {
+          album: current?.albumRef,
+          artists: current?.artistRefs ?? [],
+        };
+
+  const navigateTo = (
+    kind: "album" | "artist",
+    ref: NonNullable<TrackNavigation["album"]>,
+  ): void => {
+    router.navigate({
+      kind,
+      id: ref.id,
+      ...(ref.source === "catalog" ? { source: "catalog" } : {}),
+    });
+  };
 
   const run = (action: () => Promise<void>): void => {
     void action().catch(reportActionError);
@@ -101,7 +174,24 @@ export function PlayerBar(): JSX.Element {
 
   return (
     <footer className="player-bar" aria-label="Now playing">
-      <div className="player-track">
+      <div
+        className="player-track"
+        data-context-kind={current ? "track" : undefined}
+        data-context-id={current?.id}
+        data-context-title={current?.title}
+        data-context-artist={current?.artistName}
+        data-context-album={current?.albumTitle}
+        data-context-resource-type={current?.resourceType}
+        data-context-catalog-id={current?.catalogId}
+        data-context-album-ref={
+          navigation.album ? JSON.stringify(navigation.album) : undefined
+        }
+        data-context-artist-refs={
+          navigation.artists.length
+            ? JSON.stringify(navigation.artists)
+            : undefined
+        }
+      >
         <Artwork
           track={current}
           size="sm"
@@ -109,11 +199,47 @@ export function PlayerBar(): JSX.Element {
         />
         <div className="player-track-copy">
           <strong title={current?.title}>
-            {current?.title ?? "Nothing playing"}
+            {current?.title && navigation.album ? (
+              <button
+                className="player-title-album"
+                type="button"
+                data-player-navigation="album"
+                data-player-navigation-id={navigation.album.id}
+                aria-label={`Go to album: ${navigation.album.name ?? current.title}`}
+                onClick={() => navigateTo("album", navigation.album!)}
+              >
+                {current.title}
+              </button>
+            ) : (
+              (current?.title ?? "Nothing playing")
+            )}
           </strong>
-          <span title={current?.artistName}>
-            {current?.artistName ?? "Choose something to listen to"}
-          </span>
+          <div className="player-track-links">
+            {navigation.artists.length ? (
+              navigation.artists.map((artist, index) => (
+                <span className="player-track-link-group" key={artist.id}>
+                  {index > 0 ? <span aria-hidden="true">, </span> : null}
+                  <button
+                    type="button"
+                    data-player-navigation="artist"
+                    data-player-navigation-id={artist.id}
+                    aria-label={`Go to artist: ${artist.name ?? `Artist ${index + 1}`}`}
+                    title={artist.name ?? current?.artistName}
+                    onClick={() => navigateTo("artist", artist)}
+                  >
+                    {artist.name ??
+                      (navigation.artists.length === 1
+                        ? current?.artistName
+                        : `Artist ${index + 1}`)}
+                  </button>
+                </span>
+              ))
+            ) : current?.artistName ? (
+              <span title={current.artistName}>{current.artistName}</span>
+            ) : (
+              <span>Choose something to listen to</span>
+            )}
+          </div>
         </div>
         {current?.explicit ? <span className="explicit-badge">E</span> : null}
       </div>

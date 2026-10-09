@@ -50,6 +50,16 @@ interface DetailController {
     source?: DetailSource,
     options?: { refresh?: boolean },
   ) => Promise<unknown>;
+  playAlbum?: (
+    id: string,
+    source?: DetailSource,
+    startIndex?: number,
+  ) => Promise<void>;
+  playPlaylist?: (
+    id: string,
+    source?: DetailSource,
+    startIndex?: number,
+  ) => Promise<void>;
   refreshCurrentData?: () => Promise<unknown>;
 }
 
@@ -160,23 +170,37 @@ function TrackList({
   resources,
   canPlay,
   onPlay,
+  parentKind,
+  parentId,
+  parentSource,
 }: {
   resources: ResourceLike[];
   canPlay: boolean;
-  onPlay: (track: Track) => void;
+  onPlay: (track: Track, index: number) => void;
+  parentKind: "album" | "playlist";
+  parentId: string;
+  parentSource: DetailSource;
 }): JSX.Element {
   return (
     <section className="library-list-panel" aria-label="Tracks">
       <VirtualList
         className="library-track-list"
         items={resources}
-        getKey={(resource) => resource.id}
+        getKey={(resource, index) =>
+          `${resource.type ?? "track"}:${resource.id}:${index}`
+        }
         renderRow={(resource, index) => (
           <LibraryTrackRow
             resource={resource}
             index={index}
             onPlay={onPlay}
             disabled={!canPlay}
+            contextData={{
+              "data-context-parent-kind": parentKind,
+              "data-context-parent-id": parentId,
+              "data-context-parent-source": parentSource,
+              "data-context-parent-index": String(index),
+            }}
           />
         )}
       />
@@ -238,13 +262,26 @@ export function LibraryDetailView({
     source,
   ]);
 
-  const playTrack = (track: Track): void =>
-    act(() => controller.playTracks([track]));
-  const playAll = (): void => {
+  const playbackSource: DetailSource =
+    source ?? (resource ? resourceSource(resource) : undefined) ?? "library";
+  const playCollection = (startIndex: number): Promise<void> | undefined => {
+    if (kind === "playlist" && extendedController.playPlaylist) {
+      return extendedController.playPlaylist(id, playbackSource, startIndex);
+    }
+    if (kind === "album" && extendedController.playAlbum) {
+      return extendedController.playAlbum(id, playbackSource, startIndex);
+    }
     const tracks = resources
       .map(toTrack)
       .filter((track): track is Track => Boolean(track));
-    if (tracks.length) act(() => controller.playTracks(tracks));
+    return tracks.length
+      ? controller.playTracks(tracks, startIndex)
+      : undefined;
+  };
+  const playTrack = (_track: Track, index: number): void =>
+    act(() => playCollection(index));
+  const playAll = (): void => {
+    if (resources.length) act(() => playCollection(0));
   };
 
   if (!authorized && !offline) {
@@ -417,6 +454,9 @@ export function LibraryDetailView({
           resources={resources}
           canPlay={authorized}
           onPlay={playTrack}
+          parentKind={kind === "playlist" ? "playlist" : "album"}
+          parentId={id}
+          parentSource={playbackSource}
         />
       ) : (
         <EmptyState

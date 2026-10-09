@@ -45,6 +45,12 @@ export function SongRow({
       <div
         className={current ? "song-row-shell is-current" : "song-row-shell"}
         {...contextData}
+        data-context-album-ref={
+          track.albumRef ? JSON.stringify(track.albumRef) : undefined
+        }
+        data-context-artist-refs={
+          track.artistRefs ? JSON.stringify(track.artistRefs) : undefined
+        }
       >
         <button
           className={rowClassName}

@@ -21,6 +21,8 @@ declare namespace MusicKit {
     musicUserToken: string;
     developerToken?: string;
     setQueue(options: QueueOptions): Promise<void>;
+    /** Select and begin playback at a queue index when the runtime exposes it. */
+    changeToMediaAtIndex?(index: number): Promise<number>;
     /** Recently loaded library songs exposed by MusicKit JS when available. */
     librarySongs?: MediaItem[];
     /** Current playlist/resource descriptor exposed by MusicKit JS. */
@@ -129,6 +131,8 @@ declare namespace MusicKit {
     currentPlaybackQueueItemIndex?: number;
     shuffle?: boolean;
     repeatMode?: number | "off" | "all" | "one";
+    /** Select and begin playback at a queue index in MusicKit JS v3. */
+    changeToMediaAtIndex?(index: number): Promise<number>;
     [key: string]: unknown;
   }
 

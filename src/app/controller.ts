@@ -92,7 +92,12 @@ import {
   createLibraryLoader,
   type DetailLoadOptions,
 } from "./library-loader.ts";
+import { createCollectionPlayback } from "./collection-playback.ts";
 import { createPlayback } from "./playback.ts";
+import {
+  createTrackNavigationResolver,
+  type TrackNavigation,
+} from "../musickit/song-navigation.ts";
 
 export type { DetailLoadOptions } from "./library-loader.ts";
 
@@ -177,6 +182,17 @@ export interface AppController {
   setSearchSource?(source: "catalog" | "library"): void;
   playFromSearch(index: number): Promise<void>;
   playTracks(tracks: readonly Track[], startIndex?: number): Promise<void>;
+  playPlaylist?(
+    id: string,
+    source?: MusicSource,
+    startIndex?: number,
+  ): Promise<void>;
+  playAlbum?(
+    id: string,
+    source?: MusicSource,
+    startIndex?: number,
+  ): Promise<void>;
+  resolveTrackNavigation?(track: Track): Promise<TrackNavigation>;
   playConsecutive(): Promise<void>;
   togglePlayback(): Promise<void>;
   play?(): Promise<void>;
@@ -266,8 +282,22 @@ export function createAppController(
   );
   const discovery = createDiscovery(context, dependencies);
   const playback = createPlayback(context);
+  const trackNavigation = createTrackNavigationResolver(requireMusic);
   const { requireLibrary, ensureLibraryCache, clearLibraryCache } = library;
-
+  const collections = createCollectionPlayback({
+    requireMusic,
+    getMusic: () => music,
+    requireLibrary,
+    playTracks: playback.playTracks,
+  });
+  const playTracks = (
+    tracks: readonly Track[],
+    startIndex = 0,
+  ): Promise<void> => {
+    collections.invalidate();
+    return playback.playTracks(tracks, startIndex);
+  };
+  const playCollection = collections.play;
   const updater =
     dependencies.updater ??
     createUpdaterService({
@@ -503,6 +533,7 @@ export function createAppController(
     },
 
     async signOut(): Promise<void> {
+      collections.invalidate();
       try {
         const instance = requireMusic();
         // Sign-out resets the UI to idle; audio must not keep playing.
@@ -512,6 +543,7 @@ export function createAppController(
           log(`Stop before sign-out failed: ${safeErrorMessage(error)}`);
         }
         await unauthorize(instance);
+        trackNavigation.clear();
         await clearLibraryCache();
         // Pins are local and not tied to an Apple ID; the next account to
         // sign in on this PC must not see them.
@@ -544,7 +576,10 @@ export function createAppController(
 
     loadRadio: discovery.loadRadio,
 
-    playStation: playback.playStation,
+    playStation(station: Station): Promise<void> {
+      collections.invalidate();
+      return playback.playStation(station);
+    },
 
     loadAlbum(
       id: string,
@@ -686,11 +721,24 @@ export function createAppController(
       }
     },
 
-    playNextTracks: playback.playNextTracks,
+    playNextTracks(
+      tracks: readonly Track[] | readonly string[],
+    ): Promise<void> {
+      collections.invalidate();
+      return playback.playNextTracks(tracks);
+    },
 
-    playLaterTracks: playback.playLaterTracks,
+    playLaterTracks(
+      tracks: readonly Track[] | readonly string[],
+    ): Promise<void> {
+      collections.invalidate();
+      return playback.playLaterTracks(tracks);
+    },
 
-    playQueueItem: playback.playQueueItem,
+    playQueueItem(index: number): Promise<void> {
+      collections.invalidate();
+      return playback.playQueueItem(index);
+    },
 
     async refreshCurrentData(): Promise<void> {
       const route = getState().navigation;
@@ -734,10 +782,15 @@ export function createAppController(
     search: discovery.search,
 
     async playFromSearch(index: number): Promise<void> {
-      await playback.playTracks(discovery.searchTracks(), index);
+      await playTracks(discovery.searchTracks().slice(Math.max(0, index)));
     },
 
-    playTracks: playback.playTracks,
+    playTracks,
+    playPlaylist: (id, source = "library", startIndex = 0) =>
+      playCollection("playlist", id, source, startIndex),
+    playAlbum: (id, source = "library", startIndex = 0) =>
+      playCollection("album", id, source, startIndex),
+    resolveTrackNavigation: trackNavigation.resolve,
 
     async playConsecutive(): Promise<void> {
       const lastTracks = discovery.lastSearchTracks();
@@ -747,7 +800,7 @@ export function createAppController(
           `Need at least ${CONSECUTIVE_TRACK_TARGET} search results.`,
         );
       }
-      await playback.playTracks(tracks.slice(0, CONSECUTIVE_TRACK_TARGET));
+      await playTracks(tracks.slice(0, CONSECUTIVE_TRACK_TARGET));
     },
 
     togglePlayback: playback.togglePlayback,
@@ -866,6 +919,8 @@ export function createAppController(
     log,
 
     dispose(): void {
+      collections.invalidate();
+      trackNavigation.clear();
       if (volumeSaveTimer !== undefined) {
         clearTimeout(volumeSaveTimer);
         flushVolumeSave();

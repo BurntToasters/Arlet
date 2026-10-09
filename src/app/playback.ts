@@ -1,6 +1,7 @@
 import { mapErrorToCode } from "../musickit/errors.ts";
 import {
   queueOptionsForTracks,
+  changeToMediaAtIndex,
   readPlaybackModes,
   seekToTime,
   setRepeatMode as setMusicRepeatMode,
@@ -69,12 +70,43 @@ export function createPlayback(context: ControllerContext) {
     startIndex = 0,
   ): Promise<void> => {
     const instance = requireMusic();
-    const queue = tracks.slice(Math.max(0, startIndex));
-    if (queue.length === 0) throw new Error("Queue is empty");
-    setQueue([...queue], 0);
+    if (tracks.length === 0) throw new Error("Queue is empty");
+    if (
+      !Number.isInteger(startIndex) ||
+      startIndex < 0 ||
+      startIndex >= tracks.length
+    ) {
+      throw new Error("The selected song is unavailable.");
+    }
+    const needsExplicitSelection =
+      startIndex > 0 || readPlaybackModes(instance).shuffleMode === "songs";
+    const providerPlayer = (instance.player ?? instance) as unknown as Record<
+      string,
+      unknown
+    >;
+    const instanceRecord = instance as unknown as Record<string, unknown>;
+    if (
+      needsExplicitSelection &&
+      typeof providerPlayer.changeToMediaAtIndex !== "function" &&
+      typeof instanceRecord.changeToMediaAtIndex !== "function"
+    ) {
+      throw new Error(
+        "Selecting a song in the MusicKit queue is not available in this runtime.",
+      );
+    }
+    const queue = [...tracks];
+    setQueue(queue, startIndex);
     setPlaybackStatus("loading");
     try {
       await instance.setQueue(queueOptionsForTracks(queue));
+      if (needsExplicitSelection) {
+        const selected = await changeToMediaAtIndex(instance, startIndex);
+        if (!selected) {
+          throw new Error(
+            "Selecting a song in the MusicKit queue is not available in this runtime.",
+          );
+        }
+      }
       await instance.play();
     } catch (error) {
       reportPlayFailure("Play failed", error);
