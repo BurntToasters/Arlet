@@ -266,12 +266,13 @@ export function createPlayback(context: ControllerContext) {
 
     async playStation(station: Station): Promise<void> {
       const url = station.url?.trim();
-      if (!url) throw new Error("This station cannot be played.");
+      const id = station.id.trim();
+      if (!url && !id) throw new Error("This station cannot be played.");
       const instance = requireMusic();
       clearPlaybackError();
       setPlaybackStatus("loading");
       try {
-        await instance.setQueue({ url });
+        await instance.setQueue(url ? { url } : { station: id });
         await instance.play();
       } catch (error) {
         reportPlayFailure("Station play failed", error);

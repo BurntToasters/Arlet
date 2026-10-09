@@ -16,6 +16,7 @@ import {
   PinOff,
   Play,
   Plus,
+  Radio,
   RefreshCw,
   Search,
   Scissors,
@@ -52,6 +53,7 @@ import {
 import { requestPlaylistDialog } from "./playlist-events.ts";
 import { reportActionError, reportQueueEdit } from "./action-errors.ts";
 import type { QueueEditTier } from "../musickit/queue-edit.ts";
+import type { StationTarget } from "../musickit/stations.ts";
 
 type ContextKind = "track" | "album" | "artist" | "playlist" | "folder";
 
@@ -548,6 +550,13 @@ interface AppControllerWithContext extends Record<string, unknown> {
   unpin?: (id: string) => Promise<void>;
   resolveTrackNavigation?: (track: Track) => Promise<TrackNavigation>;
   removeQueueItem?: (index: number) => Promise<QueueEditTier>;
+  startStation?: (target: StationTarget) => Promise<void>;
+  queueCollection?: (
+    kind: "playlist" | "album",
+    id: string,
+    source: MusicSource,
+    where: "next" | "later",
+  ) => Promise<void>;
   rate?: (target: RatingTarget, value: RatingValue) => Promise<void>;
   loadRating?: (target: RatingTarget) => Promise<void>;
   addToLibrary?: (target: RatingTarget) => Promise<void>;
@@ -715,6 +724,21 @@ function buildItems({
           const playLater = controller.playLaterTracks;
           if (playLater) void playLater([track]).catch(reportActionError);
           else void statefulPlay(controller, track).catch(reportActionError);
+        }),
+      },
+      {
+        id: "start-station",
+        label: "Start Station",
+        icon: Radio,
+        disabled: !controller.startStation,
+        action: run(() => {
+          void controller
+            .startStation?.({
+              kind: "song",
+              id: track.id,
+              catalogId: track.catalogId,
+            })
+            .catch(reportActionError);
         }),
       },
       {
@@ -896,7 +920,49 @@ function buildItems({
               .catch(reportActionError);
         }),
       },
+      {
+        id: "play-next-collection",
+        label: "Play next",
+        icon: SkipForward,
+        disabled: !controller.queueCollection,
+        action: run(() => {
+          void controller
+            .queueCollection?.(kind, collectionId, source, "next")
+            .catch(reportActionError);
+        }),
+      },
+      {
+        id: "play-later-collection",
+        label: "Play later",
+        icon: Forward,
+        disabled: !controller.queueCollection,
+        action: run(() => {
+          void controller
+            .queueCollection?.(kind, collectionId, source, "later")
+            .catch(reportActionError);
+        }),
+      },
     );
+  }
+
+  if (target.kind === "artist" && target.id) {
+    const artistId = target.id;
+    items.push({
+      id: "start-station",
+      label: "Start Station",
+      icon: Radio,
+      disabled: !controller.startStation,
+      action: run(() => {
+        void controller
+          .startStation?.({
+            kind: "artist",
+            id: artistId,
+            catalogId: target.catalogId,
+            source: target.source,
+          })
+          .catch(reportActionError);
+      }),
+    });
   }
 
   if (target.kind === "playlist" || target.kind === "folder" || !target.kind) {

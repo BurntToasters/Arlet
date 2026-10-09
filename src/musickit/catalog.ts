@@ -414,7 +414,9 @@ function stationUrl(resource: AppleMusicResource): string | undefined {
   return candidate?.trim();
 }
 
-function normalizeStation(resource: AppleMusicResource): Station | undefined {
+export function normalizeStation(
+  resource: AppleMusicResource,
+): Station | undefined {
   const record = asRecord(resource);
   const attributes = asRecord(record?.attributes);
   const id = typeof record?.id === "string" ? record.id : undefined;

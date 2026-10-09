@@ -20,6 +20,10 @@ import {
   setAutoplayEnabled,
   syncMusicKitQueue,
 } from "../musickit/player.ts";
+import {
+  createStationResolver,
+  type StationTarget,
+} from "../musickit/stations.ts";
 import { createSleepTimer, type SleepTimerOption } from "./sleep-timer.ts";
 import { normalizeTrack } from "../musickit/normalize.ts";
 import { classifyPlaybackKind } from "../musickit/preview.ts";
@@ -98,6 +102,7 @@ import {
 } from "./library-loader.ts";
 import {
   createCollectionPlayback,
+  loadAllTracks,
   type CollectionPlayOptions,
 } from "./collection-playback.ts";
 import { createPlayback } from "./playback.ts";
@@ -199,6 +204,22 @@ export interface AppController {
   setSearchSource?(source: "catalog" | "library"): void;
   playFromSearch(index: number): Promise<void>;
   playTracks(tracks: readonly Track[], startIndex?: number): Promise<void>;
+  /** Plays the tracks in shuffled order. */
+  playTracksShuffled(tracks: readonly Track[]): Promise<void>;
+  /** Looks up the song or artist station and plays it; throws if none. */
+  startStation(target: StationTarget): Promise<void>;
+  /** Loads every page, then inserts after the current song or at the end. */
+  queueCollection(
+    kind: "playlist" | "album",
+    id: string,
+    source: MusicSource,
+    where: "next" | "later",
+  ): Promise<void>;
+  loadArtistTopSongs(
+    id: string,
+    source: MusicSource,
+    catalogId?: string,
+  ): Promise<Track[]>;
   playCollection?(
     kind: "playlist" | "album",
     id: string,
@@ -337,6 +358,20 @@ export function createAppController(
     return playback.playTracks(tracks, startIndex);
   };
   const playCollection = collections.play;
+  let stationResolver:
+    | {
+        instance: MusicKit.MusicKitInstance;
+        resolver: ReturnType<typeof createStationResolver>;
+      }
+    | undefined;
+  /** Lookups are cached per MusicKit instance, so sign-out drops them. */
+  const stations = (): ReturnType<typeof createStationResolver> => {
+    const instance = requireMusic();
+    if (stationResolver?.instance !== instance) {
+      stationResolver = { instance, resolver: createStationResolver(instance) };
+    }
+    return stationResolver.resolver;
+  };
   const playbackSession = createPlaybackSession({
     invokeFn,
     now,
@@ -889,6 +924,36 @@ export function createAppController(
     },
 
     playTracks,
+    playTracksShuffled: collections.playShuffled,
+    async startStation(target: StationTarget): Promise<void> {
+      collections.invalidate();
+      const mine = collections.generation();
+      const instance = requireMusic();
+      const station = await stations().stationFor(target);
+      // Other playback may have started while the lookup was pending.
+      if (collections.generation() !== mine || instance !== music) return;
+      if (!station) {
+        throw new Error(`No station is available for this ${target.kind}.`);
+      }
+      await playback.playStation(station);
+    },
+    async queueCollection(kind, id, source, where): Promise<void> {
+      const instance = requireMusic();
+      const tracks = await loadAllTracks(
+        kind,
+        id,
+        source,
+        requireLibrary(),
+        () => instance !== music,
+      );
+      if (!tracks) return;
+      collections.invalidate();
+      await (where === "next"
+        ? playback.playNextTracks(tracks)
+        : playback.playLaterTracks(tracks));
+    },
+    loadArtistTopSongs: (id, source, catalogId) =>
+      stations().topSongs(id, catalogId, source),
     playCollection: (kind, id, source = "library", startIndex = 0, options) =>
       playCollection(kind, id, source, startIndex, options),
     playPlaylist: (id, source = "library", startIndex = 0) =>

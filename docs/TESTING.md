@@ -169,6 +169,18 @@ Failure scenarios to cover before changing production code:
   exist, break playback.
 - Saving on every position tick thrashes the disk.
 
+## Radio and artist pages
+
+- Start Station on a library song with no catalog ID, or an artist with none,
+  throws instead of reporting that no station is available.
+- A station lookup that finishes after the user started something else
+  replaces the newer playback.
+- Play next or Play later on an album or playlist queues only the first page,
+  the wrong order, or interrupts the current song.
+- Artist top songs for a library artist call the catalog with a library ID.
+- Top songs from a previous artist flash on the next artist page.
+- The shortcut list in Settings drifts from the real key handling.
+
 ## Release-only evidence
 
 The following checks require a Windows release environment and are kept out of

@@ -1,4 +1,4 @@
-import { X } from "lucide-preact";
+import { Radio, X } from "lucide-preact";
 import type { JSX } from "preact";
 import { useEffect, useRef } from "preact/hooks";
 import {
@@ -104,15 +104,34 @@ function NowPlayingDialog(): JSX.Element {
     >
       <header className="now-playing-header">
         <span className="eyebrow">Now playing</span>
-        <button
-          ref={closeRef}
-          className="icon-button"
-          type="button"
-          aria-label="Close Now Playing"
-          onClick={closeNowPlaying}
-        >
-          <X aria-hidden="true" size={18} strokeWidth={1.8} />
-        </button>
+        <div className="now-playing-header-actions">
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={!canControl}
+            onClick={() => {
+              if (!current) return;
+              controller
+                .startStation({
+                  kind: "song",
+                  id: current.id,
+                  catalogId: current.catalogId,
+                })
+                .catch(reportActionError);
+            }}
+          >
+            <Radio aria-hidden="true" size={16} /> Start Station
+          </button>
+          <button
+            ref={closeRef}
+            className="icon-button"
+            type="button"
+            aria-label="Close Now Playing"
+            onClick={closeNowPlaying}
+          >
+            <X aria-hidden="true" size={18} strokeWidth={1.8} />
+          </button>
+        </div>
       </header>
       <div className="now-playing-body">
         <section className="now-playing-hero">
