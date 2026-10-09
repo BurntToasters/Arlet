@@ -4,6 +4,7 @@ import {
   Download,
   ExternalLink,
   Info,
+  Keyboard,
   LifeBuoy,
   ListMusic,
   LoaderCircle,
@@ -21,6 +22,7 @@ import {
 import type { JSX } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { useAppController, useAppState } from "../app/context.tsx";
+import { SHORTCUT_HELP } from "../app/shortcuts.ts";
 import { LicensesDialog } from "../components/LicensesDialog.tsx";
 import { ResetSettingsDialog } from "../components/ResetSettingsDialog.tsx";
 import type {
@@ -481,6 +483,31 @@ export function SettingsView(): JSX.Element {
               dark mode.
             </span>
           </div>
+        </section>
+
+        <section
+          className="settings-section"
+          aria-labelledby="shortcuts-heading"
+        >
+          <div className="settings-section-heading">
+            <span className="settings-icon">
+              <Keyboard aria-hidden="true" size={19} strokeWidth={1.8} />
+            </span>
+            <div>
+              <h2 id="shortcuts-heading">Keyboard shortcuts</h2>
+              <p>Playback keys are off while you type in a field or dialog.</p>
+            </div>
+          </div>
+          <dl className="shortcut-list">
+            {SHORTCUT_HELP.map((entry) => (
+              <div key={entry.keys} className="shortcut-row">
+                <dt>
+                  <kbd>{entry.keys}</kbd>
+                </dt>
+                <dd>{entry.action}</dd>
+              </div>
+            ))}
+          </dl>
         </section>
 
         <section className="settings-section" aria-labelledby="support-heading">

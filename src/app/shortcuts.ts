@@ -8,6 +8,23 @@ export type ShortcutAction =
   | { type: "toggleMute" }
   | { type: "closeNowPlaying" };
 
+/** Listed in Settings; keep in step with `shortcutFor` and the App.tsx keys. */
+export const SHORTCUT_HELP: readonly { keys: string; action: string }[] = [
+  { keys: "Space", action: "Play or pause" },
+  { keys: "Ctrl+→", action: "Next song" },
+  { keys: "Ctrl+←", action: "Previous song" },
+  { keys: "Ctrl+↑", action: "Volume up" },
+  { keys: "Ctrl+↓", action: "Volume down" },
+  { keys: "Shift+→", action: "Skip forward 10 seconds" },
+  { keys: "Shift+←", action: "Skip back 10 seconds" },
+  { keys: "M", action: "Mute or unmute" },
+  { keys: "Esc", action: "Close Now Playing" },
+  { keys: "Ctrl+K", action: "Search Apple Music" },
+  { keys: "Ctrl+R", action: "Refresh current data" },
+  { keys: "Alt+←", action: "Back" },
+  { keys: "Alt+→", action: "Forward" },
+];
+
 const VOLUME_STEP = 0.05;
 const SEEK_STEP_SECONDS = 10;
 
