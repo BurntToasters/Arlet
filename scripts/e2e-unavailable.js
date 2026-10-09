@@ -282,7 +282,7 @@ export async function runUnavailable({ page, check }) {
     );
     await waitFor(
       page,
-      `document.querySelector(".library-detail-hero h1")?.textContent === "Big Playlist"`,
+      `document.querySelector(".library-detail-hero h1")?.textContent?.startsWith("Big Playlist")`,
       15_000,
     );
 

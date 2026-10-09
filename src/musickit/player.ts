@@ -263,7 +263,41 @@ export function readMusicKitQueue(
     itemIndex(items, instanceRecord.nowPlayingItem) ??
     itemIndex(items, playerRecord?.nowPlayingItem) ??
     0;
-  return { items, index: Math.min(index, Math.max(0, items.length - 1)) };
+  const clamped = Math.min(index, Math.max(0, items.length - 1));
+  return {
+    items,
+    index: alignWithNowPlaying(
+      items,
+      clamped,
+      instanceRecord.nowPlayingItem ?? playerRecord?.nowPlayingItem,
+    ),
+  };
+}
+
+/**
+ * MusicKit publishes reordered items (e.g. turning shuffle on) before it
+ * moves the queue position, so a reported position can name another song.
+ * The playing item wins: its occurrence nearest the reported position.
+ */
+function alignWithNowPlaying(
+  items: readonly MusicKit.MediaItem[],
+  index: number,
+  nowPlaying: unknown,
+): number {
+  const id = asRecord(nowPlaying)?.id;
+  if (typeof id !== "string" || !id) return index;
+  if (items[index]?.id === id) return index;
+  let nearest: number | undefined;
+  items.forEach((item, position) => {
+    if (item.id !== id) return;
+    if (
+      nearest === undefined ||
+      Math.abs(position - index) < Math.abs(nearest - index)
+    ) {
+      nearest = position;
+    }
+  });
+  return nearest ?? index;
 }
 
 /** Sync app queue from provider queue. Returns false when runtime hides queue. */

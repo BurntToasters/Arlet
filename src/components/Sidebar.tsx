@@ -16,7 +16,7 @@ import {
 import type { LucideIcon } from "lucide-preact";
 import type { JSX } from "preact";
 import { useAppRouter, useAppState } from "../app/context.tsx";
-import { setUiState } from "../state.ts";
+import { libraryDetailKey, setUiState } from "../state.ts";
 import { openSupportPage } from "../platform/support.ts";
 import { reportActionError } from "./action-errors.ts";
 import type { PinnedPlaylist } from "../domain/music.ts";
@@ -158,8 +158,13 @@ function resolvePinDisplay(
   state: ReturnType<typeof useAppState>,
   pin: PinnedPlaylist,
 ): { name?: string; artworkUrl?: string } {
+  // A pinned playlist that is open but not in the loaded list still has a name.
+  const opened = (
+    state.library?.details?.playlist as Record<string, unknown> | undefined
+  )?.[libraryDetailKey(pin.id, pin.source)] as { item?: unknown } | undefined;
   const candidates = [
     ...(state.library?.collections?.playlists?.items ?? []),
+    ...(opened?.item ? [opened.item] : []),
     ...(state.library?.details?.playlistFolder?.items ?? []),
     ...(state.home?.recentPlaylists ?? []),
     ...(state.home?.heavyRotation ?? []),

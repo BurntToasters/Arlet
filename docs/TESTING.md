@@ -101,6 +101,9 @@ Failure scenarios to cover before changing production code:
   `setQueue`; the start must be passed as `startWith`).
 - Shuffle state is read from the write-only `shuffle` property instead of
   `shuffleMode`, so the button and Shuffle play misreport.
+- Turning shuffle on mid-song shows a different song's title and artist:
+  MusicKit reorders the queue and publishes `queueItemsDidChange` before it
+  moves the queue position, so the old position names another song.
 - The Play button gives no feedback while a long playlist's pages load.
 - A keyboard shortcut calls a stale controller after the controller changes.
 
@@ -141,6 +144,12 @@ are not playable. Failure scenarios:
 - A capped queue ends after 500 songs instead of loading the rest of the
   playlist as it plays; a refill fires twice, refills after a new play or
   `Clear`, or interrupts the current song.
+
+## Layout
+
+- A horizontal scrollbar appears in the player or content area.
+- Long pinned playlist names wrap into tall blocks in the sidebar and push
+  the account row under the player bar instead of ending in an ellipsis.
 
 ## Keyboard and transport
 
