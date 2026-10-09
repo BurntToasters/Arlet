@@ -6,9 +6,11 @@ import {
   Info,
   LifeBuoy,
   LoaderCircle,
+  Minimize2,
   MonitorCog,
   Moon,
   Palette,
+  Play,
   RefreshCw,
   RotateCcw,
   Scale,
@@ -368,6 +370,73 @@ export function SettingsView(): JSX.Element {
               ) : null}
             </div>
           ) : null}
+        </section>
+
+        {state.playback.modeCapabilities?.autoplay ? (
+          <section
+            className="settings-section"
+            aria-labelledby="playback-heading"
+          >
+            <div className="settings-section-heading">
+              <span className="settings-icon">
+                <Play aria-hidden="true" size={19} strokeWidth={1.8} />
+              </span>
+              <div>
+                <h2 id="playback-heading">Playback</h2>
+                <p>Control what plays after your queue ends.</p>
+              </div>
+            </div>
+            <div className="settings-fields">
+              <label className="settings-field settings-toggle-field">
+                <span>
+                  <Play aria-hidden="true" size={16} strokeWidth={1.8} />{" "}
+                  Autoplay
+                </span>
+                <input
+                  type="checkbox"
+                  checked={settings.autoplay}
+                  onChange={(event) =>
+                    void Promise.resolve(
+                      controller.setAutoplay?.(event.currentTarget.checked),
+                    ).catch(reportActionError)
+                  }
+                />
+              </label>
+            </div>
+          </section>
+        ) : null}
+
+        <section className="settings-section" aria-labelledby="window-heading">
+          <div className="settings-section-heading">
+            <span className="settings-icon">
+              <Minimize2 aria-hidden="true" size={19} strokeWidth={1.8} />
+            </span>
+            <div>
+              <h2 id="window-heading">Window</h2>
+              <p>Choose what the close button does.</p>
+            </div>
+          </div>
+          <div className="settings-fields">
+            <label className="settings-field settings-toggle-field">
+              <span>
+                <Minimize2 aria-hidden="true" size={16} strokeWidth={1.8} />{" "}
+                Close to tray
+              </span>
+              <input
+                type="checkbox"
+                checked={settings.closeToTray}
+                onChange={(event) =>
+                  void Promise.resolve(
+                    controller.setCloseToTray?.(event.currentTarget.checked),
+                  ).catch(reportActionError)
+                }
+              />
+            </label>
+          </div>
+          <p className="settings-field-help">
+            With this on, closing the window keeps Arlet running in the tray.
+            Use Quit in the tray menu to exit.
+          </p>
         </section>
 
         <section

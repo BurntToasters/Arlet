@@ -21,6 +21,7 @@ import type { TrackNavigation } from "../musickit/song-navigation.ts";
 import { setUiState } from "../state.ts";
 import { Artwork } from "./Artwork.tsx";
 import { IconButton } from "./IconButton.tsx";
+import { SleepTimerButton } from "./SleepTimerButton.tsx";
 import { reportActionError } from "./action-errors.ts";
 import { PlaybackProgress, TransportControls } from "./TransportControls.tsx";
 
@@ -272,6 +273,7 @@ export function PlayerBar(): JSX.Element {
             }
           />
         ) : null}
+        <SleepTimerButton />
         {playback.error ? (
           <span className="player-error" title={playback.error.message}>
             <CircleAlert aria-hidden="true" size={15} strokeWidth={1.9} />

@@ -180,6 +180,16 @@ the deterministic smoke gate:
   provider-account fixtures.
 - Apple developer-token/account credentials are required for the manual
   MusicKit authorization and protected full-track playback matrix.
+- The Windows SMTC flyout and hardware media keys need a real desktop: the
+  timeline seek, shuffle and repeat buttons (and whether Windows shows them),
+  and Play, Pause, Next, and Previous with the app unfocused or minimized.
+  The E2E harness covers the frontend routing of these events only.
+- The tray menu needs a real desktop: Play/Pause, Next, Previous, Show Arlet,
+  and Quit (Quit must save the window geometry, then exit). Left-click shows
+  the window. The E2E harness covers close-to-tray and the second launch only.
+- `End of track` pauses at the next item change, so a brief bleed of the next
+  song may be audible on MusicKit before the pause lands. Listen for it on
+  protected and unprotected tracks.
 
 These external gates are intentionally opt-in and must run only on the release
 VM or a test machine with the appropriate credentials and signed artifacts.

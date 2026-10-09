@@ -14,6 +14,7 @@ export type NormalizedRepeatMode = "off" | "all" | "one";
 export interface PlaybackModeCapabilities {
   shuffle: boolean;
   repeat: boolean;
+  autoplay: boolean;
 }
 
 function playerRecord(
@@ -90,8 +91,27 @@ export function readPlaybackModes(instance: MusicKit.MusicKitInstance): {
     capabilities: {
       shuffle: writableProperty(record, "shuffle"),
       repeat: writableProperty(record, "repeatMode"),
+      autoplay: writableProperty(
+        instance as unknown as Record<string, unknown>,
+        "autoplayEnabled",
+      ),
     },
   };
+}
+
+/** Writes `autoplayEnabled` on the instance; false when the runtime rejects it. */
+export function setAutoplayEnabled(
+  instance: MusicKit.MusicKitInstance,
+  enabled: boolean,
+): boolean {
+  const record = instance as unknown as Record<string, unknown>;
+  if (!writableProperty(record, "autoplayEnabled")) return false;
+  try {
+    record.autoplayEnabled = enabled;
+    return record.autoplayEnabled === enabled;
+  } catch {
+    return false;
+  }
 }
 
 export function setShuffleMode(

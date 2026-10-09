@@ -538,6 +538,8 @@ function installMusicKitFixture() {
     musicUserToken: "fixture-music-user-token",
     isAuthorized: true,
     storefrontId: "us",
+    // Removing this property simulates a runtime without autoplay support.
+    autoplayEnabled: true,
     playbackState: STOPPED,
     player,
     api: { music: musicRequest, v3: { music: musicRequest } },
@@ -778,6 +780,33 @@ function installMusicKitFixture() {
         return true;
       }
       return selectIndex(nextIndex, transitionType);
+    },
+    /**
+     * Ends the current track; at queue end with autoplay on, MusicKit appends
+     * an item and keeps playing, as the real runtime does.
+     */
+    finishWithAutoplay() {
+      if (!state.queue.length) return false;
+      if (
+        state.queueIndex + 1 >= state.queue.length &&
+        player.repeatMode === 0 &&
+        !player.shuffle &&
+        instance.autoplayEnabled === true
+      ) {
+        state.queue.push(mediaItem(`autoplay-${state.queue.length + 1}`));
+        return selectIndex(state.queue.length - 1, "finishAutoplay");
+      }
+      return this.finishCurrentTrack();
+    },
+    /** Adds or removes `autoplayEnabled` and emits a mode change so the app re-reads it. */
+    setAutoplayAvailable(available) {
+      if (available) {
+        if (!("autoplayEnabled" in instance)) instance.autoplayEnabled = true;
+      } else {
+        delete instance.autoplayEnabled;
+      }
+      emit(events.shuffleModeDidChange, { shuffle: player.shuffle });
+      return "autoplayEnabled" in instance;
     },
     selectContext(idOrTarget) {
       const id = typeof idOrTarget === "string" ? idOrTarget : idOrTarget?.id;
