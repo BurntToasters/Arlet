@@ -70,15 +70,32 @@ function writableProperty(
   return key in record;
 }
 
+/**
+ * MusicKit v3 exposes shuffle as `shuffleMode` (0 off, 1 songs); `shuffle`
+ * is write-only there. Older shapes expose a readable `shuffle` boolean.
+ */
+function readShuffle(record: Record<string, unknown>): boolean {
+  const mode = record.shuffleMode;
+  if (typeof mode === "number") return mode === 1;
+  if (typeof mode === "string") return mode === "songs";
+  return record.shuffle === true;
+}
+
+function shuffleWritable(record: Record<string, unknown>): boolean {
+  return (
+    writableProperty(record, "shuffleMode") ||
+    writableProperty(record, "shuffle")
+  );
+}
+
 export function readPlaybackModes(instance: MusicKit.MusicKitInstance): {
   shuffleMode: "off" | "songs";
   repeatMode: NormalizedRepeatMode;
   capabilities: PlaybackModeCapabilities;
 } {
   const record = playerRecord(instance);
-  const shuffle = record.shuffle;
   const repeat = record.repeatMode;
-  const shuffleMode = shuffle === true ? "songs" : "off";
+  const shuffleMode = readShuffle(record) ? "songs" : "off";
   const repeatMode: NormalizedRepeatMode =
     repeat === 2 || repeat === "one"
       ? "one"
@@ -89,7 +106,7 @@ export function readPlaybackModes(instance: MusicKit.MusicKitInstance): {
     shuffleMode,
     repeatMode,
     capabilities: {
-      shuffle: writableProperty(record, "shuffle"),
+      shuffle: shuffleWritable(record),
       repeat: writableProperty(record, "repeatMode"),
       autoplay: writableProperty(
         instance as unknown as Record<string, unknown>,
@@ -119,10 +136,15 @@ export function setShuffleMode(
   enabled: boolean,
 ): boolean {
   const record = playerRecord(instance);
-  if (!writableProperty(record, "shuffle")) return false;
   try {
-    record.shuffle = enabled;
-    return record.shuffle === enabled;
+    if (writableProperty(record, "shuffleMode")) {
+      record.shuffleMode = enabled ? 1 : 0;
+    } else if (writableProperty(record, "shuffle")) {
+      record.shuffle = enabled;
+    } else {
+      return false;
+    }
+    return readShuffle(record) === enabled;
   } catch {
     return false;
   }
@@ -306,8 +328,9 @@ export function syncMusicKitQueue(
  * Queue option shape matching track origin. MusicKit JS resolves queue
  * descriptors through catalog endpoints, so always prefer the catalog id:
  * the dedicated library descriptor keys build library URLs MusicKit cannot
- * resolve and fail playback. Library-only songs (no catalog id, `i.` id)
- * cannot resolve through `songs`, so they use typed `items` descriptors.
+ * resolve and fail playback. Library-only songs (no catalog id) keep their
+ * `i.` id under `songs`: MusicKit's item loader routes library-type ids to
+ * `/v1/me/library/songs`. Plain `items` objects carry no `kind` and fail.
  */
 export function queueOptionsForTracks(
   tracks: readonly Track[],
@@ -322,18 +345,7 @@ export function queueOptionsForTracks(
   if (allVideos) {
     return { musicVideos: tracks.map(usableId) };
   }
-  const libraryOnly = tracks.some(
-    (track) => !track.catalogId && track.id.startsWith("i."),
-  );
-  if (!libraryOnly) {
-    return { songs: tracks.map(usableId) };
-  }
-  return {
-    items: tracks.map((track) => ({
-      id: usableId(track),
-      type: track.catalogId ? "songs" : (track.resourceType ?? "library-songs"),
-    })),
-  };
+  return { songs: tracks.map(usableId) };
 }
 
 export async function pause(

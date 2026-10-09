@@ -565,14 +565,12 @@ export async function runPlaylistPlayback({ page, check }) {
     .filter((item) => item.type === "setQueue")
     .at(-1);
   check(
-    "a library-only song queues with typed items instead of its i. ID as songs",
+    "a library-only song queues its i. ID under songs, which MusicKit loads from the library",
     libraryRowReady &&
       libraryOnlyStarted &&
       JSON.stringify(libraryOnlySet?.options) ===
-        JSON.stringify({
-          items: [{ id: "i.library-only", type: "library-songs" }],
-        }) &&
-      libraryOnlySet?.shape?.join(",") === "items",
+        JSON.stringify({ songs: ["i.library-only"] }) &&
+      libraryOnlySet?.shape?.join(",") === "songs",
     { setQueue: libraryOnlySet, queue: libraryOnlySnapshot.queue },
   );
 }

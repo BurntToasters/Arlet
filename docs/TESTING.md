@@ -95,7 +95,12 @@ Failure scenarios to cover before changing production code:
 - Choosing a row in `Playing Next` drops earlier songs, breaks Previous, or
   reorders a shuffled queue.
 - A failed repeat or queue action is silent.
-- A library-only song (no catalog ID) is queued by its `i.` ID and fails.
+- A library-only song (no catalog ID) leaves the `songs` descriptor, which
+  MusicKit's item loader resolves through `/v1/me/library/songs`.
+- With shuffle on, the chosen song does not play first (MusicKit shuffles on
+  `setQueue`; the start must be passed as `startWith`).
+- Shuffle state is read from the write-only `shuffle` property instead of
+  `shuffleMode`, so the button and Shuffle play misreport.
 - The Play button gives no feedback while a long playlist's pages load.
 - A keyboard shortcut calls a stale controller after the controller changes.
 

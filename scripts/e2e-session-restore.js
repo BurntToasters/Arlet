@@ -193,18 +193,18 @@ export async function runSessionRestore({ page, check, dataDir }) {
   );
   const indexOf = (type) => transitions.findIndex((item) => item.type === type);
   const setQueue = transitions.find((item) => item.type === "setQueue");
-  const selected = transitions.find((item) => item.type === "selectIndex");
+  const played = transitions.find((item) => item.type === "play");
   const seek = transitions.find((item) => item.type === "seekToTime");
   check(
-    "Play sets the saved queue, selects the saved song, then seeks to the saved position",
+    "Play sets the saved queue starting at the saved song, then seeks to the saved position",
     resumed &&
       JSON.stringify(setQueue?.ids) === JSON.stringify(SAVED_IDS) &&
-      selected?.index === SAVED_INDEX &&
+      setQueue?.options?.startWith === SAVED_INDEX &&
+      played?.index === SAVED_INDEX &&
       Math.abs((seek?.seconds ?? -1) - SAVED_POSITION) < 0.001 &&
-      indexOf("setQueue") < indexOf("selectIndex") &&
-      indexOf("selectIndex") < indexOf("play") &&
+      indexOf("setQueue") < indexOf("play") &&
       indexOf("play") < indexOf("seekToTime"),
-    { order: transitions.map((item) => item.type), setQueue, selected, seek },
+    { order: transitions.map((item) => item.type), setQueue, played, seek },
   );
 
   // 4. Turning Resume off deletes the file; turning it back on saves again.

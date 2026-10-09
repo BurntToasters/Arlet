@@ -86,8 +86,8 @@ declare namespace MusicKit {
     musicVideos?: string[];
     album?: string;
     url?: string;
-    /** Typed descriptors for library-only songs that have no catalog ID. */
-    items?: Array<{ id: string; type: string }>;
+    /** Queue index (or item ID) MusicKit positions on before shuffling. */
+    startWith?: number | string;
     [key: string]: unknown;
   }
 

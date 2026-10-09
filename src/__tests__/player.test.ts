@@ -73,17 +73,11 @@ describe("queueOptionsForTracks", () => {
     ).toEqual({ songs: ["c.one", "c.two"] });
   });
 
-  it("queues library-only songs as typed items", () => {
+  it("falls back to library identifiers without catalog matches", () => {
     expect(
-      queueOptionsForTracks([
-        libraryTrack("i.up", "library-songs"),
-        libraryTrack("c.two", "songs", "c.two"),
-      ]),
+      queueOptionsForTracks([libraryTrack("i.up", "library-songs")]),
     ).toEqual({
-      items: [
-        { id: "i.up", type: "library-songs" },
-        { id: "c.two", type: "songs" },
-      ],
+      songs: ["i.up"],
     });
   });
 

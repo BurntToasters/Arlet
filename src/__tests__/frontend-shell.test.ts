@@ -342,7 +342,10 @@ describe("MusicKit controller", () => {
 
     expect(getState().search.results).toEqual(tracks);
     await controller.playFromSearch(1);
-    expect(instance.setQueue).toHaveBeenLastCalledWith({ songs: ["b", "c"] });
+    expect(instance.setQueue).toHaveBeenLastCalledWith({
+      songs: ["b", "c"],
+      startWith: 0,
+    });
     expect(getState().playback.queue.map((track) => track.id)).toEqual([
       "b",
       "c",

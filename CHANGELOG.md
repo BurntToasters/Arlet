@@ -40,7 +40,7 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 - **NEW - Tray icon:** Arlet has a tray icon with play/pause, next, previous, `Show Arlet`, and `Quit`. Turn on `Settings` > `Window` > `Close to tray` to keep Arlet running when you close the window.
 - **Windows:** The Windows media controls can now seek and change shuffle and repeat.
 - **Fix - Playback:** The `Can't play` badge now clears once a song plays. Choosing a song in `Playing Next` keeps the songs before it, so `Previous` still works.
-- **Fix - Library songs:** Songs that are only in your library (such as uploads) can now be queued.
+- **Fix - Shuffle:** The shuffle button now shows the real shuffle state and turns shuffle on and off reliably, and the song you pick always plays first when shuffle is on.
 - **Fix - Playlists:** `Play` shows that it's working while a long playlist loads.
 - **Fix - Repeat:** Errors from the repeat button are now shown instead of ignored.
 - **Note:** Apple Music doesn't let other apps rename or delete playlists or remove songs from them, so Arlet can't either.

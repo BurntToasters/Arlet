@@ -10,6 +10,7 @@ import {
   type RatingResourceType,
 } from "../musickit/library.ts";
 import type { RatingValue, Track } from "../domain/music.ts";
+import { httpStatusOf } from "../musickit/errors.ts";
 import { getState, ratingKey, setRating } from "../state.ts";
 import {
   safeErrorMessage,
@@ -107,6 +108,19 @@ export function createRatings(
       settled.set(key, value);
       setRating(key, value);
     } catch (error) {
+      // Apple answers 404 when the item has no rating.
+      if (httpStatusOf(error) === 404) {
+        const isCurrent = loadKey === key || playingKey === key;
+        if (
+          isCurrent &&
+          !inFlight.has(key) &&
+          (generations.get(key) ?? 0) === generation
+        ) {
+          settled.set(key, 0);
+          setRating(key, 0);
+        }
+        return;
+      }
       context.log(`Rating lookup failed: ${safeErrorMessage(error)}`);
     }
   };

@@ -469,54 +469,72 @@ function installMusicKitFixture() {
       );
     }
   };
-  const insertNative = async (type, index, options) => {
-    const ids = idsFromOptions(options);
-    if (!Number.isInteger(index) || index < 0 || index > state.queue.length) {
-      throw new Error(`Fixture queue index unavailable: ${index}`);
+  // Mirrors MusicKit v3 `Queue.splice(start, deleteCount, mediaItems)`,
+  // which is synchronous and returns the removed MediaItems. A configured
+  // delay makes it async so a provider change can land mid-edit.
+  const spliceNative = (start, deleteCount, items) => {
+    if (
+      !Number.isInteger(start) ||
+      start < 0 ||
+      start > state.queue.length ||
+      !Number.isInteger(deleteCount) ||
+      deleteCount < 0
+    ) {
+      throw new Error(`Fixture queue splice unavailable: ${start}`);
     }
-    await queueEditDelay();
-    state.queue.splice(index, 0, ...ids.map(mediaItem));
-    if (index <= state.queueIndex) state.queueIndex += ids.length;
-    state.transitions.push({ type, index, ids: [...ids] });
+    const end = Math.min(state.queue.length, start + deleteCount);
+    if (
+      deleteCount > 0 &&
+      start <= state.queueIndex &&
+      state.queueIndex < end
+    ) {
+      throw new Error("Fixture queue cannot remove the current item.");
+    }
+    const removed = state.queue.splice(start, deleteCount, ...items);
+    if (start < state.queueIndex) {
+      state.queueIndex += items.length - removed.length;
+    } else if (start === state.queueIndex && items.length > 0) {
+      state.queueIndex += items.length;
+    }
+    if (removed.length > 0) {
+      state.transitions.push({
+        type: "nativeRemove",
+        index: start,
+        ids: removed.map((item) => item.id),
+      });
+    }
+    if (items.length > 0) {
+      state.transitions.push({
+        type: "nativeSplice",
+        index: start,
+        ids: items.map((item) => item.id),
+      });
+    }
     syncProviderQueue(true, false);
+    return removed;
   };
   const nativeQueue = Object.create(queueRecord);
   Object.assign(nativeQueue, {
-    async remove(index) {
-      if (
-        !Number.isInteger(index) ||
-        index < 0 ||
-        index >= state.queue.length
-      ) {
-        throw new Error(`Fixture queue index unavailable: ${index}`);
+    splice(start, deleteCount, items = []) {
+      if (state.queueEditDelayMs > 0) {
+        return queueEditDelay().then(() =>
+          spliceNative(start, deleteCount, items),
+        );
       }
-      await queueEditDelay();
-      if (index >= state.queue.length) {
-        throw new Error(`Fixture queue index unavailable: ${index}`);
-      }
-      const [removed] = state.queue.splice(index, 1);
-      if (index < state.queueIndex) state.queueIndex -= 1;
-      state.transitions.push({
-        type: "nativeRemove",
-        index,
-        id: removed?.id,
-      });
-      syncProviderQueue(true, false);
-    },
-    splice(index, options) {
-      return insertNative("nativeSplice", index, options);
-    },
-    append(options) {
-      return insertNative("nativeAppend", state.queue.length, options);
-    },
-    prepend(options) {
-      return insertNative("nativePrepend", 0, options);
+      return spliceNative(start, deleteCount, items);
     },
   });
 
   const player = {
     queue: queueRecord,
     shuffle: false,
+    // MusicKit v3 reads shuffle through `shuffleMode` (0 off, 1 songs).
+    get shuffleMode() {
+      return this.shuffle ? 1 : 0;
+    },
+    set shuffleMode(value) {
+      this.shuffle = value === 1;
+    },
     repeatMode: 0,
     volume: 1,
     get nowPlayingItem() {
@@ -584,11 +602,21 @@ function installMusicKitFixture() {
     async setQueue(options) {
       const itemIds = idsFromOptions(options);
       state.queue = itemIds.map(mediaItem);
-      state.queueIndex = 0;
-      state.shuffleHistory = [0];
+      // MusicKit positions the new queue on `startWith` (index or item ID).
+      const startWith = options?.startWith;
+      const startIndex =
+        typeof startWith === "string"
+          ? state.queue.findIndex((item) => item.id === startWith)
+          : Number.isInteger(startWith)
+            ? startWith
+            : 0;
+      state.queueIndex =
+        startIndex >= 0 && startIndex < state.queue.length ? startIndex : 0;
+      state.shuffleHistory = [state.queueIndex];
       state.transitions.push({
         type: "setQueue",
         ids: [...itemIds],
+        index: state.queueIndex,
         options: clone(options),
         shape: Object.keys(options ?? {}),
         shuffle: player.shuffle,

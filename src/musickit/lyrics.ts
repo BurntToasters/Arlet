@@ -1,5 +1,6 @@
 import type { Track } from "../domain/music.ts";
 import { resolveMusicKitMusicRequest, resolveStorefront } from "./catalog.ts";
+import { httpStatusOf } from "./errors.ts";
 
 /** TTML larger than this is rejected before it reaches the DOM parser. */
 export const MAX_LYRICS_BYTES = 512 * 1024;
@@ -114,18 +115,12 @@ export function lyricsCatalogId(
   return track.resourceType === "songs" ? track.id : undefined;
 }
 
-function errorStatus(error: unknown): number | undefined {
-  if (!error || typeof error !== "object") return undefined;
-  const record = error as Record<string, unknown>;
-  const response = record.response as Record<string, unknown> | undefined;
-  for (const value of [record.status, record.statusCode, response?.status]) {
-    if (typeof value === "number") return value;
-  }
-  return undefined;
-}
-
 function ttmlFromResponse(raw: unknown): string | undefined {
-  const data = (raw as { data?: unknown } | null | undefined)?.data;
+  // MusicKit v3 wraps the JSON body as `{ request, response, data }`.
+  const outer = (raw as { data?: unknown } | null | undefined)?.data;
+  const data = Array.isArray(outer)
+    ? outer
+    : (outer as { data?: unknown } | null | undefined)?.data;
   const first = Array.isArray(data) ? data[0] : undefined;
   const attributes = (first as { attributes?: { ttml?: unknown } } | undefined)
     ?.attributes;
@@ -178,7 +173,7 @@ export function createLyricsLoader(
           return result;
         },
         (error: unknown) => {
-          const status = errorStatus(error);
+          const status = httpStatusOf(error);
           if (status !== undefined && DENIED_STATUSES.has(status)) {
             capable = false;
           } else if (

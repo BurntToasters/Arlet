@@ -2,6 +2,7 @@ import { mapErrorToCode } from "../musickit/errors.ts";
 import {
   queueOptionsForTracks,
   changeToMediaAtIndex,
+  readMusicKitQueue,
   readPlaybackModes,
   type NormalizedRepeatMode,
   seekToTime,
@@ -13,7 +14,8 @@ import {
   syncMusicKitQueue,
   toggle,
 } from "../musickit/player.ts";
-import type { Station, Track } from "../domain/music.ts";
+import { isSameTrack, type Station, type Track } from "../domain/music.ts";
+import { normalizeTrack } from "../musickit/normalize.ts";
 import {
   editQueue,
   planClear,
@@ -112,6 +114,33 @@ export function createPlayback(context: ControllerContext) {
     syncPlaybackModes(instance);
   };
 
+  /**
+   * Index to select after `setQueue`, or undefined when MusicKit already sits
+   * on the chosen song. With shuffle on, the provider order differs from
+   * `queue`, so the song is located by ID instead of by `startIndex`.
+   */
+  const providerStartIndex = (
+    instance: MusicKit.MusicKitInstance,
+    queue: readonly Track[],
+    startIndex: number,
+  ): number | undefined => {
+    const chosen = queue[startIndex];
+    const provider = readMusicKitQueue(instance);
+    if (!provider) return startIndex;
+    const shuffled = readPlaybackModes(instance).shuffleMode === "songs";
+    const atPosition = provider.items[provider.index];
+    const onChosen =
+      atPosition !== undefined &&
+      isSameTrack(normalizeTrack(atPosition), chosen) &&
+      (shuffled || provider.index === startIndex);
+    if (onChosen) return undefined;
+    if (!shuffled) return startIndex;
+    const found = provider.items.findIndex((item) =>
+      isSameTrack(normalizeTrack(item), chosen),
+    );
+    return found >= 0 ? found : startIndex;
+  };
+
   const playTracks = async (
     tracks: readonly Track[],
     startIndex = 0,
@@ -146,13 +175,21 @@ export function createPlayback(context: ControllerContext) {
     setQueue(queue, startIndex);
     setPlaybackStatus("loading");
     try {
-      await instance.setQueue(queueOptionsForTracks(queue));
+      // `startWith` positions the queue before MusicKit shuffles it, so the
+      // chosen song stays first and the rest are shuffled after it.
+      await instance.setQueue({
+        ...queueOptionsForTracks(queue),
+        startWith: startIndex,
+      });
       if (needsExplicitSelection) {
-        const selected = await changeToMediaAtIndex(instance, startIndex);
-        if (!selected) {
-          throw new Error(
-            "Selecting a song in the MusicKit queue is not available in this runtime.",
-          );
+        const index = providerStartIndex(instance, queue, startIndex);
+        if (index !== undefined) {
+          const selected = await changeToMediaAtIndex(instance, index);
+          if (!selected) {
+            throw new Error(
+              "Selecting a song in the MusicKit queue is not available in this runtime.",
+            );
+          }
         }
       }
       await instance.play();

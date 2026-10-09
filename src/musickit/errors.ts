@@ -68,3 +68,29 @@ export function mapErrorToCode(error: unknown): AppErrorCode {
   }
   return "PLAYBACK_FAILED";
 }
+
+const MK_REASON_STATUS: Record<string, number> = {
+  UNAUTHORIZED_ERROR: 401,
+  ACCESS_DENIED: 403,
+  NOT_FOUND: 404,
+  QUOTA_EXCEEDED: 429,
+};
+
+/**
+ * HTTP status of a failed Apple Music request. MusicKit v3 `MKError` keeps the
+ * fetch `Response` on `data` and maps the status to `errorCode`.
+ */
+export function httpStatusOf(error: unknown): number | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const record = error as Record<string, unknown>;
+  const nested = [record.data, record.response].map((value) =>
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>).status
+      : undefined,
+  );
+  for (const value of [record.status, record.statusCode, ...nested]) {
+    if (typeof value === "number") return value;
+  }
+  const reason = record.errorCode ?? record.reason;
+  return typeof reason === "string" ? MK_REASON_STATUS[reason] : undefined;
+}

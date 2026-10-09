@@ -16,11 +16,13 @@ import {
  */
 export type QueueEditTier = "native" | "rebuild" | "noop";
 
-/** Undocumented in MusicKit JS v3; detected at runtime and never assumed. */
+/**
+ * MusicKit JS v3 `Queue.splice(start, deleteCount, mediaItems)`: returns the
+ * removed MediaItems. Undocumented, so it is detected at runtime and never
+ * assumed. Re-inserting the removed MediaItem moves it without re-resolving.
+ */
 interface NativeQueue {
-  remove(index: number): unknown;
-  splice(index: number, options: MusicKit.QueueOptions): unknown;
-  append?(options: MusicKit.QueueOptions): unknown;
+  splice(start: number, deleteCount: number, items?: unknown[]): unknown;
 }
 
 export interface QueueEditPlan {
@@ -49,7 +51,7 @@ export function planRemove(
   return {
     next: queue.filter((_, position) => position !== index),
     native: async (native) => {
-      await native.remove(index);
+      await native.splice(index, 1);
     },
   };
 }
@@ -67,18 +69,14 @@ export function planMove(
   const [moved] = next.splice(from, 1);
   if (!moved) throw new Error("Queue item is unavailable.");
   next.splice(to, 0, moved);
-  const options = queueOptionsForTracks([moved]);
   return {
     next,
     native: async (native) => {
-      await native.remove(from);
-      // After removal the queue has one fewer item, so an end-slot insert
-      // is an append.
-      if (to === next.length - 1 && native.append) {
-        await native.append(options);
-      } else {
-        await native.splice(to, options);
+      const removed = await native.splice(from, 1);
+      if (!Array.isArray(removed) || removed.length !== 1) {
+        throw new Error("The queue did not return the moved song.");
       }
+      await native.splice(to, 0, removed);
     },
   };
 }
@@ -94,9 +92,7 @@ export function planClear(
   return {
     next: queue.slice(0, current + 1),
     native: async (native) => {
-      for (let index = queue.length - 1; index > current; index -= 1) {
-        await native.remove(index);
-      }
+      await native.splice(current + 1, queue.length - current - 1);
     },
   };
 }
@@ -107,12 +103,7 @@ function nativeQueueMethods(
   const queue = (instance as unknown as { queue?: unknown }).queue;
   if (!queue || typeof queue !== "object") return undefined;
   const methods = queue as Record<string, unknown>;
-  if (
-    typeof methods.remove !== "function" ||
-    typeof methods.splice !== "function"
-  ) {
-    return undefined;
-  }
+  if (typeof methods.splice !== "function") return undefined;
   return queue as NativeQueue;
 }
 
