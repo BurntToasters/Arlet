@@ -154,9 +154,27 @@ export interface PlaybackState {
   modeCapabilities?: {
     shuffle: boolean;
     repeat: boolean;
+    /** True when the runtime exposes a writable `autoplayEnabled`. */
+    autoplay?: boolean;
   };
+  /** Session-only mute. Never persisted; `volume` keeps the unmuted level. */
+  muted?: boolean;
+  /** A restored queue waits here until the first play request. */
+  pendingRestore?: PendingPlaybackRestore;
+  sleepTimer?: SleepTimerState;
   error?: PlayerError;
 }
+
+export interface PendingPlaybackRestore {
+  positionSeconds: number;
+  savedAt: number;
+}
+
+export type SleepTimerState =
+  { mode: "minutes"; endsAt: number } | { mode: "endOfTrack" };
+
+/** Apple rating: 1 loved, -1 disliked, 0 none. */
+export type RatingValue = 1 | -1 | 0;
 
 /**
  * True when two tracks are the same song. Library rows carry `i.…` IDs while

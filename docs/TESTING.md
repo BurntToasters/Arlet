@@ -87,6 +87,84 @@ so the fixture run is repeatable and auditable. Run `npm run test:e2e:app` on
 Windows with every existing Arlet instance closed. A separate signed-in check
 must confirm real track completion, shuffle, and repeat on Apple Music.
 
+## Playback correctness
+
+Failure scenarios to cover before changing production code:
+
+- A playback error badge outlives a later successful play.
+- Choosing a row in `Playing Next` drops earlier songs, breaks Previous, or
+  reorders a shuffled queue.
+- A failed repeat or queue action is silent.
+- A library-only song (no catalog ID) is queued by its `i.` ID and fails.
+- The Play button gives no feedback while a long playlist's pages load.
+- A keyboard shortcut calls a stale controller after the controller changes.
+
+## Keyboard and transport
+
+- Shortcuts fire while typing in search, a text field, or a dialog.
+- Space activates a focused button twice (click plus shortcut).
+- Arrow keys on a focused slider are hijacked.
+- Alt+arrow history navigation stops working.
+- Mute writes volume 0 to `settings.json`, or unmute restores the wrong level.
+- Shuffle play starts the same song every time or leaves shuffle off.
+
+## Queue editing
+
+- Removing or reordering upcoming songs interrupts or restarts the current song.
+- Indexes go off by one when the queue has duplicate songs.
+- Editing while shuffle is on corrupts the order.
+- A provider queue event during an edit is overwritten by a stale snapshot.
+- `Clear` stops the current song; history rows become editable.
+- A 600-song queue freezes the drawer.
+
+## Ratings and library
+
+- A ratings request uses the wrong ID kind (library vs catalog path).
+- An optimistic Love stays set after the request fails.
+- Fast repeated clicks race and leave the wrong final rating.
+- A late rating response is shown for a newer track.
+- Add to Library duplicates an item or calls the wrong endpoint.
+- Mutating requests (PUT/POST/DELETE) are retried.
+
+## Now Playing and lyrics
+
+- The overlay steals focus, traps it forever, or Esc does not close it.
+- Hostile TTML runs script or markup, or a huge document hangs the renderer.
+- Bad timestamps throw instead of rendering unsynced lines.
+- The highlighted line drifts, or every tick re-renders the app.
+- Lyrics from the previous song show on the next one.
+- The app repeats lyrics requests after a 401/403.
+
+## Desktop controls
+
+- A seek from Windows media controls outside the timeline, or NaN, reaches
+  MusicKit.
+- Windows shows a shuffle or repeat state that disagrees with MusicKit.
+- A media-control event arrives before the controller exists.
+- The sleep timer fires after sign-out or after it was cancelled.
+- `End of track` lets the next song play audibly, or never fires at queue end.
+- Autoplay is offered when the runtime does not support it, or the setting is
+  saved even though the runtime rejected it.
+
+## Tray
+
+- Quit from the tray skips saving the window state.
+- Close-to-tray leaves the app impossible to quit, or breaks the reset-settings
+  restart.
+- A duplicate tray icon appears after a WebView2 recovery.
+- Tray commands arrive before the frontend listens.
+- A second launch does not show a window hidden in the tray.
+
+## Session restore
+
+- A corrupt or oversized session file blocks startup.
+- Restore starts playback by itself.
+- Restore runs before sign-in, or for a different account after sign-out.
+- Restore delays the startup update check.
+- A saved position beyond the song duration, or library IDs that no longer
+  exist, break playback.
+- Saving on every position tick thrashes the disk.
+
 ## Release-only evidence
 
 The following checks require a Windows release environment and are kept out of

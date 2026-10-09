@@ -408,6 +408,11 @@ async function run() {
             loaded: true,
             playerIndexSelection: typeof music.player?.changeToMediaAtIndex === "function",
             instanceIndexSelection: typeof music.changeToMediaAtIndex === "function",
+            queueRemove: typeof music.queue?.remove === "function",
+            queueSplice: typeof music.queue?.splice === "function",
+            queueAppend: typeof music.queue?.append === "function",
+            queuePrepend: typeof music.queue?.prepend === "function",
+            autoplayEnabled: "autoplayEnabled" in music,
           };
         } catch { /* MusicKit can load before its instance is configured. */ }
         await new Promise((resolve) => setTimeout(resolve, 100));
