@@ -18,6 +18,7 @@ import {
   Search,
   Scissors,
   Settings,
+  Shuffle,
   SkipForward,
   SquareStack,
   UserRound,
@@ -27,6 +28,7 @@ import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useAppController, useAppRouter } from "../app/context.tsx";
 import type { MusicEntityRef, MusicSource, Track } from "../domain/music.ts";
 import type { TrackNavigation } from "../musickit/song-navigation.ts";
+import type { CollectionPlayOptions } from "../app/collection-playback.ts";
 import type { Route } from "../routing/router.ts";
 import {
   CONTEXT_MENU_REQUEST,
@@ -478,6 +480,13 @@ interface AppControllerWithContext extends Record<string, unknown> {
     source?: MusicSource,
     startIndex?: number,
   ) => Promise<void>;
+  playCollection?: (
+    kind: "playlist" | "album",
+    id: string,
+    source?: MusicSource,
+    startIndex?: number,
+    options?: CollectionPlayOptions,
+  ) => Promise<void>;
   playNextTracks?: (tracks: readonly Track[]) => Promise<void>;
   playLaterTracks?: (tracks: readonly Track[]) => Promise<void>;
   refreshCurrentData?: () => Promise<void>;
@@ -753,23 +762,41 @@ function buildItems({
     });
   }
 
-  if (target.kind === "playlist" && target.id) {
+  if ((target.kind === "playlist" || target.kind === "album") && target.id) {
+    const kind = target.kind;
+    const collectionId = target.id;
     const source =
       target.source ??
-      (target.route?.kind === "playlist" ? target.route.source : undefined) ??
+      (target.route?.kind === "playlist" || target.route?.kind === "album"
+        ? target.route.source
+        : undefined) ??
       "library";
-    items.push({
-      id: "play-now",
-      label: "Play now",
-      icon: Play,
-      disabled: !controller.playPlaylist,
-      action: run(() => {
-        if (controller.playPlaylist)
-          void controller
-            .playPlaylist(target.id as string, source, 0)
-            .catch(reportActionError);
-      }),
-    });
+    items.push(
+      {
+        id: "play-now",
+        label: "Play now",
+        icon: Play,
+        disabled: !controller.playCollection,
+        action: run(() => {
+          if (controller.playCollection)
+            void controller
+              .playCollection(kind, collectionId, source, 0)
+              .catch(reportActionError);
+        }),
+      },
+      {
+        id: "shuffle-collection",
+        label: "Shuffle",
+        icon: Shuffle,
+        disabled: !controller.playCollection,
+        action: run(() => {
+          if (controller.playCollection)
+            void controller
+              .playCollection(kind, collectionId, source, 0, { shuffle: true })
+              .catch(reportActionError);
+        }),
+      },
+    );
   }
 
   if (target.kind === "playlist" || target.kind === "folder" || !target.kind) {

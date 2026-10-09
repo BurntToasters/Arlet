@@ -1,8 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   CONSECUTIVE_TRACK_TARGET,
-  playQueue,
-  playSong,
   queueOptionsForTracks,
   readPlaybackModes,
   setRepeatMode,
@@ -10,36 +8,9 @@ import {
 } from "../musickit/player.ts";
 import type { Track } from "../domain/music.ts";
 
-function mockInstance(): MusicKit.MusicKitInstance {
-  return {
-    setQueue: vi.fn().mockResolvedValue(undefined),
-    play: vi.fn().mockResolvedValue(undefined),
-  } as unknown as MusicKit.MusicKitInstance;
-}
-
 describe("player queue", () => {
   it("keeps the consecutive-track target at the Phase 0 matrix size", () => {
     expect(CONSECUTIVE_TRACK_TARGET).toBe(20);
-  });
-
-  it("queues a single song", async () => {
-    const instance = mockInstance();
-    await playSong(instance, "song-1");
-    expect(instance.setQueue).toHaveBeenCalledWith({ songs: ["song-1"] });
-    expect(instance.play).toHaveBeenCalledOnce();
-  });
-
-  it("queues consecutive songs from a start index", async () => {
-    const instance = mockInstance();
-    await playQueue(instance, ["a", "b", "c", "d"], 2);
-    expect(instance.setQueue).toHaveBeenCalledWith({ songs: ["c", "d"] });
-    expect(instance.play).toHaveBeenCalledOnce();
-  });
-
-  it("rejects an empty queue", async () => {
-    const instance = mockInstance();
-    await expect(playQueue(instance, [])).rejects.toThrow("Queue is empty");
-    expect(instance.setQueue).not.toHaveBeenCalled();
   });
 });
 
@@ -102,11 +73,17 @@ describe("queueOptionsForTracks", () => {
     ).toEqual({ songs: ["c.one", "c.two"] });
   });
 
-  it("falls back to library identifiers without catalog matches", () => {
+  it("queues library-only songs as typed items", () => {
     expect(
-      queueOptionsForTracks([libraryTrack("i.up", "library-songs")]),
+      queueOptionsForTracks([
+        libraryTrack("i.up", "library-songs"),
+        libraryTrack("c.two", "songs", "c.two"),
+      ]),
     ).toEqual({
-      songs: ["i.up"],
+      items: [
+        { id: "i.up", type: "library-songs" },
+        { id: "c.two", type: "songs" },
+      ],
     });
   });
 

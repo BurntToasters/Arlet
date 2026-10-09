@@ -5,6 +5,7 @@ import {
   LoaderCircle,
   Play,
   RefreshCw,
+  Shuffle,
   UserRound,
 } from "lucide-preact";
 import type { LucideIcon } from "lucide-preact";
@@ -16,6 +17,7 @@ import {
   useAppState,
 } from "../app/context.tsx";
 import type { AppController } from "../app/controller.ts";
+import type { CollectionPlayOptions } from "../app/collection-playback.ts";
 import { Artwork } from "../components/Artwork.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import {
@@ -59,6 +61,13 @@ interface DetailController {
     id: string,
     source?: DetailSource,
     startIndex?: number,
+  ) => Promise<void>;
+  playCollection?: (
+    kind: "playlist" | "album",
+    id: string,
+    source?: DetailSource,
+    startIndex?: number,
+    options?: CollectionPlayOptions,
   ) => Promise<void>;
   refreshCurrentData?: () => Promise<unknown>;
 }
@@ -283,6 +292,17 @@ export function LibraryDetailView({
   const playAll = (): void => {
     if (resources.length) act(() => playCollection(0));
   };
+  const shuffleAll = (): void => {
+    if (kind === "artist" || !extendedController.playCollection) return;
+    act(() =>
+      extendedController.playCollection?.(kind, id, playbackSource, 0, {
+        shuffle: true,
+      }),
+    );
+  };
+  const pending = state.ui.pendingCollection;
+  const collectionBusy =
+    kind !== "artist" && pending?.kind === kind && pending.id === id;
 
   if (!authorized && !offline) {
     return (
@@ -376,10 +396,29 @@ export function LibraryDetailView({
               <button
                 className="primary-button"
                 type="button"
+                aria-busy={collectionBusy || undefined}
+                disabled={collectionBusy}
                 onClick={playAll}
               >
-                <Play aria-hidden="true" size={16} fill="currentColor" /> Play
-                all
+                {collectionBusy ? (
+                  <LoaderCircle className="spin" aria-hidden="true" size={16} />
+                ) : (
+                  <Play aria-hidden="true" size={16} fill="currentColor" />
+                )}{" "}
+                Play all
+              </button>
+            ) : null}
+            {!isArtist &&
+            resources.length &&
+            extendedController.playCollection ? (
+              <button
+                className="secondary-button"
+                type="button"
+                aria-busy={collectionBusy || undefined}
+                disabled={collectionBusy}
+                onClick={shuffleAll}
+              >
+                <Shuffle aria-hidden="true" size={16} /> Shuffle
               </button>
             ) : null}
             <button

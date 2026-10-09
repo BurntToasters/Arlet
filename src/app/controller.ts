@@ -92,7 +92,10 @@ import {
   createLibraryLoader,
   type DetailLoadOptions,
 } from "./library-loader.ts";
-import { createCollectionPlayback } from "./collection-playback.ts";
+import {
+  createCollectionPlayback,
+  type CollectionPlayOptions,
+} from "./collection-playback.ts";
 import { createPlayback } from "./playback.ts";
 import {
   createTrackNavigationResolver,
@@ -182,6 +185,13 @@ export interface AppController {
   setSearchSource?(source: "catalog" | "library"): void;
   playFromSearch(index: number): Promise<void>;
   playTracks(tracks: readonly Track[], startIndex?: number): Promise<void>;
+  playCollection?(
+    kind: "playlist" | "album",
+    id: string,
+    source?: MusicSource,
+    startIndex?: number,
+    options?: CollectionPlayOptions,
+  ): Promise<void>;
   playPlaylist?(
     id: string,
     source?: MusicSource,
@@ -203,6 +213,10 @@ export interface AppController {
   next(): Promise<void>;
   seek(seconds: number): Promise<void>;
   setVolume(volume: number): Promise<void>;
+  /** Mute silences output and keeps the unmuted level for unmute. */
+  toggleMute(): void;
+  seekBy(deltaSeconds: number): void;
+  adjustVolume(delta: number): void;
   setTheme(theme: ThemePreference): Promise<void>;
   setWindowEffect(preference: WindowEffectPreference): Promise<void>;
   setAutoCheckUpdates(enabled: boolean): Promise<void>;
@@ -289,6 +303,7 @@ export function createAppController(
     getMusic: () => music,
     requireLibrary,
     playTracks: playback.playTracks,
+    setShuffleMode: playback.setShuffleMode,
   });
   const playTracks = (
     tracks: readonly Track[],
@@ -786,6 +801,8 @@ export function createAppController(
     },
 
     playTracks,
+    playCollection: (kind, id, source = "library", startIndex = 0, options) =>
+      playCollection(kind, id, source, startIndex, options),
     playPlaylist: (id, source = "library", startIndex = 0) =>
       playCollection("playlist", id, source, startIndex),
     playAlbum: (id, source = "library", startIndex = 0) =>
@@ -818,6 +835,28 @@ export function createAppController(
     next: playback.next,
 
     seek: playback.seek,
+
+    toggleMute(): void {
+      playback.toggleMute();
+    },
+
+    seekBy(deltaSeconds: number): void {
+      const { current, positionSeconds, durationSeconds } = getState().playback;
+      if (!current || durationSeconds <= 0) return;
+      const target = Math.min(
+        durationSeconds,
+        Math.max(0, positionSeconds + deltaSeconds),
+      );
+      // seek() logs its own failure, so shortcuts stay silent.
+      void playback.seek(target).catch(() => undefined);
+    },
+
+    adjustVolume(delta: number): void {
+      const level = getState().playback.volume + delta;
+      void controller
+        .setVolume(Math.round(level * 100) / 100)
+        .catch(() => undefined);
+    },
 
     async setVolume(volume: number): Promise<void> {
       const safeVolume = playback.applyPlaybackVolume(volume);

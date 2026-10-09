@@ -21,8 +21,6 @@ declare namespace MusicKit {
     musicUserToken: string;
     developerToken?: string;
     setQueue(options: QueueOptions): Promise<void>;
-    /** Select and begin playback at a queue index when the runtime exposes it. */
-    changeToMediaAtIndex?(index: number): Promise<number>;
     /** Recently loaded library songs exposed by MusicKit JS when available. */
     librarySongs?: MediaItem[];
     /** Current playlist/resource descriptor exposed by MusicKit JS. */
@@ -88,6 +86,8 @@ declare namespace MusicKit {
     musicVideos?: string[];
     album?: string;
     url?: string;
+    /** Typed descriptors for library-only songs that have no catalog ID. */
+    items?: Array<{ id: string; type: string }>;
     [key: string]: unknown;
   }
 

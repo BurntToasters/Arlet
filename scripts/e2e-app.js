@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { MUSIC_FIXTURE_SEED, musicFixtureSource } from "./e2e-music-fixture.js";
 import { runPlaylistPlayback } from "./e2e-playlist-playback.js";
 import { runSongNavigation } from "./e2e-song-navigation.js";
+import { runTransport } from "./e2e-transport.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IDENTIFIER = "run.rosie.arlet";
@@ -872,6 +873,7 @@ async function run() {
       for (const [name, scenario] of [
         ["playlist-playback", runPlaylistPlayback],
         ["song-navigation", runSongNavigation],
+        ["transport", runTransport],
       ]) {
         try {
           await scenario({ page, check });

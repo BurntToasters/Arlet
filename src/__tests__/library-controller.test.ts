@@ -114,7 +114,10 @@ describe("library controller", () => {
     ]);
 
     expect(music.setQueue).toHaveBeenCalledWith({
-      songs: ["i.library-song", "catalog-song"],
+      items: [
+        { id: "i.library-song", type: "library-songs" },
+        { id: "catalog-song", type: "songs" },
+      ],
     });
     expect(music.play).toHaveBeenCalledOnce();
     controller.dispose();

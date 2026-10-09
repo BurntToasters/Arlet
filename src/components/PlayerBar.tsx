@@ -97,6 +97,8 @@ export function PlayerBar(): JSX.Element {
   const current = playback.current;
   const playing = playback.status === "playing";
   const loading = playback.status === "loading";
+  const muted = playback.muted === true;
+  const shownVolume = muted ? 0 : playback.volume;
   const canControl =
     state.initialization.status === "ready" && Boolean(current);
   const [resolvedNavigation, setResolvedNavigation] = useState<{
@@ -320,7 +322,7 @@ export function PlayerBar(): JSX.Element {
             className={playback.repeatMode !== "off" ? "is-active" : ""}
             onClick={() =>
               void Promise.resolve(controller.cycleRepeatMode?.()).catch(
-                () => undefined,
+                reportActionError,
               )
             }
           />
@@ -332,19 +334,27 @@ export function PlayerBar(): JSX.Element {
           </span>
         ) : null}
         <div className="volume-control">
-          {playback.volume === 0 ? (
-            <VolumeX aria-hidden="true" size={16} strokeWidth={1.8} />
-          ) : (
-            <Volume2 aria-hidden="true" size={16} strokeWidth={1.8} />
-          )}
+          <button
+            className="volume-mute-button"
+            type="button"
+            aria-label={muted ? "Unmute" : "Mute"}
+            aria-pressed={muted}
+            onClick={controller.toggleMute}
+          >
+            {muted || playback.volume === 0 ? (
+              <VolumeX aria-hidden="true" size={16} strokeWidth={1.8} />
+            ) : (
+              <Volume2 aria-hidden="true" size={16} strokeWidth={1.8} />
+            )}
+          </button>
           <input
             aria-label="Volume"
             type="range"
             min="0"
             max="1"
             step="0.01"
-            value={playback.volume}
-            style={{ "--range-progress": `${playback.volume * 100}%` }}
+            value={shownVolume}
+            style={{ "--range-progress": `${shownVolume * 100}%` }}
             onInput={(event) => {
               void controller.setVolume(Number(event.currentTarget.value));
             }}
