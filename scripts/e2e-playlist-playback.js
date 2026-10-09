@@ -568,9 +568,9 @@ export async function runPlaylistPlayback({ page, check }) {
     "a library-only song queues its i. ID under songs, which MusicKit loads from the library",
     libraryRowReady &&
       libraryOnlyStarted &&
-      JSON.stringify(libraryOnlySet?.options) ===
-        JSON.stringify({ songs: ["i.library-only"] }) &&
-      libraryOnlySet?.shape?.join(",") === "songs",
+      JSON.stringify(libraryOnlySet?.options?.songs) ===
+        JSON.stringify(["i.library-only"]) &&
+      !libraryOnlySet?.shape?.includes("items"),
     { setQueue: libraryOnlySet, queue: libraryOnlySnapshot.queue },
   );
 }

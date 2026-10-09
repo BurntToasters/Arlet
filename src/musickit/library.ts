@@ -454,13 +454,18 @@ function normalizedRefs(
 }
 
 /**
- * Options for a non-GET call. MusicKit v3 reads `fetchOptions`; the top-level
- * keys remain for callers and tests that expect them.
+ * Options for a non-GET call. MusicKit v3 sends only `fetchOptions` to
+ * `fetch`; the top-level `method` tells the retry wrapper not to retry.
  */
 function mutationOptions(method: string, body?: unknown): RequestOptions {
   const init: RequestOptions = { method };
   if (body !== undefined) init.body = JSON.stringify(body);
-  return { ...init, fetchOptions: { ...init } };
+  // MusicKit merges these headers with its auth headers.
+  const fetchOptions =
+    body === undefined
+      ? { ...init }
+      : { ...init, headers: { "Content-Type": "application/json" } };
+  return { ...init, fetchOptions };
 }
 
 export function createAppleMusicLibraryClient(
