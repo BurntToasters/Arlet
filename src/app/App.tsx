@@ -28,9 +28,13 @@ import { TokenExpiryNotice } from "../components/TokenExpiryNotice.tsx";
 import type { DiagnosticsDrawerController } from "../diagnostics/types.ts";
 import type { DiagnosticsStore } from "../diagnostics/store.ts";
 import {
+  clampWindowsMediaSeek,
   clearWindowsMediaSession,
   createTimelineSync,
   listenWindowsMediaControls,
+  listenWindowsMediaRepeat,
+  listenWindowsMediaSeek,
+  listenWindowsMediaShuffle,
   updateWindowsMediaSession,
   updateWindowsMediaTimeline,
 } from "../platform/windows-media.ts";
@@ -134,13 +138,67 @@ function AppLayout({
       pauseEnabled: state.playback.status === "playing",
       nextEnabled: state.playback.queueIndex < state.playback.queue.length - 1,
       previousEnabled: state.playback.queueIndex > 0,
+      shuffle: state.playback.shuffleMode === "songs",
+      repeat: state.playback.repeatMode ?? "off",
     }).catch(() => undefined);
   }, [
     state.playback.current,
     state.playback.status,
     state.playback.queueIndex,
     state.playback.queue.length,
+    state.playback.shuffleMode,
+    state.playback.repeatMode,
   ]);
+
+  useEffect(() => {
+    // MusicKit stays the source of truth: these requests call the same
+    // controller methods as the in-app buttons, and SMTC then reflects the
+    // state the payload effect reads back. Requests before sign-in and
+    // MusicKit setup are dropped, not queued.
+    let active = true;
+    const stops: Array<() => void> = [];
+    const track = (listening: Promise<() => void>): void => {
+      void listening
+        .then((stop) => {
+          if (active) stops.push(stop);
+          else stop();
+        })
+        .catch(() => undefined);
+    };
+    const ready = (): boolean => getState().initialization.status === "ready";
+    track(
+      listenWindowsMediaSeek((seconds) => {
+        if (!ready()) return;
+        const target = clampWindowsMediaSeek(
+          seconds,
+          getState().playback.durationSeconds,
+        );
+        if (target !== undefined) {
+          void controller.seek(target).catch(() => undefined);
+        }
+      }),
+    );
+    track(
+      listenWindowsMediaShuffle((enabled) => {
+        if (!ready()) return;
+        void Promise.resolve(
+          controller.setShuffleMode?.(enabled ? "songs" : "off"),
+        ).catch(() => undefined);
+      }),
+    );
+    track(
+      listenWindowsMediaRepeat((mode) => {
+        if (!ready()) return;
+        void Promise.resolve(controller.setRepeatMode?.(mode)).catch(
+          () => undefined,
+        );
+      }),
+    );
+    return () => {
+      active = false;
+      for (const stop of stops) stop();
+    };
+  }, [controller]);
 
   useEffect(() => {
     const sync = createTimelineSync((timeline) => {

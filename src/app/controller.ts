@@ -17,8 +17,10 @@ import type {
 import { registerMusicKitEvents } from "../musickit/events.ts";
 import {
   CONSECUTIVE_TRACK_TARGET,
+  setAutoplayEnabled,
   syncMusicKitQueue,
 } from "../musickit/player.ts";
+import { createSleepTimer, type SleepTimerOption } from "./sleep-timer.ts";
 import { normalizeTrack } from "../musickit/normalize.ts";
 import { classifyPlaybackKind } from "../musickit/preview.ts";
 import {
@@ -34,6 +36,7 @@ import {
   setInitializationState,
   setPins,
   setSettings,
+  setSleepTimer,
   setUpdateState,
   setUiState,
   setWindowEffectState,
@@ -199,6 +202,10 @@ export interface AppController {
   pause?(): Promise<void>;
   setShuffleMode?(mode: "off" | "songs"): Promise<void>;
   cycleRepeatMode?(): Promise<void>;
+  setRepeatMode?(mode: "off" | "all" | "one"): Promise<void>;
+  /** Pauses when the timer ends; in-memory only, cleared on sign-out. */
+  startSleepTimer?(option: SleepTimerOption): void;
+  cancelSleepTimer?(): void;
   previous(): Promise<void>;
   next(): Promise<void>;
   seek(seconds: number): Promise<void>;
@@ -206,6 +213,9 @@ export interface AppController {
   setTheme(theme: ThemePreference): Promise<void>;
   setWindowEffect(preference: WindowEffectPreference): Promise<void>;
   setAutoCheckUpdates(enabled: boolean): Promise<void>;
+  /** Rejects when the runtime has no writable autoplay; saves only on success. */
+  setAutoplay?(enabled: boolean): Promise<void>;
+  setCloseToTray?(enabled: boolean): Promise<void>;
   setUpdateChannel(channel: UpdateChannel): Promise<void>;
   startupUpdateCheck(): Promise<void>;
   checkForUpdates(): Promise<void>;
@@ -329,6 +339,22 @@ export function createAppController(
     }
   };
 
+  const sleepTimer = createSleepTimer({
+    pause: () => music?.pause(),
+    setState: setSleepTimer,
+    readPlayback: () => getState().playback,
+  });
+
+  /** Pushes the saved autoplay preference to MusicKit once it is available. */
+  const applyAutoplaySetting = (instance: MusicKit.MusicKitInstance): void => {
+    playback.syncPlaybackModes(instance);
+    if (!getState().playback.modeCapabilities?.autoplay) return;
+    if (!setAutoplayEnabled(instance, getState().settings.autoplay)) {
+      log("Autoplay setting could not be applied in this MusicKit runtime.");
+    }
+    playback.syncPlaybackModes(instance);
+  };
+
   /** Saves the latest settings once a volume drag settles. */
   const flushVolumeSave = (): void => {
     volumeSaveTimer = undefined;
@@ -409,6 +435,7 @@ export function createAppController(
         stopMusicKitEvents = registerMusicKitEvents(
           instance,
           () => {
+            sleepTimer.observe(getState().playback);
             syncPlaybackDiagnostics();
           },
           (message) => {
@@ -420,7 +447,7 @@ export function createAppController(
         playback.syncPlaybackModes(instance);
       }
       syncMusicKitQueue(instance);
-      playback.syncPlaybackModes(instance);
+      applyAutoplaySetting(instance);
       restoreAuthProbe = installAuthPopupProbe(log);
       setInitializationState({ status: "ready" });
       log("MusicKit initialized successfully.");
@@ -454,6 +481,7 @@ export function createAppController(
       const settings = await loadPersistedSettings(invokeFn);
       setSettings(settings);
       playback.applyPlaybackVolume(settings.volume);
+      if (music) applyAutoplaySetting(music);
       updater.configure(settings);
       const effectPromise = applyCurrentEffect();
       const pinsPromise = reloadPins();
@@ -534,6 +562,8 @@ export function createAppController(
 
     async signOut(): Promise<void> {
       collections.invalidate();
+      // A timer armed for this account must not pause the next sign-in.
+      sleepTimer.cancel();
       try {
         const instance = requireMusic();
         // Sign-out resets the UI to idle; audio must not keep playing.
@@ -813,6 +843,8 @@ export function createAppController(
 
     cycleRepeatMode: playback.cycleRepeatMode,
 
+    setRepeatMode: playback.setRepeatMode,
+
     previous: playback.previous,
 
     next: playback.next,
@@ -850,6 +882,33 @@ export function createAppController(
       setSettings(settings);
       updater.configure(settings);
       await persistSettings(settings);
+    },
+
+    async setAutoplay(enabled: boolean): Promise<void> {
+      const instance = requireMusic();
+      if (!setAutoplayEnabled(instance, enabled)) {
+        playback.syncPlaybackModes(instance);
+        throw new Error("Autoplay is not available in this MusicKit runtime.");
+      }
+      playback.syncPlaybackModes(instance);
+      await persistSettings({ ...getState().settings, autoplay: enabled });
+    },
+
+    async setCloseToTray(enabled: boolean): Promise<void> {
+      await persistSettings({ ...getState().settings, closeToTray: enabled });
+    },
+
+    startSleepTimer(option: SleepTimerOption): void {
+      sleepTimer.start(option);
+      log(
+        option.mode === "minutes"
+          ? `Sleep timer set for ${option.minutes} minutes.`
+          : "Sleep timer set for the end of the track.",
+      );
+    },
+
+    cancelSleepTimer(): void {
+      sleepTimer.cancel();
     },
 
     async setUpdateChannel(channel: UpdateChannel): Promise<void> {
@@ -920,6 +979,7 @@ export function createAppController(
 
     dispose(): void {
       collections.invalidate();
+      sleepTimer.cancel();
       trackNavigation.clear();
       if (volumeSaveTimer !== undefined) {
         clearTimeout(volumeSaveTimer);

@@ -3,6 +3,7 @@ import {
   queueOptionsForTracks,
   changeToMediaAtIndex,
   readPlaybackModes,
+  type NormalizedRepeatMode,
   seekToTime,
   setRepeatMode as setMusicRepeatMode,
   setShuffleMode as setMusicShuffleMode,
@@ -63,6 +64,24 @@ export function createPlayback(context: ControllerContext) {
       repeatMode: modes.repeatMode,
       modeCapabilities: modes.capabilities,
     });
+  };
+
+  /** Writes a repeat mode; throws when the runtime cannot change it. */
+  const applyRepeatMode = (
+    instance: MusicKit.MusicKitInstance,
+    mode: NormalizedRepeatMode,
+  ): void => {
+    const current = readPlaybackModes(instance);
+    if (!current.capabilities.repeat) {
+      throw new Error("Repeat is not available in this MusicKit runtime.");
+    }
+    if (!setMusicRepeatMode(instance, mode)) {
+      setPlaybackModes({
+        modeCapabilities: { ...current.capabilities, repeat: false },
+      });
+      throw new Error("Repeat could not be changed in this MusicKit runtime.");
+    }
+    syncPlaybackModes(instance);
   };
 
   const playTracks = async (
@@ -255,24 +274,17 @@ export function createPlayback(context: ControllerContext) {
     async cycleRepeatMode(): Promise<void> {
       const instance = requireMusic();
       const current = readPlaybackModes(instance);
-      if (!current.capabilities.repeat) {
-        throw new Error("Repeat is not available in this MusicKit runtime.");
-      }
       const next =
         current.repeatMode === "off"
           ? "all"
           : current.repeatMode === "all"
             ? "one"
             : "off";
-      if (!setMusicRepeatMode(instance, next)) {
-        setPlaybackModes({
-          modeCapabilities: { ...current.capabilities, repeat: false },
-        });
-        throw new Error(
-          "Repeat could not be changed in this MusicKit runtime.",
-        );
-      }
-      syncPlaybackModes(instance);
+      applyRepeatMode(instance, next);
+    },
+
+    async setRepeatMode(mode: NormalizedRepeatMode): Promise<void> {
+      applyRepeatMode(requireMusic(), mode);
     },
 
     async previous(): Promise<void> {

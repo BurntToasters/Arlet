@@ -8,6 +8,9 @@ static SETTINGS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Set once settings are reset; the old in-memory settings must not be
 /// written back before (or if) the restart happens.
 static RESET_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Mirrors the `closeToTray` setting for the window close handler, which
+/// runs on the event loop and must not take `SETTINGS_LOCK`.
+static CLOSE_TO_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 const MAX_SETTINGS_BYTES: usize = 512 * 1024;
 pub const SETTINGS_SCHEMA_VERSION: u64 = 1;
@@ -48,6 +51,7 @@ impl ThemePreference {
 pub struct StartupAppearance {
     pub theme: ThemePreference,
     pub window_effect: WindowEffectPreference,
+    pub close_to_tray: bool,
 }
 
 impl Default for StartupAppearance {
@@ -55,8 +59,26 @@ impl Default for StartupAppearance {
         Self {
             theme: ThemePreference::System,
             window_effect: WindowEffectPreference::Acrylic,
+            close_to_tray: false,
         }
     }
+}
+
+/// Reads the `closeToTray` flag; anything other than `true` is off.
+fn close_to_tray_setting(value: &Value) -> bool {
+    value
+        .get("closeToTray")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// True when closing the main window hides it to the tray instead of quitting.
+pub fn close_to_tray() -> bool {
+    CLOSE_TO_TRAY.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+pub fn set_close_to_tray(enabled: bool) {
+    CLOSE_TO_TRAY.store(enabled, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// Parse only the stable appearance keys. Missing fields use the defaults;
@@ -85,6 +107,7 @@ pub fn parse_startup_appearance(json: &str) -> StartupAppearance {
         window_effect: WindowEffectPreference::from_setting(
             object.get("windowEffect").and_then(Value::as_str),
         ),
+        close_to_tray: close_to_tray_setting(&value),
     }
 }
 
@@ -240,9 +263,11 @@ pub fn save_settings(app: tauri::AppHandle, json: String) -> Result<(), String> 
             json.len()
         ));
     }
-    let _parsed: serde_json::Value =
+    let parsed: serde_json::Value =
         serde_json::from_str(&json).map_err(|e| format!("Invalid settings JSON: {e}"))?;
-    write_settings_text(&settings_path(&app)?, &json)
+    write_settings_text(&settings_path(&app)?, &json)?;
+    set_close_to_tray(close_to_tray_setting(&parsed));
+    Ok(())
 }
 
 /// True once settings were reset in this process (restart pending).
@@ -404,6 +429,17 @@ mod tests {
             parse_startup_appearance(r#"{"schemaVersion":1,"theme":"neon","windowEffect":"blur"}"#);
         assert_eq!(appearance.theme, ThemePreference::System);
         assert_eq!(appearance.window_effect, WindowEffectPreference::Acrylic);
+    }
+
+    // Failure mode: a non-boolean closeToTray must not hide the window.
+    #[test]
+    fn close_to_tray_reads_only_true_booleans() {
+        let on = parse_startup_appearance(r#"{"schemaVersion":1,"closeToTray":true}"#);
+        let text = parse_startup_appearance(r#"{"schemaVersion":1,"closeToTray":"true"}"#);
+        let missing = parse_startup_appearance(r#"{"schemaVersion":1}"#);
+        assert!(on.close_to_tray);
+        assert!(!text.close_to_tray);
+        assert!(!missing.close_to_tray);
     }
 
     #[test]

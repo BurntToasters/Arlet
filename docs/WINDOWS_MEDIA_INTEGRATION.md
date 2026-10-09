@@ -21,15 +21,45 @@ hardware key / system command ──▶ Rust ──event──▶ PlaybackContro
   track transition; stale artwork is cleared on logout/stop.
 - Hardware media keys work while the app is unfocused.
 - App volume and system media state do not fight each other.
-- Repeat and shuffle remain MusicKit-owned and are not emulated by native
-  controls.
+- Repeat and shuffle remain MusicKit-owned. Native requests are sent to
+  MusicKit, and SMTC shows the state MusicKit reports back.
 
 Supported system actions:
 
 - Play and Pause
 - Next and Previous
+- Seek from the timeline (`PlaybackPositionChangeRequested`)
+- Shuffle and repeat requests (`ShuffleEnabledChangeRequested`,
+  `AutoRepeatModeChangeRequested`)
 - Track title, artist, album, and HTTPS artwork
 - Playing, paused, and stopped status
+
+Event contract (Rust emits, `src/app/App.tsx` routes):
+
+| Event | Payload | Frontend action |
+| --- | --- | --- |
+| `windows-media-control` | `play`, `pause`, `next`, `previous` | play, pause, next, previous |
+| `windows-media-seek` | seconds | `controller.seek`, clamped to `[0, duration]` |
+| `windows-media-shuffle` | boolean | `controller.setShuffleMode` |
+| `windows-media-repeat` | `off`, `all`, `one` | `controller.setRepeatMode` |
+
+Rust drops seek requests that are negative, non-finite, or arrive before a
+timeline has published a duration. The frontend drops them again, and ignores
+every event until MusicKit is ready. Shuffle and repeat go out through the
+payload (`shuffle`, `repeat`), read from MusicKit state.
+
+Seek availability comes from the timeline's min and max seek range, which
+Arlet publishes with each timeline update. The `windows` 0.62 bindings expose
+no separate "playback position enabled" or repeat/shuffle capability setter,
+so none is set. Whether Windows shows the scrubber and shuffle/repeat buttons
+on a given build is verified only on hardware (see `docs/TESTING.md`).
+
+The tray's Play/Pause item emits the same `windows-media-control` event, with
+`pause` while playing and `play` otherwise, so one frontend path handles both.
+
+Close-to-tray (`closeToTray`) hides the main window instead of closing it. The
+tray icon restores it, and a second launch restores it too. Tray Quit saves the
+window geometry before exiting.
 
 Arlet clears SMTC metadata and artwork when playback stops, the current track
 is removed, the user signs out, or the native window is destroyed. Artwork is

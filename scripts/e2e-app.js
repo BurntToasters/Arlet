@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { MUSIC_FIXTURE_SEED, musicFixtureSource } from "./e2e-music-fixture.js";
 import { runPlaylistPlayback } from "./e2e-playlist-playback.js";
 import { runSongNavigation } from "./e2e-song-navigation.js";
+import { desktopEventRecorderSource, runDesktop } from "./e2e-desktop.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IDENTIFIER = "run.rosie.arlet";
@@ -239,6 +240,43 @@ $client = New-Object ArletE2eWindow+RECT
   ).stdout.trim();
   const [x, y, width, height] = out.split(/\s+/u).map(Number);
   return { x, y, width, height };
+}
+
+/** Visible top-level windows titled "Arlet" that belong to the process. */
+function visibleArletWindows(pid) {
+  const script = `
+Add-Type @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class ArletE2eVisibility {
+  public delegate bool EnumProc(IntPtr hwnd, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int maxCount);
+  public static int Count(uint processId) {
+    int count = 0;
+    EnumWindows((hwnd, lParam) => {
+      uint owner;
+      GetWindowThreadProcessId(hwnd, out owner);
+      if (owner != processId || !IsWindowVisible(hwnd)) return true;
+      StringBuilder title = new StringBuilder(64);
+      GetWindowText(hwnd, title, title.Capacity);
+      if (title.ToString() == "Arlet") count++;
+      return true;
+    }, IntPtr.Zero);
+    return count;
+  }
+}
+"@
+[ArletE2eVisibility]::Count(${pid})`;
+  const out = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    { encoding: "utf8" },
+  ).stdout.trim();
+  return Number(out);
 }
 
 const near = (actual, expected) => Math.abs(actual - expected) <= 2;
@@ -852,6 +890,9 @@ async function run() {
       "Page.addScriptToEvaluateOnNewDocument",
       { source: musicFixtureSource },
     );
+    await page.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: desktopEventRecorderSource,
+    });
     await page.evaluate('location.hash = "#/home";');
     await page.send("Page.reload", { ignoreCache: true });
     await sleep(1000);
@@ -872,6 +913,7 @@ async function run() {
       for (const [name, scenario] of [
         ["playlist-playback", runPlaylistPlayback],
         ["song-navigation", runSongNavigation],
+        ["desktop", runDesktop],
       ]) {
         try {
           await scenario({ page, check });
@@ -902,6 +944,49 @@ async function run() {
     if (fs.existsSync(logFile)) {
       fs.copyFileSync(logFile, path.join(artifactDir, "arlet.log"));
     }
+
+    // Close to tray: closing hides the window and keeps the process alive,
+    // and a second launch shows the hidden window again (single instance).
+    // Failure modes: a second launch does not show a window hidden in the tray;
+    // close-to-tray leaves the app impossible to quit (docs/TESTING.md, Tray).
+    const trayEnabled = await settle(page, "save_settings", {
+      json: JSON.stringify({ ...DEFAULT_SETTINGS_FOR_E2E, closeToTray: true }),
+    });
+    void settle(page, "plugin:window|close", { label: "main" }).catch(
+      () => undefined,
+    );
+    await sleep(1500);
+    const hiddenInTray = visibleArletWindows(child.pid) === 0;
+    const aliveAfterClose = processAlive(child.pid);
+    const relaunch = spawn(EXE, [], {
+      env: { ...process.env, MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN },
+      stdio: "ignore",
+    });
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 20_000);
+      relaunch.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    const trayDeadline = Date.now() + 15_000;
+    let shownAgain = false;
+    while (Date.now() < trayDeadline && !shownAgain) {
+      shownAgain = visibleArletWindows(child.pid) === 1;
+      if (!shownAgain) await sleep(250);
+    }
+    check(
+      "close to tray hides the window and a second launch shows it again",
+      trayEnabled.ok &&
+        hiddenInTray &&
+        aliveAfterClose &&
+        shownAgain &&
+        processAlive(child.pid),
+      { hiddenInTray, aliveAfterClose, shownAgain },
+    );
+    await settle(page, "save_settings", {
+      json: JSON.stringify(DEFAULT_SETTINGS_FOR_E2E),
+    });
 
     // Resize, then close normally: the new geometry is saved for next launch.
     const resized = await settle(page, "plugin:window|set_size", {

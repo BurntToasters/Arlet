@@ -24,6 +24,7 @@ import type { Track } from "../domain/music.ts";
 import type { TrackNavigation } from "../musickit/song-navigation.ts";
 import { Artwork } from "./Artwork.tsx";
 import { IconButton } from "./IconButton.tsx";
+import { SleepTimerButton } from "./SleepTimerButton.tsx";
 import { reportActionError } from "./action-errors.ts";
 
 export function playerErrorLabel(code: AppErrorCode): string {
@@ -325,6 +326,7 @@ export function PlayerBar(): JSX.Element {
             }
           />
         ) : null}
+        <SleepTimerButton />
         {playback.error ? (
           <span className="player-error" title={playback.error.message}>
             <CircleAlert aria-hidden="true" size={15} strokeWidth={1.9} />
