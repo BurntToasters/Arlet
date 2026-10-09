@@ -22,7 +22,13 @@ import {
   withResolvableTracks,
 } from "../musickit/unresolved.ts";
 import { reportActionError } from "../components/action-errors.ts";
-import { MAX_QUEUE_LENGTH, windowQueue } from "./queue-window.ts";
+import {
+  MAX_QUEUE_LENGTH,
+  QUEUE_REFILL_SIZE,
+  QUEUE_REFILL_THRESHOLD,
+  shuffledCopy,
+  windowQueue,
+} from "./queue-window.ts";
 import {
   editQueue,
   planClear,
@@ -42,6 +48,7 @@ import {
   setPlaybackPosition,
   setPlaybackStatus,
   setQueue,
+  setQueueRest,
   setQueueSnapshot,
   setVolume,
 } from "../state.ts";
@@ -154,6 +161,27 @@ export function createPlayback(context: ControllerContext) {
     return expected ?? matches[0];
   };
 
+  // Songs from a capped playlist not yet in the provider queue. A new
+  // generation drops a pending refill for a queue that has been replaced.
+  let queueRest: Track[] = [];
+  let restGeneration = 0;
+  let refilling = false;
+  // Last song this playlist added. If the queue no longer holds it, the
+  // queue was replaced elsewhere and the rest must not be appended.
+  let restAnchor: Track | undefined;
+
+  const setRest = (tracks: Track[], anchor?: Track): void => {
+    queueRest = tracks;
+    if (anchor) restAnchor = anchor;
+    if (tracks.length === 0) restAnchor = undefined;
+    setQueueRest(tracks.length);
+  };
+
+  const clearContinuation = (): void => {
+    restGeneration += 1;
+    setRest([]);
+  };
+
   const playTracks = async (
     requestedTracks: readonly Track[],
     requestedStart = 0,
@@ -168,14 +196,16 @@ export function createPlayback(context: ControllerContext) {
       throw new Error("The selected song is unavailable.");
     }
     const shuffled = readPlaybackModes(instance).shuffleMode === "songs";
-    const { tracks, startIndex } = windowQueue(
+    const { tracks, startIndex, rest } = windowQueue(
       requestedTracks,
       requestedStart,
       shuffled,
     );
-    if (tracks.length < requestedTracks.length) {
+    clearContinuation();
+    const generation = restGeneration;
+    if (rest.length) {
       log(
-        `Queued ${tracks.length} of ${requestedTracks.length} songs to stay within Apple's request limits.`,
+        `Queued ${tracks.length} of ${requestedTracks.length} songs; the rest load as the queue plays.`,
       );
     }
     const needsExplicitSelection = startIndex > 0 || shuffled;
@@ -231,6 +261,7 @@ export function createPlayback(context: ControllerContext) {
         }
       }
       await instance.play();
+      if (generation === restGeneration) setRest(rest, queue.at(-1));
     } catch (error) {
       reportPlayFailure("Play failed", error);
       throw error;
@@ -241,12 +272,14 @@ export function createPlayback(context: ControllerContext) {
    * Play Next / Play Later. The local snapshot is captured before crossing
    * the provider boundary: a queue event can replace app state while the
    * call is awaiting, so a post-await read would lose the insertion index
-   * when MusicKit does not expose its queue yet.
+   * when MusicKit does not expose its queue yet. Resolves to the songs
+   * actually inserted; `quiet` logs skipped songs instead of showing a toast.
    */
   const insertTracks = async (
     method: QueueInsertMethod,
     tracks: readonly Track[] | readonly string[],
-  ): Promise<void> => {
+    options: { quiet?: boolean } = {},
+  ): Promise<Track[]> => {
     const ids = trackIds(tracks);
     if (ids.length === 0) throw new Error("At least one track is required.");
     const allTracks = materializeTracks(tracks);
@@ -261,7 +294,7 @@ export function createPlayback(context: ControllerContext) {
     const currentIndex = getState().playback.queueIndex;
     if (currentQueue.length === 0) {
       await playTracks(requestedTracks);
-      return;
+      return requestedTracks;
     }
     const beforeQueue = [...currentQueue];
     const snapshotIndex = Math.max(
@@ -294,7 +327,7 @@ export function createPlayback(context: ControllerContext) {
     if (skipped.length) {
       log(`Skipped ${skipped.length} unavailable songs.`);
       const message = skippedMessage(skipped.length);
-      if (message) reportActionError(new Error(message));
+      if (message && !options.quiet) reportActionError(new Error(message));
     }
     const expectedQueue = [...beforeQueue];
     if (method === "playNext") {
@@ -310,21 +343,68 @@ export function createPlayback(context: ControllerContext) {
     // mutation; otherwise use the captured local snapshot deterministically
     // until queueItemsDidChange reports the authoritative queue.
     if (synced && sameTrackIds(getState().playback.queue, expectedQueue)) {
-      return;
+      return normalizedTracks;
     }
     setQueueSnapshot(expectedQueue, snapshotIndex);
+    return normalizedTracks;
+  };
+
+  /**
+   * Appends the next songs of a capped playlist once fewer than
+   * QUEUE_REFILL_THRESHOLD upcoming songs remain. Runs once at a time; a new
+   * play or `Clear` drops a refill that is still in flight.
+   */
+  const maybeRefillQueue = (): void => {
+    if (refilling || queueRest.length === 0) return;
+    const { queue, queueIndex } = getState().playback;
+    if (queue.length === 0) return;
+    if (!queue.some((track) => isSameTrack(track, restAnchor))) {
+      log("Queue was replaced; dropping the rest of the previous playlist.");
+      clearContinuation();
+      return;
+    }
+    if (queue.length - queueIndex - 1 >= QUEUE_REFILL_THRESHOLD) return;
+    const generation = restGeneration;
+    const chunk = queueRest.slice(0, QUEUE_REFILL_SIZE);
+    const instance = getMusic();
+    const shuffled =
+      instance !== undefined &&
+      instance !== null &&
+      readPlaybackModes(instance).shuffleMode === "songs";
+    refilling = true;
+    let inserted: Track[] = [];
+    // A background refill never toasts; the user did not start it.
+    void insertTracks("playLater", shuffled ? shuffledCopy(chunk) : chunk, {
+      quiet: true,
+    })
+      .then((tracks) => {
+        inserted = tracks;
+      })
+      .catch((error: unknown) => {
+        log(`Queue refill failed: ${errorMessage(error)}`);
+      })
+      .finally(() => {
+        refilling = false;
+        // The chunk is consumed even on failure so a bad page cannot loop.
+        if (generation === restGeneration) {
+          setRest(queueRest.slice(chunk.length), inserted.at(-1));
+        }
+      });
   };
 
   return {
     applyPlaybackVolume,
     syncPlaybackModes,
     playTracks,
+    maybeRefillQueue,
+    clearContinuation,
 
     async playStation(station: Station): Promise<void> {
       const url = station.url?.trim();
       const id = station.id.trim();
       if (!url && !id) throw new Error("This station cannot be played.");
       const instance = requireMusic();
+      clearContinuation();
       clearPlaybackError();
       setPlaybackStatus("loading");
       try {
@@ -336,11 +416,17 @@ export function createPlayback(context: ControllerContext) {
       }
     },
 
-    playNextTracks: (tracks: readonly Track[] | readonly string[]) =>
-      insertTracks("playNext", tracks),
+    playNextTracks: async (
+      tracks: readonly Track[] | readonly string[],
+    ): Promise<void> => {
+      await insertTracks("playNext", tracks);
+    },
 
-    playLaterTracks: (tracks: readonly Track[] | readonly string[]) =>
-      insertTracks("playLater", tracks),
+    playLaterTracks: async (
+      tracks: readonly Track[] | readonly string[],
+    ): Promise<void> => {
+      await insertTracks("playLater", tracks);
+    },
 
     async playQueueItem(index: number): Promise<void> {
       const instance = requireMusic();
@@ -404,6 +490,8 @@ export function createPlayback(context: ControllerContext) {
     },
 
     async clearUpNext(): Promise<QueueEditTier> {
+      // Clearing Up Next also drops the rest of a capped playlist.
+      clearContinuation();
       return editQueueLogged(
         "Queue clear failed",
         requireMusic(),

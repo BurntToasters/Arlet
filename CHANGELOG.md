@@ -2,7 +2,7 @@
 
 | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                            | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
 | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.1/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.1/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.2/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.2/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -18,6 +18,13 @@
 ### ℹ️ Enjoying Arlet? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
+
+## Changes in `v0.2.2:`
+
+- **Fix - Long playlists and albums:** Playlist and album pages now list every song instead of stopping at the first 100. The first songs show right away and the rest load in the background. Returning to a long playlist keeps your place instead of jumping back to the top.
+- **NEW - Endless queue:** Playing a playlist longer than 500 songs now keeps going. Arlet adds the next songs as the queue runs low, and `Playing Next` shows how many are still to come. Shuffle keeps drawing from the whole playlist.
+- **Fix - Queue:** Starting something else, playing a station, or `Clear` drops the rest of a long playlist, so its songs never end up in a different queue.
+- **Testing:** End-to-end tests now cover long playlist pages, queue refills, and queues replaced mid-playlist.
 
 ## Changes in `v0.2.1:`
 

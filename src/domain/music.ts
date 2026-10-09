@@ -162,6 +162,8 @@ export interface PlaybackState {
   /** A restored queue waits here until the first play request. */
   pendingRestore?: PendingPlaybackRestore;
   sleepTimer?: SleepTimerState;
+  /** Songs from a capped playlist still waiting to be added to the queue. */
+  queueRest?: number;
   error?: PlayerError;
 }
 
