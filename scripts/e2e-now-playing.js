@@ -1,5 +1,4 @@
-/* Failure modes live in docs/TESTING.md ("Now Playing and lyrics"). Hostile
- * TTML is served by the music fixture; the checks prove it stays inert. */
+/* Failure modes live in docs/TESTING.md ("Now Playing"). */
 
 const FIXTURE = "window.__ARLET_E2E_MUSIC__";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -55,17 +54,20 @@ async function pressKey(page, key, code, windowsVirtualKeyCode) {
   }
 }
 
-async function lyricsRequests(page) {
+async function transitions(page) {
   const snapshot = await fixtureCall(page, "snapshot");
-  return (snapshot?.requests ?? []).filter((request) =>
-    String(request.path).includes("/lyrics"),
-  );
+  return snapshot?.transitions ?? [];
 }
 
-/** Run Now Playing and lyrics checks against the native WebView2 fixture. */
+/** Run Now Playing checks against the native WebView2 fixture. */
 export async function runNowPlaying({ page, check }) {
   await fixtureCall(page, "reset");
-  await fixtureCall(page, "setCurrentTrack", ["song-a"]);
+  await page.evaluate(`
+    const music = window.MusicKit.getInstance();
+    await music.setQueue({ songs: ["song-a", "song-c", "song-e"] });
+    await music.play();
+    return true;
+  `);
   await waitFor(
     page,
     `document.querySelector('.player-artwork-button:not(:disabled)')`,
@@ -90,33 +92,17 @@ export async function runNowPlaying({ page, check }) {
     { opened, focusInside },
   );
 
-  // Hostile TTML renders as inert text: no script or handler runs.
-  const lyricsText = await waitFor(
-    page,
-    `document.querySelector('.lyrics-text') && document.querySelector('.lyrics-text').textContent.includes('Opening line')`,
-    10_000,
-  );
-  const inert = await page.evaluate(`
-    const text = document.querySelector('.lyrics-text')?.textContent ?? '';
-    return {
-      sentinelUnset: typeof window.__ARLET_TTML_SENTINEL === 'undefined',
-      noMarkupElements: document.querySelectorAll('.lyrics-text img, .lyrics-text b, .lyrics-text script').length === 0,
-      textRendered: text.includes('Opening line') && text.includes('Unsynced hostile line') && text.includes('Chorus line at forty'),
-      cdataAsText: text.includes('<b>Markup stays text</b>'),
-    };
+  // Up Next lists only the songs after the current one.
+  const upNext = await page.evaluate(`
+    return [...document.querySelectorAll('.now-playing-queue strong')].map((node) => node.textContent);
   `);
   check(
-    "hostile TTML runs no script and renders as text",
-    lyricsText &&
-      inert.sentinelUnset &&
-      inert.noMarkupElements &&
-      inert.textRendered &&
-      inert.cdataAsText,
-    inert,
+    "Up Next lists only upcoming songs",
+    JSON.stringify(upNext) === JSON.stringify(["Track C", "Track E"]),
+    { upNext },
   );
 
-  // Seek to 42 s through the real progress slider. The line starting at 40 s
-  // is the active one; it must be the only aria-current line.
+  // Seeking through the overlay slider reaches MusicKit.
   await fixtureCall(page, "emitPlaybackTime", [0]);
   await waitFor(
     page,
@@ -129,64 +115,62 @@ export async function runNowPlaying({ page, check }) {
     input.dispatchEvent(new Event("change", { bubbles: true }));
     return true;
   `);
-  const highlighted = await waitFor(
+  const seeked = await waitFor(
     page,
-    `document.querySelector('.lyrics-text [aria-current="true"]')?.textContent === 'Chorus line at forty'`,
+    `window.__ARLET_E2E_MUSIC__.snapshot().transitions.some((item) => item.type === "seekToTime" && item.seconds === 42)`,
     5_000,
   );
-  const highlight = await page.evaluate(`
-    const active = document.querySelectorAll('.lyrics-text [aria-current="true"]');
-    const node = active[0];
-    const container = document.querySelector('.lyrics-text');
-    const rect = node?.getBoundingClientRect();
-    const box = container?.getBoundingClientRect();
-    return {
-      count: active.length,
-      text: node?.textContent ?? null,
-      visible: Boolean(rect && box && rect.top >= box.top && rect.bottom <= box.bottom),
-    };
-  `);
-  check(
-    "seeking to 42 s highlights the line starting at 40 s, scrolled into view",
-    highlighted &&
-      highlight.count === 1 &&
-      highlight.text === "Chorus line at forty" &&
-      highlight.visible,
-    { highlighted, highlight },
-  );
+  check("seeking in Now Playing reaches MusicKit", seeked);
 
-  // Denied lyrics: "song-c" answers 403 and shows the fallback.
-  await fixtureCall(page, "setCurrentTrack", ["song-c"]);
-  const fallback = await waitFor(
+  // Space still toggles playback while the overlay is open.
+  await page.evaluate(`document.activeElement?.blur(); return true;`);
+  const beforeSpace = (await transitions(page)).length;
+  await page.send("Input.dispatchKeyEvent", {
+    type: "keyDown",
+    key: " ",
+    code: "Space",
+    windowsVirtualKeyCode: 32,
+    text: " ",
+  });
+  await page.send("Input.dispatchKeyEvent", {
+    type: "keyUp",
+    key: " ",
+    code: "Space",
+    windowsVirtualKeyCode: 32,
+  });
+  const paused = await waitFor(
     page,
-    `document.querySelector('.lyrics-status') && document.querySelector('.lyrics-status').textContent.includes("available for this song")`,
-    10_000,
+    `window.__ARLET_E2E_MUSIC__.snapshot().transitions.slice(${beforeSpace}).some((item) => item.type === "pause")`,
+    5_000,
   );
-  const afterForbidden = await lyricsRequests(page);
-  const forbiddenRequests = afterForbidden.filter((request) =>
-    request.path.includes("/songs/song-c/lyrics"),
-  );
+  check("Space pauses playback while Now Playing is open", paused);
 
-  // Two more track changes, one with lyrics and one denied. The 403 must stop
-  // all further lyrics requests for the rest of the session.
-  await fixtureCall(page, "setCurrentTrack", ["song-e"]);
-  await sleep(300);
-  await fixtureCall(page, "setCurrentTrack", ["song-c"]);
-  await sleep(300);
-  const afterSwitches = await lyricsRequests(page);
+  // Choosing an Up Next row selects it in place and keeps earlier songs.
+  const beforeRow = (await transitions(page)).length;
+  await page.evaluate(`
+    document.querySelectorAll('.now-playing-queue button')[1]?.click();
+    return true;
+  `);
+  const selected = await waitFor(
+    page,
+    `document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Track E"`,
+    5_000,
+  );
+  const rowTransitions = (await transitions(page)).slice(beforeRow);
   check(
-    "403 shows the fallback and no lyrics request follows it",
-    fallback &&
-      forbiddenRequests.length === 1 &&
-      afterSwitches.length === afterForbidden.length,
-    {
-      fallback,
-      forbiddenRequests: forbiddenRequests.length,
-      requestsAtForbidden: afterForbidden.length,
-      requestsAfterSwitches: afterSwitches.length,
-    },
+    "choosing an Up Next row selects it without rebuilding the queue",
+    selected &&
+      rowTransitions.some(
+        (item) => item.type === "selectIndex" && item.index === 2,
+      ) &&
+      !rowTransitions.some((item) => item.type === "setQueue"),
+    { rowTransitions },
   );
 
+  // Return focus to the dialog so Esc reaches it.
+  await page.evaluate(
+    `document.querySelector('.now-playing button[aria-label="Close Now Playing"]')?.focus(); return true;`,
+  );
   // Esc closes the overlay and returns focus to the artwork button.
   await pressKey(page, "Escape", "Escape", 27);
   const closed = await waitFor(

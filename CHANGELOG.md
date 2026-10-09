@@ -28,7 +28,6 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 - **Fix - Albums:** Playing a song from an album detail page now continues through the album the same way.
 - **Fix - Play now:** `Play now` from a song's menu in a playlist or album starts that exact entry in the full list, including songs that appear more than once.
 - **NEW - Now Playing:** Click the artwork at the bottom left to open a full-window view with large artwork, controls, and `Up Next`. Press `Esc` to close it.
-- **NEW - Lyrics:** `Now Playing` has a `Lyrics` tab that follows along with the song when Apple Music provides lyrics to Arlet. Otherwise it says lyrics aren't available.
 - **NEW - Queue editing:** Remove, reorder (buttons or drag and drop), and clear songs in `Playing Next`, or save the whole queue as a playlist. Long queues now scroll smoothly.
 - **NEW - Shuffle:** Albums and playlists have a `Shuffle` button next to `Play`, and their menus have a `Shuffle` action.
 - **NEW - Love and Dislike:** Love or dislike songs, albums, and playlists from their menus, or use the heart next to the playing song. Catalog items have an `Add to Library` action.
@@ -45,7 +44,7 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 - **Fix - Repeat:** Errors from the repeat button are now shown instead of ignored.
 - **Note:** Apple Music doesn't let other apps rename or delete playlists or remove songs from them, so Arlet can't either.
 - **Playback:** Repeat and shuffle settings carry over when you start a song from a playlist. `Play next` and `Play later` still add only the song you chose.
-- **Testing:** End-to-end tests now cover playlist and album playback, shuffle and repeat, song navigation, failed lookups, queue editing, shortcuts and mute, ratings, Now Playing and lyrics, the sleep timer, autoplay, Windows media controls, close to tray, and session restore. Each run saves a repeatable report with screenshots.
+- **Testing:** End-to-end tests now cover playlist and album playback, shuffle and repeat, song navigation, failed lookups, queue editing, shortcuts and mute, ratings, Now Playing, the sleep timer, autoplay, Windows media controls, close to tray, and session restore. Each run saves a repeatable report with screenshots.
 
 ## Changes in `v0.1.3:`
 

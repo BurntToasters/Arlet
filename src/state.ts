@@ -850,10 +850,13 @@ export function setPlaybackStatus(status: PlaybackState["status"]): void {
 export function setCurrentTrack(
   track: Track | undefined,
   explicitQueueIndex?: number,
+  countAsPlayed = true,
 ): void {
   // MusicKit may report a library song by its catalog ID, so match either.
   const isNewTrack =
-    track !== undefined && !isSameTrack(track, state.playback.current);
+    countAsPlayed &&
+    track !== undefined &&
+    !isSameTrack(track, state.playback.current);
   const queue = state.playback.queue;
   const exactIndex = track
     ? queue.findIndex((item) => item.id === track.id)
@@ -918,11 +921,18 @@ export function setQueue(queue: Track[], queueIndex = 0): void {
   });
 }
 
-/** Replace queue while preserving explicit position for duplicate track IDs. */
-export function setQueueSnapshot(queue: Track[], queueIndex = 0): void {
+/**
+ * Replace queue while preserving explicit position for duplicate track IDs.
+ * A restored queue passes `countAsPlayed: false`; nothing has played yet.
+ */
+export function setQueueSnapshot(
+  queue: Track[],
+  queueIndex = 0,
+  countAsPlayed = true,
+): void {
   setQueue(queue, queueIndex);
   const current = queue[queueIndex];
-  if (current) setCurrentTrack(current, Math.max(0, queueIndex));
+  if (current) setCurrentTrack(current, Math.max(0, queueIndex), countAsPlayed);
 }
 
 export function setPlaybackError(code: AppErrorCode, message: string): void {

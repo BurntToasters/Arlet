@@ -62,7 +62,6 @@ function testController(): AppController {
     removeQueueItem: vi.fn(async () => "native" as const),
     moveQueueItem: vi.fn(async () => "native" as const),
     clearUpNext: vi.fn(async () => "native" as const),
-    saveQueueAsPlaylist: vi.fn(async () => undefined),
     refreshCurrentData: vi.fn(async () => undefined),
     search: vi.fn(async () => []),
     playFromSearch: vi.fn(async () => undefined),

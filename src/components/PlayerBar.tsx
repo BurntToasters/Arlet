@@ -114,8 +114,7 @@ export function PlayerBar(): JSX.Element {
 
   const navigation =
     current &&
-    resolvedNavigation &&
-    resolvedNavigation.track.id === current.id &&
+    resolvedNavigation?.track.id === current.id &&
     resolvedNavigation.track.catalogId === current.catalogId
       ? resolvedNavigation.value
       : {

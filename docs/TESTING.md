@@ -131,15 +131,13 @@ Failure scenarios to cover before changing production code:
 - Add to Library duplicates an item or calls the wrong endpoint.
 - Mutating requests (PUT/POST/DELETE) are retried.
 
-## Now Playing and lyrics
+## Now Playing
 
 - The overlay steals focus, traps it forever, or Esc does not close it.
-- Hostile TTML runs script or markup, or a huge document hangs the renderer.
-- Bad timestamps throw instead of rendering unsynced lines.
-- The highlighted line drifts, or every tick re-renders the app.
-- Lyrics from the previous song show on the next one.
-- The app repeats lyrics requests after a 401/403, or one missing song (404)
-  turns lyrics off for every song.
+- Transport keys stop working while the overlay is open.
+- Up Next shows history or the current song, or choosing a row drops the
+  songs before it.
+- Seeking from the overlay does not reach MusicKit.
 
 ## Desktop controls
 

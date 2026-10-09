@@ -1,6 +1,6 @@
 import { X } from "lucide-preact";
 import type { JSX } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import {
   useAppController,
   useAppRouter,
@@ -9,14 +9,11 @@ import {
 import type { MusicEntityRef, Track } from "../domain/music.ts";
 import { setUiState } from "../state.ts";
 import { Artwork } from "./Artwork.tsx";
-import { LyricsPanel } from "./LyricsPanel.tsx";
 import { reportActionError } from "./action-errors.ts";
 import { PlaybackProgress, TransportControls } from "./TransportControls.tsx";
 
 const FOCUSABLE =
   "button:not(:disabled), input:not(:disabled), [href], [tabindex]:not([tabindex='-1'])";
-
-type SidePanel = "lyrics" | "upNext";
 
 function closeNowPlaying(): void {
   setUiState({ nowPlayingOpen: false });
@@ -35,7 +32,6 @@ function NowPlayingDialog(): JSX.Element {
   const router = useAppRouter();
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
-  const [panel, setPanel] = useState<SidePanel>("lyrics");
   const playback = state.playback;
   const current = playback.current;
   const playing = playback.status === "playing";
@@ -173,35 +169,14 @@ function NowPlayingDialog(): JSX.Element {
           </div>
         </section>
         <section className="now-playing-side">
-          <div className="now-playing-tabs">
-            <button
-              type="button"
-              aria-pressed={panel === "lyrics"}
-              className={panel === "lyrics" ? "is-active" : undefined}
-              onClick={() => setPanel("lyrics")}
-            >
-              Lyrics
-            </button>
-            <button
-              type="button"
-              aria-pressed={panel === "upNext"}
-              className={panel === "upNext" ? "is-active" : undefined}
-              onClick={() => setPanel("upNext")}
-            >
-              Up Next
-            </button>
-          </div>
-          {panel === "lyrics" ? (
-            <LyricsPanel track={current} />
-          ) : (
-            <UpNext
-              queue={state.playback.queue}
-              queueIndex={state.playback.queueIndex}
-              onPlay={(index) =>
-                void controller.playQueueItem(index).catch(reportActionError)
-              }
-            />
-          )}
+          <h3 className="now-playing-side-heading">Up Next</h3>
+          <UpNext
+            queue={state.playback.queue}
+            queueIndex={state.playback.queueIndex}
+            onPlay={(index) =>
+              void controller.playQueueItem(index).catch(reportActionError)
+            }
+          />
         </section>
       </div>
     </div>
@@ -221,7 +196,7 @@ function UpNext({
     .map((track, index) => ({ track, index }))
     .slice(queueIndex + 1);
   if (upcoming.length === 0) {
-    return <p className="lyrics-status">Nothing else is queued.</p>;
+    return <p className="now-playing-empty">Nothing else is queued.</p>;
   }
   return (
     <ol className="now-playing-queue" aria-label="Up Next">

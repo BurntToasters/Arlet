@@ -65,8 +65,6 @@ export interface Track {
   playable?: boolean;
   /** Whether this resource can be appended to an Apple Music playlist. */
   addable?: boolean;
-  /** Apple reports timed or untimed lyrics exist for this song. */
-  hasLyrics?: boolean;
 }
 
 export interface Album {

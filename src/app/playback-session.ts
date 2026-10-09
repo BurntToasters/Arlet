@@ -292,7 +292,7 @@ export function createPlaybackSession(
     if (!snapshot) return;
     // Playback the user started while the file was loading wins.
     if (getState().playback.queue.length > 0) return;
-    setQueueSnapshot(snapshot.tracks, snapshot.index);
+    setQueueSnapshot(snapshot.tracks, snapshot.index, false);
     setPlaybackStatus("paused");
     setPlaybackPosition(snapshot.positionSeconds, snapshot.durationSeconds);
     setPendingRestore({

@@ -1,4 +1,4 @@
-/* Now Playing overlay and lyrics */
+/* Now Playing overlay */
 .artwork-xl {
   width: min(100%, 320px);
   aspect-ratio: 1;
@@ -117,65 +117,19 @@
   border-radius: var(--radius-lg);
   background: var(--surface-subtle);
 }
-.now-playing-tabs {
-  display: flex;
-  gap: 6px;
-}
-.now-playing-tabs button {
-  padding: 6px 12px;
-  border: 0;
-  border-radius: var(--radius-pill);
-  background: transparent;
+.now-playing-side-heading {
+  margin: 0;
   color: var(--text-muted);
-  font: inherit;
   font-size: 12px;
-  font-weight: 620;
-  cursor: pointer;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
-.now-playing-tabs button:hover {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-.now-playing-tabs button[aria-pressed="true"] {
-  background: var(--surface-active);
-  color: var(--accent-strong);
-}
-
-.lyrics-status {
+.now-playing-empty {
   margin: 0;
   padding: 18px 6px;
   color: var(--text-muted);
   font-size: 13px;
-}
-.lyrics-text {
-  min-height: 0;
-  flex: 1 1 auto;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 8px 6px 40vh;
-}
-.lyrics-text ol {
-  display: grid;
-  margin: 0;
-  padding: 0;
-  gap: 14px;
-  list-style: none;
-}
-.lyrics-text li {
-  color: var(--text-faint);
-  font-size: 18px;
-  font-weight: 620;
-  line-height: 1.35;
-  transition: color var(--duration-normal) var(--ease-standard);
-}
-.lyrics-text li[aria-current="true"] {
-  color: var(--text);
-}
-.lyrics-text p {
-  margin: 0 0 14px;
-  color: var(--text-muted);
-  font-size: 16px;
-  line-height: 1.45;
 }
 
 .now-playing-queue {
