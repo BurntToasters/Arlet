@@ -94,6 +94,7 @@ import {
 } from "./library-loader.ts";
 import { createCollectionPlayback } from "./collection-playback.ts";
 import { createPlayback } from "./playback.ts";
+import type { QueueEditTier } from "../musickit/queue-edit.ts";
 import {
   createTrackNavigationResolver,
   type TrackNavigation,
@@ -177,6 +178,10 @@ export interface AppController {
   playNextTracks(tracks: readonly Track[] | readonly string[]): Promise<void>;
   playLaterTracks(tracks: readonly Track[] | readonly string[]): Promise<void>;
   playQueueItem(index: number): Promise<void>;
+  removeQueueItem(index: number): Promise<QueueEditTier>;
+  moveQueueItem(from: number, to: number): Promise<QueueEditTier>;
+  clearUpNext(): Promise<QueueEditTier>;
+  saveQueueAsPlaylist(name: string): Promise<LibraryEntity | undefined>;
   refreshCurrentData(): Promise<void>;
   search(term: string): Promise<Track[]>;
   setSearchSource?(source: "catalog" | "library"): void;
@@ -738,6 +743,29 @@ export function createAppController(
     playQueueItem(index: number): Promise<void> {
       collections.invalidate();
       return playback.playQueueItem(index);
+    },
+
+    removeQueueItem(index: number): Promise<QueueEditTier> {
+      collections.invalidate();
+      return playback.removeQueueItem(index);
+    },
+
+    moveQueueItem(from: number, to: number): Promise<QueueEditTier> {
+      collections.invalidate();
+      return playback.moveQueueItem(from, to);
+    },
+
+    clearUpNext(): Promise<QueueEditTier> {
+      collections.invalidate();
+      return playback.clearUpNext();
+    },
+
+    saveQueueAsPlaylist(name: string): Promise<LibraryEntity | undefined> {
+      return controller.createPlaylist(
+        name,
+        undefined,
+        getState().playback.queue,
+      );
     },
 
     async refreshCurrentData(): Promise<void> {

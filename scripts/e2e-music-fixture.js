@@ -109,6 +109,8 @@ function installMusicKitFixture() {
     rejectPaths: [],
     delayMs: 800,
     repeatPlaylistCursor: false,
+    nativeQueueEdit: false,
+    queueEditDelayMs: 0,
   };
   let instance;
 
@@ -324,6 +326,60 @@ function installMusicKitFixture() {
     return index;
   };
 
+  // Native queue edits exist only when configure({ nativeQueueEdit: true }),
+  // so both the native and rebuild tiers run against the same fixture.
+  const queueEditDelay = async () => {
+    if (state.queueEditDelayMs > 0) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, state.queueEditDelayMs),
+      );
+    }
+  };
+  const insertNative = async (type, index, options) => {
+    const ids = idsFromOptions(options);
+    if (!Number.isInteger(index) || index < 0 || index > state.queue.length) {
+      throw new Error(`Fixture queue index unavailable: ${index}`);
+    }
+    await queueEditDelay();
+    state.queue.splice(index, 0, ...ids.map(mediaItem));
+    if (index <= state.queueIndex) state.queueIndex += ids.length;
+    state.transitions.push({ type, index, ids: [...ids] });
+    syncProviderQueue(true, false);
+  };
+  const nativeQueue = Object.create(queueRecord);
+  Object.assign(nativeQueue, {
+    async remove(index) {
+      if (
+        !Number.isInteger(index) ||
+        index < 0 ||
+        index >= state.queue.length
+      ) {
+        throw new Error(`Fixture queue index unavailable: ${index}`);
+      }
+      await queueEditDelay();
+      if (index >= state.queue.length) {
+        throw new Error(`Fixture queue index unavailable: ${index}`);
+      }
+      const [removed] = state.queue.splice(index, 1);
+      if (index < state.queueIndex) state.queueIndex -= 1;
+      state.transitions.push({
+        type: "nativeRemove",
+        index,
+        id: removed?.id,
+      });
+      syncProviderQueue(true, false);
+    },
+    splice(index, options) {
+      return insertNative("nativeSplice", index, options);
+    },
+    append(options) {
+      return insertNative("nativeAppend", state.queue.length, options);
+    },
+    prepend(options) {
+      return insertNative("nativePrepend", 0, options);
+    },
+  });
+
   const player = {
     queue: queueRecord,
     shuffle: false,
@@ -353,6 +409,9 @@ function installMusicKitFixture() {
     api: { music: musicRequest, v3: { music: musicRequest } },
     get queueItems() {
       return state.queue;
+    },
+    get queue() {
+      return state.nativeQueueEdit ? nativeQueue : undefined;
     },
     get currentPlaybackQueueItemIndex() {
       return state.queue.length ? state.queueIndex : -1;
@@ -448,6 +507,7 @@ function installMusicKitFixture() {
       return selectIndex(index, "previous");
     },
     async seekToTime(time) {
+      state.transitions.push({ type: "seekToTime", seconds: time });
       emit(events.playbackTimeDidChange, {
         currentPlaybackTime: time,
         currentPlaybackDuration: 180,
@@ -489,6 +549,15 @@ function installMusicKitFixture() {
       ) {
         state.repeatPlaylistCursor = options.repeatPlaylistCursor === true;
       }
+      if (Object.prototype.hasOwnProperty.call(options, "nativeQueueEdit")) {
+        state.nativeQueueEdit = options.nativeQueueEdit === true;
+      }
+      if (Object.prototype.hasOwnProperty.call(options, "queueEditDelayMs")) {
+        state.queueEditDelayMs = Math.max(
+          0,
+          Number(options.queueEditDelayMs) || 0,
+        );
+      }
       return this.snapshot();
     },
     reset() {
@@ -499,6 +568,8 @@ function installMusicKitFixture() {
       state.rejectPaths = [];
       state.delayMs = 800;
       state.repeatPlaylistCursor = false;
+      state.nativeQueueEdit = false;
+      state.queueEditDelayMs = 0;
       state.queue = [];
       state.queueIndex = 0;
       state.shuffleHistory = [];
@@ -608,11 +679,32 @@ function installMusicKitFixture() {
       );
       return true;
     },
+    emitPlaybackTime(seconds) {
+      emit(events.playbackTimeDidChange, {
+        currentPlaybackTime: seconds,
+        currentPlaybackDuration: 180,
+      });
+      return true;
+    },
+    seedQueue(count) {
+      state.queue = Array.from({ length: count }, (_, index) =>
+        mediaItem(`bulk-${index}`),
+      );
+      state.queueIndex = 0;
+      state.shuffleHistory = [0];
+      state.transitions.push({ type: "seedQueue", total: count });
+      syncProviderQueue(true, true);
+      return true;
+    },
     snapshot() {
       return {
         seed: this.seed,
         requests: clone(state.requests),
         transitions: clone(state.transitions),
+        queueEdit: {
+          native: state.nativeQueueEdit,
+          delayMs: state.queueEditDelayMs,
+        },
         queue: captureQueue(),
         modes: {
           shuffle: player.shuffle === true,

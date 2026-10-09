@@ -21,6 +21,7 @@ import {
   SkipForward,
   SquareStack,
   UserRound,
+  X,
 } from "lucide-preact";
 import type { LucideIcon } from "lucide-preact";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
@@ -33,7 +34,8 @@ import {
   type ContextMenuRequestDetail,
 } from "./context-menu-events.ts";
 import { requestPlaylistDialog } from "./playlist-events.ts";
-import { reportActionError } from "./action-errors.ts";
+import { reportActionError, reportQueueEdit } from "./action-errors.ts";
+import type { QueueEditTier } from "../musickit/queue-edit.ts";
 
 type ContextKind = "track" | "album" | "artist" | "playlist" | "folder";
 
@@ -54,6 +56,7 @@ interface ContextTarget {
   parentId?: string;
   parentSource?: MusicSource;
   parentIndex?: number;
+  queueIndex?: number;
 }
 
 interface MenuItem {
@@ -135,6 +138,7 @@ function parseTarget(node: HTMLElement | null): ContextTarget {
       ? node.dataset.contextParentKind
       : undefined;
   const parentIndex = Number(node.dataset.contextParentIndex);
+  const queueIndex = Number(node.dataset.contextQueueIndex);
   let route: Route | undefined;
   if (
     routeKind === "album" ||
@@ -180,6 +184,8 @@ function parseTarget(node: HTMLElement | null): ContextTarget {
       Number.isInteger(parentIndex) && parentIndex >= 0
         ? parentIndex
         : undefined,
+    queueIndex:
+      Number.isInteger(queueIndex) && queueIndex >= 0 ? queueIndex : undefined,
   };
 }
 
@@ -492,6 +498,7 @@ interface AppControllerWithContext extends Record<string, unknown> {
   togglePin?: (id: string, source?: "library" | "catalog") => Promise<void>;
   unpin?: (id: string) => Promise<void>;
   resolveTrackNavigation?: (track: Track) => Promise<TrackNavigation>;
+  removeQueueItem?: (index: number) => Promise<QueueEditTier>;
 }
 
 function buildItems({
@@ -669,6 +676,19 @@ function buildItems({
         }),
       },
     );
+    const removeQueueItem = controller.removeQueueItem;
+    const queueIndex = target.queueIndex;
+    if (queueIndex !== undefined) {
+      items.push({
+        id: "remove-from-queue",
+        label: "Remove from queue",
+        icon: X,
+        disabled: !removeQueueItem,
+        action: run(() => {
+          if (removeQueueItem) reportQueueEdit(removeQueueItem(queueIndex));
+        }),
+      });
+    }
 
     const trackNavigation = navigation ?? {
       album: track.albumRef,

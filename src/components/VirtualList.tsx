@@ -18,10 +18,15 @@ export interface VirtualListProps<T> {
   rowHeight?: number;
   className?: string;
   "aria-label"?: string;
+  /** Ancestor that scrolls the list. Defaults to the main content scroller. */
+  scrollParentSelector?: string;
 }
 
-function scrollParent(element: HTMLElement): HTMLElement | null {
-  return element.closest<HTMLElement>(".content-scroll");
+function scrollParent(
+  element: HTMLElement,
+  selector: string,
+): HTMLElement | null {
+  return element.closest<HTMLElement>(selector);
 }
 
 /**
@@ -35,6 +40,7 @@ export function VirtualList<T>({
   rowHeight = 65,
   className,
   "aria-label": ariaLabel,
+  scrollParentSelector = ".content-scroll",
 }: VirtualListProps<T>): JSX.Element {
   const listRef = useRef<HTMLOListElement>(null);
   const measured = useRef(rowHeight);
@@ -47,7 +53,7 @@ export function VirtualList<T>({
   useLayoutEffect(() => {
     if (!virtual) return undefined;
     const list = listRef.current;
-    const scroller = list ? scrollParent(list) : null;
+    const scroller = list ? scrollParent(list, scrollParentSelector) : null;
     if (!list || !scroller) return undefined;
     const update = (): void => {
       const row = list.querySelector<HTMLElement>(
@@ -78,7 +84,7 @@ export function VirtualList<T>({
       scroller.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
     };
-  }, [virtual, items.length]);
+  }, [virtual, items.length, scrollParentSelector]);
 
   if (!virtual) {
     return (
