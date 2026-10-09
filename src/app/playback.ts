@@ -14,9 +14,11 @@ import {
 } from "../musickit/player.ts";
 import type { Station, Track } from "../domain/music.ts";
 import {
+  clearPlaybackError,
   DEFAULT_SETTINGS,
   getState,
   setCurrentTrack,
+  setMuted,
   setPlaybackError,
   setPlaybackModes,
   setPlaybackPosition,
@@ -46,10 +48,12 @@ export function createPlayback(context: ControllerContext) {
     log(`${label}: ${message}`);
   };
 
+  /** Sets the unmuted level. Any explicit volume change also unmutes. */
   const applyPlaybackVolume = (volume: number): number => {
     const safeVolume = Number.isFinite(volume)
       ? Math.max(0, Math.min(1, volume))
       : DEFAULT_SETTINGS.volume;
+    if (getState().playback.muted) setMuted(false);
     setVolume(safeVolume);
     const music = getMusic();
     if (music) setMusicVolume(music, safeVolume);
@@ -95,6 +99,7 @@ export function createPlayback(context: ControllerContext) {
       );
     }
     const queue = [...tracks];
+    clearPlaybackError();
     setQueue(queue, startIndex);
     setPlaybackStatus("loading");
     try {
@@ -183,6 +188,7 @@ export function createPlayback(context: ControllerContext) {
       const url = station.url?.trim();
       if (!url) throw new Error("This station cannot be played.");
       const instance = requireMusic();
+      clearPlaybackError();
       setPlaybackStatus("loading");
       try {
         await instance.setQueue({ url });
@@ -210,9 +216,19 @@ export function createPlayback(context: ControllerContext) {
       ) {
         throw new Error("Queue item is unavailable.");
       }
-      const queue = snapshot.queue.slice(index);
+      clearPlaybackError();
       setPlaybackStatus("loading");
       try {
+        // Selecting in the provider queue keeps history and shuffle order.
+        if (await changeToMediaAtIndex(instance, index)) {
+          await instance.play();
+          setQueueSnapshot(snapshot.queue, index);
+          return;
+        }
+        log(
+          "Queue selection unavailable; rebuilding the queue from the selected song.",
+        );
+        const queue = snapshot.queue.slice(index);
         await instance.setQueue(queueOptionsForTracks(queue));
         await instance.play();
         setQueue(queue, 0);
@@ -220,6 +236,16 @@ export function createPlayback(context: ControllerContext) {
       } catch (error) {
         reportPlayFailure("Queue item play failed", error);
         throw error;
+      }
+    },
+
+    /** Mute keeps the unmuted level in `playback.volume` and silences the output. */
+    toggleMute(): void {
+      const muted = !getState().playback.muted;
+      setMuted(muted);
+      const music = getMusic();
+      if (music) {
+        setMusicVolume(music, muted ? 0 : getState().playback.volume);
       }
     },
 

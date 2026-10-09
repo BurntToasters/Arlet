@@ -71,6 +71,14 @@ function installMusicKitFixture() {
     "nav-error": navTrack("nav-error", "Navigation Error Song"),
   };
 
+  // A library-only song: no catalog ID in playParams or relationships.
+  const libraryOnlyItem = track("i.library-only", "Library Only Song");
+  libraryOnlyItem.attributes.playParams = {
+    id: "i.library-only",
+    kind: "song",
+  };
+  navResources[libraryOnlyItem.id] = libraryOnlyItem;
+
   const resource = (id) =>
     playlistItems.find((item) => item.id === id) ??
     albumItems.find((item) => item.id === id) ??
@@ -109,6 +117,7 @@ function installMusicKitFixture() {
     rejectPaths: [],
     delayMs: 800,
     repeatPlaylistCursor: false,
+    rejectPlay: false,
   };
   let instance;
 
@@ -166,10 +175,18 @@ function installMusicKitFixture() {
         queue: queueRecord,
         currentItemIndex: state.queueIndex,
       });
+      // A new item starts at zero with a known duration, as MusicKit reports it.
+      emit(events.playbackTimeDidChange, {
+        currentPlaybackTime: 0,
+        currentPlaybackDuration: 180,
+      });
     }
   };
 
   const idsFromOptions = (options) => {
+    if (Array.isArray(options?.items)) {
+      return options.items.map((item) => String(item?.id));
+    }
     const list = options?.songs ?? options?.musicVideos ?? [];
     return Array.isArray(list) ? list.map(String) : [];
   };
@@ -368,6 +385,7 @@ function installMusicKitFixture() {
     },
     set volume(value) {
       player.volume = value;
+      state.transitions.push({ type: "volume", value });
     },
     addEventListener(name, callback) {
       const callbacks = state.listeners.get(name) ?? new Set();
@@ -394,6 +412,7 @@ function installMusicKitFixture() {
         type: "setQueue",
         ids: [...itemIds],
         options: clone(options),
+        shape: Object.keys(options ?? {}),
         shuffle: player.shuffle,
       });
       syncProviderQueue(true, true);
@@ -401,6 +420,10 @@ function installMusicKitFixture() {
     },
     changeToMediaAtIndex: (index) => selectIndex(index),
     async play() {
+      if (state.rejectPlay) {
+        state.transitions.push({ type: "playRejected" });
+        throw new Error("Fixture play rejected");
+      }
       this.playbackState = PLAYING;
       state.transitions.push({
         type: "play",
@@ -448,6 +471,7 @@ function installMusicKitFixture() {
       return selectIndex(index, "previous");
     },
     async seekToTime(time) {
+      state.transitions.push({ type: "seek", seconds: time });
       emit(events.playbackTimeDidChange, {
         currentPlaybackTime: time,
         currentPlaybackDuration: 180,
@@ -489,6 +513,9 @@ function installMusicKitFixture() {
       ) {
         state.repeatPlaylistCursor = options.repeatPlaylistCursor === true;
       }
+      if (Object.prototype.hasOwnProperty.call(options, "rejectPlay")) {
+        state.rejectPlay = options.rejectPlay === true;
+      }
       return this.snapshot();
     },
     reset() {
@@ -499,11 +526,13 @@ function installMusicKitFixture() {
       state.rejectPaths = [];
       state.delayMs = 800;
       state.repeatPlaylistCursor = false;
+      state.rejectPlay = false;
       state.queue = [];
       state.queueIndex = 0;
       state.shuffleHistory = [];
       player.shuffle = false;
       player.repeatMode = 0;
+      player.volume = 1;
       instance.playbackState = STOPPED;
       syncProviderQueue(true, true);
       emit(events.shuffleModeDidChange, { shuffle: false });
@@ -618,6 +647,7 @@ function installMusicKitFixture() {
           shuffle: player.shuffle === true,
           repeat: player.repeatMode,
         },
+        volume: player.volume,
         contextTarget: state.contextTarget ? clone(state.contextTarget) : null,
       };
     },

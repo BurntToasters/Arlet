@@ -123,6 +123,45 @@ export async function runPlaylistPlayback({ page, check }) {
     drawer,
   );
 
+  const beforeQueueSelect = await page.evaluate(
+    "return window.__ARLET_E2E_MUSIC__.snapshot();",
+  );
+  await page.evaluate(`
+    document.querySelector(".queue-drawer .queue-list li:nth-child(3) .queue-row")?.click();
+    return true;
+  `);
+  const queueSelected = await waitFor(
+    page,
+    `document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Track C"`,
+  );
+  const afterQueueSelect = await page.evaluate(
+    "return window.__ARLET_E2E_MUSIC__.snapshot();",
+  );
+  const queueSelectTransitions = afterQueueSelect.transitions.slice(
+    beforeQueueSelect.transitions.length,
+  );
+  check(
+    "clicking Playing Next row 3 of 6 keeps the queue and selects that index",
+    queueSelected &&
+      JSON.stringify(ids(afterQueueSelect)) ===
+        JSON.stringify(expectedPlaylistIds) &&
+      currentIndex(afterQueueSelect) === 2 &&
+      queueSelectTransitions.every((item) => item.type !== "setQueue") &&
+      queueSelectTransitions.some(
+        (item) => item.type === "selectIndex" && item.index === 2,
+      ),
+    { queue: afterQueueSelect.queue, transitions: queueSelectTransitions },
+  );
+  // Restore the clicked occurrence so the shuffle checks below stay anchored.
+  await page.evaluate(`
+    document.querySelector(".queue-drawer .queue-list li:nth-child(4) .queue-row")?.click();
+    return true;
+  `);
+  await waitFor(
+    page,
+    `document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Duplicate Occurrence"`,
+  );
+
   await page.evaluate(`
     document.querySelector('button[aria-label="Next track"]')?.click();
     return true;
@@ -468,5 +507,72 @@ export async function runPlaylistPlayback({ page, check }) {
       queue: repeatOneSnapshot.queue,
       transitions: repeatOneSnapshot.transitions.slice(-3),
     },
+  );
+
+  await page.evaluate(`
+    window.__ARLET_E2E_MUSIC__.configure({ rejectPlay: true });
+    document.querySelectorAll(".library-track-row")[0]?.click();
+    return true;
+  `);
+  const badgeShown = await waitFor(
+    page,
+    `document.querySelector(".player-error")`,
+  );
+  await page.evaluate(`
+    window.__ARLET_E2E_MUSIC__.configure({ rejectPlay: false });
+    document.querySelectorAll(".library-track-row")[1]?.click();
+    return true;
+  `);
+  const badgeCleared = await waitFor(
+    page,
+    `document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Album Track B" && !document.querySelector(".player-error")`,
+  );
+  const badgeSnapshot = await page.evaluate(
+    "return window.__ARLET_E2E_MUSIC__.snapshot();",
+  );
+  check(
+    "a rejected play shows the error badge and the next good play clears it",
+    badgeShown &&
+      badgeCleared &&
+      badgeSnapshot.transitions.some((item) => item.type === "playRejected") &&
+      currentIndex(badgeSnapshot) === 1,
+    {
+      queue: badgeSnapshot.queue,
+      transitions: badgeSnapshot.transitions.slice(-4),
+    },
+  );
+
+  await page.evaluate(`
+    location.hash = "#/library/songs";
+    return true;
+  `);
+  const libraryRowReady = await waitFor(
+    page,
+    `document.querySelector('.song-row-shell[data-context-id="i.library-only"] > button')`,
+  );
+  await page.evaluate(`
+    document.querySelector('.song-row-shell[data-context-id="i.library-only"] > button')?.click();
+    return true;
+  `);
+  const libraryOnlyStarted = await waitFor(
+    page,
+    `document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Library Only Song"`,
+  );
+  const libraryOnlySnapshot = await page.evaluate(
+    "return window.__ARLET_E2E_MUSIC__.snapshot();",
+  );
+  const libraryOnlySet = libraryOnlySnapshot.transitions
+    .filter((item) => item.type === "setQueue")
+    .at(-1);
+  check(
+    "a library-only song queues with typed items instead of its i. ID as songs",
+    libraryRowReady &&
+      libraryOnlyStarted &&
+      JSON.stringify(libraryOnlySet?.options) ===
+        JSON.stringify({
+          items: [{ id: "i.library-only", type: "library-songs" }],
+        }) &&
+      libraryOnlySet?.shape?.join(",") === "items",
+    { setQueue: libraryOnlySet, queue: libraryOnlySnapshot.queue },
   );
 }

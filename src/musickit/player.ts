@@ -286,7 +286,8 @@ export function syncMusicKitQueue(
  * Queue option shape matching track origin. MusicKit JS resolves queue
  * descriptors through catalog endpoints, so always prefer the catalog id:
  * the dedicated library descriptor keys build library URLs MusicKit cannot
- * resolve and fail playback.
+ * resolve and fail playback. Library-only songs (no catalog id, `i.` id)
+ * cannot resolve through `songs`, so they use typed `items` descriptors.
  */
 export function queueOptionsForTracks(
   tracks: readonly Track[],
@@ -301,27 +302,18 @@ export function queueOptionsForTracks(
   if (allVideos) {
     return { musicVideos: tracks.map(usableId) };
   }
-  return { songs: tracks.map(usableId) };
-}
-
-export async function playQueue(
-  instance: MusicKit.MusicKitInstance,
-  songIds: readonly string[],
-  startIndex = 0,
-): Promise<void> {
-  if (songIds.length === 0) {
-    throw new Error("Queue is empty");
+  const libraryOnly = tracks.some(
+    (track) => !track.catalogId && track.id.startsWith("i."),
+  );
+  if (!libraryOnly) {
+    return { songs: tracks.map(usableId) };
   }
-  const start = Math.max(0, Math.min(startIndex, songIds.length - 1));
-  await instance.setQueue({ songs: [...songIds.slice(start)] });
-  await instance.play();
-}
-
-export async function playSong(
-  instance: MusicKit.MusicKitInstance,
-  songId: string,
-): Promise<void> {
-  await playQueue(instance, [songId]);
+  return {
+    items: tracks.map((track) => ({
+      id: usableId(track),
+      type: track.catalogId ? "songs" : (track.resourceType ?? "library-songs"),
+    })),
+  };
 }
 
 export async function pause(

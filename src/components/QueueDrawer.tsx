@@ -2,6 +2,7 @@ import { AudioLines, ListMusic, MoreHorizontal, X } from "lucide-preact";
 import type { JSX } from "preact";
 import { useAppController, useAppState } from "../app/context.tsx";
 import { Artwork } from "./Artwork.tsx";
+import { reportActionError } from "./action-errors.ts";
 import { requestContextMenu } from "./context-menu-events.ts";
 import { IconButton } from "./IconButton.tsx";
 
@@ -13,7 +14,7 @@ export function QueueDrawer(): JSX.Element | null {
 
   const playQueueItem = (index: number): void => {
     if (!queue[index]) return;
-    void controller.playQueueItem(index).catch(() => undefined);
+    void controller.playQueueItem(index).catch(reportActionError);
   };
 
   return (

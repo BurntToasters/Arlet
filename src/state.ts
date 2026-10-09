@@ -834,9 +834,11 @@ export function clearDiagnosticLogs(): void {
 }
 
 export function setPlaybackStatus(status: PlaybackState["status"]): void {
+  // A playing provider state proves the last failure is no longer current.
+  const error = status === "playing" ? undefined : state.playback.error;
   update({
     ...state,
-    playback: { ...state.playback, status },
+    playback: { ...state.playback, status, error },
   });
 }
 
