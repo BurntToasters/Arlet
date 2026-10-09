@@ -17,6 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { MUSIC_FIXTURE_SEED, musicFixtureSource } from "./e2e-music-fixture.js";
+import { runLibraryActions } from "./e2e-library-actions.js";
 import { runPlaylistPlayback } from "./e2e-playlist-playback.js";
 import { runSongNavigation } from "./e2e-song-navigation.js";
 
@@ -872,6 +873,7 @@ async function run() {
       for (const [name, scenario] of [
         ["playlist-playback", runPlaylistPlayback],
         ["song-navigation", runSongNavigation],
+        ["library-actions", runLibraryActions],
       ]) {
         try {
           await scenario({ page, check });

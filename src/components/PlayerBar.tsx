@@ -1,5 +1,6 @@
 import {
   CircleAlert,
+  Heart,
   ListMusic,
   LoaderCircle,
   Pause,
@@ -19,6 +20,7 @@ import {
   useAppState,
   usePlaybackPosition,
 } from "../app/context.tsx";
+import { ratingKeyOf, trackRatingTarget } from "../app/ratings.ts";
 import type { AppErrorCode } from "../domain/errors.ts";
 import type { Track } from "../domain/music.ts";
 import type { TrackNavigation } from "../musickit/song-navigation.ts";
@@ -99,6 +101,9 @@ export function PlayerBar(): JSX.Element {
   const loading = playback.status === "loading";
   const canControl =
     state.initialization.status === "ready" && Boolean(current);
+  const loveTarget = current ? trackRatingTarget(current) : undefined;
+  const loveKey = loveTarget ? ratingKeyOf(loveTarget) : undefined;
+  const loved = loveKey !== undefined && state.ratings[loveKey] === 1;
   const [resolvedNavigation, setResolvedNavigation] = useState<{
     track: Track;
     value: TrackNavigation;
@@ -241,6 +246,17 @@ export function PlayerBar(): JSX.Element {
             )}
           </div>
         </div>
+        {loveKey && loveTarget ? (
+          <IconButton
+            icon={Heart}
+            label={loved ? "Unlove" : "Love"}
+            pressed={loved}
+            disabled={!canControl}
+            onClick={() =>
+              run(() => controller.rate(loveTarget, loved ? 0 : 1))
+            }
+          />
+        ) : null}
         {current?.explicit ? <span className="explicit-badge">E</span> : null}
       </div>
 

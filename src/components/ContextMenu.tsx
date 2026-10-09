@@ -8,6 +8,8 @@ import {
   Disc3,
   FolderPlus,
   Forward,
+  Heart,
+  LibraryBig,
   ListPlus,
   Music2,
   Pin,
@@ -20,14 +22,26 @@ import {
   Settings,
   SkipForward,
   SquareStack,
+  ThumbsDown,
   UserRound,
 } from "lucide-preact";
 import type { LucideIcon } from "lucide-preact";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { useAppController, useAppRouter } from "../app/context.tsx";
-import type { MusicEntityRef, MusicSource, Track } from "../domain/music.ts";
+import {
+  isLibraryTarget,
+  ratingResourceType,
+  type RatingTarget,
+} from "../app/ratings.ts";
+import type {
+  MusicEntityRef,
+  MusicSource,
+  RatingValue,
+  Track,
+} from "../domain/music.ts";
 import type { TrackNavigation } from "../musickit/song-navigation.ts";
 import type { Route } from "../routing/router.ts";
+import { getState, ratingKey } from "../state.ts";
 import {
   CONTEXT_MENU_REQUEST,
   type ContextMenuRequestDetail,
@@ -183,6 +197,18 @@ function parseTarget(node: HTMLElement | null): ContextTarget {
   };
 }
 
+const RATING_DEFAULT_TYPE: Partial<Record<ContextKind, string>> = {
+  track: "songs",
+  album: "albums",
+  playlist: "playlists",
+};
+
+function ratingTargetOf(target: ContextTarget): RatingTarget | undefined {
+  const fallback = target.kind ? RATING_DEFAULT_TYPE[target.kind] : undefined;
+  if (!target.id || !fallback) return undefined;
+  return { type: target.resourceType ?? fallback, id: target.id };
+}
+
 function targetTrack(target: ContextTarget): Track | undefined {
   if (!target.id || target.kind !== "track") return undefined;
   return {
@@ -317,11 +343,13 @@ export function ContextMenu(): JSX.Element | null {
         items: makeItems(),
       });
       setPosition({ x, y });
+      let resolvedNavigation: TrackNavigation | undefined;
       if (track && extendedController.resolveTrackNavigation) {
         void extendedController
           .resolveTrackNavigation(track)
           .then((navigation) => {
             if (menuRequestRef.current !== requestId) return;
+            resolvedNavigation = navigation;
             setMenu((current) =>
               current?.requestId === requestId
                 ? { ...current, items: makeItems(navigation) }
@@ -331,6 +359,18 @@ export function ContextMenu(): JSX.Element | null {
           .catch((error: unknown) => {
             if (menuRequestRef.current === requestId) reportActionError(error);
           });
+      }
+      // Rebuild once the rating is known so Love/Dislike labels are current.
+      const ratingTarget = ratingTargetOf(target);
+      if (ratingTarget && extendedController.loadRating) {
+        void extendedController.loadRating(ratingTarget).then(() => {
+          if (menuRequestRef.current !== requestId) return;
+          setMenu((current) =>
+            current?.requestId === requestId
+              ? { ...current, items: makeItems(resolvedNavigation) }
+              : current,
+          );
+        });
       }
     };
     const open = ({
@@ -492,6 +532,9 @@ interface AppControllerWithContext extends Record<string, unknown> {
   togglePin?: (id: string, source?: "library" | "catalog") => Promise<void>;
   unpin?: (id: string) => Promise<void>;
   resolveTrackNavigation?: (track: Track) => Promise<TrackNavigation>;
+  rate?: (target: RatingTarget, value: RatingValue) => Promise<void>;
+  loadRating?: (target: RatingTarget) => Promise<void>;
+  addToLibrary?: (target: RatingTarget) => Promise<void>;
 }
 
 function buildItems({
@@ -709,6 +752,43 @@ function buildItems({
             ...(artist.source === "catalog" ? { source: "catalog" } : {}),
           }),
         ),
+      });
+    }
+  }
+
+  const ratingTarget = ratingTargetOf(target);
+  const ratingType = ratingTarget && ratingResourceType(ratingTarget);
+  if (ratingTarget && ratingType) {
+    const liked = getState().ratings[ratingKey(ratingType, ratingTarget.id)];
+    // Toggle against the value at click time, not at menu build time.
+    const toggle = (value: 1 | -1): (() => void) =>
+      run(() => {
+        const current =
+          getState().ratings[ratingKey(ratingType, ratingTarget.id)];
+        void controller.rate?.(ratingTarget, current === value ? 0 : value);
+      });
+    items.push(
+      {
+        id: "love",
+        label: liked === 1 ? "Unlove" : "Love",
+        icon: Heart,
+        action: toggle(1),
+      },
+      {
+        id: "dislike",
+        label: liked === -1 ? "Remove dislike" : "Dislike",
+        icon: ThumbsDown,
+        action: toggle(-1),
+      },
+    );
+    if (!isLibraryTarget(ratingTarget) && target.source !== "library") {
+      items.push({
+        id: "add-to-library",
+        label: "Add to Library",
+        icon: LibraryBig,
+        action: run(() => {
+          void controller.addToLibrary?.(ratingTarget);
+        }),
       });
     }
   }

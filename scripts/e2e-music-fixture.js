@@ -49,6 +49,23 @@ function installMusicKitFixture() {
     track("album-d", "Album Track D", "Fixture Album"),
   ];
 
+  // Catalog (not library) song: its rating and library add use the plain `songs` kind.
+  const catalogSong = {
+    id: "catalog-song",
+    type: "songs",
+    attributes: {
+      name: "Catalog Song",
+      artistName: "Fixture Artist",
+      albumName: "Fixture Album",
+      durationInMillis: 180_000,
+      playParams: {
+        id: "catalog-song",
+        kind: "song",
+        catalogId: "catalog-song",
+      },
+    },
+  };
+
   const navTrack = (id, name, relationships) => {
     const resource = track(id, name, "Navigation Album");
     resource.attributes.playParams = { id, kind: "song", catalogId: id };
@@ -75,6 +92,7 @@ function installMusicKitFixture() {
     playlistItems.find((item) => item.id === id) ??
     albumItems.find((item) => item.id === id) ??
     navResources[id] ??
+    (id === catalogSong.id ? catalogSong : undefined) ??
     track(id, id);
   const playlist = {
     id: "playlist-1",
@@ -109,6 +127,9 @@ function installMusicKitFixture() {
     rejectPaths: [],
     delayMs: 800,
     repeatPlaylistCursor: false,
+    // Keyed `${type}:${id}`, e.g. `library-songs:song-a`; values are 1 or -1.
+    ratings: {},
+    libraryAdds: [],
   };
   let instance;
 
@@ -190,8 +211,57 @@ function installMusicKitFixture() {
     "/v1/me/library/playlists/playlist-1/tracks?offset=4";
   const secondAlbumPage = "/v1/me/library/albums/album-1/tracks?offset=2";
 
-  const responseFor = (path) => {
+  // Ratings honor the method: GET reads `query.ids`, PUT/DELETE edit state.
+  const ratingResponse = (pathname, call) => {
+    const match = pathname.match(/^\/v1\/me\/ratings\/([^/]+)(?:\/([^/]+))?$/u);
+    if (!match) return undefined;
+    const type = match[1];
+    const id =
+      match[2] === undefined ? undefined : decodeURIComponent(match[2]);
+    if (call.method === "GET") {
+      const ids = String(call.query?.ids ?? "")
+        .split(",")
+        .filter(Boolean);
+      return {
+        data: ids
+          .filter((itemId) => state.ratings[`${type}:${itemId}`] !== undefined)
+          .map((itemId) => ({
+            id: itemId,
+            type: "ratings",
+            attributes: { value: state.ratings[`${type}:${itemId}`] },
+          })),
+      };
+    }
+    if (id === undefined) return undefined;
+    if (call.method === "PUT") {
+      state.ratings[`${type}:${id}`] = call.body?.attributes?.value;
+      return {};
+    }
+    if (call.method === "DELETE") {
+      delete state.ratings[`${type}:${id}`];
+      return {};
+    }
+    return undefined;
+  };
+
+  const libraryResponse = (pathname, call) => {
+    if (pathname !== "/v1/me/library" || call.method !== "POST")
+      return undefined;
+    for (const [key, value] of Object.entries(call.query ?? {})) {
+      const type = key.match(/^ids\[(\w+)\]$/u)?.[1];
+      if (!type) continue;
+      for (const id of String(value).split(",").filter(Boolean)) {
+        state.libraryAdds.push({ type, id });
+      }
+    }
+    return {};
+  };
+
+  const responseFor = (path, call = { method: "GET" }) => {
     const pathname = String(path).split("?", 1)[0];
+    const mutation =
+      ratingResponse(pathname, call) ?? libraryResponse(pathname, call);
+    if (mutation) return mutation;
     if (pathname === "/v1/me/storefront") {
       return { data: [{ id: "us", type: "storefronts" }] };
     }
@@ -276,10 +346,24 @@ function installMusicKitFixture() {
     return { data: [] };
   };
 
+  // MusicKit v3 callers pass the method and body under `fetchOptions`.
+  const requestBody = (raw) => {
+    if (raw === undefined) return undefined;
+    try {
+      return JSON.parse(String(raw));
+    } catch {
+      return String(raw);
+    }
+  };
+
   const musicRequest = async (path, query, options) => {
     const request = {
       path: String(path),
+      method: String(
+        options?.method ?? options?.fetchOptions?.method ?? "GET",
+      ).toUpperCase(),
       query: query ? clone(query) : undefined,
+      body: requestBody(options?.body ?? options?.fetchOptions?.body),
       options: options ? clone(options) : undefined,
       startedAt: Date.now(),
     };
@@ -297,7 +381,7 @@ function installMusicKitFixture() {
       request.error = `Fixture request rejected: ${pathText}`;
       throw new Error(request.error);
     }
-    const response = responseFor(pathText);
+    const response = responseFor(pathText, request);
     request.completedAt = Date.now();
     request.response = clone(response);
     return clone(response);
@@ -499,6 +583,8 @@ function installMusicKitFixture() {
       state.rejectPaths = [];
       state.delayMs = 800;
       state.repeatPlaylistCursor = false;
+      state.ratings = {};
+      state.libraryAdds = [];
       state.queue = [];
       state.queueIndex = 0;
       state.shuffleHistory = [];
