@@ -2,7 +2,7 @@
 
 | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                            | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
 | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.0/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.0/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.1/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.1/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -18,6 +18,16 @@
 ### ℹ️ Enjoying Arlet? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
+
+## Changes in `v0.2.1:`
+
+- **Fix - Playback:** Playlists and albums that include songs removed from Apple Music, or songs that are temporarily unavailable, now play. Arlet skips those songs and tells you how many it skipped, instead of failing with `Can't play`.
+- **Fix - Starting song:** The song you click now always plays first, even when unavailable songs are skipped or shuffle is on. If the song you clicked is unavailable, the next available song starts.
+- **Fix - Skipping:** When a song can't be played as it starts, Arlet now skips to the next song, like Apple Music. It stops after three failures in a row, and never skips for account problems such as an inactive subscription.
+- **Fix - Play next and Play later:** One unavailable song no longer stops the rest of an album or playlist from being added.
+- **Fix - Song lists:** Songs Apple Music can't stream are dimmed and can't be started from their row.
+- **Fix - Large playlists:** Playing a very large playlist queues up to 500 songs around the one you chose, so it starts quickly and stays within Apple Music's request limits. Shuffle still picks from the whole playlist.
+- **Testing:** End-to-end tests now cover removed and unplayable songs, songs that fail as they start, and very large playlists.
 
 ## Changes in `v0.2.0:`
 
