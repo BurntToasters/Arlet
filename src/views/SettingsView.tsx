@@ -4,11 +4,15 @@ import {
   Download,
   ExternalLink,
   Info,
+  Keyboard,
   LifeBuoy,
+  ListMusic,
   LoaderCircle,
+  Minimize2,
   MonitorCog,
   Moon,
   Palette,
+  Play,
   RefreshCw,
   RotateCcw,
   Scale,
@@ -18,6 +22,7 @@ import {
 import type { JSX } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { useAppController, useAppState } from "../app/context.tsx";
+import { SHORTCUT_HELP } from "../app/shortcuts.ts";
 import { LicensesDialog } from "../components/LicensesDialog.tsx";
 import { ResetSettingsDialog } from "../components/ResetSettingsDialog.tsx";
 import type {
@@ -316,6 +321,59 @@ export function SettingsView(): JSX.Element {
 
         <section
           className="settings-section"
+          aria-labelledby="playback-heading"
+        >
+          <div className="settings-section-heading">
+            <span className="settings-icon">
+              <ListMusic aria-hidden="true" size={19} strokeWidth={1.8} />
+            </span>
+            <div>
+              <h2 id="playback-heading">Playback</h2>
+              <p>Choose what happens between launches and after the queue.</p>
+            </div>
+          </div>
+          <div className="settings-fields">
+            <label className="settings-field settings-toggle-field">
+              <span>
+                <ListMusic aria-hidden="true" size={16} strokeWidth={1.8} />{" "}
+                Resume where I left off
+              </span>
+              <input
+                type="checkbox"
+                checked={settings.restoreSession}
+                onChange={(event) =>
+                  void controller
+                    .setRestoreSession(event.currentTarget.checked)
+                    .catch(reportActionError)
+                }
+              />
+            </label>
+            {state.playback.modeCapabilities?.autoplay ? (
+              <label className="settings-field settings-toggle-field">
+                <span>
+                  <Play aria-hidden="true" size={16} strokeWidth={1.8} />{" "}
+                  Autoplay
+                </span>
+                <input
+                  type="checkbox"
+                  checked={settings.autoplay}
+                  onChange={(event) =>
+                    void Promise.resolve(
+                      controller.setAutoplay?.(event.currentTarget.checked),
+                    ).catch(reportActionError)
+                  }
+                />
+              </label>
+            ) : null}
+          </div>
+          <p className="settings-field-help">
+            Restores the last queue and position after restart, paused. Turning
+            this off deletes the saved queue.
+          </p>
+        </section>
+
+        <section
+          className="settings-section"
           aria-labelledby="appearance-heading"
         >
           <div className="settings-section-heading">
@@ -370,6 +428,41 @@ export function SettingsView(): JSX.Element {
           ) : null}
         </section>
 
+        <section className="settings-section" aria-labelledby="window-heading">
+          <div className="settings-section-heading">
+            <span className="settings-icon">
+              <Minimize2 aria-hidden="true" size={19} strokeWidth={1.8} />
+            </span>
+            <div>
+              <h2 id="window-heading">Window</h2>
+              <p>Choose whether Arlet keeps running in the tray.</p>
+            </div>
+          </div>
+          <div className="settings-fields">
+            <label className="settings-field settings-toggle-field">
+              <span>
+                <Minimize2 aria-hidden="true" size={16} strokeWidth={1.8} />{" "}
+                Show tray icon
+              </span>
+              <input
+                type="checkbox"
+                checked={settings.trayIcon}
+                onChange={(event) =>
+                  void Promise.resolve(
+                    controller.setTrayIcon?.(event.currentTarget.checked),
+                  ).catch(reportActionError)
+                }
+              />
+            </label>
+          </div>
+          <p className="settings-field-help">
+            With this on, closing the window keeps Arlet playing in the tray.
+            Click the tray icon to show or hide Arlet, or right-click it for
+            playback controls and Quit. With it off, closing the window quits
+            Arlet.
+          </p>
+        </section>
+
         <section
           className="settings-section"
           aria-labelledby="accessibility-heading"
@@ -392,6 +485,31 @@ export function SettingsView(): JSX.Element {
               dark mode.
             </span>
           </div>
+        </section>
+
+        <section
+          className="settings-section"
+          aria-labelledby="shortcuts-heading"
+        >
+          <div className="settings-section-heading">
+            <span className="settings-icon">
+              <Keyboard aria-hidden="true" size={19} strokeWidth={1.8} />
+            </span>
+            <div>
+              <h2 id="shortcuts-heading">Keyboard shortcuts</h2>
+              <p>Playback keys are off while you type in a field or dialog.</p>
+            </div>
+          </div>
+          <dl className="shortcut-list">
+            {SHORTCUT_HELP.map((entry) => (
+              <div key={entry.keys} className="shortcut-row">
+                <dt>
+                  <kbd>{entry.keys}</kbd>
+                </dt>
+                <dd>{entry.action}</dd>
+              </div>
+            ))}
+          </dl>
         </section>
 
         <section className="settings-section" aria-labelledby="support-heading">

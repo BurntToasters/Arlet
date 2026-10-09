@@ -1,6 +1,6 @@
-import type { Track } from "../domain/music.ts";
+import { isSameTrack, type Track } from "../domain/music.ts";
 import { normalizeTrack } from "./normalize.ts";
-import { setCurrentTrack, setQueue } from "../state.ts";
+import { getState, setCurrentTrack, setQueue } from "../state.ts";
 
 export const CONSECUTIVE_TRACK_TARGET = 20;
 
@@ -14,12 +14,41 @@ export type NormalizedRepeatMode = "off" | "all" | "one";
 export interface PlaybackModeCapabilities {
   shuffle: boolean;
   repeat: boolean;
+  autoplay: boolean;
 }
 
 function playerRecord(
   instance: MusicKit.MusicKitInstance,
 ): Record<string, unknown> {
   return (instance.player ?? instance) as unknown as Record<string, unknown>;
+}
+
+/**
+ * Move within the provider-owned queue without rebuilding it. MusicKit JS
+ * exposes this on Player in current runtimes and on the instance in some
+ * compatible builds, so keep both shapes behind feature detection.
+ */
+export async function changeToMediaAtIndex(
+  instance: MusicKit.MusicKitInstance,
+  index: number,
+): Promise<boolean> {
+  const player = playerRecord(instance);
+  const method = player.changeToMediaAtIndex;
+  if (typeof method === "function") {
+    await (method as (index: number) => Promise<unknown>).call(player, index);
+    return true;
+  }
+
+  const instanceRecord = instance as unknown as Record<string, unknown>;
+  const instanceMethod = instanceRecord.changeToMediaAtIndex;
+  if (typeof instanceMethod === "function") {
+    await (instanceMethod as (index: number) => Promise<unknown>).call(
+      instance,
+      index,
+    );
+    return true;
+  }
+  return false;
 }
 
 function writableProperty(
@@ -41,15 +70,32 @@ function writableProperty(
   return key in record;
 }
 
+/**
+ * MusicKit v3 exposes shuffle as `shuffleMode` (0 off, 1 songs); `shuffle`
+ * is write-only there. Older shapes expose a readable `shuffle` boolean.
+ */
+function readShuffle(record: Record<string, unknown>): boolean {
+  const mode = record.shuffleMode;
+  if (typeof mode === "number") return mode === 1;
+  if (typeof mode === "string") return mode === "songs";
+  return record.shuffle === true;
+}
+
+function shuffleWritable(record: Record<string, unknown>): boolean {
+  return (
+    writableProperty(record, "shuffleMode") ||
+    writableProperty(record, "shuffle")
+  );
+}
+
 export function readPlaybackModes(instance: MusicKit.MusicKitInstance): {
   shuffleMode: "off" | "songs";
   repeatMode: NormalizedRepeatMode;
   capabilities: PlaybackModeCapabilities;
 } {
   const record = playerRecord(instance);
-  const shuffle = record.shuffle;
   const repeat = record.repeatMode;
-  const shuffleMode = shuffle === true ? "songs" : "off";
+  const shuffleMode = readShuffle(record) ? "songs" : "off";
   const repeatMode: NormalizedRepeatMode =
     repeat === 2 || repeat === "one"
       ? "one"
@@ -60,10 +106,29 @@ export function readPlaybackModes(instance: MusicKit.MusicKitInstance): {
     shuffleMode,
     repeatMode,
     capabilities: {
-      shuffle: writableProperty(record, "shuffle"),
+      shuffle: shuffleWritable(record),
       repeat: writableProperty(record, "repeatMode"),
+      autoplay: writableProperty(
+        instance as unknown as Record<string, unknown>,
+        "autoplayEnabled",
+      ),
     },
   };
+}
+
+/** Writes `autoplayEnabled` on the instance; false when the runtime rejects it. */
+export function setAutoplayEnabled(
+  instance: MusicKit.MusicKitInstance,
+  enabled: boolean,
+): boolean {
+  const record = instance as unknown as Record<string, unknown>;
+  if (!writableProperty(record, "autoplayEnabled")) return false;
+  try {
+    record.autoplayEnabled = enabled;
+    return record.autoplayEnabled === enabled;
+  } catch {
+    return false;
+  }
 }
 
 export function setShuffleMode(
@@ -71,10 +136,15 @@ export function setShuffleMode(
   enabled: boolean,
 ): boolean {
   const record = playerRecord(instance);
-  if (!writableProperty(record, "shuffle")) return false;
   try {
-    record.shuffle = enabled;
-    return record.shuffle === enabled;
+    if (writableProperty(record, "shuffleMode")) {
+      record.shuffleMode = enabled ? 1 : 0;
+    } else if (writableProperty(record, "shuffle")) {
+      record.shuffle = enabled;
+    } else {
+      return false;
+    }
+    return readShuffle(record) === enabled;
   } catch {
     return false;
   }
@@ -203,7 +273,51 @@ export function syncMusicKitQueue(
 ): boolean {
   const snapshot = readMusicKitQueue(instance, event);
   if (!snapshot) return false;
-  const tracks = snapshot.items.map((item) => normalizeTrack(item));
+  const previous = getState().playback.queue;
+  const claimedPrevious = new Set<number>();
+  const previousByTrackId = new Map<string, number[]>();
+  previous.forEach((candidate, candidateIndex) => {
+    for (const id of new Set([candidate.id, candidate.catalogId])) {
+      if (!id) continue;
+      const bucket = previousByTrackId.get(id);
+      if (bucket) bucket.push(candidateIndex);
+      else previousByTrackId.set(id, [candidateIndex]);
+    }
+  });
+  const tracks = snapshot.items.map((item, index) => {
+    const normalized = normalizeTrack(item);
+    const samePosition = previous[index];
+    let previousIndex =
+      samePosition &&
+      !claimedPrevious.has(index) &&
+      isSameTrack(normalized, samePosition)
+        ? index
+        : -1;
+    if (previousIndex < 0) {
+      for (const id of new Set([normalized.id, normalized.catalogId])) {
+        const match = id
+          ? previousByTrackId
+              .get(id)
+              ?.find((candidateIndex) => !claimedPrevious.has(candidateIndex))
+          : undefined;
+        if (match !== undefined && (previousIndex < 0 || match < previousIndex))
+          previousIndex = match;
+      }
+    }
+
+    if (previousIndex < 0) return normalized;
+    claimedPrevious.add(previousIndex);
+    const existing = previous[previousIndex];
+    return {
+      ...normalized,
+      ...(normalized.albumRef || !existing.albumRef
+        ? {}
+        : { albumRef: existing.albumRef }),
+      ...(normalized.artistRefs?.length || !existing.artistRefs?.length
+        ? {}
+        : { artistRefs: existing.artistRefs }),
+    };
+  });
   setQueue(tracks, snapshot.index);
   const current = tracks[snapshot.index];
   setCurrentTrack(current, snapshot.index);
@@ -214,7 +328,9 @@ export function syncMusicKitQueue(
  * Queue option shape matching track origin. MusicKit JS resolves queue
  * descriptors through catalog endpoints, so always prefer the catalog id:
  * the dedicated library descriptor keys build library URLs MusicKit cannot
- * resolve and fail playback.
+ * resolve and fail playback. Library-only songs (no catalog id) keep their
+ * `i.` id under `songs`: MusicKit's item loader routes library-type ids to
+ * `/v1/me/library/songs`. Plain `items` objects carry no `kind` and fail.
  */
 export function queueOptionsForTracks(
   tracks: readonly Track[],
@@ -230,26 +346,6 @@ export function queueOptionsForTracks(
     return { musicVideos: tracks.map(usableId) };
   }
   return { songs: tracks.map(usableId) };
-}
-
-export async function playQueue(
-  instance: MusicKit.MusicKitInstance,
-  songIds: readonly string[],
-  startIndex = 0,
-): Promise<void> {
-  if (songIds.length === 0) {
-    throw new Error("Queue is empty");
-  }
-  const start = Math.max(0, Math.min(startIndex, songIds.length - 1));
-  await instance.setQueue({ songs: [...songIds.slice(start)] });
-  await instance.play();
-}
-
-export async function playSong(
-  instance: MusicKit.MusicKitInstance,
-  songId: string,
-): Promise<void> {
-  await playQueue(instance, [songId]);
 }
 
 export async function pause(

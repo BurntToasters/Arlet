@@ -86,6 +86,8 @@ declare namespace MusicKit {
     musicVideos?: string[];
     album?: string;
     url?: string;
+    /** Queue index (or item ID) MusicKit positions on before shuffling. */
+    startWith?: number | string;
     [key: string]: unknown;
   }
 
@@ -129,6 +131,8 @@ declare namespace MusicKit {
     currentPlaybackQueueItemIndex?: number;
     shuffle?: boolean;
     repeatMode?: number | "off" | "all" | "one";
+    /** Select and begin playback at a queue index in MusicKit JS v3. */
+    changeToMediaAtIndex?(index: number): Promise<number>;
     [key: string]: unknown;
   }
 

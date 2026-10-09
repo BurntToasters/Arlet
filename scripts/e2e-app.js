@@ -16,6 +16,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { MUSIC_FIXTURE_SEED, musicFixtureSource } from "./e2e-music-fixture.js";
+import { runLibraryActions } from "./e2e-library-actions.js";
+import { runPlaylistPlayback } from "./e2e-playlist-playback.js";
+import { runSongNavigation } from "./e2e-song-navigation.js";
+import { runTransport } from "./e2e-transport.js";
+import { runQueueEdit } from "./e2e-queue-edit.js";
+import { runNowPlaying } from "./e2e-now-playing.js";
+import { runRadioArtist } from "./e2e-radio-artist.js";
+import { desktopEventRecorderSource, runDesktop } from "./e2e-desktop.js";
+import { runSessionRestore } from "./e2e-session-restore.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IDENTIFIER = "run.rosie.arlet";
@@ -51,10 +61,18 @@ function build(token) {
 }
 
 function dataDirs() {
-  return [
-    path.join(process.env.APPDATA ?? "", IDENTIFIER),
-    path.join(process.env.LOCALAPPDATA ?? "", IDENTIFIER),
-  ];
+  return ["APPDATA", "LOCALAPPDATA"].map((name) => {
+    const parent = process.env[name];
+    if (!parent || !path.isAbsolute(parent)) fail(`${name} must be absolute`);
+    const target = path.resolve(parent, IDENTIFIER);
+    if (
+      path.dirname(target) !== path.resolve(parent) ||
+      path.basename(target) !== IDENTIFIER
+    ) {
+      fail(`unsafe E2E data directory: ${target}`);
+    }
+    return target;
+  });
 }
 
 function moveAside(stamp) {
@@ -183,6 +201,18 @@ function processAlive(pid) {
   return new RegExp(`\\b${pid}\\b`, "u").test(out);
 }
 
+// PID of the running Arlet. After the settings reset restart this differs
+// from the spawned child's PID.
+function runningArletPid() {
+  const out = spawnSync(
+    "tasklist",
+    ["/FI", "IMAGENAME eq arlet.exe", "/FO", "CSV", "/NH"],
+    { encoding: "utf8" },
+  ).stdout;
+  const match = /^"arlet\.exe","(\d+)"/imu.exec(out ?? "");
+  return match ? Number(match[1]) : undefined;
+}
+
 // The settings reset restarts Arlet as a new process outside the original
 // child's tree; run() refuses to start while any other Arlet is open.
 function killArlet() {
@@ -228,6 +258,43 @@ $client = New-Object ArletE2eWindow+RECT
   ).stdout.trim();
   const [x, y, width, height] = out.split(/\s+/u).map(Number);
   return { x, y, width, height };
+}
+
+/** Visible top-level windows titled "Arlet" that belong to the process. */
+function visibleArletWindows(pid) {
+  const script = `
+Add-Type @"
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class ArletE2eVisibility {
+  public delegate bool EnumProc(IntPtr hwnd, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int maxCount);
+  public static int Count(uint processId) {
+    int count = 0;
+    EnumWindows((hwnd, lParam) => {
+      uint owner;
+      GetWindowThreadProcessId(hwnd, out owner);
+      if (owner != processId || !IsWindowVisible(hwnd)) return true;
+      StringBuilder title = new StringBuilder(64);
+      GetWindowText(hwnd, title, title.Capacity);
+      if (title.ToString() == "Arlet") count++;
+      return true;
+    }, IntPtr.Zero);
+    return count;
+  }
+}
+"@
+[ArletE2eVisibility]::Count(${pid})`;
+  const out = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    { encoding: "utf8" },
+  ).stdout.trim();
+  return Number(out);
 }
 
 const near = (actual, expected) => Math.abs(actual - expected) <= 2;
@@ -334,6 +401,7 @@ async function run() {
   const moved = moveAside(stamp);
   let child;
   let page;
+  let musicRuntimeCapabilities;
   try {
     seedCorruptSettings();
     seedLegacyCache();
@@ -387,6 +455,34 @@ async function run() {
     check(`app origin is ${RELEASE_ORIGIN}`, origin === RELEASE_ORIGIN, {
       origin,
     });
+    musicRuntimeCapabilities = await page.evaluate(`
+      const deadline = Date.now() + 12000;
+      while (Date.now() < deadline) {
+        try {
+          const music = window.MusicKit?.getInstance?.();
+          if (music) return {
+            loaded: true,
+            playerIndexSelection: typeof music.player?.changeToMediaAtIndex === "function",
+            instanceIndexSelection: typeof music.changeToMediaAtIndex === "function",
+            queueRemove: typeof music.queue?.remove === "function",
+            queueSplice: typeof music.queue?.splice === "function",
+            queueAppend: typeof music.queue?.append === "function",
+            queuePrepend: typeof music.queue?.prepend === "function",
+            autoplayEnabled: "autoplayEnabled" in music,
+          };
+        } catch { /* MusicKit can load before its instance is configured. */ }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return { loaded: false };
+    `);
+    if (musicRuntimeCapabilities.loaded) {
+      check(
+        "live MusicKit exposes indexed queue selection",
+        musicRuntimeCapabilities.playerIndexSelection ||
+          musicRuntimeCapabilities.instanceIndexSelection,
+        musicRuntimeCapabilities,
+      );
+    }
 
     if (realToken) {
       const catalog = await page.evaluate(`
@@ -801,6 +897,129 @@ async function run() {
       { stateFileExists: fs.existsSync(windowStateFile), resetGeometry },
     );
 
+    // Exercise application behavior with a deterministic provider. The
+    // fixture is injected only by DevTools; production code has no test hook.
+    await page.send("Network.enable");
+    await page.send("Network.setBlockedURLs", {
+      urls: ["*js-cdn.music.apple.com*"],
+    });
+    await page.send("Page.enable");
+    const fixtureScript = await page.send(
+      "Page.addScriptToEvaluateOnNewDocument",
+      { source: musicFixtureSource },
+    );
+    await page.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: desktopEventRecorderSource,
+    });
+    await page.evaluate('location.hash = "#/home";');
+    await page.send("Page.reload", { ignoreCache: true });
+    await sleep(1000);
+    const fixtureReady = await waitFor(
+      page,
+      "window.__ARLET_E2E_MUSIC__ && document.querySelector('.app-shell .player-bar')",
+      30_000,
+    );
+    check("deterministic MusicKit fixture starts", fixtureReady, {
+      seed: MUSIC_FIXTURE_SEED,
+      state: fixtureReady
+        ? undefined
+        : await page.evaluate(
+            `return JSON.stringify({fixture:!!window.__ARLET_E2E_MUSIC__,mk:typeof window.MusicKit,shell:!!document.querySelector('.app-shell'),bar:!!document.querySelector('.player-bar'),hash:location.hash,text:document.body.innerText.slice(0,300)})`,
+          ),
+    });
+    if (fixtureReady) {
+      for (const [name, scenario] of [
+        ["playlist-playback", runPlaylistPlayback],
+        ["song-navigation", runSongNavigation],
+        ["transport", runTransport],
+        ["queue-edit", runQueueEdit],
+        ["library-actions", runLibraryActions],
+        ["now-playing", runNowPlaying],
+        ["radio-artist", runRadioArtist],
+        ["desktop", runDesktop],
+        // Last: it signs out at the end.
+        ["session-restore", runSessionRestore],
+      ]) {
+        try {
+          // A menu left open by the previous scenario would intercept clicks.
+          await page.evaluate(
+            'document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); return true;',
+          );
+          await scenario({ page, check, dataDir: dataDirs()[0] });
+        } catch (error) {
+          check(`${name} completes`, false, String(error?.message ?? error));
+        } finally {
+          const screenshot = await page.send("Page.captureScreenshot", {
+            format: "png",
+          });
+          fs.writeFileSync(
+            path.join(artifactDir, `screenshot-${name}.png`),
+            Buffer.from(screenshot.data, "base64"),
+          );
+          const trace = await page.evaluate(
+            "return window.__ARLET_E2E_MUSIC__.snapshot();",
+          );
+          fs.writeFileSync(
+            path.join(artifactDir, `${name}-trace.json`),
+            `${JSON.stringify(trace, null, 2)}\n`,
+          );
+        }
+      }
+    }
+    await page.send("Page.removeScriptToEvaluateOnNewDocument", {
+      identifier: fixtureScript.identifier,
+    });
+    await page.send("Network.setBlockedURLs", { urls: [] });
+    if (fs.existsSync(logFile)) {
+      fs.copyFileSync(logFile, path.join(artifactDir, "arlet.log"));
+    }
+
+    // Tray on: closing hides the window and keeps the process alive, and a
+    // second launch shows the hidden window again (single instance).
+    // Failure modes: a second launch does not show a window hidden in the
+    // tray; the tray leaves the app impossible to quit (docs/TESTING.md, Tray).
+    const trayEnabled = await settle(page, "save_settings", {
+      json: JSON.stringify({ ...DEFAULT_SETTINGS_FOR_E2E, trayIcon: true }),
+    });
+    const appPid = runningArletPid();
+    void settle(page, "plugin:window|close", { label: "main" }).catch(
+      () => undefined,
+    );
+    await sleep(1500);
+    const hiddenInTray = visibleArletWindows(appPid) === 0;
+    const aliveAfterClose = processAlive(appPid);
+    const relaunch = spawn(EXE, [], {
+      env: { ...process.env, MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN },
+      stdio: "ignore",
+    });
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, 20_000);
+      relaunch.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+    const trayDeadline = Date.now() + 15_000;
+    let shownAgain = false;
+    while (Date.now() < trayDeadline && !shownAgain) {
+      shownAgain = visibleArletWindows(appPid) === 1;
+      if (!shownAgain) await sleep(250);
+    }
+    check(
+      "with the tray on, closing hides the window and a second launch shows it again",
+      trayEnabled.ok &&
+        appPid !== undefined &&
+        hiddenInTray &&
+        aliveAfterClose &&
+        shownAgain &&
+        processAlive(appPid),
+      { appPid, hiddenInTray, aliveAfterClose, shownAgain },
+    );
+    // Tray off: closing the window quits instead of hiding.
+    const trayDisabled = await settle(page, "save_settings", {
+      json: JSON.stringify({ ...DEFAULT_SETTINGS_FOR_E2E, trayIcon: false }),
+    });
+
     // Resize, then close normally: the new geometry is saved for next launch.
     const resized = await settle(page, "plugin:window|set_size", {
       label: "main",
@@ -835,6 +1054,15 @@ async function run() {
         savedAfterClose.y === beforeClose.y,
       { resized: resized.ok, beforeClose, savedAfterClose },
     );
+    const exitDeadline = Date.now() + 15_000;
+    while (Date.now() < exitDeadline && processAlive(appPid)) {
+      await sleep(250);
+    }
+    check(
+      "with the tray off, closing the window quits Arlet",
+      trayDisabled.ok && appPid !== undefined && !processAlive(appPid),
+      { trayDisabled: trayDisabled.ok, appPid, alive: processAlive(appPid) },
+    );
 
     // Stop the app, then confirm the cache file was migrated in place.
     killArlet();
@@ -847,6 +1075,8 @@ async function run() {
     check("legacy cache database migrated to schema 1", version === 1, {
       version,
     });
+  } catch (error) {
+    check("native E2E completes", false, String(error?.message ?? error));
   } finally {
     page?.close();
     if (child?.pid) {
@@ -877,6 +1107,8 @@ async function run() {
     host: `${os.type()} ${os.release()} ${os.arch()}`,
     binary: { path: path.relative(root, EXE), sha256: exeHash },
     tokenMode: realToken ? "real" : "synthetic",
+    musicFixtureSeed: MUSIC_FIXTURE_SEED,
+    musicRuntimeCapabilities,
     checks,
   };
   fs.writeFileSync(

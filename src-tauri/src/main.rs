@@ -11,8 +11,10 @@ mod library_cache;
 mod logging;
 mod music_diagnostic;
 mod pins;
+mod playback_session;
 mod settings;
 mod token_policy;
+mod tray;
 mod webview_recovery;
 mod window_fx;
 mod window_snap;
@@ -20,7 +22,6 @@ mod window_state;
 mod windows_media;
 
 use std::sync::Mutex;
-use tauri::Manager;
 
 use logging::LogFileLock;
 
@@ -52,12 +53,8 @@ fn main() {
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             // A second launch brings the existing window back even when it
-            // is minimized or hidden; focus alone leaves it on the taskbar.
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            // is minimized or hidden to the tray; focus alone leaves it on the taskbar.
+            tray::show_main_window(app);
         }));
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
@@ -92,6 +89,12 @@ fn main() {
             if let Err(error) = webview_recovery::install(&window) {
                 eprintln!("Unable to install WebView2 crash recovery: {error}");
             }
+            settings::set_tray_icon(appearance.tray_icon);
+            if appearance.tray_icon {
+                if let Err(error) = tray::install(app.handle()) {
+                    eprintln!("Unable to create the tray icon: {error}");
+                }
+            }
             // Positioned while still hidden, so there is no visible jump.
             let restored = window_state::restore(&window);
             window.show()?;
@@ -117,6 +120,18 @@ fn main() {
             {
                 window_state::record(window);
             }
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == auth_popup::MAIN_WINDOW_LABEL {
+                    if tray::should_hide_on_close() {
+                        api.prevent_close();
+                        let _ = window.hide();
+                    } else {
+                        // A shown-again window may move without a final Moved
+                        // event; capture the geometry it closes at.
+                        window_state::record(window);
+                    }
+                }
+            }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 if window.label() == auth_popup::MAIN_WINDOW_LABEL {
                     window_state::persist(window);
@@ -141,6 +156,9 @@ fn main() {
             pins::load_pins,
             pins::save_pins,
             pins::delete_pins,
+            playback_session::load_playback_session,
+            playback_session::save_playback_session,
+            playback_session::delete_playback_session,
             logging::append_local_log,
             logging::get_log_dir,
             logging::clear_logs,

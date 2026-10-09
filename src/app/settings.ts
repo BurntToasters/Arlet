@@ -22,6 +22,9 @@ const settingsShape = z.object({
   autoCheckUpdates: z.boolean().optional(),
   updateChannel: z.enum(["auto", "stable", "beta"]).optional(),
   volume: z.number().finite().min(0).max(1).optional(),
+  autoplay: z.boolean().optional(),
+  restoreSession: z.boolean().optional(),
+  trayIcon: z.boolean().optional(),
 });
 const themeSchema = z.enum(["system", "light", "dark"]);
 const windowEffectSchema = z.enum(["acrylic", "mica", "solid"]);
@@ -71,6 +74,9 @@ export function migrateSettings(raw: unknown): AppSettings {
     autoCheckUpdates: z.boolean().safeParse(parsed.autoCheckUpdates),
     updateChannel: updateChannelSchema.safeParse(parsed.updateChannel),
     volume: volumeSchema.safeParse(parsed.volume),
+    autoplay: z.boolean().safeParse(parsed.autoplay),
+    restoreSession: z.boolean().safeParse(parsed.restoreSession),
+    trayIcon: z.boolean().safeParse(parsed.trayIcon),
   };
   const reserved = Object.fromEntries(
     Object.entries(parsed).filter(([key]) => key.startsWith("_")),
@@ -93,6 +99,15 @@ export function migrateSettings(raw: unknown): AppSettings {
     volume: candidate.volume.success
       ? candidate.volume.data
       : DEFAULT_SETTINGS.volume,
+    autoplay: candidate.autoplay.success
+      ? candidate.autoplay.data
+      : DEFAULT_SETTINGS.autoplay,
+    restoreSession: candidate.restoreSession.success
+      ? candidate.restoreSession.data
+      : DEFAULT_SETTINGS.restoreSession,
+    trayIcon: candidate.trayIcon.success
+      ? candidate.trayIcon.data
+      : DEFAULT_SETTINGS.trayIcon,
   };
 }
 
@@ -108,6 +123,9 @@ export function serializeSettings(settings: AppSettings): string {
     autoCheckUpdates: settings.autoCheckUpdates,
     updateChannel: settings.updateChannel,
     volume: settings.volume,
+    autoplay: settings.autoplay,
+    restoreSession: settings.restoreSession,
+    trayIcon: settings.trayIcon,
   });
 }
 

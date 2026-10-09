@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tauri::WebviewWindow;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -13,6 +14,16 @@ pub struct NowPlayingPayload {
     pub pause_enabled: bool,
     pub next_enabled: bool,
     pub previous_enabled: bool,
+    /// Defaults keep payloads from callers without mode state valid.
+    #[serde(default)]
+    pub shuffle: bool,
+    /// `"off" | "all" | "one"`, as MusicKit reports it.
+    #[serde(default = "default_repeat")]
+    pub repeat: String,
+}
+
+fn default_repeat() -> String {
+    "off".to_owned()
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -20,6 +31,47 @@ pub struct NowPlayingPayload {
 pub struct TimelinePayload {
     pub position_seconds: f64,
     pub duration_seconds: f64,
+}
+
+/// Repeat state shared with the frontend wire format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RepeatMode {
+    Off,
+    All,
+    One,
+}
+
+impl RepeatMode {
+    /// Unknown values read as `Off`, the safe default.
+    pub fn from_wire(value: &str) -> Self {
+        match value {
+            "all" => Self::All,
+            "one" => Self::One,
+            _ => Self::Off,
+        }
+    }
+
+    pub fn to_wire(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::All => "all",
+            Self::One => "one",
+        }
+    }
+}
+
+/// Converts an SMTC seek request (100 ns ticks) to seconds. Requests that are
+/// negative or non-finite, or that arrive before a usable duration is known,
+/// are dropped. Positions past the end are clamped to the duration.
+pub fn seek_seconds(ticks: i64, duration_seconds: f64) -> Option<f64> {
+    if !duration_seconds.is_finite() || duration_seconds <= 0.0 {
+        return None;
+    }
+    let seconds = ticks as f64 / 10_000_000.0;
+    if !seconds.is_finite() || seconds < 0.0 {
+        return None;
+    }
+    Some(seconds.min(duration_seconds))
 }
 
 /// SMTC ticks are 100 ns. Returns `None` for unusable input so a bad tick
@@ -37,15 +89,36 @@ pub fn timeline_ticks(payload: TimelinePayload) -> Option<(i64, i64)> {
     Some((to_ticks(position), to_ticks(duration_seconds)))
 }
 
+/// Duration of the last valid timeline, as f64 bits; 0 means unknown. Seek
+/// requests are checked against it on the SMTC callback thread.
+static DURATION_BITS: AtomicU64 = AtomicU64::new(0);
+/// Last playback status sent by the frontend; the tray uses it to pick the
+/// Play or Pause command for its toggle item.
+static PLAYING: AtomicBool = AtomicBool::new(false);
+
+fn known_duration() -> f64 {
+    f64::from_bits(DURATION_BITS.load(Ordering::SeqCst))
+}
+
+fn set_known_duration(seconds: f64) {
+    DURATION_BITS.store(seconds.to_bits(), Ordering::SeqCst);
+}
+
+pub fn is_playing() -> bool {
+    PLAYING.load(Ordering::SeqCst)
+}
+
 #[cfg(target_os = "windows")]
 mod platform {
-    use super::{NowPlayingPayload, TimelinePayload};
+    use super::{NowPlayingPayload, RepeatMode, TimelinePayload};
     use std::sync::{Mutex, OnceLock};
     use tauri::{Emitter, Manager, WebviewWindow};
     use windows::core::{Ref, HSTRING};
     use windows::Foundation::{TimeSpan, TypedEventHandler, Uri};
     use windows::Media::{
-        MediaPlaybackStatus, MediaPlaybackType, SystemMediaTransportControls,
+        AutoRepeatModeChangeRequestedEventArgs, MediaPlaybackAutoRepeatMode, MediaPlaybackStatus,
+        MediaPlaybackType, PlaybackPositionChangeRequestedEventArgs,
+        ShuffleEnabledChangeRequestedEventArgs, SystemMediaTransportControls,
         SystemMediaTransportControlsButton, SystemMediaTransportControlsTimelineProperties,
     };
     use windows::Storage::Streams::RandomAccessStreamReference;
@@ -56,6 +129,9 @@ mod platform {
     struct Session {
         controls: SystemMediaTransportControls,
         button_token: i64,
+        position_token: i64,
+        shuffle_token: i64,
+        repeat_token: i64,
     }
 
     static SESSION: OnceLock<Mutex<Option<Session>>> = OnceLock::new();
@@ -79,6 +155,14 @@ mod platform {
         unsafe { factory.GetForWindow::<SystemMediaTransportControls>(hwnd) }
     }
 
+    fn to_windows_repeat(mode: RepeatMode) -> MediaPlaybackAutoRepeatMode {
+        match mode {
+            RepeatMode::Off => MediaPlaybackAutoRepeatMode::None,
+            RepeatMode::All => MediaPlaybackAutoRepeatMode::List,
+            RepeatMode::One => MediaPlaybackAutoRepeatMode::Track,
+        }
+    }
+
     fn ensure_session(window: &WebviewWindow) -> Result<SystemMediaTransportControls, String> {
         let mut guard = session()
             .lock()
@@ -88,6 +172,7 @@ mod platform {
         }
         let controls = controls_for_window(window).map_err(|error| error.to_string())?;
         let app = window.app_handle().clone();
+        let button_app = app.clone();
         let handler: TypedEventHandler<
             SystemMediaTransportControls,
             windows::Media::SystemMediaTransportControlsButtonPressedEventArgs,
@@ -106,16 +191,77 @@ mod platform {
                     SystemMediaTransportControlsButton::Previous => "previous",
                     _ => return Ok(()),
                 };
-                let _ = app.emit("windows-media-control", event);
+                let _ = button_app.emit("windows-media-control", event);
                 Ok(())
             },
         );
         let button_token = controls
             .ButtonPressed(&handler)
             .map_err(|error| error.to_string())?;
+
+        let position_app = app.clone();
+        let position_handler: TypedEventHandler<
+            SystemMediaTransportControls,
+            PlaybackPositionChangeRequestedEventArgs,
+        > = TypedEventHandler::new(
+            move |_sender: Ref<'_, SystemMediaTransportControls>,
+                  args: Ref<'_, PlaybackPositionChangeRequestedEventArgs>| {
+                let args = args.ok()?;
+                let ticks = args.RequestedPlaybackPosition()?.Duration;
+                if let Some(seconds) = super::seek_seconds(ticks, super::known_duration()) {
+                    let _ = position_app.emit("windows-media-seek", seconds);
+                }
+                Ok(())
+            },
+        );
+        let position_token = controls
+            .PlaybackPositionChangeRequested(&position_handler)
+            .map_err(|error| error.to_string())?;
+
+        let shuffle_app = app.clone();
+        let shuffle_handler: TypedEventHandler<
+            SystemMediaTransportControls,
+            ShuffleEnabledChangeRequestedEventArgs,
+        > = TypedEventHandler::new(
+            move |_sender: Ref<'_, SystemMediaTransportControls>,
+                  args: Ref<'_, ShuffleEnabledChangeRequestedEventArgs>| {
+                let args = args.ok()?;
+                let enabled = args.RequestedShuffleEnabled()?;
+                let _ = shuffle_app.emit("windows-media-shuffle", enabled);
+                Ok(())
+            },
+        );
+        let shuffle_token = controls
+            .ShuffleEnabledChangeRequested(&shuffle_handler)
+            .map_err(|error| error.to_string())?;
+
+        let repeat_app = app.clone();
+        let repeat_handler: TypedEventHandler<
+            SystemMediaTransportControls,
+            AutoRepeatModeChangeRequestedEventArgs,
+        > = TypedEventHandler::new(
+            move |_sender: Ref<'_, SystemMediaTransportControls>,
+                  args: Ref<'_, AutoRepeatModeChangeRequestedEventArgs>| {
+                let args = args.ok()?;
+                let mode = match args.RequestedAutoRepeatMode()? {
+                    MediaPlaybackAutoRepeatMode::Track => RepeatMode::One,
+                    MediaPlaybackAutoRepeatMode::List => RepeatMode::All,
+                    _ => RepeatMode::Off,
+                };
+                let _ = repeat_app.emit("windows-media-repeat", mode.to_wire());
+                Ok(())
+            },
+        );
+        let repeat_token = controls
+            .AutoRepeatModeChangeRequested(&repeat_handler)
+            .map_err(|error| error.to_string())?;
+
         *guard = Some(Session {
             controls: controls.clone(),
             button_token,
+            position_token,
+            shuffle_token,
+            repeat_token,
         });
         Ok(controls)
     }
@@ -136,6 +282,12 @@ mod platform {
             .map_err(|error| error.to_string())?;
         controls
             .SetIsPreviousEnabled(payload.previous_enabled)
+            .map_err(|error| error.to_string())?;
+        controls
+            .SetShuffleEnabled(payload.shuffle)
+            .map_err(|error| error.to_string())?;
+        controls
+            .SetAutoRepeatMode(to_windows_repeat(RepeatMode::from_wire(&payload.repeat)))
             .map_err(|error| error.to_string())?;
         let status = match payload.playback_status.as_str() {
             "playing" => MediaPlaybackStatus::Playing,
@@ -184,6 +336,7 @@ mod platform {
         let Some((position, duration)) = super::timeline_ticks(payload) else {
             return Ok(());
         };
+        super::set_known_duration(payload.duration_seconds);
         let controls = match session()
             .lock()
             .map_err(|_| "Windows media session lock poisoned".to_string())?
@@ -198,6 +351,8 @@ mod platform {
         properties
             .SetStartTime(span(0))
             .map_err(|e| e.to_string())?;
+        // The seek range is what lets Windows offer the timeline scrubber;
+        // the PlaybackPositionChangeRequested handler answers it.
         properties
             .SetMinSeekTime(span(0))
             .map_err(|e| e.to_string())?;
@@ -216,6 +371,7 @@ mod platform {
     }
 
     pub fn clear(window: &WebviewWindow) -> Result<(), String> {
+        super::set_known_duration(0.0);
         let controls = match session()
             .lock()
             .map_err(|_| "Windows media session lock poisoned".to_string())?
@@ -241,6 +397,7 @@ mod platform {
     }
 
     pub fn dispose() {
+        super::set_known_duration(0.0);
         if let Ok(mut guard) = session().lock() {
             if let Some(existing) = guard.take() {
                 if let Ok(display) = existing.controls.DisplayUpdater() {
@@ -252,6 +409,15 @@ mod platform {
                     .SetPlaybackStatus(MediaPlaybackStatus::Stopped);
                 let _ = existing.controls.SetIsEnabled(false);
                 let _ = existing.controls.RemoveButtonPressed(existing.button_token);
+                let _ = existing
+                    .controls
+                    .RemovePlaybackPositionChangeRequested(existing.position_token);
+                let _ = existing
+                    .controls
+                    .RemoveShuffleEnabledChangeRequested(existing.shuffle_token);
+                let _ = existing
+                    .controls
+                    .RemoveAutoRepeatModeChangeRequested(existing.repeat_token);
             }
         }
     }
@@ -262,6 +428,7 @@ pub fn update_windows_media_session(
     window: WebviewWindow,
     payload: NowPlayingPayload,
 ) -> Result<(), String> {
+    PLAYING.store(payload.playback_status == "playing", Ordering::SeqCst);
     #[cfg(target_os = "windows")]
     {
         platform::update(&window, payload)
@@ -306,7 +473,7 @@ pub fn dispose() {
 
 #[cfg(test)]
 mod tests {
-    use super::{timeline_ticks, NowPlayingPayload, TimelinePayload};
+    use super::{seek_seconds, timeline_ticks, NowPlayingPayload, RepeatMode, TimelinePayload};
 
     fn timeline(position_seconds: f64, duration_seconds: f64) -> Option<(i64, i64)> {
         timeline_ticks(TimelinePayload {
@@ -332,6 +499,30 @@ mod tests {
         assert_eq!(timeline(99.0, 10.0), Some((100_000_000, 100_000_000)));
     }
 
+    // Failure modes: a seek from the system flyout outside the timeline, or
+    // a NaN/negative position, reaches MusicKit.
+    #[test]
+    fn seek_drops_negative_and_unknown_duration_requests() {
+        assert_eq!(seek_seconds(-10_000_000, 180.0), None);
+        assert_eq!(seek_seconds(10_000_000, 0.0), None);
+        assert_eq!(seek_seconds(10_000_000, f64::NAN), None);
+    }
+
+    #[test]
+    fn seek_converts_ticks_and_clamps_to_duration() {
+        assert_eq!(seek_seconds(15_000_000, 180.0), Some(1.5));
+        assert_eq!(seek_seconds(0, 180.0), Some(0.0));
+        assert_eq!(seek_seconds(9_000_000_000_000, 180.0), Some(180.0));
+    }
+
+    #[test]
+    fn repeat_wire_values_round_trip() {
+        for mode in [RepeatMode::Off, RepeatMode::All, RepeatMode::One] {
+            assert_eq!(RepeatMode::from_wire(mode.to_wire()), mode);
+        }
+        assert_eq!(RepeatMode::from_wire("loop"), RepeatMode::Off);
+    }
+
     #[test]
     fn payload_uses_frontend_wire_keys() {
         let payload = NowPlayingPayload {
@@ -344,11 +535,15 @@ mod tests {
             pause_enabled: true,
             next_enabled: true,
             previous_enabled: false,
+            shuffle: true,
+            repeat: "all".into(),
         };
         let json = serde_json::to_value(payload).expect("payload serializes");
         assert_eq!(json["artworkUrl"], "https://example.test/art.jpg");
         assert_eq!(json["playbackStatus"], "playing");
         assert_eq!(json["pauseEnabled"], true);
+        assert_eq!(json["shuffle"], true);
+        assert_eq!(json["repeat"], "all");
         assert!(json.get("artwork_url").is_none());
     }
 }

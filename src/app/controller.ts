@@ -17,8 +17,14 @@ import type {
 import { registerMusicKitEvents } from "../musickit/events.ts";
 import {
   CONSECUTIVE_TRACK_TARGET,
+  setAutoplayEnabled,
   syncMusicKitQueue,
 } from "../musickit/player.ts";
+import {
+  createStationResolver,
+  type StationTarget,
+} from "../musickit/stations.ts";
+import { createSleepTimer, type SleepTimerOption } from "./sleep-timer.ts";
 import { normalizeTrack } from "../musickit/normalize.ts";
 import { classifyPlaybackKind } from "../musickit/preview.ts";
 import {
@@ -34,6 +40,7 @@ import {
   setInitializationState,
   setPins,
   setSettings,
+  setSleepTimer,
   setUpdateState,
   setUiState,
   setWindowEffectState,
@@ -62,6 +69,7 @@ import {
 import type {
   MusicSource,
   PinnedPlaylist,
+  RatingValue,
   Station,
   Track,
 } from "../domain/music.ts";
@@ -92,7 +100,19 @@ import {
   createLibraryLoader,
   type DetailLoadOptions,
 } from "./library-loader.ts";
+import {
+  createCollectionPlayback,
+  loadAllTracks,
+  type CollectionPlayOptions,
+} from "./collection-playback.ts";
 import { createPlayback } from "./playback.ts";
+import type { QueueEditTier } from "../musickit/queue-edit.ts";
+import { createRatings, type RatingTarget } from "./ratings.ts";
+import { createPlaybackSession } from "./playback-session.ts";
+import {
+  createTrackNavigationResolver,
+  type TrackNavigation,
+} from "../musickit/song-navigation.ts";
 
 export type { DetailLoadOptions } from "./library-loader.ts";
 
@@ -169,27 +189,81 @@ export interface AppController {
     playlistId: string,
     tracks: readonly Track[] | readonly string[],
   ): Promise<void>;
+  /** Optimistic; a failed request rolls back and reports a toast. */
+  rate(target: RatingTarget, value: RatingValue): Promise<void>;
+  loadRating(target: RatingTarget): Promise<void>;
+  addToLibrary(target: RatingTarget): Promise<void>;
   playNextTracks(tracks: readonly Track[] | readonly string[]): Promise<void>;
   playLaterTracks(tracks: readonly Track[] | readonly string[]): Promise<void>;
   playQueueItem(index: number): Promise<void>;
+  removeQueueItem(index: number): Promise<QueueEditTier>;
+  moveQueueItem(from: number, to: number): Promise<QueueEditTier>;
+  clearUpNext(): Promise<QueueEditTier>;
   refreshCurrentData(): Promise<void>;
   search(term: string): Promise<Track[]>;
   setSearchSource?(source: "catalog" | "library"): void;
   playFromSearch(index: number): Promise<void>;
   playTracks(tracks: readonly Track[], startIndex?: number): Promise<void>;
+  /** Plays the tracks in shuffled order. */
+  playTracksShuffled(tracks: readonly Track[]): Promise<void>;
+  /** Looks up the song or artist station and plays it; throws if none. */
+  startStation(target: StationTarget): Promise<void>;
+  /** Loads every page, then inserts after the current song or at the end. */
+  queueCollection(
+    kind: "playlist" | "album",
+    id: string,
+    source: MusicSource,
+    where: "next" | "later",
+  ): Promise<void>;
+  loadArtistTopSongs(
+    id: string,
+    source: MusicSource,
+    catalogId?: string,
+  ): Promise<Track[]>;
+  playCollection?(
+    kind: "playlist" | "album",
+    id: string,
+    source?: MusicSource,
+    startIndex?: number,
+    options?: CollectionPlayOptions,
+  ): Promise<void>;
+  playPlaylist?(
+    id: string,
+    source?: MusicSource,
+    startIndex?: number,
+  ): Promise<void>;
+  playAlbum?(
+    id: string,
+    source?: MusicSource,
+    startIndex?: number,
+  ): Promise<void>;
+  resolveTrackNavigation?(track: Track): Promise<TrackNavigation>;
   playConsecutive(): Promise<void>;
   togglePlayback(): Promise<void>;
   play?(): Promise<void>;
   pause?(): Promise<void>;
   setShuffleMode?(mode: "off" | "songs"): Promise<void>;
   cycleRepeatMode?(): Promise<void>;
+  setRepeatMode?(mode: "off" | "all" | "one"): Promise<void>;
+  /** Pauses when the timer ends; in-memory only, cleared on sign-out. */
+  startSleepTimer?(option: SleepTimerOption): void;
+  cancelSleepTimer?(): void;
   previous(): Promise<void>;
   next(): Promise<void>;
   seek(seconds: number): Promise<void>;
   setVolume(volume: number): Promise<void>;
+  /** Mute silences output and keeps the unmuted level for unmute. */
+  toggleMute(): void;
+  seekBy(deltaSeconds: number): void;
+  adjustVolume(delta: number): void;
   setTheme(theme: ThemePreference): Promise<void>;
   setWindowEffect(preference: WindowEffectPreference): Promise<void>;
   setAutoCheckUpdates(enabled: boolean): Promise<void>;
+  /** Rejects when the runtime has no writable autoplay; saves only on success. */
+  setAutoplay?(enabled: boolean): Promise<void>;
+  setTrayIcon?(enabled: boolean): Promise<void>;
+  /** Turning this off deletes the saved queue. */
+  setRestoreSession(enabled: boolean): Promise<void>;
   setUpdateChannel(channel: UpdateChannel): Promise<void>;
   startupUpdateCheck(): Promise<void>;
   checkForUpdates(): Promise<void>;
@@ -266,8 +340,45 @@ export function createAppController(
   );
   const discovery = createDiscovery(context, dependencies);
   const playback = createPlayback(context);
+  const ratings = createRatings(context);
+  const trackNavigation = createTrackNavigationResolver(requireMusic);
   const { requireLibrary, ensureLibraryCache, clearLibraryCache } = library;
-
+  const collections = createCollectionPlayback({
+    requireMusic,
+    getMusic: () => music,
+    requireLibrary,
+    playTracks: playback.playTracks,
+    setShuffleMode: playback.setShuffleMode,
+  });
+  const playTracks = (
+    tracks: readonly Track[],
+    startIndex = 0,
+  ): Promise<void> => {
+    collections.invalidate();
+    return playback.playTracks(tracks, startIndex);
+  };
+  const playCollection = collections.play;
+  let stationResolver:
+    | {
+        instance: MusicKit.MusicKitInstance;
+        resolver: ReturnType<typeof createStationResolver>;
+      }
+    | undefined;
+  /** Lookups are cached per MusicKit instance and dropped on sign-out. */
+  const stations = (): ReturnType<typeof createStationResolver> => {
+    const instance = requireMusic();
+    if (stationResolver?.instance !== instance) {
+      stationResolver = { instance, resolver: createStationResolver(instance) };
+    }
+    return stationResolver.resolver;
+  };
+  const playbackSession = createPlaybackSession({
+    invokeFn,
+    now,
+    log,
+    playTracks,
+    seek: playback.seek,
+  });
   const updater =
     dependencies.updater ??
     createUpdaterService({
@@ -297,6 +408,22 @@ export function createAppController(
     } catch (error) {
       log(`Settings save failed: ${errorMessage(error)}`);
     }
+  };
+
+  const sleepTimer = createSleepTimer({
+    pause: () => music?.pause(),
+    setState: setSleepTimer,
+    readPlayback: () => getState().playback,
+  });
+
+  /** Pushes the saved autoplay preference to MusicKit once it is available. */
+  const applyAutoplaySetting = (instance: MusicKit.MusicKitInstance): void => {
+    playback.syncPlaybackModes(instance);
+    if (!getState().playback.modeCapabilities?.autoplay) return;
+    if (!setAutoplayEnabled(instance, getState().settings.autoplay)) {
+      log("Autoplay setting could not be applied in this MusicKit runtime.");
+    }
+    playback.syncPlaybackModes(instance);
   };
 
   /** Saves the latest settings once a volume drag settles. */
@@ -353,6 +480,7 @@ export function createAppController(
   };
 
   const initializeController = async (): Promise<void> => {
+    playbackSession.start();
     setInitializationState({ status: "loading" });
     log("Initializing MusicKit…");
     try {
@@ -379,7 +507,10 @@ export function createAppController(
         stopMusicKitEvents = registerMusicKitEvents(
           instance,
           () => {
+            sleepTimer.observe(getState().playback);
             syncPlaybackDiagnostics();
+            // Loads ratings only when the now-playing track changes.
+            ratings.syncCurrentTrack();
           },
           (message) => {
             log(`Media playback error: ${message}`);
@@ -390,7 +521,7 @@ export function createAppController(
         playback.syncPlaybackModes(instance);
       }
       syncMusicKitQueue(instance);
-      playback.syncPlaybackModes(instance);
+      applyAutoplaySetting(instance);
       restoreAuthProbe = installAuthPopupProbe(log);
       setInitializationState({ status: "ready" });
       log("MusicKit initialized successfully.");
@@ -406,7 +537,10 @@ export function createAppController(
         if (storefront) setAccountSummary({ storefront });
         log("Already authorized from previous session.");
       }
+      // Not awaited: a restored queue must never hold up the update check.
+      playbackSession.tryRestore();
       syncPlaybackDiagnostics();
+      ratings.syncCurrentTrack();
     } catch (error) {
       const message = safeErrorMessage(error);
       setInitializationState({ status: "error", message });
@@ -423,7 +557,9 @@ export function createAppController(
     async loadSettings(): Promise<void> {
       const settings = await loadPersistedSettings(invokeFn);
       setSettings(settings);
+      playbackSession.markSettingsLoaded();
       playback.applyPlaybackVolume(settings.volume);
+      if (music) applyAutoplaySetting(music);
       updater.configure(settings);
       const effectPromise = applyCurrentEffect();
       const pinsPromise = reloadPins();
@@ -457,8 +593,10 @@ export function createAppController(
         // Start both operations immediately: the in-memory library is cleared
         // synchronously, the persisted cache is purged, and MusicKit can open
         // its popup without an extra event-loop delay.
-        const [, userToken] = await Promise.all([
+        // The saved queue may belong to the previous account, so drop it too.
+        const [, , userToken] = await Promise.all([
           clearLibraryCache(),
+          playbackSession.clear(),
           authorize(instance),
         ]);
         registerSensitiveValue(userToken);
@@ -503,6 +641,9 @@ export function createAppController(
     },
 
     async signOut(): Promise<void> {
+      collections.invalidate();
+      // A timer armed for this account must not pause the next sign-in.
+      sleepTimer.cancel();
       try {
         const instance = requireMusic();
         // Sign-out resets the UI to idle; audio must not keep playing.
@@ -512,6 +653,9 @@ export function createAppController(
           log(`Stop before sign-out failed: ${safeErrorMessage(error)}`);
         }
         await unauthorize(instance);
+        trackNavigation.clear();
+        // Library artist mappings belong to the signed-out account.
+        stationResolver = undefined;
         await clearLibraryCache();
         // Pins are local and not tied to an Apple ID; the next account to
         // sign in on this PC must not see them.
@@ -520,6 +664,7 @@ export function createAppController(
         } catch (error) {
           log(`Pinned playlists clear failed: ${safeErrorMessage(error)}`);
         }
+        await playbackSession.clear();
         discovery.resetSearch();
         resetState();
         setPins([]);
@@ -544,7 +689,10 @@ export function createAppController(
 
     loadRadio: discovery.loadRadio,
 
-    playStation: playback.playStation,
+    playStation(station: Station): Promise<void> {
+      collections.invalidate();
+      return playback.playStation(station);
+    },
 
     loadAlbum(
       id: string,
@@ -686,11 +834,51 @@ export function createAppController(
       }
     },
 
-    playNextTracks: playback.playNextTracks,
+    rate(target: RatingTarget, value: RatingValue): Promise<void> {
+      return ratings.rate(target, value);
+    },
 
-    playLaterTracks: playback.playLaterTracks,
+    loadRating(target: RatingTarget): Promise<void> {
+      return ratings.loadRating(target);
+    },
 
-    playQueueItem: playback.playQueueItem,
+    addToLibrary(target: RatingTarget): Promise<void> {
+      return ratings.addToLibrary(target);
+    },
+
+    playNextTracks(
+      tracks: readonly Track[] | readonly string[],
+    ): Promise<void> {
+      collections.invalidate();
+      return playback.playNextTracks(tracks);
+    },
+
+    playLaterTracks(
+      tracks: readonly Track[] | readonly string[],
+    ): Promise<void> {
+      collections.invalidate();
+      return playback.playLaterTracks(tracks);
+    },
+
+    playQueueItem(index: number): Promise<void> {
+      collections.invalidate();
+      return playback.playQueueItem(index);
+    },
+
+    removeQueueItem(index: number): Promise<QueueEditTier> {
+      collections.invalidate();
+      return playback.removeQueueItem(index);
+    },
+
+    moveQueueItem(from: number, to: number): Promise<QueueEditTier> {
+      collections.invalidate();
+      return playback.moveQueueItem(from, to);
+    },
+
+    clearUpNext(): Promise<QueueEditTier> {
+      collections.invalidate();
+      return playback.clearUpNext();
+    },
 
     async refreshCurrentData(): Promise<void> {
       const route = getState().navigation;
@@ -734,10 +922,47 @@ export function createAppController(
     search: discovery.search,
 
     async playFromSearch(index: number): Promise<void> {
-      await playback.playTracks(discovery.searchTracks(), index);
+      await playTracks(discovery.searchTracks().slice(Math.max(0, index)));
     },
 
-    playTracks: playback.playTracks,
+    playTracks,
+    playTracksShuffled: collections.playShuffled,
+    async startStation(target: StationTarget): Promise<void> {
+      collections.invalidate();
+      const mine = collections.generation();
+      const instance = requireMusic();
+      const station = await stations().stationFor(target);
+      // Other playback may have started while the lookup was pending.
+      if (collections.generation() !== mine || instance !== music) return;
+      if (!station) {
+        throw new Error(`No station is available for this ${target.kind}.`);
+      }
+      await playback.playStation(station);
+    },
+    async queueCollection(kind, id, source, where): Promise<void> {
+      const instance = requireMusic();
+      const tracks = await loadAllTracks(
+        kind,
+        id,
+        source,
+        requireLibrary(),
+        () => instance !== music,
+      );
+      if (!tracks) return;
+      collections.invalidate();
+      await (where === "next"
+        ? playback.playNextTracks(tracks)
+        : playback.playLaterTracks(tracks));
+    },
+    loadArtistTopSongs: (id, source, catalogId) =>
+      stations().topSongs(id, catalogId, source),
+    playCollection: (kind, id, source = "library", startIndex = 0, options) =>
+      playCollection(kind, id, source, startIndex, options),
+    playPlaylist: (id, source = "library", startIndex = 0) =>
+      playCollection("playlist", id, source, startIndex),
+    playAlbum: (id, source = "library", startIndex = 0) =>
+      playCollection("album", id, source, startIndex),
+    resolveTrackNavigation: trackNavigation.resolve,
 
     async playConsecutive(): Promise<void> {
       const lastTracks = discovery.lastSearchTracks();
@@ -747,12 +972,18 @@ export function createAppController(
           `Need at least ${CONSECUTIVE_TRACK_TARGET} search results.`,
         );
       }
-      await playback.playTracks(tracks.slice(0, CONSECUTIVE_TRACK_TARGET));
+      await playTracks(tracks.slice(0, CONSECUTIVE_TRACK_TARGET));
     },
 
-    togglePlayback: playback.togglePlayback,
+    async togglePlayback(): Promise<void> {
+      if (await playbackSession.resumePendingRestore()) return;
+      return playback.togglePlayback();
+    },
 
-    play: playback.play,
+    async play(): Promise<void> {
+      if (await playbackSession.resumePendingRestore()) return;
+      return playback.play();
+    },
 
     pause: playback.pause,
 
@@ -760,11 +991,35 @@ export function createAppController(
 
     cycleRepeatMode: playback.cycleRepeatMode,
 
+    setRepeatMode: playback.setRepeatMode,
+
     previous: playback.previous,
 
     next: playback.next,
 
     seek: playback.seek,
+
+    toggleMute(): void {
+      playback.toggleMute();
+    },
+
+    seekBy(deltaSeconds: number): void {
+      const { current, positionSeconds, durationSeconds } = getState().playback;
+      if (!current || durationSeconds <= 0) return;
+      const target = Math.min(
+        durationSeconds,
+        Math.max(0, positionSeconds + deltaSeconds),
+      );
+      // seek() logs its own failure, so shortcuts stay silent.
+      void playback.seek(target).catch(() => undefined);
+    },
+
+    adjustVolume(delta: number): void {
+      const level = getState().playback.volume + delta;
+      void controller
+        .setVolume(Math.round(level * 100) / 100)
+        .catch(() => undefined);
+    },
 
     async setVolume(volume: number): Promise<void> {
       const safeVolume = playback.applyPlaybackVolume(volume);
@@ -797,6 +1052,41 @@ export function createAppController(
       setSettings(settings);
       updater.configure(settings);
       await persistSettings(settings);
+    },
+
+    async setAutoplay(enabled: boolean): Promise<void> {
+      const instance = requireMusic();
+      if (!setAutoplayEnabled(instance, enabled)) {
+        playback.syncPlaybackModes(instance);
+        throw new Error("Autoplay is not available in this MusicKit runtime.");
+      }
+      playback.syncPlaybackModes(instance);
+      await persistSettings({ ...getState().settings, autoplay: enabled });
+    },
+
+    async setTrayIcon(enabled: boolean): Promise<void> {
+      await persistSettings({ ...getState().settings, trayIcon: enabled });
+    },
+
+    startSleepTimer(option: SleepTimerOption): void {
+      sleepTimer.start(option);
+      log(
+        option.mode === "minutes"
+          ? `Sleep timer set for ${option.minutes} minutes.`
+          : "Sleep timer set for the end of the track.",
+      );
+    },
+
+    cancelSleepTimer(): void {
+      sleepTimer.cancel();
+    },
+
+    async setRestoreSession(enabled: boolean): Promise<void> {
+      await persistSettings({
+        ...getState().settings,
+        restoreSession: enabled,
+      });
+      if (!enabled) await playbackSession.clear();
     },
 
     async setUpdateChannel(channel: UpdateChannel): Promise<void> {
@@ -866,6 +1156,10 @@ export function createAppController(
     log,
 
     dispose(): void {
+      playbackSession.stop();
+      collections.invalidate();
+      sleepTimer.cancel();
+      trackNavigation.clear();
       if (volumeSaveTimer !== undefined) {
         clearTimeout(volumeSaveTimer);
         flushVolumeSave();

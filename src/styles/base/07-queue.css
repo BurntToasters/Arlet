@@ -32,9 +32,70 @@
 .queue-header .eyebrow {
   margin-bottom: 3px;
 }
+/* The wrapper scrolls so VirtualList can measure its viewport. */
+.queue-scroll {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+}
 .queue-list {
   padding: 7px;
-  overflow: auto;
+}
+.queue-toolbar {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.queue-toolbar button {
+  display: inline-flex;
+  height: 28px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+}
+.queue-toolbar button:hover:not(:disabled),
+.queue-toolbar button:focus-visible:not(:disabled) {
+  background: var(--surface-active);
+  color: var(--accent-strong);
+}
+.queue-toolbar button:disabled {
+  color: var(--text-faint);
+  opacity: 0.55;
+}
+.queue-row-shell[draggable="true"] {
+  cursor: grab;
+}
+.queue-row-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.queue-row-action {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+}
+.queue-row-action:hover:not(:disabled),
+.queue-row-action:focus-visible:not(:disabled) {
+  background: var(--surface-active);
+  color: var(--accent-strong);
+}
+.queue-row-action:disabled {
+  color: var(--text-faint);
+  opacity: 0.55;
 }
 .queue-row {
   display: grid;

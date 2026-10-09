@@ -30,6 +30,15 @@ export function RouteView({ route }: { route: Route }): JSX.Element {
       hasMounted.current = true;
       return;
     }
+    // A shortcut such as Ctrl+K may already have focused a field on the new page.
+    const active = document.activeElement;
+    if (
+      active instanceof HTMLElement &&
+      page.current?.contains(active) &&
+      active.matches("input, textarea, select")
+    ) {
+      return;
+    }
     const heading = page.current?.querySelector<HTMLElement>("h1");
     heading?.focus();
   }, [routeKey]);

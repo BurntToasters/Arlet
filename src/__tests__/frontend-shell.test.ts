@@ -100,12 +100,15 @@ describe("settings", () => {
       autoCheckUpdates: true,
       updateChannel: "auto",
       volume: 1,
+      autoplay: true,
+      restoreSession: true,
+      trayIcon: true,
       _futurePreference: { enabled: true },
     });
     expect(
       serializeSettings(migrateSettings({ theme: "dark", other: 1 })),
     ).toBe(
-      '{"schemaVersion":1,"theme":"dark","windowEffect":"acrylic","autoCheckUpdates":true,"updateChannel":"auto","volume":1}',
+      '{"schemaVersion":1,"theme":"dark","windowEffect":"acrylic","autoCheckUpdates":true,"updateChannel":"auto","volume":1,"autoplay":true,"restoreSession":true,"trayIcon":true}',
     );
     expect(migrateSettings({ theme: "dark", windowEffect: "blur" })).toEqual({
       schemaVersion: 1,
@@ -114,6 +117,9 @@ describe("settings", () => {
       autoCheckUpdates: true,
       updateChannel: "auto",
       volume: 1,
+      autoplay: true,
+      restoreSession: true,
+      trayIcon: true,
     });
   });
 
@@ -336,7 +342,10 @@ describe("MusicKit controller", () => {
 
     expect(getState().search.results).toEqual(tracks);
     await controller.playFromSearch(1);
-    expect(instance.setQueue).toHaveBeenLastCalledWith({ songs: ["b", "c"] });
+    expect(instance.setQueue).toHaveBeenLastCalledWith({
+      songs: ["b", "c"],
+      startWith: 0,
+    });
     expect(getState().playback.queue.map((track) => track.id)).toEqual([
       "b",
       "c",

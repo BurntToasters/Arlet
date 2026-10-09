@@ -23,3 +23,5 @@
 @import "./base/21-support.css";
 @import "./base/22-offline.css";
 @import "./base/23-token-expiry.css";
+@import "./base/24-now-playing.css";
+@import "./base/25-sleep-timer.css";

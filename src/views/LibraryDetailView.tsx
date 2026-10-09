@@ -4,11 +4,13 @@ import {
   ListMusic,
   LoaderCircle,
   Play,
+  Radio,
   RefreshCw,
+  Shuffle,
   UserRound,
 } from "lucide-preact";
 import type { LucideIcon } from "lucide-preact";
-import { useEffect, useMemo } from "preact/hooks";
+import { useEffect, useMemo, useState } from "preact/hooks";
 import type { JSX } from "preact";
 import {
   useAppController,
@@ -16,6 +18,7 @@ import {
   useAppState,
 } from "../app/context.tsx";
 import type { AppController } from "../app/controller.ts";
+import type { CollectionPlayOptions } from "../app/collection-playback.ts";
 import { Artwork } from "../components/Artwork.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import {
@@ -28,6 +31,7 @@ import {
 } from "./LibraryView.tsx";
 import type { Track } from "../domain/music.ts";
 import { reportActionError } from "../components/action-errors.ts";
+import { SongRow } from "../components/SongRow.tsx";
 import { OfflineBanner } from "../components/OfflineBanner.tsx";
 import { VirtualList } from "../components/VirtualList.tsx";
 
@@ -50,6 +54,23 @@ interface DetailController {
     source?: DetailSource,
     options?: { refresh?: boolean },
   ) => Promise<unknown>;
+  playAlbum?: (
+    id: string,
+    source?: DetailSource,
+    startIndex?: number,
+  ) => Promise<void>;
+  playPlaylist?: (
+    id: string,
+    source?: DetailSource,
+    startIndex?: number,
+  ) => Promise<void>;
+  playCollection?: (
+    kind: "playlist" | "album",
+    id: string,
+    source?: DetailSource,
+    startIndex?: number,
+    options?: CollectionPlayOptions,
+  ) => Promise<void>;
   refreshCurrentData?: () => Promise<unknown>;
 }
 
@@ -160,28 +181,73 @@ function TrackList({
   resources,
   canPlay,
   onPlay,
+  parentKind,
+  parentId,
+  parentSource,
 }: {
   resources: ResourceLike[];
   canPlay: boolean;
-  onPlay: (track: Track) => void;
+  onPlay: (track: Track, index: number) => void;
+  parentKind: "album" | "playlist";
+  parentId: string;
+  parentSource: DetailSource;
 }): JSX.Element {
   return (
     <section className="library-list-panel" aria-label="Tracks">
       <VirtualList
         className="library-track-list"
         items={resources}
-        getKey={(resource) => resource.id}
+        getKey={(resource, index) =>
+          `${resource.type ?? "track"}:${resource.id}:${index}`
+        }
         renderRow={(resource, index) => (
           <LibraryTrackRow
             resource={resource}
             index={index}
             onPlay={onPlay}
             disabled={!canPlay}
+            contextData={{
+              "data-context-parent-kind": parentKind,
+              "data-context-parent-id": parentId,
+              "data-context-parent-source": parentSource,
+              "data-context-parent-index": String(index),
+            }}
           />
         )}
       />
     </section>
   );
+}
+
+/** Top songs for the open artist; results from a previous artist are ignored. */
+function useArtistTopSongs(
+  controller: AppController,
+  enabled: boolean,
+  id: string,
+  source: DetailSource,
+  catalogId: string | undefined,
+): Track[] {
+  const key = `${source}:${id}`;
+  const [loaded, setLoaded] = useState<{ key: string; tracks: Track[] }>();
+  useEffect(() => {
+    if (!enabled) return;
+    let current = true;
+    controller
+      .loadArtistTopSongs(id, source, catalogId)
+      .then((tracks) => {
+        if (current) setLoaded({ key, tracks });
+      })
+      .catch((error: unknown) => {
+        controller.log(
+          `Top songs unavailable: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        if (current) setLoaded({ key, tracks: [] });
+      });
+    return () => {
+      current = false;
+    };
+  }, [controller, enabled, id, source, catalogId, key]);
+  return loaded?.key === key ? loaded.tracks : [];
 }
 
 export function LibraryDetailView({
@@ -238,14 +304,60 @@ export function LibraryDetailView({
     source,
   ]);
 
-  const playTrack = (track: Track): void =>
-    act(() => controller.playTracks([track]));
-  const playAll = (): void => {
+  const playbackSource: DetailSource =
+    source ?? (resource ? resourceSource(resource) : undefined) ?? "library";
+  const playCollection = (startIndex: number): Promise<void> | undefined => {
+    if (kind === "playlist" && extendedController.playPlaylist) {
+      return extendedController.playPlaylist(id, playbackSource, startIndex);
+    }
+    if (kind === "album" && extendedController.playAlbum) {
+      return extendedController.playAlbum(id, playbackSource, startIndex);
+    }
     const tracks = resources
       .map(toTrack)
       .filter((track): track is Track => Boolean(track));
-    if (tracks.length) act(() => controller.playTracks(tracks));
+    return tracks.length
+      ? controller.playTracks(tracks, startIndex)
+      : undefined;
   };
+  const playTrack = (_track: Track, index: number): void =>
+    act(() => playCollection(index));
+  const playAll = (): void => {
+    if (resources.length) act(() => playCollection(0));
+  };
+  const shuffleAll = (): void => {
+    if (kind === "artist" || !extendedController.playCollection) return;
+    act(() =>
+      extendedController.playCollection?.(kind, id, playbackSource, 0, {
+        shuffle: true,
+      }),
+    );
+  };
+  const topSongs = useArtistTopSongs(
+    controller,
+    kind === "artist" && authorized,
+    id,
+    playbackSource,
+    resource?.catalogId,
+  );
+  const playTopSongs = (): void => {
+    if (topSongs.length) act(() => controller.playTracks(topSongs, 0));
+  };
+  const shuffleTopSongs = (): void => {
+    if (topSongs.length) act(() => controller.playTracksShuffled(topSongs));
+  };
+  const startArtistStation = (): void =>
+    act(() =>
+      controller.startStation({
+        kind: "artist",
+        id,
+        catalogId: resource?.catalogId,
+        source: playbackSource,
+      }),
+    );
+  const pending = state.ui.pendingCollection;
+  const collectionBusy =
+    kind !== "artist" && pending?.kind === kind && pending.id === id;
 
   if (!authorized && !offline) {
     return (
@@ -339,11 +451,60 @@ export function LibraryDetailView({
               <button
                 className="primary-button"
                 type="button"
+                aria-busy={collectionBusy || undefined}
+                disabled={collectionBusy}
                 onClick={playAll}
               >
-                <Play aria-hidden="true" size={16} fill="currentColor" /> Play
-                all
+                {collectionBusy ? (
+                  <LoaderCircle className="spin" aria-hidden="true" size={16} />
+                ) : (
+                  <Play aria-hidden="true" size={16} fill="currentColor" />
+                )}{" "}
+                Play all
               </button>
+            ) : null}
+            {!isArtist &&
+            resources.length &&
+            extendedController.playCollection ? (
+              <button
+                className="secondary-button"
+                type="button"
+                aria-busy={collectionBusy || undefined}
+                disabled={collectionBusy}
+                onClick={shuffleAll}
+              >
+                <Shuffle aria-hidden="true" size={16} /> Shuffle
+              </button>
+            ) : null}
+            {isArtist ? (
+              <>
+                {topSongs.length ? (
+                  <>
+                    <button
+                      className="primary-button"
+                      type="button"
+                      onClick={playTopSongs}
+                    >
+                      <Play aria-hidden="true" size={16} fill="currentColor" />{" "}
+                      Play
+                    </button>
+                    <button
+                      className="secondary-button"
+                      type="button"
+                      onClick={shuffleTopSongs}
+                    >
+                      <Shuffle aria-hidden="true" size={16} /> Shuffle
+                    </button>
+                  </>
+                ) : null}
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={startArtistStation}
+                >
+                  <Radio aria-hidden="true" size={16} /> Station
+                </button>
+              </>
             ) : null}
             <button
               className="icon-button"
@@ -373,6 +534,54 @@ export function LibraryDetailView({
         <p className="library-stale-note" role="status">
           Refresh failed; showing saved data. {detail.error}
         </p>
+      ) : null}
+      {isArtist && topSongs.length ? (
+        <section
+          className="artist-top-songs"
+          aria-labelledby="top-songs-heading"
+        >
+          <h2 id="top-songs-heading">Top Songs</h2>
+          <div className="library-list-panel">
+            <ol className="library-track-list">
+              {topSongs.map((track, index) => (
+                <SongRow
+                  key={`${track.id}:${index}`}
+                  track={track}
+                  index={index}
+                  onPlay={() =>
+                    act(() => controller.playTracks(topSongs, index))
+                  }
+                  onPlayNext={() =>
+                    act(() => controller.playNextTracks([track]))
+                  }
+                  disabled={!authorized}
+                  rowClassName="library-track-row"
+                  numberClassName="library-row-number"
+                  copyClassName="library-row-copy"
+                  durationClassName="library-row-duration"
+                  contextData={{
+                    "data-context-kind": "track",
+                    "data-context-id": track.id,
+                    "data-context-title": track.title,
+                    "data-context-artist": track.artistName,
+                    ...(track.albumTitle
+                      ? { "data-context-album": track.albumTitle }
+                      : {}),
+                    ...(track.artwork?.url
+                      ? { "data-context-artwork": track.artwork.url }
+                      : {}),
+                    ...(track.resourceType
+                      ? { "data-context-resource-type": track.resourceType }
+                      : {}),
+                    ...(track.catalogId
+                      ? { "data-context-catalog-id": track.catalogId }
+                      : {}),
+                  }}
+                />
+              ))}
+            </ol>
+          </div>
+        </section>
       ) : null}
       {isArtist ? (
         resources.length ? (
@@ -417,6 +626,9 @@ export function LibraryDetailView({
           resources={resources}
           canPlay={authorized}
           onPlay={playTrack}
+          parentKind={kind === "playlist" ? "playlist" : "album"}
+          parentId={id}
+          parentSource={playbackSource}
         />
       ) : (
         <EmptyState

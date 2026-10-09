@@ -39,6 +39,15 @@
   background: color-mix(in srgb, var(--surface-raised) 74%, transparent);
 }
 
+.artist-top-songs {
+  margin-bottom: 20px;
+}
+
+.artist-top-songs h2 {
+  margin: 0 0 10px;
+  font-size: 1.05rem;
+}
+
 .library-track-list {
   margin: 0;
   padding: 0;

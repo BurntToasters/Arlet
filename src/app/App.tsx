@@ -8,6 +8,8 @@ import {
   subscribePlaybackPosition,
 } from "../state.ts";
 import type { AppController } from "./controller.ts";
+import { shortcutFor, type ShortcutAction } from "./shortcuts.ts";
+import { reportActionError } from "../components/action-errors.ts";
 import {
   AppProvider,
   useAppController,
@@ -17,6 +19,7 @@ import {
 import { QueueDrawer } from "../components/QueueDrawer.tsx";
 import { Sidebar } from "../components/Sidebar.tsx";
 import { PlayerBar } from "../components/PlayerBar.tsx";
+import { NowPlaying } from "../components/NowPlaying.tsx";
 import { Titlebar } from "../components/Titlebar.tsx";
 import { RouteView } from "../views/RouteView.tsx";
 import { DiagnosticsDrawer } from "../components/diagnostics/DiagnosticsDrawer.tsx";
@@ -28,9 +31,13 @@ import { TokenExpiryNotice } from "../components/TokenExpiryNotice.tsx";
 import type { DiagnosticsDrawerController } from "../diagnostics/types.ts";
 import type { DiagnosticsStore } from "../diagnostics/store.ts";
 import {
+  clampWindowsMediaSeek,
   clearWindowsMediaSession,
   createTimelineSync,
   listenWindowsMediaControls,
+  listenWindowsMediaRepeat,
+  listenWindowsMediaSeek,
+  listenWindowsMediaShuffle,
   updateWindowsMediaSession,
   updateWindowsMediaTimeline,
 } from "../platform/windows-media.ts";
@@ -39,6 +46,44 @@ export interface AppProps {
   controller: AppController;
   router: HashRouter;
   diagnosticsStore?: DiagnosticsStore;
+}
+
+/** Runs a transport shortcut; false means it did not apply to this state. */
+function runShortcut(
+  controller: AppController,
+  action: ShortcutAction,
+): boolean {
+  const { playback, initialization, ui } = getState();
+  const transportReady =
+    initialization.status === "ready" && playback.current !== undefined;
+  switch (action.type) {
+    case "togglePlayback":
+      if (!transportReady) return false;
+      void controller.togglePlayback().catch(reportActionError);
+      return true;
+    case "next":
+      if (!transportReady) return false;
+      void controller.next().catch(reportActionError);
+      return true;
+    case "previous":
+      if (!transportReady) return false;
+      void controller.previous().catch(reportActionError);
+      return true;
+    case "seekBy":
+      if (!transportReady) return false;
+      controller.seekBy(action.seconds);
+      return true;
+    case "adjustVolume":
+      controller.adjustVolume(action.delta);
+      return true;
+    case "toggleMute":
+      controller.toggleMute();
+      return true;
+    case "closeNowPlaying":
+      if (!ui.nowPlayingOpen) return false;
+      setUiState({ nowPlayingOpen: false });
+      return true;
+  }
 }
 
 function AppLayout({
@@ -62,18 +107,29 @@ function AppLayout({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "d") {
+      const action = shortcutFor(event);
+      if (action && runShortcut(controller, action)) {
+        event.preventDefault();
+      } else if (
+        event.ctrlKey &&
+        event.shiftKey &&
+        event.key.toLowerCase() === "d"
+      ) {
         if (!import.meta.env.DEV) return;
         event.preventDefault();
-        setUiState({ diagnosticsOpen: !state.ui.diagnosticsOpen });
+        setUiState({ diagnosticsOpen: !getState().ui.diagnosticsOpen });
       } else if (event.ctrlKey && event.key.toLowerCase() === "k") {
         event.preventDefault();
         router.navigate({ kind: "search", query: "" });
-        window.setTimeout(() => {
-          document
-            .querySelector<HTMLInputElement>(".search-form input")
-            ?.focus();
-        }, 0);
+        // The Search view may render a few frames after navigation.
+        let attempts = 0;
+        const focusSearch = (): void => {
+          const input =
+            document.querySelector<HTMLInputElement>(".search-form input");
+          if (input) input.focus();
+          else if ((attempts += 1) < 30) requestAnimationFrame(focusSearch);
+        };
+        requestAnimationFrame(focusSearch);
       } else if (event.ctrlKey && event.key.toLowerCase() === "r") {
         event.preventDefault();
         void controller.refreshCurrentData().catch(() => undefined);
@@ -87,7 +143,7 @@ function AppLayout({
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [router, state.ui.diagnosticsOpen]);
+  }, [controller, router]);
 
   useEffect(() => {
     let active = true;
@@ -134,13 +190,67 @@ function AppLayout({
       pauseEnabled: state.playback.status === "playing",
       nextEnabled: state.playback.queueIndex < state.playback.queue.length - 1,
       previousEnabled: state.playback.queueIndex > 0,
+      shuffle: state.playback.shuffleMode === "songs",
+      repeat: state.playback.repeatMode ?? "off",
     }).catch(() => undefined);
   }, [
     state.playback.current,
     state.playback.status,
     state.playback.queueIndex,
     state.playback.queue.length,
+    state.playback.shuffleMode,
+    state.playback.repeatMode,
   ]);
+
+  useEffect(() => {
+    // MusicKit stays the source of truth: these requests call the same
+    // controller methods as the in-app buttons, and SMTC then reflects the
+    // state the payload effect reads back. Requests before sign-in and
+    // MusicKit setup are dropped, not queued.
+    let active = true;
+    const stops: Array<() => void> = [];
+    const track = (listening: Promise<() => void>): void => {
+      void listening
+        .then((stop) => {
+          if (active) stops.push(stop);
+          else stop();
+        })
+        .catch(() => undefined);
+    };
+    const ready = (): boolean => getState().initialization.status === "ready";
+    track(
+      listenWindowsMediaSeek((seconds) => {
+        if (!ready()) return;
+        const target = clampWindowsMediaSeek(
+          seconds,
+          getState().playback.durationSeconds,
+        );
+        if (target !== undefined) {
+          void controller.seek(target).catch(() => undefined);
+        }
+      }),
+    );
+    track(
+      listenWindowsMediaShuffle((enabled) => {
+        if (!ready()) return;
+        void Promise.resolve(
+          controller.setShuffleMode?.(enabled ? "songs" : "off"),
+        ).catch(() => undefined);
+      }),
+    );
+    track(
+      listenWindowsMediaRepeat((mode) => {
+        if (!ready()) return;
+        void Promise.resolve(controller.setRepeatMode?.(mode)).catch(
+          () => undefined,
+        );
+      }),
+    );
+    return () => {
+      active = false;
+      for (const stop of stops) stop();
+    };
+  }, [controller]);
 
   useEffect(() => {
     const sync = createTimelineSync((timeline) => {
@@ -185,6 +295,7 @@ function AppLayout({
         />
       ) : null}
       <PlayerBar />
+      <NowPlaying />
       <UpdateReadyModal />
       <ContextMenu />
       <PlaylistDialogs />

@@ -3,8 +3,11 @@ import type {
   Artist,
   DiscoveryResource,
   PinnedPlaylist,
+  PendingPlaybackRestore,
   PlaybackState,
   Playlist,
+  RatingValue,
+  SleepTimerState,
   RecommendationSection,
   Station,
   Track,
@@ -35,6 +38,12 @@ export interface AppSettings {
   autoCheckUpdates: boolean;
   updateChannel: UpdateChannel;
   volume: number;
+  /** Ask MusicKit to keep playing similar music after the queue ends. */
+  autoplay: boolean;
+  /** Restore the last queue and position, paused, after restart. */
+  restoreSession: boolean;
+  /** Show the tray icon; closing the window then hides to it instead of quitting. */
+  trayIcon: boolean;
   /** Reserved for forward-compatible settings owned by other versions. */
   [key: string]: unknown;
 }
@@ -46,6 +55,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoCheckUpdates: true,
   updateChannel: "auto",
   volume: 1,
+  autoplay: true,
+  restoreSession: true,
+  trayIcon: true,
 };
 
 export type AuthState =
@@ -216,10 +228,18 @@ export interface DiagnosticsState {
   sessionStartedAt: number;
 }
 
+export interface PendingCollectionPlay {
+  kind: "album" | "playlist";
+  id: string;
+}
+
 export interface UiState {
   queueOpen: boolean;
   diagnosticsOpen: boolean;
   sidebarOpen: boolean;
+  nowPlayingOpen: boolean;
+  /** Collection whose pages load before playback starts. */
+  pendingCollection?: PendingCollectionPlay;
 }
 
 export interface WindowEffectState {
@@ -266,6 +286,8 @@ export interface AppState {
   pins?: PinnedPlaylist[];
   ui?: UiState;
   diagnostics?: DiagnosticsState;
+  /** Ratings keyed by `ratingKey(type, id)`. */
+  ratings?: Record<string, RatingValue>;
 }
 
 export interface RuntimeAppState extends AppState {
@@ -285,6 +307,7 @@ export interface RuntimeAppState extends AppState {
   browse: BrowseState;
   radio: RadioState;
   account: AccountSummary;
+  ratings: Record<string, RatingValue>;
 }
 
 const initialPlaybackState: PlaybackState = {
@@ -297,7 +320,10 @@ const initialPlaybackState: PlaybackState = {
   queueIndex: 0,
   shuffleMode: "off",
   repeatMode: "off",
-  modeCapabilities: { shuffle: false, repeat: false },
+  modeCapabilities: { shuffle: false, repeat: false, autoplay: false },
+  muted: false,
+  pendingRestore: undefined,
+  sleepTimer: undefined,
   error: undefined,
 };
 
@@ -423,6 +449,7 @@ const initialState: RuntimeAppState = {
     queueOpen: false,
     diagnosticsOpen: false,
     sidebarOpen: false,
+    nowPlayingOpen: false,
   },
   diagnostics: {
     logs: [],
@@ -435,6 +462,7 @@ const initialState: RuntimeAppState = {
   home: createInitialHomeState(),
   browse: createInitialBrowseState(),
   radio: createInitialRadioState(),
+  ratings: {},
 };
 
 function cloneInitialState(): RuntimeAppState {
@@ -463,6 +491,7 @@ function cloneInitialState(): RuntimeAppState {
     home: createInitialHomeState(),
     browse: createInitialBrowseState(),
     radio: createInitialRadioState(),
+    ratings: {},
   };
 }
 
@@ -805,19 +834,29 @@ export function clearDiagnosticLogs(): void {
 }
 
 export function setPlaybackStatus(status: PlaybackState["status"]): void {
+  // A playing provider state proves the last failure is no longer current.
+  const error = status === "playing" ? undefined : state.playback.error;
+  // Any real playback start replaces a restored queue that was never resumed.
+  const pendingRestore =
+    status === "playing" || status === "loading"
+      ? undefined
+      : state.playback.pendingRestore;
   update({
     ...state,
-    playback: { ...state.playback, status },
+    playback: { ...state.playback, status, error, pendingRestore },
   });
 }
 
 export function setCurrentTrack(
   track: Track | undefined,
   explicitQueueIndex?: number,
+  countAsPlayed = true,
 ): void {
   // MusicKit may report a library song by its catalog ID, so match either.
   const isNewTrack =
-    track !== undefined && !isSameTrack(track, state.playback.current);
+    countAsPlayed &&
+    track !== undefined &&
+    !isSameTrack(track, state.playback.current);
   const queue = state.playback.queue;
   const exactIndex = track
     ? queue.findIndex((item) => item.id === track.id)
@@ -882,11 +921,18 @@ export function setQueue(queue: Track[], queueIndex = 0): void {
   });
 }
 
-/** Replace queue while preserving explicit position for duplicate track IDs. */
-export function setQueueSnapshot(queue: Track[], queueIndex = 0): void {
+/**
+ * Replace queue while preserving explicit position for duplicate track IDs.
+ * A restored queue passes `countAsPlayed: false`; nothing has played yet.
+ */
+export function setQueueSnapshot(
+  queue: Track[],
+  queueIndex = 0,
+  countAsPlayed = true,
+): void {
   setQueue(queue, queueIndex);
   const current = queue[queueIndex];
-  if (current) setCurrentTrack(current, Math.max(0, queueIndex));
+  if (current) setCurrentTrack(current, Math.max(0, queueIndex), countAsPlayed);
 }
 
 export function setPlaybackError(code: AppErrorCode, message: string): void {
@@ -898,6 +944,37 @@ export function setPlaybackError(code: AppErrorCode, message: string): void {
       error: { code, message: sanitizeRenderableError(message) },
     },
   });
+}
+
+export function clearPlaybackError(): void {
+  if (state.playback.error === undefined) return;
+  update({
+    ...state,
+    playback: { ...state.playback, error: undefined },
+  });
+}
+
+export function setMuted(muted: boolean): void {
+  update({ ...state, playback: { ...state.playback, muted } });
+}
+
+export function setPendingRestore(
+  pendingRestore: PendingPlaybackRestore | undefined,
+): void {
+  update({ ...state, playback: { ...state.playback, pendingRestore } });
+}
+
+export function setSleepTimer(sleepTimer: SleepTimerState | undefined): void {
+  update({ ...state, playback: { ...state.playback, sleepTimer } });
+}
+
+/** Stable key for the ratings map, e.g. `library-songs:i.abc`. */
+export function ratingKey(type: string, id: string): string {
+  return `${type}:${id}`;
+}
+
+export function setRating(key: string, value: RatingValue): void {
+  update({ ...state, ratings: { ...state.ratings, [key]: value } });
 }
 
 export function resetState(): void {

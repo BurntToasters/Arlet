@@ -1,0 +1,14 @@
+.sleep-timer-button:has(.sleep-timer-label) {
+  width: auto;
+  gap: 5px;
+  padding: 0 8px;
+}
+.sleep-timer-label {
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.sleep-timer-menu {
+  width: 176px;
+}

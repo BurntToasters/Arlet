@@ -13,7 +13,11 @@ export interface WindowsMediaPayload {
   pauseEnabled: boolean;
   nextEnabled: boolean;
   previousEnabled: boolean;
+  shuffle: boolean;
+  repeat: WindowsMediaRepeat;
 }
+
+export type WindowsMediaRepeat = "off" | "all" | "one";
 
 export function updateWindowsMediaSession(
   payload: WindowsMediaPayload,
@@ -84,6 +88,51 @@ export async function listenWindowsMediaControls(
       event.payload === "pause" ||
       event.payload === "next" ||
       event.payload === "previous"
+    ) {
+      handler(event.payload);
+    }
+  });
+}
+
+/**
+ * Seconds for a system seek, or undefined when the request cannot be applied:
+ * NaN, negative, or no known duration. Positions past the end are clamped.
+ */
+export function clampWindowsMediaSeek(
+  seconds: number,
+  durationSeconds: number,
+): number | undefined {
+  if (!Number.isFinite(seconds) || seconds < 0) return undefined;
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return undefined;
+  }
+  return Math.min(seconds, durationSeconds);
+}
+
+export function listenWindowsMediaSeek(
+  handler: (seconds: number) => void,
+): Promise<UnlistenFn> {
+  return listen<number>("windows-media-seek", (event) => {
+    if (typeof event.payload === "number") handler(event.payload);
+  });
+}
+
+export function listenWindowsMediaShuffle(
+  handler: (enabled: boolean) => void,
+): Promise<UnlistenFn> {
+  return listen<boolean>("windows-media-shuffle", (event) => {
+    if (typeof event.payload === "boolean") handler(event.payload);
+  });
+}
+
+export function listenWindowsMediaRepeat(
+  handler: (mode: WindowsMediaRepeat) => void,
+): Promise<UnlistenFn> {
+  return listen<WindowsMediaRepeat>("windows-media-repeat", (event) => {
+    if (
+      event.payload === "off" ||
+      event.payload === "all" ||
+      event.payload === "one"
     ) {
       handler(event.payload);
     }

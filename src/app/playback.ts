@@ -1,7 +1,10 @@
 import { mapErrorToCode } from "../musickit/errors.ts";
 import {
   queueOptionsForTracks,
+  changeToMediaAtIndex,
+  readMusicKitQueue,
   readPlaybackModes,
+  type NormalizedRepeatMode,
   seekToTime,
   setRepeatMode as setMusicRepeatMode,
   setShuffleMode as setMusicShuffleMode,
@@ -11,11 +14,22 @@ import {
   syncMusicKitQueue,
   toggle,
 } from "../musickit/player.ts";
-import type { Station, Track } from "../domain/music.ts";
+import { isSameTrack, type Station, type Track } from "../domain/music.ts";
+import { normalizeTrack } from "../musickit/normalize.ts";
 import {
+  editQueue,
+  planClear,
+  planMove,
+  planRemove,
+  type QueueEditPlan,
+  type QueueEditTier,
+} from "../musickit/queue-edit.ts";
+import {
+  clearPlaybackError,
   DEFAULT_SETTINGS,
   getState,
   setCurrentTrack,
+  setMuted,
   setPlaybackError,
   setPlaybackModes,
   setPlaybackPosition,
@@ -45,14 +59,32 @@ export function createPlayback(context: ControllerContext) {
     log(`${label}: ${message}`);
   };
 
+  /** Sets the unmuted level. Any explicit volume change also unmutes. */
   const applyPlaybackVolume = (volume: number): number => {
     const safeVolume = Number.isFinite(volume)
       ? Math.max(0, Math.min(1, volume))
       : DEFAULT_SETTINGS.volume;
+    if (getState().playback.muted) setMuted(false);
     setVolume(safeVolume);
     const music = getMusic();
     if (music) setMusicVolume(music, safeVolume);
     return safeVolume;
+  };
+
+  const editQueueLogged = async (
+    label: string,
+    instance: MusicKit.MusicKitInstance,
+    plan: (
+      queue: readonly Track[],
+      current: number,
+    ) => QueueEditPlan | undefined,
+  ): Promise<QueueEditTier> => {
+    try {
+      return await editQueue(instance, plan);
+    } catch (error) {
+      log(`${label}: ${errorMessage(error)}`);
+      throw error;
+    }
   };
 
   const syncPlaybackModes = (instance: MusicKit.MusicKitInstance): void => {
@@ -64,17 +96,102 @@ export function createPlayback(context: ControllerContext) {
     });
   };
 
+  /** Writes a repeat mode; throws when the runtime cannot change it. */
+  const applyRepeatMode = (
+    instance: MusicKit.MusicKitInstance,
+    mode: NormalizedRepeatMode,
+  ): void => {
+    const current = readPlaybackModes(instance);
+    if (!current.capabilities.repeat) {
+      throw new Error("Repeat is not available in this MusicKit runtime.");
+    }
+    if (!setMusicRepeatMode(instance, mode)) {
+      setPlaybackModes({
+        modeCapabilities: { ...current.capabilities, repeat: false },
+      });
+      throw new Error("Repeat could not be changed in this MusicKit runtime.");
+    }
+    syncPlaybackModes(instance);
+  };
+
+  /**
+   * Index to select after `setQueue`, or undefined when MusicKit already sits
+   * on the chosen song. With shuffle on, the provider order differs from
+   * `queue`, so the song is located by ID instead of by `startIndex`.
+   */
+  const providerStartIndex = (
+    instance: MusicKit.MusicKitInstance,
+    queue: readonly Track[],
+    startIndex: number,
+  ): number | undefined => {
+    const chosen = queue[startIndex];
+    const provider = readMusicKitQueue(instance);
+    if (!provider) return startIndex;
+    const shuffled = readPlaybackModes(instance).shuffleMode === "songs";
+    const atPosition = provider.items[provider.index];
+    const onChosen =
+      atPosition !== undefined &&
+      isSameTrack(normalizeTrack(atPosition), chosen) &&
+      (shuffled || provider.index === startIndex);
+    if (onChosen) return undefined;
+    if (!shuffled) return startIndex;
+    const found = provider.items.findIndex((item) =>
+      isSameTrack(normalizeTrack(item), chosen),
+    );
+    return found >= 0 ? found : startIndex;
+  };
+
   const playTracks = async (
     tracks: readonly Track[],
     startIndex = 0,
   ): Promise<void> => {
     const instance = requireMusic();
-    const queue = tracks.slice(Math.max(0, startIndex));
-    if (queue.length === 0) throw new Error("Queue is empty");
-    setQueue([...queue], 0);
+    if (tracks.length === 0) throw new Error("Queue is empty");
+    if (
+      !Number.isInteger(startIndex) ||
+      startIndex < 0 ||
+      startIndex >= tracks.length
+    ) {
+      throw new Error("The selected song is unavailable.");
+    }
+    const needsExplicitSelection =
+      startIndex > 0 || readPlaybackModes(instance).shuffleMode === "songs";
+    const providerPlayer = (instance.player ?? instance) as unknown as Record<
+      string,
+      unknown
+    >;
+    const instanceRecord = instance as unknown as Record<string, unknown>;
+    if (
+      needsExplicitSelection &&
+      typeof providerPlayer.changeToMediaAtIndex !== "function" &&
+      typeof instanceRecord.changeToMediaAtIndex !== "function"
+    ) {
+      throw new Error(
+        "Selecting a song in the MusicKit queue is not available in this runtime.",
+      );
+    }
+    const queue = [...tracks];
+    clearPlaybackError();
+    setQueue(queue, startIndex);
     setPlaybackStatus("loading");
     try {
-      await instance.setQueue(queueOptionsForTracks(queue));
+      // `startWith` positions the queue before MusicKit shuffles it, so the
+      // chosen song stays first and the rest are shuffled after it.
+      await instance.setQueue({
+        ...queueOptionsForTracks(queue),
+        startWith: startIndex,
+      });
+      if (needsExplicitSelection) {
+        const index = providerStartIndex(instance, queue, startIndex);
+        if (index !== undefined) {
+          const selected = await changeToMediaAtIndex(instance, index);
+          if (!selected) {
+            throw new Error(
+              "Selecting a song in the MusicKit queue is not available in this runtime.",
+            );
+          }
+        }
+      }
       await instance.play();
     } catch (error) {
       reportPlayFailure("Play failed", error);
@@ -149,11 +266,13 @@ export function createPlayback(context: ControllerContext) {
 
     async playStation(station: Station): Promise<void> {
       const url = station.url?.trim();
-      if (!url) throw new Error("This station cannot be played.");
+      const id = station.id.trim();
+      if (!url && !id) throw new Error("This station cannot be played.");
       const instance = requireMusic();
+      clearPlaybackError();
       setPlaybackStatus("loading");
       try {
-        await instance.setQueue({ url });
+        await instance.setQueue(url ? { url } : { station: id });
         await instance.play();
       } catch (error) {
         reportPlayFailure("Station play failed", error);
@@ -178,9 +297,19 @@ export function createPlayback(context: ControllerContext) {
       ) {
         throw new Error("Queue item is unavailable.");
       }
-      const queue = snapshot.queue.slice(index);
+      clearPlaybackError();
       setPlaybackStatus("loading");
       try {
+        // Selecting in the provider queue keeps history and shuffle order.
+        if (await changeToMediaAtIndex(instance, index)) {
+          await instance.play();
+          setQueueSnapshot(snapshot.queue, index);
+          return;
+        }
+        log(
+          "Queue selection unavailable; rebuilding the queue from the selected song.",
+        );
+        const queue = snapshot.queue.slice(index);
         await instance.setQueue(queueOptionsForTracks(queue));
         await instance.play();
         setQueue(queue, 0);
@@ -189,6 +318,41 @@ export function createPlayback(context: ControllerContext) {
         reportPlayFailure("Queue item play failed", error);
         throw error;
       }
+    },
+
+    /** Mute keeps the unmuted level in `playback.volume` and silences the output. */
+    toggleMute(): void {
+      const muted = !getState().playback.muted;
+      setMuted(muted);
+      const music = getMusic();
+      if (music) {
+        setMusicVolume(music, muted ? 0 : getState().playback.volume);
+      }
+    },
+
+    // Async so a missing MusicKit instance rejects instead of throwing into the caller.
+    async removeQueueItem(index: number): Promise<QueueEditTier> {
+      return editQueueLogged(
+        "Queue remove failed",
+        requireMusic(),
+        (queue, current) => planRemove(queue, current, index),
+      );
+    },
+
+    async moveQueueItem(from: number, to: number): Promise<QueueEditTier> {
+      return editQueueLogged(
+        "Queue move failed",
+        requireMusic(),
+        (queue, current) => planMove(queue, current, from, to),
+      );
+    },
+
+    async clearUpNext(): Promise<QueueEditTier> {
+      return editQueueLogged(
+        "Queue clear failed",
+        requireMusic(),
+        (queue, current) => planClear(queue, current),
+      );
     },
 
     async togglePlayback(): Promise<void> {
@@ -223,24 +387,17 @@ export function createPlayback(context: ControllerContext) {
     async cycleRepeatMode(): Promise<void> {
       const instance = requireMusic();
       const current = readPlaybackModes(instance);
-      if (!current.capabilities.repeat) {
-        throw new Error("Repeat is not available in this MusicKit runtime.");
-      }
       const next =
         current.repeatMode === "off"
           ? "all"
           : current.repeatMode === "all"
             ? "one"
             : "off";
-      if (!setMusicRepeatMode(instance, next)) {
-        setPlaybackModes({
-          modeCapabilities: { ...current.capabilities, repeat: false },
-        });
-        throw new Error(
-          "Repeat could not be changed in this MusicKit runtime.",
-        );
-      }
-      syncPlaybackModes(instance);
+      applyRepeatMode(instance, next);
+    },
+
+    async setRepeatMode(mode: NormalizedRepeatMode): Promise<void> {
+      applyRepeatMode(requireMusic(), mode);
     },
 
     async previous(): Promise<void> {

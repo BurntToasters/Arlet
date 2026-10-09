@@ -8,6 +8,9 @@ static SETTINGS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Set once settings are reset; the old in-memory settings must not be
 /// written back before (or if) the restart happens.
 static RESET_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Mirrors the `trayIcon` setting for the window close handler, which runs on
+/// the event loop and must not take `SETTINGS_LOCK`.
+static TRAY_ICON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 const MAX_SETTINGS_BYTES: usize = 512 * 1024;
 pub const SETTINGS_SCHEMA_VERSION: u64 = 1;
@@ -48,6 +51,7 @@ impl ThemePreference {
 pub struct StartupAppearance {
     pub theme: ThemePreference,
     pub window_effect: WindowEffectPreference,
+    pub tray_icon: bool,
 }
 
 impl Default for StartupAppearance {
@@ -55,8 +59,26 @@ impl Default for StartupAppearance {
         Self {
             theme: ThemePreference::System,
             window_effect: WindowEffectPreference::Acrylic,
+            tray_icon: true,
         }
     }
+}
+
+/// Reads the `trayIcon` flag; only an explicit `false` turns the tray off.
+fn tray_icon_setting(value: &Value) -> bool {
+    value
+        .get("trayIcon")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
+/// True when the tray icon is shown and closing the window hides to it.
+pub fn tray_icon() -> bool {
+    TRAY_ICON.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+pub fn set_tray_icon(enabled: bool) {
+    TRAY_ICON.store(enabled, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// Parse only the stable appearance keys. Missing fields use the defaults;
@@ -85,6 +107,7 @@ pub fn parse_startup_appearance(json: &str) -> StartupAppearance {
         window_effect: WindowEffectPreference::from_setting(
             object.get("windowEffect").and_then(Value::as_str),
         ),
+        tray_icon: tray_icon_setting(&value),
     }
 }
 
@@ -240,9 +263,13 @@ pub fn save_settings(app: tauri::AppHandle, json: String) -> Result<(), String> 
             json.len()
         ));
     }
-    let _parsed: serde_json::Value =
+    let parsed: serde_json::Value =
         serde_json::from_str(&json).map_err(|e| format!("Invalid settings JSON: {e}"))?;
-    write_settings_text(&settings_path(&app)?, &json)
+    write_settings_text(&settings_path(&app)?, &json)?;
+    let tray_icon = tray_icon_setting(&parsed);
+    set_tray_icon(tray_icon);
+    crate::tray::apply(&app, tray_icon);
+    Ok(())
 }
 
 /// True once settings were reset in this process (restart pending).
@@ -404,6 +431,19 @@ mod tests {
             parse_startup_appearance(r#"{"schemaVersion":1,"theme":"neon","windowEffect":"blur"}"#);
         assert_eq!(appearance.theme, ThemePreference::System);
         assert_eq!(appearance.window_effect, WindowEffectPreference::Acrylic);
+    }
+
+    // Failure mode: a missing or non-boolean trayIcon disables the tray
+    // instead of using the default.
+    #[test]
+    fn tray_icon_defaults_on_and_only_false_turns_it_off() {
+        let off = parse_startup_appearance(r#"{"schemaVersion":1,"trayIcon":false}"#);
+        let text = parse_startup_appearance(r#"{"schemaVersion":1,"trayIcon":"false"}"#);
+        let missing = parse_startup_appearance(r#"{"schemaVersion":1}"#);
+        assert!(!off.tray_icon);
+        assert!(text.tray_icon);
+        assert!(missing.tray_icon);
+        assert!(StartupAppearance::default().tray_icon);
     }
 
     #[test]
