@@ -836,9 +836,14 @@ export function clearDiagnosticLogs(): void {
 export function setPlaybackStatus(status: PlaybackState["status"]): void {
   // A playing provider state proves the last failure is no longer current.
   const error = status === "playing" ? undefined : state.playback.error;
+  // Any real playback start replaces a restored queue that was never resumed.
+  const pendingRestore =
+    status === "playing" || status === "loading"
+      ? undefined
+      : state.playback.pendingRestore;
   update({
     ...state,
-    playback: { ...state.playback, status, error },
+    playback: { ...state.playback, status, error, pendingRestore },
   });
 }
 

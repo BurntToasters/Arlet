@@ -26,7 +26,9 @@ export interface LyricsLoader {
 
 const UNAVAILABLE: LyricsResult = { status: "unavailable" };
 // Apple rejects lyrics for third-party developer tokens with these codes.
-const DENIED_STATUSES = new Set([401, 403, 404]);
+const DENIED_STATUSES = new Set([401, 403]);
+// A missing lyrics resource affects only that song.
+const MISSING_STATUS = 404;
 const HMS = /^(\d+):(\d{1,2}):(\d{1,2}(?:\.\d+)?)$/u;
 const MS = /^(\d+):(\d{1,2}(?:\.\d+)?)$/u;
 const SECONDS = /^\d+(?:\.\d+)?$/u;
@@ -131,8 +133,8 @@ function ttmlFromResponse(raw: unknown): string | undefined {
 }
 
 /**
- * Lyrics for the current session. A 401/403/404 turns lyrics off for the rest
- * of the session. Results are cached per catalog ID; transient failures are
+ * Lyrics for the current session. A 401/403 turns lyrics off for the rest of
+ * the session; a 404 marks only that song unavailable. Results are cached per catalog ID; transient failures are
  * not cached, so a later view can retry.
  */
 export function createLyricsLoader(
@@ -179,6 +181,11 @@ export function createLyricsLoader(
           const status = errorStatus(error);
           if (status !== undefined && DENIED_STATUSES.has(status)) {
             capable = false;
+          } else if (
+            status === MISSING_STATUS &&
+            requestGeneration === generation
+          ) {
+            results.set(catalogId, UNAVAILABLE);
           }
           return UNAVAILABLE;
         },

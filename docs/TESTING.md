@@ -133,7 +133,8 @@ Failure scenarios to cover before changing production code:
 - Bad timestamps throw instead of rendering unsynced lines.
 - The highlighted line drifts, or every tick re-renders the app.
 - Lyrics from the previous song show on the next one.
-- The app repeats lyrics requests after a 401/403.
+- The app repeats lyrics requests after a 401/403, or one missing song (404)
+  turns lyrics off for every song.
 
 ## Desktop controls
 

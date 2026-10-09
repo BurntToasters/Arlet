@@ -18,7 +18,8 @@ const EDITABLE_SELECTOR = [
   "[contenteditable]:not([contenteditable='false'])",
   "[role='slider']",
 ].join(", ");
-const DIALOG_SELECTOR = "[role='dialog'], dialog[open]";
+// Now Playing is a full-window view where transport keys should still work.
+const DIALOG_SELECTOR = "[role='dialog']:not(.now-playing), dialog[open]";
 const NATIVE_ACTIVATION_SELECTOR =
   "button, a[href], [role='button'], [role='link']";
 

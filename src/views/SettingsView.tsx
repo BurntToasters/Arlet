@@ -327,7 +327,7 @@ export function SettingsView(): JSX.Element {
             </span>
             <div>
               <h2 id="playback-heading">Playback</h2>
-              <p>Keep your place between launches.</p>
+              <p>Choose what happens between launches and after the queue.</p>
             </div>
           </div>
           <div className="settings-fields">
@@ -340,10 +340,29 @@ export function SettingsView(): JSX.Element {
                 type="checkbox"
                 checked={settings.restoreSession}
                 onChange={(event) =>
-                  void controller.setRestoreSession(event.currentTarget.checked)
+                  void controller
+                    .setRestoreSession(event.currentTarget.checked)
+                    .catch(reportActionError)
                 }
               />
             </label>
+            {state.playback.modeCapabilities?.autoplay ? (
+              <label className="settings-field settings-toggle-field">
+                <span>
+                  <Play aria-hidden="true" size={16} strokeWidth={1.8} />{" "}
+                  Autoplay
+                </span>
+                <input
+                  type="checkbox"
+                  checked={settings.autoplay}
+                  onChange={(event) =>
+                    void Promise.resolve(
+                      controller.setAutoplay?.(event.currentTarget.checked),
+                    ).catch(reportActionError)
+                  }
+                />
+              </label>
+            ) : null}
           </div>
           <p className="settings-field-help">
             Restores the last queue and position after restart, paused. Turning
@@ -406,40 +425,6 @@ export function SettingsView(): JSX.Element {
             </div>
           ) : null}
         </section>
-
-        {state.playback.modeCapabilities?.autoplay ? (
-          <section
-            className="settings-section"
-            aria-labelledby="playback-heading"
-          >
-            <div className="settings-section-heading">
-              <span className="settings-icon">
-                <Play aria-hidden="true" size={19} strokeWidth={1.8} />
-              </span>
-              <div>
-                <h2 id="playback-heading">Playback</h2>
-                <p>Control what plays after your queue ends.</p>
-              </div>
-            </div>
-            <div className="settings-fields">
-              <label className="settings-field settings-toggle-field">
-                <span>
-                  <Play aria-hidden="true" size={16} strokeWidth={1.8} />{" "}
-                  Autoplay
-                </span>
-                <input
-                  type="checkbox"
-                  checked={settings.autoplay}
-                  onChange={(event) =>
-                    void Promise.resolve(
-                      controller.setAutoplay?.(event.currentTarget.checked),
-                    ).catch(reportActionError)
-                  }
-                />
-              </label>
-            </div>
-          </section>
-        ) : null}
 
         <section className="settings-section" aria-labelledby="window-heading">
           <div className="settings-section-heading">

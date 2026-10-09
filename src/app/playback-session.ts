@@ -395,14 +395,15 @@ export function createPlaybackSession(
     tryRestore,
 
     resumePendingRestore(): Promise<boolean> {
+      // A second press while the first resume is running waits for it.
+      if (resuming) return resuming.then(() => true);
       const { playback } = getState();
       if (!playback.pendingRestore) return Promise.resolve(false);
       if (playback.queue.length === 0) {
         setPendingRestore(undefined);
         return Promise.resolve(false);
       }
-      // A second press while the first resume is running waits for it.
-      resuming ??= resumeRestoredQueue().finally(() => {
+      resuming = resumeRestoredQueue().finally(() => {
         resuming = undefined;
       });
       return resuming.then(() => true);

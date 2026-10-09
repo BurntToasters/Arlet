@@ -198,7 +198,7 @@ function NowPlayingDialog(): JSX.Element {
               queue={state.playback.queue}
               queueIndex={state.playback.queueIndex}
               onPlay={(index) =>
-                void controller.playQueueItem(index).catch(() => undefined)
+                void controller.playQueueItem(index).catch(reportActionError)
               }
             />
           )}
