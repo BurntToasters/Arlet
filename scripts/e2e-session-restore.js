@@ -125,7 +125,7 @@ export async function runSessionRestore({ page, check, dataDir }) {
   );
   check(
     "corrupt saved queue starts with an empty queue and a usable app",
-    corruptReloaded && corrupt.nowPlaying === null && usable,
+    corruptReloaded && corrupt.nowPlaying === "Nothing playing" && usable,
     { ...corrupt, usable },
   );
 
@@ -160,7 +160,10 @@ export async function runSessionRestore({ page, check, dataDir }) {
       button: document.querySelector(".play-button")?.getAttribute("aria-label") ?? null,
       position: document.querySelector(".player-progress span")?.textContent ?? null,
       activeRow: document.querySelector(".queue-row-shell.is-active")?.textContent ?? null,
-      transitions: trace.transitions.map((item) => item.type),
+      // Applying the saved volume at startup is not a playback call.
+      transitions: trace.transitions
+        .map((item) => item.type)
+        .filter((type) => type !== "volume"),
     };`);
   check(
     "saved queue renders paused at the saved position with no provider calls",
@@ -218,6 +221,9 @@ export async function runSessionRestore({ page, check, dataDir }) {
     return true;`);
   const savedAgain = await waitForFile(sessionFile, true, 8_000);
   const saved = readJson(sessionFile);
+  const playingTitle = await page.evaluate(
+    `return document.querySelector(${JSON.stringify(NOW_PLAYING)})?.textContent ?? null;`,
+  );
   check(
     "turning Resume back on saves the queue after the next pause",
     savedAgain &&
@@ -228,6 +234,10 @@ export async function runSessionRestore({ page, check, dataDir }) {
       savedAgain,
       index: saved?.index,
       ids: saved?.items?.map((item) => item.id),
+      playingTitle,
+      provider: await page.evaluate(
+        "return window.__ARLET_E2E_MUSIC__.snapshot().queue;",
+      ),
     },
   );
 

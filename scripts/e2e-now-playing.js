@@ -117,7 +117,7 @@ export async function runNowPlaying({ page, check }) {
 
   // Seek to 42 s through the real progress slider. The line starting at 40 s
   // is the active one; it must be the only aria-current line.
-  await fixtureCall(page, "setPlaybackTime", [0]);
+  await fixtureCall(page, "emitPlaybackTime", [0]);
   await waitFor(
     page,
     `document.querySelector('.now-playing input[aria-label="Playback position"]:not(:disabled)')`,

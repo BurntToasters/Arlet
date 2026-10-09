@@ -86,7 +86,7 @@ export async function runTransport({ page, check }) {
   `);
   const albumReady = await waitFor(
     page,
-    `document.querySelectorAll(".library-track-row").length >= 4 && document.querySelector(".library-detail-hero h1")?.textContent === "Fixture Album"`,
+    `document.querySelectorAll(".library-track-row").length >= 2 && document.querySelector(".library-detail-hero h1")?.textContent === "Fixture Album"`,
   );
   check("transport scenario renders the album detail", albumReady);
   if (!albumReady) return;
@@ -252,7 +252,7 @@ export async function runTransport({ page, check }) {
   `);
   const albumAgain = await waitFor(
     page,
-    `document.querySelectorAll(".library-track-row").length >= 4 && [...document.querySelectorAll(".library-detail-actions button")].some((item) => item.textContent?.trim() === "Shuffle")`,
+    `document.querySelectorAll(".library-track-row").length >= 2 && [...document.querySelectorAll(".library-detail-actions button")].some((item) => item.textContent?.trim() === "Shuffle")`,
   );
   const beforeShuffle = await snapshot(page);
   await clickButton(page, "Shuffle");

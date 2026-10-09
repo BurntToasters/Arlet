@@ -14,9 +14,16 @@ pub struct NowPlayingPayload {
     pub pause_enabled: bool,
     pub next_enabled: bool,
     pub previous_enabled: bool,
+    /// Defaults keep payloads from callers without mode state valid.
+    #[serde(default)]
     pub shuffle: bool,
     /// `"off" | "all" | "one"`, as MusicKit reports it.
+    #[serde(default = "default_repeat")]
     pub repeat: String,
+}
+
+fn default_repeat() -> String {
+    "off".to_owned()
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]

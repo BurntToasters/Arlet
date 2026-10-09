@@ -12,34 +12,66 @@ const FIFTEEN_MINUTES_MS = 15 * 60_000;
 const FAST_TIMER_MS = 1500;
 
 /**
- * Injected before the app loads. Records the Tauri listen registrations (the
- * fetch IPC carries the event name and handler id) so the scenario can emit
- * events to the same callbacks Rust would reach.
+ * Injected before the app loads. Records the Tauri listen registrations
+ * (event name and handler id) from the IPC request, so the scenario can emit
+ * events to the same callbacks Rust would reach. Tauri's `invoke` is not
+ * writable, so the transport is observed instead: the custom-protocol fetch,
+ * or the WebView2 postMessage fallback.
  */
 export function recordTauriEvents() {
   if (window.__ARLET_E2E_TAURI_EVENTS__) return;
   const handlers = new Map();
+  const seen = [];
+  const record = (command, args) => {
+    seen.push(command);
+    if (seen.length > 50) seen.shift();
+    if (
+      command === "plugin:event|listen" &&
+      typeof args?.event === "string" &&
+      typeof args.handler === "number"
+    ) {
+      handlers.set(args.event, [
+        ...(handlers.get(args.event) ?? []),
+        args.handler,
+      ]);
+    }
+  };
+  const parse = (body) => {
+    try {
+      return typeof body === "string" ? JSON.parse(body) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
   const nativeFetch = window.fetch.bind(window);
   window.fetch = (input, init) => {
     try {
-      const url = decodeURIComponent(String(input?.url ?? input));
-      if (
-        url.includes("plugin:event|listen") &&
-        typeof init?.body === "string"
-      ) {
-        const message = JSON.parse(init.body);
-        if (typeof message.event === "string") {
-          handlers.set(message.event, [
-            ...(handlers.get(message.event) ?? []),
-            message.handler,
-          ]);
-        }
+      const url = new URL(String(input?.url ?? input));
+      if (url.hostname === "ipc.localhost") {
+        record(decodeURIComponent(url.pathname.slice(1)), parse(init?.body));
       }
     } catch {
       // Recording must never break the app's own IPC.
     }
     return nativeFetch(input, init);
   };
+  const webview = window.chrome?.webview;
+  if (webview && typeof webview.postMessage === "function") {
+    const nativePost = webview.postMessage.bind(webview);
+    try {
+      webview.postMessage = (message) => {
+        try {
+          const parsed = parse(message);
+          if (parsed?.cmd) record(parsed.cmd, parsed.payload);
+        } catch {
+          // Recording must never break the app's own IPC.
+        }
+        return nativePost(message);
+      };
+    } catch {
+      // A read-only postMessage leaves only the fetch path recorded.
+    }
+  }
   window.__ARLET_E2E_TAURI_EVENTS__ = {
     emit(event, payload) {
       const ids = handlers.get(event) ?? [];
@@ -47,6 +79,9 @@ export function recordTauriEvents() {
         window.__TAURI_INTERNALS__.runCallback(id, { event, id: 0, payload });
       }
       return ids.length;
+    },
+    debug() {
+      return { events: [...handlers.keys()], commands: [...seen] };
     },
   };
 }
@@ -294,7 +329,15 @@ export async function runDesktop({ page, check }) {
         seekApplied &&
         seeks.length === seeksBefore + 1 &&
         seeks.at(-1) === 180,
-      { emitted, seekApplied, seeksBefore, seeks },
+      {
+        emitted,
+        seekApplied,
+        seeksBefore,
+        seeks,
+        recorder: await page.evaluate(
+          "return window.__ARLET_E2E_TAURI_EVENTS__?.debug?.();",
+        ),
+      },
     );
 
     const shuffleOn = await emitNative(page, "windows-media-shuffle", true);

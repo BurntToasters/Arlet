@@ -27,8 +27,25 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 - **Fix - Playlists:** Playing a song in a playlist now keeps going through the rest of the playlist instead of stopping after that one song. With shuffle on, the song you picked plays first and the whole playlist is shuffled in after it.
 - **Fix - Albums:** Playing a song from an album detail page now continues through the album the same way.
 - **Fix - Play now:** `Play now` from a song's menu in a playlist or album starts that exact entry in the full list, including songs that appear more than once.
+- **NEW - Now Playing:** Click the artwork at the bottom left to open a full-window view with large artwork, controls, and `Up Next`. Press `Esc` to close it.
+- **NEW - Lyrics:** `Now Playing` has a `Lyrics` tab that follows along with the song when Apple Music provides lyrics to Arlet. Otherwise it says lyrics aren't available.
+- **NEW - Queue editing:** Remove, reorder (buttons or drag and drop), and clear songs in `Playing Next`, or save the whole queue as a playlist. Long queues now scroll smoothly.
+- **NEW - Shuffle:** Albums and playlists have a `Shuffle` button next to `Play`, and their menus have a `Shuffle` action.
+- **NEW - Love and Dislike:** Love or dislike songs, albums, and playlists from their menus, or use the heart next to the playing song. Catalog items have an `Add to Library` action.
+- **NEW - Keyboard shortcuts:** `Space` plays and pauses, `Ctrl` + `←`/`→` skips, `Ctrl` + `↑`/`↓` changes volume, `Shift` + `←`/`→` seeks 10 seconds, and `M` mutes. Shortcuts never fire while you're typing.
+- **NEW - Mute:** Click the speaker icon to mute and unmute without losing your volume level.
+- **NEW - Sleep timer:** Pause after 15, 30, 45, or 60 minutes, or at the end of the current song, from the timer button in the player.
+- **NEW - Pick up where you left off:** Arlet remembers your queue and position and brings them back paused after a restart. Turn this off in `Settings` > `Playback`.
+- **NEW - Autoplay:** When Apple Music supports it, `Settings` > `Playback` can keep similar music playing after your queue ends.
+- **NEW - Tray icon:** Arlet has a tray icon with play/pause, next, previous, `Show Arlet`, and `Quit`. Turn on `Settings` > `Window` > `Close to tray` to keep Arlet running when you close the window.
+- **Windows:** The Windows media controls can now seek and change shuffle and repeat.
+- **Fix - Playback:** The `Can't play` badge now clears once a song plays. Choosing a song in `Playing Next` keeps the songs before it, so `Previous` still works.
+- **Fix - Library songs:** Songs that are only in your library (such as uploads) can now be queued.
+- **Fix - Playlists:** `Play` shows that it's working while a long playlist loads.
+- **Fix - Repeat:** Errors from the repeat button are now shown instead of ignored.
+- **Note:** Apple Music doesn't let other apps rename or delete playlists or remove songs from them, so Arlet can't either.
 - **Playback:** Repeat and shuffle settings carry over when you start a song from a playlist. `Play next` and `Play later` still add only the song you chose.
-- **Testing:** End-to-end tests now cover playlist and album playback, shuffle and repeat, song navigation, and failed lookups, and save a repeatable report with screenshots.
+- **Testing:** End-to-end tests now cover playlist and album playback, shuffle and repeat, song navigation, failed lookups, queue editing, shortcuts and mute, ratings, Now Playing and lyrics, the sleep timer, autoplay, Windows media controls, close to tray, and session restore. Each run saves a repeatable report with screenshots.
 
 ## Changes in `v0.1.3:`
 

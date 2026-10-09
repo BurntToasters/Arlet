@@ -200,6 +200,18 @@ function processAlive(pid) {
   return new RegExp(`\\b${pid}\\b`, "u").test(out);
 }
 
+// PID of the running Arlet. After the settings reset restart this differs
+// from the spawned child's PID.
+function runningArletPid() {
+  const out = spawnSync(
+    "tasklist",
+    ["/FI", "IMAGENAME eq arlet.exe", "/FO", "CSV", "/NH"],
+    { encoding: "utf8" },
+  ).stdout;
+  const match = /^"arlet\.exe","(\d+)"/imu.exec(out ?? "");
+  return match ? Number(match[1]) : undefined;
+}
+
 // The settings reset restarts Arlet as a new process outside the original
 // child's tree; run() refuses to start while any other Arlet is open.
 function killArlet() {
@@ -927,6 +939,10 @@ async function run() {
         ["session-restore", runSessionRestore],
       ]) {
         try {
+          // A menu left open by the previous scenario would intercept clicks.
+          await page.evaluate(
+            'document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); return true;',
+          );
           await scenario({ page, check, dataDir: dataDirs()[0] });
         } catch (error) {
           check(`${name} completes`, false, String(error?.message ?? error));
@@ -963,12 +979,13 @@ async function run() {
     const trayEnabled = await settle(page, "save_settings", {
       json: JSON.stringify({ ...DEFAULT_SETTINGS_FOR_E2E, closeToTray: true }),
     });
+    const appPid = runningArletPid();
     void settle(page, "plugin:window|close", { label: "main" }).catch(
       () => undefined,
     );
     await sleep(1500);
-    const hiddenInTray = visibleArletWindows(child.pid) === 0;
-    const aliveAfterClose = processAlive(child.pid);
+    const hiddenInTray = visibleArletWindows(appPid) === 0;
+    const aliveAfterClose = processAlive(appPid);
     const relaunch = spawn(EXE, [], {
       env: { ...process.env, MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN },
       stdio: "ignore",
@@ -983,17 +1000,18 @@ async function run() {
     const trayDeadline = Date.now() + 15_000;
     let shownAgain = false;
     while (Date.now() < trayDeadline && !shownAgain) {
-      shownAgain = visibleArletWindows(child.pid) === 1;
+      shownAgain = visibleArletWindows(appPid) === 1;
       if (!shownAgain) await sleep(250);
     }
     check(
       "close to tray hides the window and a second launch shows it again",
       trayEnabled.ok &&
+        appPid !== undefined &&
         hiddenInTray &&
         aliveAfterClose &&
         shownAgain &&
-        processAlive(child.pid),
-      { hiddenInTray, aliveAfterClose, shownAgain },
+        processAlive(appPid),
+      { appPid, hiddenInTray, aliveAfterClose, shownAgain },
     );
     await settle(page, "save_settings", {
       json: JSON.stringify(DEFAULT_SETTINGS_FOR_E2E),

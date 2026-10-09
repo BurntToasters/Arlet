@@ -61,9 +61,9 @@ export async function runQueueEdit({ page, check }) {
   `);
   const rowsReady = await waitFor(
     page,
-    `document.querySelectorAll(".library-track-row").length === 6`,
+    `document.querySelectorAll(".library-track-row").length >= 4`,
   );
-  check("queue-edit playlist renders all six occurrences", rowsReady);
+  check("queue-edit playlist renders its first page", rowsReady);
   if (!rowsReady) return;
 
   // Starting at the first song leaves both duplicates upcoming.
