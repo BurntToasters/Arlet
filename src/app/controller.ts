@@ -104,6 +104,7 @@ import {
   createTrackNavigationResolver,
   type TrackNavigation,
 } from "../musickit/song-navigation.ts";
+import { createLyricsLoader, type LyricsResult } from "../musickit/lyrics.ts";
 
 export type { DetailLoadOptions } from "./library-loader.ts";
 
@@ -214,6 +215,7 @@ export interface AppController {
     startIndex?: number,
   ): Promise<void>;
   resolveTrackNavigation?(track: Track): Promise<TrackNavigation>;
+  loadLyrics?(track: Track): Promise<LyricsResult>;
   playConsecutive(): Promise<void>;
   togglePlayback(): Promise<void>;
   play?(): Promise<void>;
@@ -309,6 +311,7 @@ export function createAppController(
   const playback = createPlayback(context);
   const ratings = createRatings(context);
   const trackNavigation = createTrackNavigationResolver(requireMusic);
+  const lyrics = createLyricsLoader(requireMusic);
   const { requireLibrary, ensureLibraryCache, clearLibraryCache } = library;
   const collections = createCollectionPlayback({
     requireMusic,
@@ -574,6 +577,7 @@ export function createAppController(
         }
         await unauthorize(instance);
         trackNavigation.clear();
+        lyrics.clear();
         await clearLibraryCache();
         // Pins are local and not tied to an Apple ID; the next account to
         // sign in on this PC must not see them.
@@ -859,6 +863,8 @@ export function createAppController(
       playCollection("album", id, source, startIndex),
     resolveTrackNavigation: trackNavigation.resolve,
 
+    loadLyrics: lyrics.load,
+
     async playConsecutive(): Promise<void> {
       const lastTracks = discovery.lastSearchTracks();
       const tracks = lastTracks.length ? lastTracks : getState().search.results;
@@ -1010,6 +1016,7 @@ export function createAppController(
     dispose(): void {
       collections.invalidate();
       trackNavigation.clear();
+      lyrics.clear();
       if (volumeSaveTimer !== undefined) {
         clearTimeout(volumeSaveTimer);
         flushVolumeSave();

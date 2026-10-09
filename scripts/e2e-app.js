@@ -22,6 +22,7 @@ import { runPlaylistPlayback } from "./e2e-playlist-playback.js";
 import { runSongNavigation } from "./e2e-song-navigation.js";
 import { runTransport } from "./e2e-transport.js";
 import { runQueueEdit } from "./e2e-queue-edit.js";
+import { runNowPlaying } from "./e2e-now-playing.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IDENTIFIER = "run.rosie.arlet";
@@ -878,6 +879,7 @@ async function run() {
         ["transport", runTransport],
         ["queue-edit", runQueueEdit],
         ["library-actions", runLibraryActions],
+        ["now-playing", runNowPlaying],
       ]) {
         try {
           await scenario({ page, check });

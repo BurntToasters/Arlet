@@ -19,6 +19,7 @@ import {
 import { QueueDrawer } from "../components/QueueDrawer.tsx";
 import { Sidebar } from "../components/Sidebar.tsx";
 import { PlayerBar } from "../components/PlayerBar.tsx";
+import { NowPlaying } from "../components/NowPlaying.tsx";
 import { Titlebar } from "../components/Titlebar.tsx";
 import { RouteView } from "../views/RouteView.tsx";
 import { DiagnosticsDrawer } from "../components/diagnostics/DiagnosticsDrawer.tsx";
@@ -232,6 +233,7 @@ function AppLayout({
         />
       ) : null}
       <PlayerBar />
+      <NowPlaying />
       <UpdateReadyModal />
       <ContextMenu />
       <PlaylistDialogs />
