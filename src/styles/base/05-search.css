@@ -301,6 +301,12 @@ button.search-row {
 }
 
 /* Now playing: shared by every SongRow list (search, library, detail). */
+/* Songs Apple cannot stream stay listed, dimmed like Apple Music. */
+.song-row-shell.is-unavailable > button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .song-row-shell.is-current {
   background: color-mix(in srgb, var(--accent) 10%, transparent);
 }

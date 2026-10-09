@@ -17,6 +17,13 @@ import {
 import { isSameTrack, type Station, type Track } from "../domain/music.ts";
 import { normalizeTrack } from "../musickit/normalize.ts";
 import {
+  keptStartIndex,
+  skippedMessage,
+  withResolvableTracks,
+} from "../musickit/unresolved.ts";
+import { reportActionError } from "../components/action-errors.ts";
+import { MAX_QUEUE_LENGTH, windowQueue } from "./queue-window.ts";
+import {
   editQueue,
   planClear,
   planMove,
@@ -116,8 +123,8 @@ export function createPlayback(context: ControllerContext) {
 
   /**
    * Index to select after `setQueue`, or undefined when MusicKit already sits
-   * on the chosen song. With shuffle on, the provider order differs from
-   * `queue`, so the song is located by ID instead of by `startIndex`.
+   * on the chosen song. MusicKit drops unplayable songs and, with shuffle on,
+   * reorders the rest, so the chosen occurrence is located by ID.
    */
   const providerStartIndex = (
     instance: MusicKit.MusicKitInstance,
@@ -128,34 +135,50 @@ export function createPlayback(context: ControllerContext) {
     const provider = readMusicKitQueue(instance);
     if (!provider) return startIndex;
     const shuffled = readPlaybackModes(instance).shuffleMode === "songs";
-    const atPosition = provider.items[provider.index];
-    const onChosen =
-      atPosition !== undefined &&
-      isSameTrack(normalizeTrack(atPosition), chosen) &&
-      (shuffled || provider.index === startIndex);
+    const matches: number[] = [];
+    provider.items.forEach((item, index) => {
+      if (isSameTrack(normalizeTrack(item), chosen)) matches.push(index);
+    });
+    if (matches.length === 0) return startIndex;
+    // Without shuffle the order is kept, so pick the same duplicate occurrence.
+    const occurrence = queue
+      .slice(0, startIndex)
+      .filter((track) => isSameTrack(track, chosen)).length;
+    const expected = shuffled
+      ? undefined
+      : (matches[occurrence] ?? matches[matches.length - 1]);
+    const onChosen = shuffled
+      ? matches.includes(provider.index)
+      : provider.index === expected;
     if (onChosen) return undefined;
-    if (!shuffled) return startIndex;
-    const found = provider.items.findIndex((item) =>
-      isSameTrack(normalizeTrack(item), chosen),
-    );
-    return found >= 0 ? found : startIndex;
+    return expected ?? matches[0];
   };
 
   const playTracks = async (
-    tracks: readonly Track[],
-    startIndex = 0,
+    requestedTracks: readonly Track[],
+    requestedStart = 0,
   ): Promise<void> => {
     const instance = requireMusic();
-    if (tracks.length === 0) throw new Error("Queue is empty");
+    if (requestedTracks.length === 0) throw new Error("Queue is empty");
     if (
-      !Number.isInteger(startIndex) ||
-      startIndex < 0 ||
-      startIndex >= tracks.length
+      !Number.isInteger(requestedStart) ||
+      requestedStart < 0 ||
+      requestedStart >= requestedTracks.length
     ) {
       throw new Error("The selected song is unavailable.");
     }
-    const needsExplicitSelection =
-      startIndex > 0 || readPlaybackModes(instance).shuffleMode === "songs";
+    const shuffled = readPlaybackModes(instance).shuffleMode === "songs";
+    const { tracks, startIndex } = windowQueue(
+      requestedTracks,
+      requestedStart,
+      shuffled,
+    );
+    if (tracks.length < requestedTracks.length) {
+      log(
+        `Queued ${tracks.length} of ${requestedTracks.length} songs to stay within Apple's request limits.`,
+      );
+    }
+    const needsExplicitSelection = startIndex > 0 || shuffled;
     const providerPlayer = (instance.player ?? instance) as unknown as Record<
       string,
       unknown
@@ -170,19 +193,34 @@ export function createPlayback(context: ControllerContext) {
         "Selecting a song in the MusicKit queue is not available in this runtime.",
       );
     }
-    const queue = [...tracks];
     clearPlaybackError();
-    setQueue(queue, startIndex);
+    setQueue([...tracks], startIndex);
     setPlaybackStatus("loading");
     try {
-      // `startWith` positions the queue before MusicKit shuffles it, so the
-      // chosen song stays first and the rest are shuffled after it.
-      await instance.setQueue({
-        ...queueOptionsForTracks(queue),
-        startWith: startIndex,
-      });
-      if (needsExplicitSelection) {
-        const index = providerStartIndex(instance, queue, startIndex);
+      // MusicKit rejects the whole queue when any song cannot be resolved,
+      // so unavailable songs are skipped and the rest retried.
+      const { entries, skipped } = await withResolvableTracks(
+        tracks,
+        async (attempt) => {
+          const queue = attempt.map((entry) => entry.track);
+          // `startWith` positions the queue before MusicKit shuffles it, so
+          // the chosen song stays first and the rest are shuffled after it.
+          await instance.setQueue({
+            ...queueOptionsForTracks(queue),
+            startWith: keptStartIndex(attempt, startIndex),
+          });
+        },
+      );
+      const queue = entries.map((entry) => entry.track);
+      const start = keptStartIndex(entries, startIndex);
+      if (skipped.length) {
+        log(`Skipped ${skipped.length} unavailable songs.`);
+        setQueue(queue, start);
+        const message = skippedMessage(skipped.length);
+        if (message) reportActionError(new Error(message));
+      }
+      if (needsExplicitSelection || skipped.length) {
+        const index = providerStartIndex(instance, queue, start);
         if (index !== undefined) {
           const selected = await changeToMediaAtIndex(instance, index);
           if (!selected) {
@@ -211,11 +249,18 @@ export function createPlayback(context: ControllerContext) {
   ): Promise<void> => {
     const ids = trackIds(tracks);
     if (ids.length === 0) throw new Error("At least one track is required.");
-    const normalizedTracks = materializeTracks(tracks);
+    const allTracks = materializeTracks(tracks);
+    // Same request limit as playTracks; the first songs are kept in order.
+    const requestedTracks = allTracks.slice(0, MAX_QUEUE_LENGTH);
+    if (requestedTracks.length < allTracks.length) {
+      log(
+        `Added the first ${requestedTracks.length} of ${allTracks.length} songs to stay within Apple's request limits.`,
+      );
+    }
     const currentQueue = getState().playback.queue;
     const currentIndex = getState().playback.queueIndex;
     if (currentQueue.length === 0) {
-      await playTracks(normalizedTracks);
+      await playTracks(requestedTracks);
       return;
     }
     const beforeQueue = [...currentQueue];
@@ -223,12 +268,6 @@ export function createPlayback(context: ControllerContext) {
       0,
       Math.min(currentIndex, beforeQueue.length - 1),
     );
-    const expectedQueue = [...beforeQueue];
-    if (method === "playNext") {
-      expectedQueue.splice(snapshotIndex + 1, 0, ...normalizedTracks);
-    } else {
-      expectedQueue.push(...normalizedTracks);
-    }
     const instance = requireMusic() as unknown as Record<string, unknown>;
     const insert = instance[method];
     if (typeof insert !== "function") {
@@ -238,14 +277,31 @@ export function createPlayback(context: ControllerContext) {
           : "Play Later is not available in this MusicKit runtime.",
       );
     }
-    const options =
-      typeof tracks[0] === "string"
-        ? { songs: ids }
-        : queueOptionsForTracks(tracks as readonly Track[]);
-    await (insert as (options: MusicKit.QueueOptions) => Promise<void>).call(
-      instance,
-      options,
+    const byId = typeof tracks[0] === "string";
+    // One unavailable song would otherwise reject the whole insertion.
+    const { entries, skipped } = await withResolvableTracks(
+      requestedTracks,
+      async (attempt) => {
+        const options = byId
+          ? { songs: attempt.map((entry) => entry.track.id) }
+          : queueOptionsForTracks(attempt.map((entry) => entry.track));
+        await (
+          insert as (options: MusicKit.QueueOptions) => Promise<void>
+        ).call(instance, options);
+      },
     );
+    const normalizedTracks = entries.map((entry) => entry.track);
+    if (skipped.length) {
+      log(`Skipped ${skipped.length} unavailable songs.`);
+      const message = skippedMessage(skipped.length);
+      if (message) reportActionError(new Error(message));
+    }
+    const expectedQueue = [...beforeQueue];
+    if (method === "playNext") {
+      expectedQueue.splice(snapshotIndex + 1, 0, ...normalizedTracks);
+    } else {
+      expectedQueue.push(...normalizedTracks);
+    }
     const synced = syncMusicKitQueue(
       instance as unknown as MusicKit.MusicKitInstance,
     );

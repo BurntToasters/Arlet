@@ -104,6 +104,34 @@ Failure scenarios to cover before changing production code:
 - The Play button gives no feedback while a long playlist's pages load.
 - A keyboard shortcut calls a stale controller after the controller changes.
 
+## Unavailable songs
+
+MusicKit's item loader rejects the whole `setQueue`, `playNext`, or
+`playLater` call with `NOT_FOUND` ("One or more items could not be resolved")
+when any catalog ID is missing, and it silently drops songs that resolve but
+are not playable. Failure scenarios:
+
+- One removed or temporarily unavailable song stops a whole playlist or album
+  from playing.
+- The chosen song does not play first after unavailable songs are skipped, or
+  a different song plays because skipped songs shifted the start index.
+- Skipping the chosen song itself fails instead of starting the next
+  available one.
+- A library song whose catalog copy was removed is skipped even though its
+  library copy can still play.
+- A playlist where every song is unavailable loops or shows a raw error.
+- `Play next` or `Play later` adds nothing because one song is unavailable.
+- The user is not told that songs were skipped.
+- A song that fails when it starts playing (content unavailable, restricted,
+  unsupported) stops the queue instead of skipping to the next song.
+- Auto-skip loops through the whole queue, or skips on account-wide failures
+  (subscription, sign-in, DRM licence, device limit) that every song shares.
+- A song that is not streamable looks normal in lists, or a playable song is
+  greyed out.
+- Queueing a very large playlist sends hundreds of parallel requests, hits
+  Apple's rate limit, and plays nothing; shuffle of a large playlist only
+  ever draws from the songs near the chosen one.
+
 ## Keyboard and transport
 
 - Shortcuts fire while typing in search, a text field, or a dialog.
