@@ -119,7 +119,7 @@ export async function runQueueEdit({ page, check }) {
       rebuild.indexOf(seek) > selectIndex &&
       rebuild.at(-1)?.type === "play" &&
       !rebuild.some((item) => item.type === "pause") &&
-      PLAYER_TITLE === "Track A",
+      (await page.evaluate(`return ${PLAYER_TITLE};`)) === "Track A",
     { rebuild },
   );
 
@@ -193,7 +193,7 @@ export async function runQueueEdit({ page, check }) {
       afterMove.queue.index === 0 &&
       !sinceMove.some((item) => MUSIC_TRANSITION_TYPES.includes(item.type)) &&
       sinceMove.some((item) => item.type === "nativeSplice") &&
-      PLAYER_TITLE === "Track A",
+      (await page.evaluate(`return ${PLAYER_TITLE};`)) === "Track A",
     { sinceMove },
   );
 
@@ -273,7 +273,8 @@ export async function runQueueEdit({ page, check }) {
       clearSettled &&
       sameIds(ids(afterClear), ["song-a", "song-duplicate"]) &&
       afterClear.queue.index === 1 &&
-      PLAYER_TITLE === "Duplicate Occurrence" &&
+      (await page.evaluate(`return ${PLAYER_TITLE};`)) ===
+        "Duplicate Occurrence" &&
       !sinceClear.some((item) => item.type === "pause") &&
       sinceClear.at(-1)?.type === "play",
     { sinceClear },

@@ -121,11 +121,15 @@ function AppLayout({
       } else if (event.ctrlKey && event.key.toLowerCase() === "k") {
         event.preventDefault();
         router.navigate({ kind: "search", query: "" });
-        window.setTimeout(() => {
-          document
-            .querySelector<HTMLInputElement>(".search-form input")
-            ?.focus();
-        }, 0);
+        // The Search view may render a few frames after navigation.
+        let attempts = 0;
+        const focusSearch = (): void => {
+          const input =
+            document.querySelector<HTMLInputElement>(".search-form input");
+          if (input) input.focus();
+          else if ((attempts += 1) < 30) requestAnimationFrame(focusSearch);
+        };
+        requestAnimationFrame(focusSearch);
       } else if (event.ctrlKey && event.key.toLowerCase() === "r") {
         event.preventDefault();
         void controller.refreshCurrentData().catch(() => undefined);
