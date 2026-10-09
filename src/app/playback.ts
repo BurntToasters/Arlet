@@ -272,12 +272,13 @@ export function createPlayback(context: ControllerContext) {
    * Play Next / Play Later. The local snapshot is captured before crossing
    * the provider boundary: a queue event can replace app state while the
    * call is awaiting, so a post-await read would lose the insertion index
-   * when MusicKit does not expose its queue yet.
+   * when MusicKit does not expose its queue yet. Resolves to the songs
+   * actually inserted; `quiet` logs skipped songs instead of showing a toast.
    */
-  /** Resolves to the songs actually inserted, after unavailable ones are skipped. */
   const insertTracks = async (
     method: QueueInsertMethod,
     tracks: readonly Track[] | readonly string[],
+    options: { quiet?: boolean } = {},
   ): Promise<Track[]> => {
     const ids = trackIds(tracks);
     if (ids.length === 0) throw new Error("At least one track is required.");
@@ -326,7 +327,7 @@ export function createPlayback(context: ControllerContext) {
     if (skipped.length) {
       log(`Skipped ${skipped.length} unavailable songs.`);
       const message = skippedMessage(skipped.length);
-      if (message) reportActionError(new Error(message));
+      if (message && !options.quiet) reportActionError(new Error(message));
     }
     const expectedQueue = [...beforeQueue];
     if (method === "playNext") {
@@ -372,7 +373,10 @@ export function createPlayback(context: ControllerContext) {
       readPlaybackModes(instance).shuffleMode === "songs";
     refilling = true;
     let inserted: Track[] = [];
-    void insertTracks("playLater", shuffled ? shuffledCopy(chunk) : chunk)
+    // A background refill never toasts; the user did not start it.
+    void insertTracks("playLater", shuffled ? shuffledCopy(chunk) : chunk, {
+      quiet: true,
+    })
       .then((tracks) => {
         inserted = tracks;
       })

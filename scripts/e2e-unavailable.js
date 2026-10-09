@@ -268,6 +268,24 @@ export async function runUnavailable({ page, check }) {
       `document.querySelector(".content-scroll")?.scrollTo(0, 0); return true;`,
     );
 
+    // Album pages follow the cursor too.
+    await page.evaluate(`location.hash = "#/album/album-1"; return true;`);
+    const albumAll = await waitFor(
+      page,
+      `document.querySelector(".library-detail-hero h1")?.textContent === "Fixture Album" &&
+        [...document.querySelectorAll(".library-row-copy strong")].some((node) => node.textContent === "Album Track D")`,
+      15_000,
+    );
+    check("an album page lists tracks past its first page", albumAll);
+    await page.evaluate(
+      `location.hash = "#/playlist/playlist-big"; return true;`,
+    );
+    await waitFor(
+      page,
+      `document.querySelector(".library-detail-hero h1")?.textContent === "Big Playlist"`,
+      15_000,
+    );
+
     await page.evaluate(`
       [...document.querySelectorAll(".library-detail-actions button")]
         .find((node) => node.textContent.trim() === "Play all")?.click();

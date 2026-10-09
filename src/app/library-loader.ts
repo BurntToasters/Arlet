@@ -42,8 +42,11 @@ import {
   type LibraryMethod,
 } from "./controller-support.ts";
 
-/** Upper bound for one detail list; Apple pages playlists 100 songs at a time. */
-const MAX_DETAIL_ITEMS = 10_000;
+/**
+ * Upper bound for one detail list. The native cache takes at most 10,000
+ * entries per page, and the playlist or album record itself takes one.
+ */
+const MAX_DETAIL_ITEMS = 9_999;
 
 const OFFLINE_MESSAGE =
   "You're offline. Reconnect to load the latest from Apple Music.";
@@ -509,19 +512,25 @@ export function createLibraryLoader(
     client: AppleMusicLibraryClient,
     id: string,
     source: MusicSource,
-  ): Promise<LibraryEntity[]> => {
+    cursor?: string,
+  ): Promise<{ items: LibraryEntity[]; next?: string }> => {
     const method = (client as unknown as Record<string, unknown>)
       .getAlbumTracks;
     if (typeof method === "function") {
-      return asLibraryEntities(
-        await (method as LibraryMethod).call(client, id, source),
+      const page = await (method as LibraryMethod).call(
+        client,
+        id,
+        source,
+        cursor,
       );
+      return { items: asLibraryEntities(page), next: asNext(page) };
     }
+    if (cursor) return { items: [] };
     // The current public client contract keeps album-track expansion optional.
     // Use the documented relationship path only when MusicKit exposes its
     // request adapter; preview/test instances simply render the album shell.
     const instance = getMusic();
-    if (!instance) return [];
+    if (!instance) return { items: [] };
     try {
       const storefront = String(instance.storefrontId ?? "").trim();
       const prefix =
@@ -531,9 +540,9 @@ export function createLibraryLoader(
       const raw = await resolveMusicKitMusicRequest(instance)(
         `${prefix}/albums/${encodeURIComponent(id)}/tracks`,
       );
-      return normalizedLibraryEntities(raw);
+      return { items: normalizedLibraryEntities(raw) };
     } catch {
-      return [];
+      return { items: [] };
     }
   };
 
@@ -564,8 +573,9 @@ export function createLibraryLoader(
   };
 
   /**
-   * Appends the remaining pages after the first one renders, so long
-   * playlists list every song. A newer load of the same detail stops it.
+   * Loads the pages after the first, so long playlists and albums list every
+   * song. `onPage` shows each page as it arrives; without it the result is
+   * returned in one piece. Resolves undefined once a newer load replaced it.
    */
   const loadRemainingDetailPages = async (
     kind: DetailKind,
@@ -576,7 +586,8 @@ export function createLibraryLoader(
       cursor: string,
     ) => Promise<{ items: LibraryEntity[]; next?: string }>,
     isCurrent: () => boolean,
-  ): Promise<void> => {
+    onPage?: (items: LibraryEntity[], next: string | undefined) => void,
+  ): Promise<{ items: LibraryEntity[]; next?: string } | undefined> => {
     const cacheSection = detailCacheSection(kind, id, source);
     const cursors = new Set<string>();
     let items = first.items;
@@ -594,17 +605,12 @@ export function createLibraryLoader(
         log(`Loading more ${kind} songs failed: ${safeErrorMessage(error)}`);
         break;
       }
-      if (!isCurrent()) return;
-      items = [...items, ...page.items];
+      if (!isCurrent()) return undefined;
+      items = [...items, ...page.items].slice(0, MAX_DETAIL_ITEMS);
       cursor = page.next;
-      setLibraryDetailState(
-        kind,
-        { items, ...detailChildren(kind, items), next: cursor },
-        id,
-        source,
-      );
+      onPage?.(items, cursor);
     }
-    if (!isCurrent()) return;
+    if (!isCurrent()) return undefined;
     try {
       await ensureLibraryCache();
       await libraryCache.clearSection(LIBRARY_CACHE_SCOPE, cacheSection);
@@ -617,6 +623,7 @@ export function createLibraryLoader(
     } catch (error) {
       log(`${detailLabels(kind).write}: ${safeErrorMessage(error)}`);
     }
+    return { items, next: cursor };
   };
 
   /**
@@ -700,39 +707,52 @@ export function createLibraryLoader(
         next: detail.next,
         updatedAt: now(),
       };
-      await ensureLibraryCache();
-      try {
-        await libraryCache.clearSection(LIBRARY_CACHE_SCOPE, cacheSection);
-        await libraryCache.writePage(LIBRARY_CACHE_SCOPE, cacheSection, page);
-      } catch (error) {
-        log(`${labels.write}: ${safeErrorMessage(error)}`);
+      const morePages = Boolean(fetchMore && page.next);
+      // A cached full list stays on screen while every page reloads, so a
+      // revisit never collapses to the first page and jumps the scroll.
+      const quiet = morePages && Boolean(stalePage?.items.length);
+      if (!morePages) {
+        await ensureLibraryCache();
+        try {
+          await libraryCache.clearSection(LIBRARY_CACHE_SCOPE, cacheSection);
+          await libraryCache.writePage(LIBRARY_CACHE_SCOPE, cacheSection, page);
+        } catch (error) {
+          log(`${labels.write}: ${safeErrorMessage(error)}`);
+        }
       }
       if (!isCurrent()) return;
-      setLibraryDetailState(
-        kind,
-        {
-          status: "success",
-          source: "network",
-          item: detail.item,
-          resource: detail.item,
-          items: detail.items,
-          ...detailChildren(kind, detail.items),
-          next: page.next,
-          lastUpdatedAt: page.updatedAt,
-          stale: false,
-        },
-        id,
-        source,
-      );
+      const publish = (
+        items: LibraryEntity[],
+        next: string | undefined,
+      ): void =>
+        setLibraryDetailState(
+          kind,
+          {
+            status: "success",
+            source: "network",
+            item: detail.item,
+            resource: detail.item,
+            items,
+            ...detailChildren(kind, items),
+            next,
+            lastUpdatedAt: page.updatedAt,
+            stale: false,
+          },
+          id,
+          source,
+        );
+      if (!quiet) publish(detail.items, page.next);
       if (fetchMore && page.next) {
-        await loadRemainingDetailPages(
+        const all = await loadRemainingDetailPages(
           kind,
           id,
           source,
           { item: detail.item, items: detail.items, next: page.next },
           (cursor) => fetchMore(client, cursor),
           isCurrent,
+          quiet ? undefined : publish,
         );
+        if (all) publish(all.items, all.next);
       }
     } catch (error) {
       if (!isCurrent()) return;
@@ -787,31 +807,46 @@ export function createLibraryLoader(
     source: MusicSource = "library",
     options: DetailLoadOptions = {},
   ): Promise<void> =>
-    loadDetailResource(kind, id, source, options, async (client, isCurrent) => {
-      const raw = await libraryMethod(
-        client,
-        `get${kind[0].toUpperCase()}${kind.slice(1)}`,
-      )(id, source);
-      if (!isCurrent()) return undefined;
-      const detail = detailFromResponse(raw);
-      if (!detail.item && detail.items.length > 0) {
-        detail.item = detail.items[0];
-        detail.items = detail.items.slice(1);
-      }
-      if (kind === "album" && detail.items.length === 0) {
-        detail.items = await loadAlbumTracks(client, id, source);
+    loadDetailResource(
+      kind,
+      id,
+      source,
+      options,
+      async (client, isCurrent) => {
+        const raw = await libraryMethod(
+          client,
+          `get${kind[0].toUpperCase()}${kind.slice(1)}`,
+        )(id, source);
         if (!isCurrent()) return undefined;
-      }
-      if (kind === "artist" && detail.items.length === 0) {
-        try {
-          detail.items = await loadArtistAlbums(id, source, detail.item?.name);
-        } catch (error) {
-          log(`Artist album expansion failed: ${safeErrorMessage(error)}`);
+        const detail = detailFromResponse(raw);
+        if (!detail.item && detail.items.length > 0) {
+          detail.item = detail.items[0];
+          detail.items = detail.items.slice(1);
         }
-        if (!isCurrent()) return undefined;
-      }
-      return detail;
-    });
+        if (kind === "album" && detail.items.length === 0) {
+          const tracks = await loadAlbumTracks(client, id, source);
+          detail.items = tracks.items;
+          detail.next = tracks.next;
+          if (!isCurrent()) return undefined;
+        }
+        if (kind === "artist" && detail.items.length === 0) {
+          try {
+            detail.items = await loadArtistAlbums(
+              id,
+              source,
+              detail.item?.name,
+            );
+          } catch (error) {
+            log(`Artist album expansion failed: ${safeErrorMessage(error)}`);
+          }
+          if (!isCurrent()) return undefined;
+        }
+        return detail;
+      },
+      kind === "album"
+        ? (client, cursor) => loadAlbumTracks(client, id, source, cursor)
+        : undefined,
+    );
 
   const loadPlaylist = (
     id: string,
