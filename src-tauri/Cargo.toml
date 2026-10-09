@@ -1,6 +1,6 @@
 [package]
 name = "arlet"
-version = "0.2.0"
+version = "0.2.1"
 description = "Unofficial Apple Music client for Windows 10 and 11, built with Tauri v2 and MusicKit."
 repository = "https://github.com/BurntToasters/Arlet"
 homepage = "https://github.com/BurntToasters/Arlet#readme"
