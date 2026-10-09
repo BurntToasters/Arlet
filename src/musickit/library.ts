@@ -19,6 +19,7 @@ import type {
   Track,
   DiscoveryResource,
   MusicSource,
+  RatingValue,
   RecommendationSection,
 } from "../domain/music.ts";
 
@@ -104,7 +105,7 @@ type RequestOptions = {
   headers?: Record<string, string>;
   [key: string]: unknown;
 };
-type MusicRequest = (
+export type MusicRequest = (
   path: string,
   query?: Query,
   options?: RequestOptions,
@@ -452,11 +453,14 @@ function normalizedRefs(
   });
 }
 
-function postOptions(body: unknown): RequestOptions {
-  return {
-    method: "POST",
-    body: JSON.stringify(body),
-  };
+/**
+ * Options for a non-GET call. MusicKit v3 reads `fetchOptions`; the top-level
+ * keys remain for callers and tests that expect them.
+ */
+function mutationOptions(method: string, body?: unknown): RequestOptions {
+  const init: RequestOptions = { method };
+  if (body !== undefined) init.body = JSON.stringify(body);
+  return { ...init, fetchOptions: { ...init } };
 }
 
 export function createAppleMusicLibraryClient(
@@ -744,7 +748,7 @@ export function createAppleMusicLibraryClient(
       const raw = await request(
         "/v1/me/library/playlists",
         undefined,
-        postOptions(body),
+        mutationOptions("POST", body),
       );
       const resource = firstResource(raw);
       const playlist = resource
@@ -771,7 +775,7 @@ export function createAppleMusicLibraryClient(
       const raw = await request(
         "/v1/me/library/playlist-folders",
         undefined,
-        postOptions(body),
+        mutationOptions("POST", body),
       );
       const resource = firstResource(raw);
       const folder = resource
@@ -789,8 +793,86 @@ export function createAppleMusicLibraryClient(
       await request(
         `/v1/me/library/playlists/${encodePathPart(playlistId)}/tracks`,
         undefined,
-        postOptions({ data: normalizedRefs(refs) }),
+        mutationOptions("POST", { data: normalizedRefs(refs) }),
       );
     },
   };
+}
+
+/** Library and catalog kinds Apple accepts for rating endpoints. */
+export type RatingResourceType =
+  | "songs"
+  | "library-songs"
+  | "albums"
+  | "library-albums"
+  | "playlists"
+  | "library-playlists";
+
+/** Catalog kinds accepted by `POST /v1/me/library`. */
+export interface AddToLibraryIds {
+  songs?: readonly string[];
+  albums?: readonly string[];
+  playlists?: readonly string[];
+}
+
+function ratingPath(type: RatingResourceType, id: string): string {
+  const trimmed = id.trim();
+  if (!trimmed) throw new Error("Rating item id is required.");
+  return `/v1/me/ratings/${type}/${encodePathPart(trimmed)}`;
+}
+
+/** Loads ratings for the given ids; unrated ids are absent from the map. */
+export async function getRatings(
+  request: MusicRequest,
+  type: RatingResourceType,
+  ids: readonly string[],
+): Promise<Map<string, RatingValue>> {
+  const values = new Map<string, RatingValue>();
+  const list = ids.map((id) => id.trim()).filter(Boolean);
+  if (list.length === 0) return values;
+  const raw = await request(`/v1/me/ratings/${type}`, { ids: list.join(",") });
+  for (const value of resourceArray(raw) ?? []) {
+    const resource = asRecord(value);
+    const id = nonEmptyString(resource?.id);
+    if (!id) continue;
+    const rating = asRecord(resource?.attributes)?.value;
+    values.set(id, rating === 1 ? 1 : rating === -1 ? -1 : 0);
+  }
+  return values;
+}
+
+export async function setRating(
+  request: MusicRequest,
+  type: RatingResourceType,
+  id: string,
+  value: 1 | -1,
+): Promise<void> {
+  await request(
+    ratingPath(type, id),
+    undefined,
+    mutationOptions("PUT", { type: "rating", attributes: { value } }),
+  );
+}
+
+export async function clearRating(
+  request: MusicRequest,
+  type: RatingResourceType,
+  id: string,
+): Promise<void> {
+  await request(ratingPath(type, id), undefined, mutationOptions("DELETE"));
+}
+
+export async function addToLibrary(
+  request: MusicRequest,
+  items: AddToLibraryIds,
+): Promise<void> {
+  const query: Record<string, string> = {};
+  for (const type of ["songs", "albums", "playlists"] as const) {
+    const ids = (items[type] ?? []).map((id) => id.trim()).filter(Boolean);
+    if (ids.length > 0) query[`ids[${type}]`] = ids.join(",");
+  }
+  if (Object.keys(query).length === 0) {
+    throw new Error("At least one item is required.");
+  }
+  await request("/v1/me/library", query, mutationOptions("POST"));
 }

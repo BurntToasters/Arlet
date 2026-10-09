@@ -17,6 +17,23 @@
 | `api.music.apple.com`       | Apple Music API |
 | (add observed domains here) |                 |
 
+### Library and Ratings Endpoints
+
+All calls go through MusicKit's `api.music` to `api.music.apple.com`. Mutations
+(PUT, POST, DELETE) are sent once per user action and are never retried.
+
+| Method | Path                            | Purpose                                         |
+| ------ | ------------------------------- | ----------------------------------------------- |
+| GET    | `/v1/me/ratings/{type}?ids=a,b` | Load Love/Dislike for song, album, playlist IDs |
+| PUT    | `/v1/me/ratings/{type}/{id}`    | Set Love (`value: 1`) or Dislike (`-1`)         |
+| DELETE | `/v1/me/ratings/{type}/{id}`    | Clear a rating                                  |
+| POST   | `/v1/me/library?ids[songs]=…`   | Add a catalog song, album, or playlist          |
+
+`{type}` is `library-songs`, `library-albums`, or `library-playlists` for
+library IDs (`i.`, `l.`, `p.` prefixes), and `songs`, `albums`, or `playlists`
+for catalog IDs. Apple's public API has no endpoint to rename, delete, reorder,
+or remove tracks from playlists, so Arlet does not offer those actions.
+
 ## Authorization
 
 | Domain                      | Purpose                               |

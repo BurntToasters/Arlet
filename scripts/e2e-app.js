@@ -17,6 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { MUSIC_FIXTURE_SEED, musicFixtureSource } from "./e2e-music-fixture.js";
+import { runLibraryActions } from "./e2e-library-actions.js";
 import { runPlaylistPlayback } from "./e2e-playlist-playback.js";
 import { runSongNavigation } from "./e2e-song-navigation.js";
 import { runTransport } from "./e2e-transport.js";
@@ -876,6 +877,7 @@ async function run() {
         ["song-navigation", runSongNavigation],
         ["transport", runTransport],
         ["queue-edit", runQueueEdit],
+        ["library-actions", runLibraryActions],
       ]) {
         try {
           await scenario({ page, check });

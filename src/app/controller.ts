@@ -62,6 +62,7 @@ import {
 import type {
   MusicSource,
   PinnedPlaylist,
+  RatingValue,
   Station,
   Track,
 } from "../domain/music.ts";
@@ -98,6 +99,7 @@ import {
 } from "./collection-playback.ts";
 import { createPlayback } from "./playback.ts";
 import type { QueueEditTier } from "../musickit/queue-edit.ts";
+import { createRatings, type RatingTarget } from "./ratings.ts";
 import {
   createTrackNavigationResolver,
   type TrackNavigation,
@@ -178,6 +180,10 @@ export interface AppController {
     playlistId: string,
     tracks: readonly Track[] | readonly string[],
   ): Promise<void>;
+  /** Optimistic; a failed request rolls back and reports a toast. */
+  rate(target: RatingTarget, value: RatingValue): Promise<void>;
+  loadRating(target: RatingTarget): Promise<void>;
+  addToLibrary(target: RatingTarget): Promise<void>;
   playNextTracks(tracks: readonly Track[] | readonly string[]): Promise<void>;
   playLaterTracks(tracks: readonly Track[] | readonly string[]): Promise<void>;
   playQueueItem(index: number): Promise<void>;
@@ -301,6 +307,7 @@ export function createAppController(
   );
   const discovery = createDiscovery(context, dependencies);
   const playback = createPlayback(context);
+  const ratings = createRatings(context);
   const trackNavigation = createTrackNavigationResolver(requireMusic);
   const { requireLibrary, ensureLibraryCache, clearLibraryCache } = library;
   const collections = createCollectionPlayback({
@@ -430,6 +437,8 @@ export function createAppController(
           instance,
           () => {
             syncPlaybackDiagnostics();
+            // Loads ratings only when the now-playing track changes.
+            ratings.syncCurrentTrack();
           },
           (message) => {
             log(`Media playback error: ${message}`);
@@ -457,6 +466,7 @@ export function createAppController(
         log("Already authorized from previous session.");
       }
       syncPlaybackDiagnostics();
+      ratings.syncCurrentTrack();
     } catch (error) {
       const message = safeErrorMessage(error);
       setInitializationState({ status: "error", message });
@@ -739,6 +749,18 @@ export function createAppController(
           `Playlist refresh failed after adding tracks: ${safeErrorMessage(error)}`,
         );
       }
+    },
+
+    rate(target: RatingTarget, value: RatingValue): Promise<void> {
+      return ratings.rate(target, value);
+    },
+
+    loadRating(target: RatingTarget): Promise<void> {
+      return ratings.loadRating(target);
+    },
+
+    addToLibrary(target: RatingTarget): Promise<void> {
+      return ratings.addToLibrary(target);
     },
 
     playNextTracks(
