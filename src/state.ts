@@ -968,6 +968,11 @@ export function setSleepTimer(sleepTimer: SleepTimerState | undefined): void {
   update({ ...state, playback: { ...state.playback, sleepTimer } });
 }
 
+export function setQueueRest(queueRest: number): void {
+  if ((state.playback.queueRest ?? 0) === queueRest) return;
+  update({ ...state, playback: { ...state.playback, queueRest } });
+}
+
 /** Stable key for the ratings map, e.g. `library-songs:i.abc`. */
 export function ratingKey(type: string, id: string): string {
   return `${type}:${id}`;

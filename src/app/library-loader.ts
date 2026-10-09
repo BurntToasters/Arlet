@@ -42,6 +42,9 @@ import {
   type LibraryMethod,
 } from "./controller-support.ts";
 
+/** Upper bound for one detail list; Apple pages playlists 100 songs at a time. */
+const MAX_DETAIL_ITEMS = 10_000;
+
 const OFFLINE_MESSAGE =
   "You're offline. Reconnect to load the latest from Apple Music.";
 
@@ -561,6 +564,62 @@ export function createLibraryLoader(
   };
 
   /**
+   * Appends the remaining pages after the first one renders, so long
+   * playlists list every song. A newer load of the same detail stops it.
+   */
+  const loadRemainingDetailPages = async (
+    kind: DetailKind,
+    id: string,
+    source: MusicSource,
+    first: { item?: LibraryEntity; items: LibraryEntity[]; next: string },
+    fetchPage: (
+      cursor: string,
+    ) => Promise<{ items: LibraryEntity[]; next?: string }>,
+    isCurrent: () => boolean,
+  ): Promise<void> => {
+    const cacheSection = detailCacheSection(kind, id, source);
+    const cursors = new Set<string>();
+    let items = first.items;
+    let cursor: string | undefined = first.next;
+    while (cursor && items.length < MAX_DETAIL_ITEMS) {
+      if (cursors.has(cursor)) {
+        log(`Detail paging stopped: Apple Music repeated a ${kind} page.`);
+        break;
+      }
+      cursors.add(cursor);
+      let page: { items: LibraryEntity[]; next?: string };
+      try {
+        page = await fetchPage(cursor);
+      } catch (error) {
+        log(`Loading more ${kind} songs failed: ${safeErrorMessage(error)}`);
+        break;
+      }
+      if (!isCurrent()) return;
+      items = [...items, ...page.items];
+      cursor = page.next;
+      setLibraryDetailState(
+        kind,
+        { items, ...detailChildren(kind, items), next: cursor },
+        id,
+        source,
+      );
+    }
+    if (!isCurrent()) return;
+    try {
+      await ensureLibraryCache();
+      await libraryCache.clearSection(LIBRARY_CACHE_SCOPE, cacheSection);
+      await libraryCache.writePage(LIBRARY_CACHE_SCOPE, cacheSection, {
+        cursor: undefined,
+        items: first.item ? [first.item, ...items] : items,
+        next: cursor,
+        updatedAt: now(),
+      });
+    } catch (error) {
+      log(`${detailLabels(kind).write}: ${safeErrorMessage(error)}`);
+    }
+  };
+
+  /**
    * Shared stale-while-revalidate flow for album, artist, and playlist
    * details. `fetchDetail` returns `undefined` once its request is stale.
    */
@@ -573,6 +632,10 @@ export function createLibraryLoader(
       client: AppleMusicLibraryClient,
       isCurrent: () => boolean,
     ) => Promise<DetailResult | undefined>,
+    fetchMore?: (
+      client: AppleMusicLibraryClient,
+      cursor: string,
+    ) => Promise<{ items: LibraryEntity[]; next?: string }>,
   ): Promise<void> => {
     if (isOffline()) {
       await loadOfflineDetail(
@@ -661,6 +724,16 @@ export function createLibraryLoader(
         id,
         source,
       );
+      if (fetchMore && page.next) {
+        await loadRemainingDetailPages(
+          kind,
+          id,
+          source,
+          { item: detail.item, items: detail.items, next: page.next },
+          (cursor) => fetchMore(client, cursor),
+          isCurrent,
+        );
+      }
     } catch (error) {
       if (!isCurrent()) return;
       if (stalePage?.items.length) {
@@ -745,24 +818,38 @@ export function createLibraryLoader(
     source: MusicSource = "library",
     options: DetailLoadOptions = {},
   ): Promise<void> =>
-    loadDetailResource("playlist", id, source, options, async (client) => {
-      const [playlistRaw, tracksRaw] = await Promise.all([
-        libraryMethod(client, "getPlaylist")(id, source),
-        source === "catalog"
-          ? libraryMethod(client, "getPlaylistTracks")(id, source)
-          : libraryMethod(client, "getPlaylistTracks")(id),
-      ]);
-      const detail = detailFromResponse(playlistRaw);
-      const tracks = asLibraryEntities(tracksRaw);
-      if (!detail.item && detail.items.length > 0) {
-        detail.item = detail.items[0];
-      }
-      return {
-        item: detail.item,
-        items: tracks.length > 0 ? tracks : detail.items.slice(1),
-        next: asNext(tracksRaw) ?? detail.next,
-      };
-    });
+    loadDetailResource(
+      "playlist",
+      id,
+      source,
+      options,
+      async (client) => {
+        const [playlistRaw, tracksRaw] = await Promise.all([
+          libraryMethod(client, "getPlaylist")(id, source),
+          source === "catalog"
+            ? libraryMethod(client, "getPlaylistTracks")(id, source)
+            : libraryMethod(client, "getPlaylistTracks")(id),
+        ]);
+        const detail = detailFromResponse(playlistRaw);
+        const tracks = asLibraryEntities(tracksRaw);
+        if (!detail.item && detail.items.length > 0) {
+          detail.item = detail.items[0];
+        }
+        return {
+          item: detail.item,
+          items: tracks.length > 0 ? tracks : detail.items.slice(1),
+          next: asNext(tracksRaw) ?? detail.next,
+        };
+      },
+      async (client, cursor) => {
+        const raw = await libraryMethod(client, "getPlaylistTracks")(
+          id,
+          cursor,
+          source,
+        );
+        return { items: asLibraryEntities(raw), next: asNext(raw) };
+      },
+    );
 
   const loadPlaylistFolder = async (id?: string): Promise<void> => {
     const section = `playlist-folder:${id ?? "root"}`;

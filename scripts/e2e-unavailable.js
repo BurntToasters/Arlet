@@ -249,6 +249,25 @@ export async function runUnavailable({ page, check }) {
       dimmed,
     );
 
+    // The playlist page loads every page, not only the first.
+    const allListed = await waitFor(
+      page,
+      `(() => {
+        const scroller = document.querySelector(".content-scroll");
+        if (scroller) scroller.scrollTop = scroller.scrollHeight;
+        const numbers = [...document.querySelectorAll(".library-row-number")];
+        return numbers.at(-1)?.textContent?.trim() === "1200";
+      })()`,
+      20_000,
+    );
+    check(
+      "a long playlist page lists every song, not just the first page",
+      allListed,
+    );
+    await page.evaluate(
+      `document.querySelector(".content-scroll")?.scrollTo(0, 0); return true;`,
+    );
+
     await page.evaluate(`
       [...document.querySelectorAll(".library-detail-actions button")]
         .find((node) => node.textContent.trim() === "Play all")?.click();
@@ -276,6 +295,64 @@ export async function runUnavailable({ page, check }) {
       },
     );
 
+    // Near the end of the capped queue the next songs are appended once.
+    await page.evaluate(`
+      if (!document.querySelector(".queue-drawer")) {
+        document.querySelector('button[aria-label="Toggle Playing Next"]')?.click();
+      }
+      return true;
+    `);
+    const restShown = await waitFor(
+      page,
+      `document.querySelector(".queue-rest-note")?.textContent?.includes("700 more songs")`,
+    );
+    await page.evaluate(
+      "await window.MusicKit.getInstance().changeToMediaAtIndex(450); return true;",
+    );
+    const refilled = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().transitions.some((item) => item.type === "playLater")`,
+      15_000,
+    );
+    await sleep(800);
+    snap = await snapshot(page);
+    const refills = snap.transitions.filter(
+      (item) => item.type === "playLater",
+    );
+    const restAfter = await page.evaluate(
+      `return document.querySelector(".queue-rest-note")?.textContent ?? null;`,
+    );
+    check(
+      "a capped queue appends the next songs once as it runs low",
+      restShown &&
+        refilled &&
+        refills.length === 1 &&
+        refills[0].ids.length === 200 &&
+        refills[0].ids[0] === "big-0500" &&
+        snap.queue.activeId === "big-0451" &&
+        String(restAfter).includes("500 more songs"),
+      {
+        restShown,
+        refills: refills.map((item) => ({
+          length: item.ids.length,
+          first: item.ids[0],
+        })),
+        activeId: snap.queue.activeId,
+        restAfter,
+      },
+    );
+
+    // Clear drops the rest of the playlist too.
+    await page.evaluate(`
+      document.querySelector('button[aria-label="Clear up next"]')?.click();
+      return true;
+    `);
+    const restCleared = await waitFor(
+      page,
+      `!document.querySelector(".queue-rest-note")`,
+    );
+    check("Clear also drops the songs still waiting to be queued", restCleared);
+
     await fixtureCall(page, "reset");
     await page.evaluate(`
       [...document.querySelectorAll(".library-detail-actions button")]
@@ -301,6 +378,32 @@ export async function runUnavailable({ page, check }) {
         farIndexes > 0 &&
         snap.modes.shuffle === true,
       { length: shuffledIds.length, farIndexes, shuffle: snap.modes.shuffle },
+    );
+
+    // A queue replaced outside Arlet drops the previous playlist's rest.
+    const restBefore = await waitFor(
+      page,
+      `document.querySelector(".queue-rest-note")`,
+    );
+    mark = (await snapshot(page)).transitions.length;
+    await page.evaluate(`
+      const music = window.MusicKit.getInstance();
+      await music.setQueue({ songs: ["song-a"] });
+      await music.play();
+      return true;
+    `);
+    const restDropped = await waitFor(
+      page,
+      `!document.querySelector(".queue-rest-note")`,
+    );
+    await sleep(500);
+    snap = await snapshot(page);
+    check(
+      "a queue replaced elsewhere never receives the previous playlist's songs",
+      restBefore &&
+        restDropped &&
+        !snap.transitions.slice(mark).some((item) => item.type === "playLater"),
+      { restBefore, restDropped },
     );
   } finally {
     await fixtureCall(page, "reset");

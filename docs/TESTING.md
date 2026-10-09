@@ -131,6 +131,12 @@ are not playable. Failure scenarios:
 - Queueing a very large playlist sends hundreds of parallel requests, hits
   Apple's rate limit, and plays nothing; shuffle of a large playlist only
   ever draws from the songs near the chosen one.
+- A playlist page lists only its first page of songs (100) instead of every
+  song; later pages loop on a repeated cursor, replace a newer playlist's
+  rows, or block the first page from rendering.
+- A capped queue ends after 500 songs instead of loading the rest of the
+  playlist as it plays; a refill fires twice, refills after a new play or
+  `Clear`, or interrupts the current song.
 
 ## Keyboard and transport
 

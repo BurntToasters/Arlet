@@ -28,6 +28,7 @@ export function QueueDrawer(): JSX.Element | null {
   const queue = state.playback.queue;
   const current = state.playback.queueIndex;
   const upcomingCount = Math.max(0, queue.length - current - 1);
+  const restCount = state.playback.queueRest ?? 0;
 
   const playQueueItem = (index: number): void => {
     if (!queue[index]) return;
@@ -229,6 +230,13 @@ export function QueueDrawer(): JSX.Element | null {
               aria-label="Queued songs"
               scrollParentSelector=".queue-scroll"
             />
+            {restCount > 0 ? (
+              <p className="queue-rest-note">
+                {restCount === 1
+                  ? "1 more song is added as the queue plays."
+                  : `${restCount.toLocaleString()} more songs are added as the queue plays.`}
+              </p>
+            ) : null}
           </div>
         </>
       )}

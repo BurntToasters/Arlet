@@ -517,6 +517,7 @@ export function createAppController(
           instance,
           () => {
             if (getState().playback.status === "playing") autoSkip.onPlaying();
+            playback.maybeRefillQueue();
             sleepTimer.observe(getState().playback);
             syncPlaybackDiagnostics();
             // Loads ratings only when the now-playing track changes.
@@ -655,6 +656,7 @@ export function createAppController(
       collections.invalidate();
       // A timer armed for this account must not pause the next sign-in.
       sleepTimer.cancel();
+      playback.clearContinuation();
       try {
         const instance = requireMusic();
         // Sign-out resets the UI to idle; audio must not keep playing.
