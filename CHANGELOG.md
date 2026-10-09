@@ -2,7 +2,7 @@
 
 | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                            | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
 | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.2/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.2/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.3/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.3/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -18,6 +18,14 @@
 ### ℹ️ Enjoying Arlet? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
+
+## Changes in `v0.2.3:`
+
+- **Fix - Shuffle:** Turning shuffle on while a song is playing no longer shows a different song's title and artist in the player.
+- **Fix - Scroll bar:** A stray horizontal scroll bar no longer appears around the player controls, and pages never scroll sideways.
+- **Fix - Sidebar:** Long playlist names stay on one line and end with `…`. Hover over a name to see all of it. The account row at the bottom of the sidebar is no longer hidden behind the player.
+- **Fix - Pinned playlists:** A pinned playlist shows its name even when it isn't in your loaded playlist list yet.
+- **Testing:** End-to-end tests now cover turning shuffle on mid-song, long sidebar names, the sidebar and page ending above the player, and any sideways scrolling.
 
 ## Changes in `v0.2.2:`
 
