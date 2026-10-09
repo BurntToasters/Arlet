@@ -95,8 +95,33 @@ function installMusicKitFixture() {
   };
   navResources[libraryOnlyItem.id] = libraryOnlyItem;
 
+  const stationResource = (id, name, url) => ({
+    id,
+    type: "stations",
+    attributes: { name, ...(url ? { url } : {}) },
+  });
+  const songStation = stationResource(
+    "ra.song-one",
+    "Navigation Song Station",
+    "https://music.apple.com/us/station/navigation-song-station/ra.song-one",
+  );
+  // No url: playback must fall back to the station ID.
+  const artistStation = stationResource("ra.artist-two", "Artist Two Station");
+  const topSongItems = ["top-1", "top-2", "top-3"].map((id, index) => ({
+    id,
+    type: "songs",
+    attributes: {
+      name: `Top Song ${index + 1}`,
+      artistName: "Artist Two",
+      albumName: "Top Album",
+      durationInMillis: 180_000,
+      playParams: { id, kind: "song", catalogId: id },
+    },
+  }));
+
   const resource = (id) =>
     playlistItems.find((item) => item.id === id) ??
+    topSongItems.find((item) => item.id === id) ??
     albumItems.find((item) => item.id === id) ??
     navResources[id] ??
     (id === catalogSong.id ? catalogSong : undefined) ??
@@ -326,10 +351,12 @@ function installMusicKitFixture() {
               { id: "nav-artist-two", type: "artists" },
             ],
           },
+          station: { data: [songStation] },
         },
         "nav-delayed": {
           albums: { data: [{ id: "nav-delayed-album", type: "albums" }] },
           artists: { data: [] },
+          station: { data: [songStation] },
         },
         "nav-race": {
           albums: { data: [{ id: "nav-race-album", type: "albums" }] },
@@ -339,6 +366,31 @@ function installMusicKitFixture() {
       return itemResponse({
         ...clone(nav),
         ...(relation ? { relationships: clone(relation) } : {}),
+      });
+    }
+    const artistMatch = pathname.match(
+      /^\/v1\/(me\/library|catalog\/us)\/artists\/([^/]+)(\/view\/top-songs)?$/u,
+    );
+    if (artistMatch) {
+      const library = artistMatch[1] === "me/library";
+      const id = decodeURIComponent(artistMatch[2]);
+      if (artistMatch[3]) {
+        return { data: id === "nav-artist-two" ? clone(topSongItems) : [] };
+      }
+      const known = library ? id === "nav-artist-one" : id === "nav-artist-two";
+      if (!known) return { data: [] };
+      const relationships = library
+        ? call.query?.include === "catalog"
+          ? { catalog: { data: [{ id: "nav-artist-two", type: "artists" }] } }
+          : undefined
+        : call.query?.include === "station"
+          ? { station: { data: [clone(artistStation)] } }
+          : undefined;
+      return itemResponse({
+        id,
+        type: library ? "library-artists" : "artists",
+        attributes: { name: library ? "Artist One" : "Artist Two" },
+        ...(relationships ? { relationships } : {}),
       });
     }
     if (/\/playlist-folders(?:\/[^/]+)?\/children$/u.test(pathname)) {
@@ -804,11 +856,13 @@ function installMusicKitFixture() {
     },
     selectContext(idOrTarget) {
       const id = typeof idOrTarget === "string" ? idOrTarget : idOrTarget?.id;
+      const kind = idOrTarget?.kind ?? "track";
       const item = resource(String(id ?? ""));
       const title = item.attributes?.name ?? String(id ?? "");
       const target = document.createElement("div");
-      target.dataset.contextKind = "track";
+      target.dataset.contextKind = kind;
       target.dataset.contextId = String(id ?? "");
+      if (idOrTarget?.source) target.dataset.contextSource = idOrTarget.source;
       target.dataset.contextTitle = title;
       target.dataset.contextArtist =
         item.attributes?.artistName ?? "Fixture Artist";
@@ -829,7 +883,7 @@ function installMusicKitFixture() {
         "position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none";
       document.body.append(target);
       state.contextTarget = {
-        kind: "track",
+        kind,
         id: String(id ?? ""),
         title,
         albumRef:

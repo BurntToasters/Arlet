@@ -44,7 +44,11 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 - **Fix - Repeat:** Errors from the repeat button are now shown instead of ignored.
 - **Note:** Apple Music doesn't let other apps rename or delete playlists or remove songs from them, so Arlet can't either.
 - **Playback:** Repeat and shuffle settings carry over when you start a song from a playlist. `Play next` and `Play later` still add only the song you chose.
-- **Testing:** End-to-end tests now cover playlist and album playback, shuffle and repeat, song navigation, failed lookups, queue editing, shortcuts and mute, ratings, Now Playing, the sleep timer, autoplay, Windows media controls, close to tray, and session restore. Each run saves a repeatable report with screenshots.
+- **NEW - Radio:** `Start Station` in song and artist menus, in `Now Playing`, and on artist pages starts an Apple Music station based on that song or artist.
+- **NEW - Queue whole albums and playlists:** Album and playlist menus have `Play next` and `Play later`, which add every song without interrupting what is playing.
+- **NEW - Top Songs:** Artist pages list the artist's top songs, with `Play`, `Shuffle`, and `Station` buttons.
+- **NEW - Keyboard shortcuts list:** `Settings` now lists every keyboard shortcut.
+- **Testing:** End-to-end tests now cover playlist and album playback, shuffle and repeat, song navigation, failed lookups, queue editing, shortcuts and mute, ratings, Now Playing, radio and artist pages, the sleep timer, autoplay, Windows media controls, close to tray, and session restore. Each run saves a repeatable report with screenshots.
 
 ## Changes in `v0.1.3:`
 

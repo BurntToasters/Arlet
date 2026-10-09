@@ -23,6 +23,7 @@ import { runSongNavigation } from "./e2e-song-navigation.js";
 import { runTransport } from "./e2e-transport.js";
 import { runQueueEdit } from "./e2e-queue-edit.js";
 import { runNowPlaying } from "./e2e-now-playing.js";
+import { runRadioArtist } from "./e2e-radio-artist.js";
 import { desktopEventRecorderSource, runDesktop } from "./e2e-desktop.js";
 import { runSessionRestore } from "./e2e-session-restore.js";
 
@@ -934,6 +935,7 @@ async function run() {
         ["queue-edit", runQueueEdit],
         ["library-actions", runLibraryActions],
         ["now-playing", runNowPlaying],
+        ["radio-artist", runRadioArtist],
         ["desktop", runDesktop],
         // Last: it signs out at the end.
         ["session-restore", runSessionRestore],
