@@ -14,6 +14,14 @@ import {
 } from "../musickit/player.ts";
 import type { Station, Track } from "../domain/music.ts";
 import {
+  editQueue,
+  planClear,
+  planMove,
+  planRemove,
+  type QueueEditPlan,
+  type QueueEditTier,
+} from "../musickit/queue-edit.ts";
+import {
   clearPlaybackError,
   DEFAULT_SETTINGS,
   getState,
@@ -58,6 +66,22 @@ export function createPlayback(context: ControllerContext) {
     const music = getMusic();
     if (music) setMusicVolume(music, safeVolume);
     return safeVolume;
+  };
+
+  const editQueueLogged = async (
+    label: string,
+    instance: MusicKit.MusicKitInstance,
+    plan: (
+      queue: readonly Track[],
+      current: number,
+    ) => QueueEditPlan | undefined,
+  ): Promise<QueueEditTier> => {
+    try {
+      return await editQueue(instance, plan);
+    } catch (error) {
+      log(`${label}: ${errorMessage(error)}`);
+      throw error;
+    }
   };
 
   const syncPlaybackModes = (instance: MusicKit.MusicKitInstance): void => {
@@ -247,6 +271,31 @@ export function createPlayback(context: ControllerContext) {
       if (music) {
         setMusicVolume(music, muted ? 0 : getState().playback.volume);
       }
+    },
+
+    // Async so a missing MusicKit instance rejects instead of throwing into the caller.
+    async removeQueueItem(index: number): Promise<QueueEditTier> {
+      return editQueueLogged(
+        "Queue remove failed",
+        requireMusic(),
+        (queue, current) => planRemove(queue, current, index),
+      );
+    },
+
+    async moveQueueItem(from: number, to: number): Promise<QueueEditTier> {
+      return editQueueLogged(
+        "Queue move failed",
+        requireMusic(),
+        (queue, current) => planMove(queue, current, from, to),
+      );
+    },
+
+    async clearUpNext(): Promise<QueueEditTier> {
+      return editQueueLogged(
+        "Queue clear failed",
+        requireMusic(),
+        (queue, current) => planClear(queue, current),
+      );
     },
 
     async togglePlayback(): Promise<void> {

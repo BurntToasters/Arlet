@@ -187,7 +187,7 @@ export async function runTransport({ page, check }) {
     `document.querySelector('[aria-label="Playback position"]')?.value === "0"`,
   );
   const seeks = since(beforeSeek, await snapshot(page))
-    .filter((item) => item.type === "seek")
+    .filter((item) => item.type === "seekToTime")
     .map((item) => item.seconds);
   check(
     "Shift+ArrowRight and Shift+ArrowLeft seek by 10 seconds",

@@ -20,6 +20,7 @@ import { MUSIC_FIXTURE_SEED, musicFixtureSource } from "./e2e-music-fixture.js";
 import { runPlaylistPlayback } from "./e2e-playlist-playback.js";
 import { runSongNavigation } from "./e2e-song-navigation.js";
 import { runTransport } from "./e2e-transport.js";
+import { runQueueEdit } from "./e2e-queue-edit.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IDENTIFIER = "run.rosie.arlet";
@@ -874,6 +875,7 @@ async function run() {
         ["playlist-playback", runPlaylistPlayback],
         ["song-navigation", runSongNavigation],
         ["transport", runTransport],
+        ["queue-edit", runQueueEdit],
       ]) {
         try {
           await scenario({ page, check });
