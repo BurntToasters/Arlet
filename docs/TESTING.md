@@ -206,6 +206,17 @@ the deterministic smoke gate:
 - `End of track` pauses at the next item change, so a brief bleed of the next
   song may be audible on MusicKit before the pause lands. Listen for it on
   protected and unprotected tracks.
+- A signed-in Apple Music account is required for the 0.2.0 behavior the
+  fixture only models from MusicKit's documented and bundled shapes:
+  - Starting a song mid-playlist with shuffle on plays that song first
+    (`setQueue` `startWith`), and the shuffle button reflects `shuffleMode`.
+  - Queue remove, move, and clear use `Queue.splice` without restarting audio.
+  - A library-only (uploaded) song plays from the `songs` descriptor.
+  - Love, Dislike, clear, and Add to Library reach Apple (check the Music app).
+  - Autoplay continues after the queue ends when enabled.
+  - `Start Station` for a catalog song, a library song, and an artist; Top
+    Songs for a library artist.
+  - A restored session resumes at the saved song and position.
 
 These external gates are intentionally opt-in and must run only on the release
 VM or a test machine with the appropriate credentials and signed artifacts.

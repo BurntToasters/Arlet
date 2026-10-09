@@ -36,12 +36,12 @@ Supported system actions:
 
 Event contract (Rust emits, `src/app/App.tsx` routes):
 
-| Event | Payload | Frontend action |
-| --- | --- | --- |
-| `windows-media-control` | `play`, `pause`, `next`, `previous` | play, pause, next, previous |
-| `windows-media-seek` | seconds | `controller.seek`, clamped to `[0, duration]` |
-| `windows-media-shuffle` | boolean | `controller.setShuffleMode` |
-| `windows-media-repeat` | `off`, `all`, `one` | `controller.setRepeatMode` |
+| Event                   | Payload                             | Frontend action                               |
+| ----------------------- | ----------------------------------- | --------------------------------------------- |
+| `windows-media-control` | `play`, `pause`, `next`, `previous` | play, pause, next, previous                   |
+| `windows-media-seek`    | seconds                             | `controller.seek`, clamped to `[0, duration]` |
+| `windows-media-shuffle` | boolean                             | `controller.setShuffleMode`                   |
+| `windows-media-repeat`  | `off`, `all`, `one`                 | `controller.setRepeatMode`                    |
 
 Rust drops seek requests that are negative, non-finite, or arrive before a
 timeline has published a duration. The frontend drops them again, and ignores

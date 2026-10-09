@@ -5,11 +5,16 @@
 Tauri capabilities are a real boundary, not documentation. Permissions are
 granted per window label in `src-tauri/capabilities/`; the default set covers
 only version, window management, updater, clipboard text, the
-library cache (fixed Rust commands, no SQL), settings, pins, logging, window
-effects, the Windows
-media session, and opening the diagnostic window. There is no `shell`, `dialog`, `notification`, or `process` plugin, no arbitrary command execution, and
-remote Apple origins get
-no filesystem/shell/updater access.
+library cache (fixed Rust commands, no SQL), settings, pins, the saved
+playback session (fixed load/save/delete commands, size- and item-capped),
+logging, window effects, the Windows media session, and opening the diagnostic
+window. There is no `shell`, `dialog`, `notification`, `process`, or
+`global-shortcut` plugin, no arbitrary command execution, and remote Apple
+origins get no filesystem/shell/updater access.
+
+The tray icon is Tauri's core `tray-icon` feature, built in Rust. Its menu
+emits the same `windows-media-control` event as the Windows media buttons and
+grants the webview no additional permissions.
 
 The Phase 0 `music-diagnostic` window loads `https://music.apple.com/` with an
 empty permission list, `local: false`, and remote URL scope limited to that

@@ -29,6 +29,18 @@ All calls go through MusicKit's `api.music` to `api.music.apple.com`. Mutations
 | DELETE | `/v1/me/ratings/{type}/{id}`    | Clear a rating                                  |
 | POST   | `/v1/me/library?ids[songs]=…`   | Add a catalog song, album, or playlist          |
 
+### Radio and Artist Endpoints
+
+| Method | Path                                            | Purpose                                |
+| ------ | ----------------------------------------------- | -------------------------------------- |
+| GET    | `/v1/catalog/{sf}/songs/{id}?include=station`   | Song station for `Start Station`       |
+| GET    | `/v1/catalog/{sf}/artists/{id}?include=station` | Artist station for `Start Station`     |
+| GET    | `/v1/catalog/{sf}/artists/{id}/view/top-songs`  | Artist Top Songs                       |
+| GET    | `/v1/me/library/artists/{id}?include=catalog`   | Catalog artist behind a library artist |
+
+A 404 from these lookups means "none available" and is not reported as an
+error.
+
 `{type}` is `library-songs`, `library-albums`, or `library-playlists` for
 library IDs (`i.`, `l.`, `p.` prefixes), and `songs`, `albums`, or `playlists`
 for catalog IDs. Apple's public API has no endpoint to rename, delete, reorder,
