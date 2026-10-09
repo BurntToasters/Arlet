@@ -25,6 +25,8 @@ import {
   type StationTarget,
 } from "../musickit/stations.ts";
 import { createSleepTimer, type SleepTimerOption } from "./sleep-timer.ts";
+import { createAutoSkip } from "./auto-skip.ts";
+import { reportActionError } from "../components/action-errors.ts";
 import { normalizeTrack } from "../musickit/normalize.ts";
 import { classifyPlaybackKind } from "../musickit/preview.ts";
 import {
@@ -410,6 +412,13 @@ export function createAppController(
     }
   };
 
+  const autoSkip = createAutoSkip({
+    readPlayback: () => getState().playback,
+    skipToNext: () => playback.next(),
+    notify: (message) => reportActionError(new Error(message)),
+    log,
+  });
+
   const sleepTimer = createSleepTimer({
     pause: () => music?.pause(),
     setState: setSleepTimer,
@@ -507,13 +516,15 @@ export function createAppController(
         stopMusicKitEvents = registerMusicKitEvents(
           instance,
           () => {
+            if (getState().playback.status === "playing") autoSkip.onPlaying();
             sleepTimer.observe(getState().playback);
             syncPlaybackDiagnostics();
             // Loads ratings only when the now-playing track changes.
             ratings.syncCurrentTrack();
           },
-          (message) => {
+          (message, error) => {
             log(`Media playback error: ${message}`);
+            autoSkip.onPlaybackError(error);
           },
           undefined,
           () => playback.syncPlaybackModes(instance),

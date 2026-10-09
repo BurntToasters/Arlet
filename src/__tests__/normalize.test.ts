@@ -81,6 +81,7 @@ describe("normalizeCatalogSong", () => {
         artistName: "Adele",
         albumName: "25",
         durationInMillis: 295000,
+        playParams: { id: "song-1", kind: "song" },
         artwork: {
           url: "https://example.com/{w}x{h}bb.jpg",
           width: 1000,

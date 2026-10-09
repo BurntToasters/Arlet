@@ -40,10 +40,19 @@ export function SongRow({
   const trackLabel = `${track.title} by ${track.artistName}`;
   const nowPlaying = useNowPlayingStatus(track);
   const current = nowPlaying !== "none";
+  // Apple marks songs it cannot stream; the menu still offers navigation.
+  const unavailable = track.playable === false;
   return (
     <li>
       <div
-        className={current ? "song-row-shell is-current" : "song-row-shell"}
+        className={[
+          "song-row-shell",
+          current ? "is-current" : "",
+          unavailable ? "is-unavailable" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+        title={unavailable ? "Not available on Apple Music" : undefined}
         {...contextData}
         data-context-album-ref={
           track.albumRef ? JSON.stringify(track.albumRef) : undefined
@@ -55,11 +64,13 @@ export function SongRow({
         <button
           className={rowClassName}
           type="button"
-          disabled={disabled}
+          disabled={disabled || unavailable}
           aria-label={
             current
               ? `Play ${trackLabel} (${nowPlaying === "playing" ? "now playing" : "paused"})`
-              : `Play ${trackLabel}`
+              : unavailable
+                ? `${trackLabel} (not available on Apple Music)`
+                : `Play ${trackLabel}`
           }
           aria-current={current ? "true" : undefined}
           onClick={onPlay}
@@ -110,7 +121,7 @@ export function SongRow({
             type="button"
             aria-label={`Play ${trackLabel} next`}
             title="Play next"
-            disabled={disabled}
+            disabled={disabled || unavailable}
             onClick={onPlayNext ?? (() => undefined)}
           >
             <SkipForward aria-hidden="true" size={16} strokeWidth={1.9} />

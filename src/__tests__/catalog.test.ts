@@ -80,6 +80,7 @@ describe("searchCatalogSongs", () => {
                   artistName: "Adele",
                   albumName: "25",
                   durationInMillis: 295000,
+                  playParams: { id: "song-1", kind: "song" },
                 },
               },
             ],
@@ -143,7 +144,11 @@ describe("discovery resources", () => {
               {
                 id: "song-1",
                 type: "songs",
-                attributes: { name: "Song", artistName: "Artist" },
+                attributes: {
+                  name: "Song",
+                  artistName: "Artist",
+                  playParams: { id: "song-1", kind: "song" },
+                },
               },
             ],
           },
@@ -208,7 +213,11 @@ describe("discovery resources", () => {
                     {
                       id: "song-1",
                       type: "songs",
-                      attributes: { name: "Song", artistName: "Artist" },
+                      attributes: {
+                        name: "Song",
+                        artistName: "Artist",
+                        playParams: { id: "song-1", kind: "song" },
+                      },
                     },
                   ],
                 },
@@ -286,7 +295,11 @@ describe("discovery resources", () => {
               {
                 id: "song-1",
                 type: "songs",
-                attributes: { name: "Song", artistName: "Artist" },
+                attributes: {
+                  name: "Song",
+                  artistName: "Artist",
+                  playParams: { id: "song-1", kind: "song" },
+                },
               },
             ],
           },

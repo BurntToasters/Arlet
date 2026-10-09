@@ -34,7 +34,7 @@ function mapPlaybackState(state: number): PlaybackState["status"] {
 export function registerMusicKitEvents(
   instance: MusicKit.MusicKitInstance,
   onStateChange?: () => void,
-  onPlaybackError?: (message: string) => void,
+  onPlaybackError?: (message: string, error: unknown) => void,
   onQueueChange?: () => void,
   onModeChange?: () => void,
 ): () => void {
@@ -68,7 +68,7 @@ export function registerMusicKitEvents(
     const message = String(event.message ?? "Playback error");
     const safeMessage = redactSensitive(message);
     setPlaybackError(mapErrorToCode(message), safeMessage);
-    onPlaybackError?.(safeMessage);
+    onPlaybackError?.(safeMessage, event);
     onStateChange?.();
   };
 

@@ -122,6 +122,7 @@ function installMusicKitFixture() {
   const resource = (id) =>
     playlistItems.find((item) => item.id === id) ??
     topSongItems.find((item) => item.id === id) ??
+    bigItems.find((item) => item.id === id) ??
     albumItems.find((item) => item.id === id) ??
     navResources[id] ??
     (id === catalogSong.id ? catalogSong : undefined) ??
@@ -160,6 +161,10 @@ function installMusicKitFixture() {
     delayMs: 800,
     repeatPlaylistCursor: false,
     rejectPlay: false,
+    // Catalog IDs the item loader cannot resolve, and IDs that resolve but
+    // are not playable (MusicKit drops those silently).
+    unresolvedIds: [],
+    unplayableIds: [],
     nativeQueueEdit: false,
     queueEditDelayMs: 0,
     // Keyed `${type}:${id}`, e.g. `library-songs:song-a`; values are 1 or -1.
@@ -249,6 +254,44 @@ function installMusicKitFixture() {
     activeId: currentItem()?.id ?? null,
   });
 
+  // A playlist past the queue cap. "big-0001" is a catalog song Apple marks
+  // unstreamable (no playParams), as removed songs appear in the API.
+  const BIG_PLAYLIST_SIZE = 1200;
+  const BIG_PAGE_SIZE = 300;
+  const bigItems = Array.from({ length: BIG_PLAYLIST_SIZE }, (_, index) => {
+    const id = `big-${String(index).padStart(4, "0")}`;
+    const item = track(id, `Big Track ${index}`, "Big Album");
+    if (index === 1) {
+      item.type = "songs";
+      delete item.attributes.playParams;
+    }
+    return item;
+  });
+  const bigPlaylist = {
+    id: "playlist-big",
+    type: "library-playlists",
+    attributes: {
+      name: "Big Playlist",
+      artistName: "Arlet E2E",
+      trackCount: BIG_PLAYLIST_SIZE,
+      canEdit: true,
+    },
+  };
+  const bigPlaylistPage = (path) => {
+    const offset = Number(
+      new URLSearchParams(String(path).split("?")[1] ?? "").get("offset") ?? 0,
+    );
+    const next = offset + BIG_PAGE_SIZE;
+    return {
+      data: bigItems.slice(offset, next).map(clone),
+      ...(next < BIG_PLAYLIST_SIZE
+        ? {
+            next: `/v1/me/library/playlists/playlist-big/tracks?offset=${next}`,
+          }
+        : {}),
+    };
+  };
+
   const itemResponse = (item) => ({ data: [clone(item)] });
   const secondPlaylistPage =
     "/v1/me/library/playlists/playlist-1/tracks?offset=4";
@@ -310,6 +353,12 @@ function installMusicKitFixture() {
     }
     if (pathname === "/v1/me/library/playlists/playlist-1") {
       return itemResponse(playlist);
+    }
+    if (pathname === "/v1/me/library/playlists/playlist-big") {
+      return itemResponse(bigPlaylist);
+    }
+    if (pathname === "/v1/me/library/playlists/playlist-big/tracks") {
+      return bigPlaylistPage(path);
     }
     if (String(path).includes(secondPlaylistPage)) {
       return {
@@ -548,6 +597,23 @@ function installMusicKitFixture() {
     },
   });
 
+  // Mirrors MusicKit's item loader: any unresolved ID rejects the whole call
+  // with NOT_FOUND, and unplayable items are dropped without an error.
+  const loadQueueItems = (type, itemIds) => {
+    const missing = itemIds.filter((id) => state.unresolvedIds.includes(id));
+    if (missing.length) {
+      state.transitions.push({ type: `${type}Unresolved`, ids: missing });
+      const error = new Error(
+        `One or more items could not be resolved: ${missing.join(", ")}`,
+      );
+      error.errorCode = "NOT_FOUND";
+      error.reason = "NOT_FOUND";
+      error.data = missing.map((id) => ({ id, kind: "song" }));
+      throw error;
+    }
+    return itemIds.filter((id) => !state.unplayableIds.includes(id));
+  };
+
   const player = {
     queue: queueRecord,
     shuffle: false,
@@ -623,7 +689,7 @@ function installMusicKitFixture() {
       this.isAuthorized = false;
     },
     async setQueue(options) {
-      const itemIds = idsFromOptions(options);
+      const itemIds = loadQueueItems("setQueue", idsFromOptions(options));
       state.queue = itemIds.map(mediaItem);
       // MusicKit positions the new queue on `startWith` (index or item ID).
       const startWith = options?.startWith;
@@ -707,7 +773,7 @@ function installMusicKitFixture() {
       });
     },
     async playNext(options) {
-      const itemIds = idsFromOptions(options);
+      const itemIds = loadQueueItems("playNext", idsFromOptions(options));
       const start = Math.min(state.queue.length, state.queueIndex + 1);
       state.queue.splice(start, 0, ...itemIds.map(mediaItem));
       state.transitions.push({
@@ -718,7 +784,7 @@ function installMusicKitFixture() {
       syncProviderQueue(true, false);
     },
     async playLater(options) {
-      const itemIds = idsFromOptions(options);
+      const itemIds = loadQueueItems("playLater", idsFromOptions(options));
       state.queue.push(...itemIds.map(mediaItem));
       state.transitions.push({ type: "playLater", ids: [...itemIds] });
       syncProviderQueue(true, false);
@@ -741,6 +807,11 @@ function installMusicKitFixture() {
         Object.prototype.hasOwnProperty.call(options, "repeatPlaylistCursor")
       ) {
         state.repeatPlaylistCursor = options.repeatPlaylistCursor === true;
+      }
+      for (const key of ["unresolvedIds", "unplayableIds"]) {
+        if (Object.prototype.hasOwnProperty.call(options, key)) {
+          state[key] = [...(options[key] ?? [])].map(String);
+        }
       }
       if (Object.prototype.hasOwnProperty.call(options, "rejectPlay")) {
         state.rejectPlay = options.rejectPlay === true;
@@ -765,6 +836,8 @@ function installMusicKitFixture() {
       state.delayMs = 800;
       state.repeatPlaylistCursor = false;
       state.rejectPlay = false;
+      state.unresolvedIds = [];
+      state.unplayableIds = [];
       state.nativeQueueEdit = false;
       state.queueEditDelayMs = 0;
       state.ratings = {};
@@ -802,6 +875,19 @@ function installMusicKitFixture() {
       state.queue[state.queueIndex] = bare;
       state.transitions.push({ type: "providerBareMedia", id: bare.id });
       syncProviderQueue(true, true);
+      return true;
+    },
+    // MusicKit publishes an MKError when a song fails as it starts playing.
+    failCurrentItem(reason) {
+      const error = new Error(`Fixture playback failure (${reason})`);
+      error.errorCode = reason;
+      error.reason = reason;
+      state.transitions.push({
+        type: "playbackError",
+        reason,
+        id: currentItem()?.id ?? null,
+      });
+      emit(events.mediaPlaybackError, error);
       return true;
     },
     finishCurrentTrack() {

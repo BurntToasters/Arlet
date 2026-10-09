@@ -217,9 +217,14 @@ export async function runRadioArtist({ page, check }) {
   await page.evaluate(
     `location.hash = "#/artist/nav-artist-one"; return true;`,
   );
+  // Wait for this artist's page, not stale rows from the previous one.
   const listed = await waitFor(
     page,
-    `document.querySelectorAll('.artist-top-songs .library-row-copy').length === 3`,
+    `location.hash === "#/artist/nav-artist-one" &&
+      document.querySelector(".library-detail-hero h1")?.textContent === "Artist One" &&
+      document.querySelectorAll('.artist-top-songs .library-row-copy').length === 3 &&
+      [...document.querySelectorAll(".library-detail-actions button")].some((node) => node.textContent.trim() === "Play")`,
+    15_000,
   );
   requests = (await snapshot(page)).requests;
   check(

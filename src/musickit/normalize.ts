@@ -369,6 +369,20 @@ export function normalizeTrack(item: MusicKit.MediaItem): Track {
 }
 
 /** Normalize a catalog song while preserving the original search shape. */
+/**
+ * Apple leaves out `playParams` when a catalog song cannot be streamed, e.g.
+ * removed from Apple Music or unavailable in the storefront. Library items
+ * without them are left playable; MusicKit decides at queue time.
+ */
+function streamable(
+  attributes: Record<string, unknown>,
+  type: MusicResourceType | undefined,
+): boolean {
+  if (typeof attributes.playable === "boolean") return attributes.playable;
+  if (asRecord(attributes.playParams)) return true;
+  return type !== "songs" && type !== "music-videos";
+}
+
 export function normalizeCatalogSong(resource: CatalogSongResource): Track {
   const record = asRecord(resource);
   const attributes = (asRecord(record?.attributes) ?? {}) as NonNullable<
@@ -390,6 +404,9 @@ export function normalizeCatalogSong(resource: CatalogSongResource): Track {
       attributes.durationInMillis > 0
         ? attributes.durationInMillis
         : undefined,
+    ...(streamable(attributes as Record<string, unknown>, "songs")
+      ? {}
+      : { playable: false }),
   };
 }
 
@@ -415,10 +432,7 @@ function normalizeResourceTrack(
     artwork: artworkFromUnknown(attributes.artwork),
     durationMs,
     resourceType: type,
-    playable:
-      typeof attributes.playable === "boolean"
-        ? attributes.playable
-        : Boolean(playParams ?? (type === "songs" || type === "library-songs")),
+    playable: streamable(attributes, type),
     addable:
       type === "songs" ||
       type === "library-songs" ||
