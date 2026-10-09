@@ -6,6 +6,7 @@ pub mod music_diagnostic;
 pub mod pins;
 pub mod settings;
 pub mod token_policy;
+pub mod tray;
 pub mod webview_recovery;
 pub mod window_fx;
 pub mod window_snap;

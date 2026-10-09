@@ -974,12 +974,12 @@ async function run() {
       fs.copyFileSync(logFile, path.join(artifactDir, "arlet.log"));
     }
 
-    // Close to tray: closing hides the window and keeps the process alive,
-    // and a second launch shows the hidden window again (single instance).
-    // Failure modes: a second launch does not show a window hidden in the tray;
-    // close-to-tray leaves the app impossible to quit (docs/TESTING.md, Tray).
+    // Tray on: closing hides the window and keeps the process alive, and a
+    // second launch shows the hidden window again (single instance).
+    // Failure modes: a second launch does not show a window hidden in the
+    // tray; the tray leaves the app impossible to quit (docs/TESTING.md, Tray).
     const trayEnabled = await settle(page, "save_settings", {
-      json: JSON.stringify({ ...DEFAULT_SETTINGS_FOR_E2E, closeToTray: true }),
+      json: JSON.stringify({ ...DEFAULT_SETTINGS_FOR_E2E, trayIcon: true }),
     });
     const appPid = runningArletPid();
     void settle(page, "plugin:window|close", { label: "main" }).catch(
@@ -1006,7 +1006,7 @@ async function run() {
       if (!shownAgain) await sleep(250);
     }
     check(
-      "close to tray hides the window and a second launch shows it again",
+      "with the tray on, closing hides the window and a second launch shows it again",
       trayEnabled.ok &&
         appPid !== undefined &&
         hiddenInTray &&
@@ -1015,8 +1015,9 @@ async function run() {
         processAlive(appPid),
       { appPid, hiddenInTray, aliveAfterClose, shownAgain },
     );
-    await settle(page, "save_settings", {
-      json: JSON.stringify(DEFAULT_SETTINGS_FOR_E2E),
+    // Tray off: closing the window quits instead of hiding.
+    const trayDisabled = await settle(page, "save_settings", {
+      json: JSON.stringify({ ...DEFAULT_SETTINGS_FOR_E2E, trayIcon: false }),
     });
 
     // Resize, then close normally: the new geometry is saved for next launch.
@@ -1052,6 +1053,15 @@ async function run() {
         savedAfterClose.x === beforeClose.x &&
         savedAfterClose.y === beforeClose.y,
       { resized: resized.ok, beforeClose, savedAfterClose },
+    );
+    const exitDeadline = Date.now() + 15_000;
+    while (Date.now() < exitDeadline && processAlive(appPid)) {
+      await sleep(250);
+    }
+    check(
+      "with the tray off, closing the window quits Arlet",
+      trayDisabled.ok && appPid !== undefined && !processAlive(appPid),
+      { trayDisabled: trayDisabled.ok, appPid, alive: processAlive(appPid) },
     );
 
     // Stop the app, then confirm the cache file was migrated in place.

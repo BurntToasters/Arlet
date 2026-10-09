@@ -152,12 +152,22 @@ Failure scenarios to cover before changing production code:
 
 ## Tray
 
+The `trayIcon` setting (on by default) controls the icon and closing together:
+on, closing the window hides Arlet to the tray; off, there is no icon and
+closing the window quits.
+
 - Quit from the tray skips saving the window state.
-- Close-to-tray leaves the app impossible to quit, or breaks the reset-settings
-  restart.
+- With the tray on, the app becomes impossible to quit, or the reset-settings
+  restart hides instead of restarting.
+- With the tray off, closing the window hides it with no icon to bring it back.
+- Turning the tray off leaves a stale icon, or turning it on adds a duplicate.
 - A duplicate tray icon appears after a WebView2 recovery.
+- Left-click does not toggle the window (show when hidden or minimized, hide
+  when shown).
 - Tray commands arrive before the frontend listens.
 - A second launch does not show a window hidden in the tray.
+- A missing or non-boolean `trayIcon` value disables the tray instead of
+  using the default.
 
 ## Session restore
 
@@ -202,7 +212,9 @@ the deterministic smoke gate:
   The E2E harness covers the frontend routing of these events only.
 - The tray menu needs a real desktop: Play/Pause, Next, Previous, Show Arlet,
   and Quit (Quit must save the window geometry, then exit). Left-click shows
-  the window. The E2E harness covers close-to-tray and the second launch only.
+  or hides the window, and turning `Show tray icon` off removes the icon. The
+  E2E harness covers closing with the tray on and off, the setting toggle, and
+  the second launch only.
 - `End of track` pauses at the next item change, so a brief bleed of the next
   song may be audible on MusicKit before the pause lands. Listen for it on
   protected and unprotected tracks.

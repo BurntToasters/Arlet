@@ -386,9 +386,9 @@ export async function runDesktop({ page, check }) {
     // runtime has no writable autoplay.
     const settingsOpen = await openSettings(page);
     const autoplayShown = await waitFor(page, labelExists("Autoplay"), 5000);
-    const closeToTrayShown = await waitFor(
+    const trayToggleShown = await waitFor(
       page,
-      labelExists("Close to tray"),
+      labelExists("Show tray icon"),
       3000,
     );
     await page.evaluate(clickToggle("Autoplay"));
@@ -441,14 +441,16 @@ export async function runDesktop({ page, check }) {
       { hiddenWhenUnsupported, shownAgain },
     );
 
-    await page.evaluate(clickToggle("Close to tray"));
-    const trayOn = await waitForSetting(page, "closeToTray", true);
-    await page.evaluate(clickToggle("Close to tray"));
-    const trayOff = await waitForSetting(page, "closeToTray", false);
+    // The tray is on by default; turning it off and on again exercises the
+    // runtime icon removal and reinstall.
+    await page.evaluate(clickToggle("Show tray icon"));
+    const trayOff = await waitForSetting(page, "trayIcon", false);
+    await page.evaluate(clickToggle("Show tray icon"));
+    const trayOn = await waitForSetting(page, "trayIcon", true);
     check(
-      "close to tray toggle saves its setting",
-      closeToTrayShown && trayOn && trayOff,
-      { closeToTrayShown, trayOn, trayOff },
+      "tray icon toggle saves its setting",
+      trayToggleShown && trayOff && trayOn,
+      { trayToggleShown, trayOff, trayOn },
     );
 
     await page.evaluate("location.hash = '#/home'; return true;");

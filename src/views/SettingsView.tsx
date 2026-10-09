@@ -435,29 +435,31 @@ export function SettingsView(): JSX.Element {
             </span>
             <div>
               <h2 id="window-heading">Window</h2>
-              <p>Choose what the close button does.</p>
+              <p>Choose whether Arlet keeps running in the tray.</p>
             </div>
           </div>
           <div className="settings-fields">
             <label className="settings-field settings-toggle-field">
               <span>
                 <Minimize2 aria-hidden="true" size={16} strokeWidth={1.8} />{" "}
-                Close to tray
+                Show tray icon
               </span>
               <input
                 type="checkbox"
-                checked={settings.closeToTray}
+                checked={settings.trayIcon}
                 onChange={(event) =>
                   void Promise.resolve(
-                    controller.setCloseToTray?.(event.currentTarget.checked),
+                    controller.setTrayIcon?.(event.currentTarget.checked),
                   ).catch(reportActionError)
                 }
               />
             </label>
           </div>
           <p className="settings-field-help">
-            With this on, closing the window keeps Arlet running in the tray.
-            Use Quit in the tray menu to exit.
+            With this on, closing the window keeps Arlet playing in the tray.
+            Click the tray icon to show or hide Arlet, or right-click it for
+            playback controls and Quit. With it off, closing the window quits
+            Arlet.
           </p>
         </section>
 

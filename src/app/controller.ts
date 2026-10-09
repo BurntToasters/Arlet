@@ -261,7 +261,7 @@ export interface AppController {
   setAutoCheckUpdates(enabled: boolean): Promise<void>;
   /** Rejects when the runtime has no writable autoplay; saves only on success. */
   setAutoplay?(enabled: boolean): Promise<void>;
-  setCloseToTray?(enabled: boolean): Promise<void>;
+  setTrayIcon?(enabled: boolean): Promise<void>;
   /** Turning this off deletes the saved queue. */
   setRestoreSession(enabled: boolean): Promise<void>;
   setUpdateChannel(channel: UpdateChannel): Promise<void>;
@@ -1064,8 +1064,8 @@ export function createAppController(
       await persistSettings({ ...getState().settings, autoplay: enabled });
     },
 
-    async setCloseToTray(enabled: boolean): Promise<void> {
-      await persistSettings({ ...getState().settings, closeToTray: enabled });
+    async setTrayIcon(enabled: boolean): Promise<void> {
+      await persistSettings({ ...getState().settings, trayIcon: enabled });
     },
 
     startSleepTimer(option: SleepTimerOption): void {

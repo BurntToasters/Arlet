@@ -36,7 +36,7 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 - **NEW - Sleep timer:** Pause after 15, 30, 45, or 60 minutes, or at the end of the current song, from the timer button in the player.
 - **NEW - Pick up where you left off:** Arlet remembers your queue and position and brings them back paused after a restart. Turn this off in `Settings` > `Playback`.
 - **NEW - Autoplay:** When Apple Music supports it, `Settings` > `Playback` can keep similar music playing after your queue ends.
-- **NEW - Tray icon:** Arlet has a tray icon with play/pause, next, previous, `Show Arlet`, and `Quit`. Turn on `Settings` > `Window` > `Close to tray` to keep Arlet running when you close the window.
+- **NEW - Tray icon:** Closing the window now keeps Arlet playing in the tray. Click the tray icon to show or hide Arlet, or right-click it for play/pause, next, previous, `Show Arlet`, and `Quit`. Turn off `Settings` > `Window` > `Show tray icon` to have the close button quit Arlet instead.
 - **Windows:** The Windows media controls can now seek and change shuffle and repeat.
 - **Fix - Playlists:** Playing a song in a playlist now keeps going through the rest of the playlist instead of stopping after that one song. `Play` also shows that it's working while a long playlist loads.
 - **Fix - Albums:** Playing a song from an album detail page now continues through the album the same way.
@@ -46,7 +46,7 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 - **Fix - Repeat:** Errors from the repeat button are now shown instead of ignored.
 - **Playback:** Repeat and shuffle settings carry over when you start a song from a playlist. From a song's menu, `Play next` and `Play later` add only that song.
 - **Note:** Apple Music doesn't let other apps rename or delete playlists or remove songs from them, so Arlet can't either.
-- **Testing:** End-to-end tests now cover playlist and album playback, shuffle and repeat, song navigation, failed lookups, queue editing, shortcuts and mute, ratings, Now Playing, radio and artist pages, the sleep timer, autoplay, Windows media controls, close to tray, and session restore. Each run saves a repeatable report with screenshots.
+- **Testing:** End-to-end tests now cover playlist and album playback, shuffle and repeat, song navigation, failed lookups, queue editing, shortcuts and mute, ratings, Now Playing, radio and artist pages, the sleep timer, autoplay, Windows media controls, the tray icon, and session restore. Each run saves a repeatable report with screenshots.
 
 ## Changes in `v0.1.3:`
 

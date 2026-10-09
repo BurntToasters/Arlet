@@ -102,13 +102,13 @@ describe("settings", () => {
       volume: 1,
       autoplay: true,
       restoreSession: true,
-      closeToTray: false,
+      trayIcon: true,
       _futurePreference: { enabled: true },
     });
     expect(
       serializeSettings(migrateSettings({ theme: "dark", other: 1 })),
     ).toBe(
-      '{"schemaVersion":1,"theme":"dark","windowEffect":"acrylic","autoCheckUpdates":true,"updateChannel":"auto","volume":1,"autoplay":true,"restoreSession":true,"closeToTray":false}',
+      '{"schemaVersion":1,"theme":"dark","windowEffect":"acrylic","autoCheckUpdates":true,"updateChannel":"auto","volume":1,"autoplay":true,"restoreSession":true,"trayIcon":true}',
     );
     expect(migrateSettings({ theme: "dark", windowEffect: "blur" })).toEqual({
       schemaVersion: 1,
@@ -119,7 +119,7 @@ describe("settings", () => {
       volume: 1,
       autoplay: true,
       restoreSession: true,
-      closeToTray: false,
+      trayIcon: true,
     });
   });
 

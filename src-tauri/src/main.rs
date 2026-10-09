@@ -89,10 +89,12 @@ fn main() {
             if let Err(error) = webview_recovery::install(&window) {
                 eprintln!("Unable to install WebView2 crash recovery: {error}");
             }
-            if let Err(error) = tray::install(app) {
-                eprintln!("Unable to create the tray icon: {error}");
+            settings::set_tray_icon(appearance.tray_icon);
+            if appearance.tray_icon {
+                if let Err(error) = tray::install(app.handle()) {
+                    eprintln!("Unable to create the tray icon: {error}");
+                }
             }
-            settings::set_close_to_tray(appearance.close_to_tray);
             // Positioned while still hidden, so there is no visible jump.
             let restored = window_state::restore(&window);
             window.show()?;

@@ -57,9 +57,11 @@ on a given build is verified only on hardware (see `docs/TESTING.md`).
 The tray's Play/Pause item emits the same `windows-media-control` event, with
 `pause` while playing and `play` otherwise, so one frontend path handles both.
 
-Close-to-tray (`closeToTray`) hides the main window instead of closing it. The
-tray icon restores it, and a second launch restores it too. Tray Quit saves the
-window geometry before exiting.
+The `trayIcon` setting (on by default) shows the tray icon and makes closing
+the main window hide it instead of quitting. Left-clicking the icon shows or
+hides the window, right-click opens the menu, and a second launch shows the
+window too. Tray Quit saves the window geometry before exiting. With the
+setting off there is no icon and closing the window quits.
 
 Arlet clears SMTC metadata and artwork when playback stops, the current track
 is removed, the user signs out, or the native window is destroyed. Artwork is

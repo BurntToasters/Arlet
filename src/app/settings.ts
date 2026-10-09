@@ -24,7 +24,7 @@ const settingsShape = z.object({
   volume: z.number().finite().min(0).max(1).optional(),
   autoplay: z.boolean().optional(),
   restoreSession: z.boolean().optional(),
-  closeToTray: z.boolean().optional(),
+  trayIcon: z.boolean().optional(),
 });
 const themeSchema = z.enum(["system", "light", "dark"]);
 const windowEffectSchema = z.enum(["acrylic", "mica", "solid"]);
@@ -76,7 +76,7 @@ export function migrateSettings(raw: unknown): AppSettings {
     volume: volumeSchema.safeParse(parsed.volume),
     autoplay: z.boolean().safeParse(parsed.autoplay),
     restoreSession: z.boolean().safeParse(parsed.restoreSession),
-    closeToTray: z.boolean().safeParse(parsed.closeToTray),
+    trayIcon: z.boolean().safeParse(parsed.trayIcon),
   };
   const reserved = Object.fromEntries(
     Object.entries(parsed).filter(([key]) => key.startsWith("_")),
@@ -105,9 +105,9 @@ export function migrateSettings(raw: unknown): AppSettings {
     restoreSession: candidate.restoreSession.success
       ? candidate.restoreSession.data
       : DEFAULT_SETTINGS.restoreSession,
-    closeToTray: candidate.closeToTray.success
-      ? candidate.closeToTray.data
-      : DEFAULT_SETTINGS.closeToTray,
+    trayIcon: candidate.trayIcon.success
+      ? candidate.trayIcon.data
+      : DEFAULT_SETTINGS.trayIcon,
   };
 }
 
@@ -125,7 +125,7 @@ export function serializeSettings(settings: AppSettings): string {
     volume: settings.volume,
     autoplay: settings.autoplay,
     restoreSession: settings.restoreSession,
-    closeToTray: settings.closeToTray,
+    trayIcon: settings.trayIcon,
   });
 }
 

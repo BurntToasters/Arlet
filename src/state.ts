@@ -42,8 +42,8 @@ export interface AppSettings {
   autoplay: boolean;
   /** Restore the last queue and position, paused, after restart. */
   restoreSession: boolean;
-  /** Hide to the tray instead of quitting when the window closes. */
-  closeToTray: boolean;
+  /** Show the tray icon; closing the window then hides to it instead of quitting. */
+  trayIcon: boolean;
   /** Reserved for forward-compatible settings owned by other versions. */
   [key: string]: unknown;
 }
@@ -57,7 +57,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   volume: 1,
   autoplay: true,
   restoreSession: true,
-  closeToTray: false,
+  trayIcon: true,
 };
 
 export type AuthState =
