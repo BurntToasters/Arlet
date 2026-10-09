@@ -364,7 +364,7 @@ export function createAppController(
         resolver: ReturnType<typeof createStationResolver>;
       }
     | undefined;
-  /** Lookups are cached per MusicKit instance, so sign-out drops them. */
+  /** Lookups are cached per MusicKit instance and dropped on sign-out. */
   const stations = (): ReturnType<typeof createStationResolver> => {
     const instance = requireMusic();
     if (stationResolver?.instance !== instance) {
@@ -654,6 +654,8 @@ export function createAppController(
         }
         await unauthorize(instance);
         trackNavigation.clear();
+        // Library artist mappings belong to the signed-out account.
+        stationResolver = undefined;
         await clearLibraryCache();
         // Pins are local and not tied to an Apple ID; the next account to
         // sign in on this PC must not see them.
