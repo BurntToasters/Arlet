@@ -454,7 +454,12 @@ function installMusicKitFixture() {
     const response = responseFor(pathText, request);
     request.completedAt = Date.now();
     request.response = clone(response);
-    return clone(response);
+    // MusicKit v3 `api.music` resolves to an envelope around the JSON body.
+    return {
+      request: { path: pathText },
+      response: { ok: true, status: response === undefined ? 204 : 200 },
+      data: clone(response),
+    };
   };
 
   const selectIndex = async (index, transitionType = "selectIndex") => {

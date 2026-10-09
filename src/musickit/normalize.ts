@@ -145,7 +145,11 @@ function resourceWithRelationships(value: unknown): {
   resource: AppleMusicResource;
   included: unknown[];
 } {
-  const root = asRecord(value);
+  const outer = asRecord(value);
+  // MusicKit v3 wraps the JSON body as `{ request, response, data }`.
+  const body = asRecord(outer?.data);
+  const root =
+    body && typeof body.id !== "string" && "data" in body ? body : outer;
   const data = root?.data;
   const firstData = Array.isArray(data) ? data[0] : data;
   const candidate = asRecord(firstData);
