@@ -2,7 +2,7 @@
 
 | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                            | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
 | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.3/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.3/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.4/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.4/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -18,6 +18,25 @@
 ### ℹ️ Enjoying Arlet? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
+
+## Changes in `v0.2.4:`
+
+- **Fix - Play next / later:** Adding a whole album or playlist to the queue no longer cancels an album or playlist you started playing while it loaded.
+- **Fix - Signing out and in:** Volume, mute, the shuffle and repeat buttons, and the token reminder stay correct. Signing in as a different account no longer shows the old account's songs, ratings, Browse, Radio, or search results, and those pages reload instead of staying on a spinner.
+- **Fix - Resuming your queue:** Pressing play on a restored queue only jumps to your saved spot if nothing else was started in the meantime. Pausing while a song is still loading now sticks, and pressing Space while it loads pauses it.
+- **Fix - Pinned playlists:** A damaged pins file no longer overwrites your last good backup, and Arlet falls back to the backup when it loads.
+- **Fix - Artists:** An artist in your library now lists every album they have, not only those on the first page of your library.
+- **Fix - Library:** Scrolling to the end of a long list while it refreshes no longer throws the refresh away, and a library that fails to clear on sign-out is never shown to the next account.
+- **Fix - Apple limits:** When Apple asks Arlet to slow down, it now waits and retries as Apple asks. Playlist and editorial artwork that used to show as broken images now loads.
+- **Fix - Menus and dialogs:** `Tab` closes the right-click menu, scrolling inside it no longer closes it, and opening it offline no longer shows an error. A slow reply can't close a playlist dialog you opened afterwards. The update prompt now opens above menus and dialogs.
+- **Fix - Settings:** The drop-down menus show a focus outline again when you use the keyboard. Settings are saved in order, and a failed reset no longer blocks later saves.
+- **Fix - Release notes:** Words like `snake_case_name` are no longer shown partly in italics.
+- **Fix - Windows:** The window position and size are saved as you move it, and restore correctly on a second monitor with different scaling. If Windows' web view keeps closing right after Arlet starts, Arlet now stops and tells you instead of restarting forever. Startup errors show a message instead of silently exiting.
+- **Security:** The main window can no longer be sent to another website, the Apple music diagnostic window stays on Apple sites, and Windows only fetches now-playing artwork from Apple's servers.
+- **Improvement - Library cache:** The saved library now lives in your local app data instead of roaming with your Windows profile, cleans up songs you no longer have, and shrinks itself when it has grown large.
+- **Improvement - Speed:** Large libraries scroll and update faster, and the diagnostics view no longer slows the app down while open.
+- **Improvement - Logs:** The previous log file is kept when a new one starts.
+- **Testing:** End-to-end tests now cover search, adding to playlists, creating playlists, and the diagnostics report, and the checks no longer rely on fixed waits. Every release now has to pass the full app tests first.
 
 ## Changes in `v0.2.3:`
 
