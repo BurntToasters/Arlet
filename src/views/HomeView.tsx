@@ -132,7 +132,7 @@ function cardSource(
 }
 
 function discoveryCards(
-  section: HomeSectionLike,
+  section: Pick<HomeSectionLike, "items" | "source">,
   fallbackSource: DiscoverySource,
 ): DiscoveryCard[] {
   const seen = new Set<string>();
@@ -377,17 +377,21 @@ export function HomeView(): JSX.Element {
   const authorized = state.auth.status === "authorized";
   const authorizationPending = state.auth.pending === true;
   const home = readHome(state);
+  // readHome rebuilds its sections each render, so the cards are keyed on the
+  // state arrays, which keep their identity between renders.
+  const recentItems = state.home.recentPlaylists;
+  const heavyItems = state.home.heavyRotation;
   const recentCards = useMemo(
     () =>
-      discoveryCards(home.recentPlaylists, "library").filter(
-        (card) => card.kind === "playlist",
-      ),
-    // readHome rebuilds its sections each render; the state arrays do not.
-    [state.home.recentPlaylists],
+      discoveryCards(
+        { items: recentItems, source: "library" },
+        "library",
+      ).filter((card) => card.kind === "playlist"),
+    [recentItems],
   );
   const heavyCards = useMemo(
-    () => discoveryCards(home.heavyRotation, "catalog"),
-    [state.home.heavyRotation],
+    () => discoveryCards({ items: heavyItems, source: "catalog" }, "catalog"),
+    [heavyItems],
   );
   const loading = home.status === "loading" || home.status === "refreshing";
 

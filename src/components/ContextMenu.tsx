@@ -424,10 +424,13 @@ export function ContextMenu(): JSX.Element | null {
       window.removeEventListener("contextmenu", onContextMenu);
       window.removeEventListener(CONTEXT_MENU_REQUEST, onRequest);
     };
-  }, [controller, router]);
+  }, [controller, extendedController, router]);
 
+  // Keyed on the request, not the menu: items refresh as lookups finish and
+  // must not re-register listeners or move focus.
+  const openRequestId = menu?.requestId;
   useEffect(() => {
-    if (!menu) return undefined;
+    if (openRequestId === undefined) return undefined;
     const close = (): void => {
       menuRequestRef.current += 1;
       setMenu(null);
@@ -502,7 +505,7 @@ export function ContextMenu(): JSX.Element | null {
       window.removeEventListener("resize", close);
       window.removeEventListener("blur", close);
     };
-  }, [menu?.requestId]);
+  }, [openRequestId]);
 
   useEffect(() => {
     if (!menu || !menuRef.current) return;

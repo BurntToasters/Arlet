@@ -71,6 +71,7 @@ export function PlayerBar(): JSX.Element {
     value: TrackNavigation;
   }>();
 
+  const artistRefsKey = JSON.stringify(current?.artistRefs ?? []);
   useEffect(() => {
     let active = true;
     if (!current) {
@@ -115,7 +116,7 @@ export function PlayerBar(): JSX.Element {
     current?.albumTitle,
     current?.artistName,
     current?.albumRef?.id,
-    JSON.stringify(current?.artistRefs ?? []),
+    artistRefsKey,
   ]);
 
   const navigation =

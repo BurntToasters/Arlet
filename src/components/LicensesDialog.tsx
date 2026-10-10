@@ -60,10 +60,17 @@ export function LicensesDialog({
   const [entries, setEntries] = useState<LicenseEntry[] | null>(null);
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  // The effect runs once; these keep it on the latest props without
+  // reloading the inventory or refocusing when a parent re-renders.
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     let active = true;
-    void load()
+    void loadRef
+      .current()
       .catch(() => [])
       .then((loaded) => {
         if (active) setEntries(loaded);
@@ -72,7 +79,7 @@ export function LicensesDialog({
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
       }
     };
     document.addEventListener("keydown", onKeyDown);

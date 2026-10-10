@@ -168,13 +168,20 @@ function AppLayout({
     };
   }, [controller]);
 
+  const {
+    current,
+    status: playbackStatus,
+    queueIndex,
+    shuffleMode,
+    repeatMode,
+  } = state.playback;
+  const queueLength = state.playback.queue.length;
   useEffect(() => {
-    const current = state.playback.current;
     if (
       !current ||
-      state.playback.status === "idle" ||
-      state.playback.status === "stopped" ||
-      state.playback.status === "error"
+      playbackStatus === "idle" ||
+      playbackStatus === "stopped" ||
+      playbackStatus === "error"
     ) {
       void clearWindowsMediaSession().catch(() => undefined);
       return;
@@ -184,22 +191,21 @@ function AppLayout({
       artist: current.artistName,
       album: current.albumTitle,
       artworkUrl: current.artwork?.url,
-      playbackStatus:
-        state.playback.status === "playing" ? "playing" : "paused",
-      playEnabled: state.playback.status !== "playing",
-      pauseEnabled: state.playback.status === "playing",
-      nextEnabled: state.playback.queueIndex < state.playback.queue.length - 1,
-      previousEnabled: state.playback.queueIndex > 0,
-      shuffle: state.playback.shuffleMode === "songs",
-      repeat: state.playback.repeatMode ?? "off",
+      playbackStatus: playbackStatus === "playing" ? "playing" : "paused",
+      playEnabled: playbackStatus !== "playing",
+      pauseEnabled: playbackStatus === "playing",
+      nextEnabled: queueIndex < queueLength - 1,
+      previousEnabled: queueIndex > 0,
+      shuffle: shuffleMode === "songs",
+      repeat: repeatMode ?? "off",
     }).catch(() => undefined);
   }, [
-    state.playback.current,
-    state.playback.status,
-    state.playback.queueIndex,
-    state.playback.queue.length,
-    state.playback.shuffleMode,
-    state.playback.repeatMode,
+    current,
+    playbackStatus,
+    queueIndex,
+    queueLength,
+    shuffleMode,
+    repeatMode,
   ]);
 
   useEffect(() => {

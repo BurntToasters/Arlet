@@ -124,14 +124,14 @@ function findResource(
 }
 
 function detailResource(
-  detail: ReturnType<typeof readDetail>,
+  detail: Pick<ReturnType<typeof readDetail>, "resource" | "item">,
   fallback: ResourceLike | undefined,
 ): ResourceLike | undefined {
   return toResource(detail.resource) ?? toResource(detail.item) ?? fallback;
 }
 
 function detailItems(
-  detail: ReturnType<typeof readDetail>,
+  detail: Pick<ReturnType<typeof readDetail>, "tracks" | "albums" | "items">,
   resource: ResourceLike | undefined,
 ): ResourceLike[] {
   const source =
@@ -278,13 +278,19 @@ export function LibraryDetailView({
     () => findResource(collectionItems, id),
     [collectionItems, id],
   );
+  const { resource: rawResource, item: rawItem } = detail;
+  const { tracks: rawTracks, albums: rawAlbums, items: rawItems } = detail;
   const resource = useMemo(
-    () => detailResource(detail, fallback),
-    [detail.resource, detail.item, fallback],
+    () => detailResource({ resource: rawResource, item: rawItem }, fallback),
+    [rawResource, rawItem, fallback],
   );
   const resources = useMemo(
-    () => detailItems(detail, resource),
-    [detail.tracks, detail.albums, detail.items, resource],
+    () =>
+      detailItems(
+        { tracks: rawTracks, albums: rawAlbums, items: rawItems },
+        resource,
+      ),
+    [rawTracks, rawAlbums, rawItems, resource],
   );
   const copy = detailCopy(kind);
   const DetailIcon = copy.icon;

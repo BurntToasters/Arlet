@@ -16,10 +16,10 @@ export default defineConfig({
       // A floor a little under today's numbers, so coverage cannot erode
       // unnoticed. E2E remains the main test; raise these as it grows.
       thresholds: {
-        statements: 53,
-        branches: 43,
-        functions: 50,
-        lines: 56,
+        statements: 58,
+        branches: 48,
+        functions: 60,
+        lines: 61,
       },
     },
   },

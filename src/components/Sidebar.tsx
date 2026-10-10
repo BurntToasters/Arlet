@@ -14,7 +14,7 @@ import {
   UserRound,
 } from "lucide-preact";
 import type { LucideIcon } from "lucide-preact";
-import type { JSX } from "preact";
+import type { JSX, TargetedEvent } from "preact";
 import { useAppRouter, useAppState } from "../app/context.tsx";
 import { libraryDetailKey, setUiState } from "../state.ts";
 import { openSupportPage } from "../platform/support.ts";
@@ -227,7 +227,7 @@ export function Sidebar(): JSX.Element {
     if (state.ui.sidebarOpen) setUiState({ sidebarOpen: false });
   };
 
-  const submitSearch = (event: JSX.TargetedEvent<HTMLFormElement>): void => {
+  const submitSearch = (event: TargetedEvent<HTMLFormElement>): void => {
     event.preventDefault();
     navigate({ kind: "search", query: query.trim() });
   };

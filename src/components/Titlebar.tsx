@@ -15,7 +15,7 @@ import {
   Square,
   X,
 } from "lucide-preact";
-import type { JSX } from "preact";
+import type { JSX, TargetedMouseEvent } from "preact";
 import appIconUrl from "../assets/app-icon.png";
 import {
   useAppController,
@@ -225,9 +225,7 @@ export function Titlebar(): JSX.Element {
     });
   };
 
-  const onTitlebarPointer = (
-    event: JSX.TargetedMouseEvent<HTMLElement>,
-  ): void => {
+  const onTitlebarPointer = (event: TargetedMouseEvent<HTMLElement>): void => {
     if (event.button !== 0) return;
     const target = event.target;
     if (!(target instanceof Element)) return;
@@ -236,7 +234,7 @@ export function Titlebar(): JSX.Element {
   };
 
   const onTitlebarDoubleClick = (
-    event: JSX.TargetedMouseEvent<HTMLElement>,
+    event: TargetedMouseEvent<HTMLElement>,
   ): void => {
     const target = event.target;
     if (!(target instanceof Element)) return;

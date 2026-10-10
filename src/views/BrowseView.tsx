@@ -6,7 +6,7 @@ import {
   RefreshCw,
   Sparkles,
 } from "lucide-preact";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import type { JSX } from "preact";
 import {
   useAppController,
@@ -70,12 +70,15 @@ export function BrowseView(): JSX.Element {
     browse.songs.length > 0 ||
     browse.albums.length > 0 ||
     browse.playlists.length > 0;
-  // Also reloads once a sign-in finishes, which resets Browse to idle. A
-  // load already in flight is not started again.
+  // Also reloads once a sign-in finishes, which resets Browse to idle. The
+  // in-flight state is read from a ref: as an effect trigger it would retry a
+  // failing load forever.
   const idle = browse.status === "idle";
   const pending = state.auth.pending;
+  const loadingRef = useRef(loading);
+  loadingRef.current = loading;
   useEffect(() => {
-    if (authorized && !pending && !loading)
+    if (authorized && !pending && !loadingRef.current)
       void Promise.resolve(controller.loadBrowse?.()).catch(() => undefined);
   }, [authorized, pending, idle, controller]);
 

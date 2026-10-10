@@ -666,12 +666,7 @@ export function LibraryView({
     if (section === "playlists" && extendedController.loadPlaylistFolder) {
       run(() => extendedController.loadPlaylistFolder?.());
     }
-  }, [
-    canView,
-    extendedController.loadLibrarySection,
-    extendedController.loadPlaylistFolder,
-    section,
-  ]);
+  }, [canView, extendedController, section]);
 
   const retry = (): void => {
     if (extendedController.refreshLibrarySection)
@@ -691,6 +686,10 @@ export function LibraryView({
       );
     }
   };
+  // The observer is rebuilt only when the list state changes; it calls the
+  // latest loadMore, which is recreated on every render.
+  const loadMoreRef = useRef(loadMore);
+  loadMoreRef.current = loadMore;
   useEffect(() => {
     const target = loadMoreTrigger.current;
     if (
@@ -707,7 +706,9 @@ export function LibraryView({
     }
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) loadMore();
+        if (entries.some((entry) => entry.isIntersecting)) {
+          loadMoreRef.current();
+        }
       },
       { rootMargin: "180px" },
     );

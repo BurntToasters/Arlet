@@ -1,6 +1,6 @@
 import { LoaderCircle, Plus, Search, X } from "lucide-preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import type { JSX } from "preact";
+import type { JSX, TargetedEvent } from "preact";
 import { useAppController, useAppState } from "../app/context.tsx";
 import type { Track } from "../domain/music.ts";
 import {
@@ -77,10 +77,8 @@ function toPlaylistOption(value: unknown): PlaylistOption | undefined {
   };
 }
 
-function localPlaylists(
-  state: ReturnType<typeof useAppState>,
-): PlaylistOption[] {
-  return state.library.collections.playlists.items
+function localPlaylists(items: readonly unknown[]): PlaylistOption[] {
+  return items
     .map(toPlaylistOption)
     .filter((item): item is PlaylistOption => Boolean(item))
     .filter((item) => item.canEdit !== false);
@@ -125,6 +123,9 @@ export function PlaylistDialogs(): JSX.Element | null {
   const dialogGeneration = useRef(0);
   const isOpenDialog = (generation: number): boolean =>
     dialogGeneration.current === generation;
+  // The Escape handler is registered per dialog, but must always run the
+  // current closeDialog, which reads the open dialog's focus target.
+  const closeDialogRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     const onRequest = (event: Event): void => {
@@ -166,11 +167,12 @@ export function PlaylistDialogs(): JSX.Element | null {
     };
     window.addEventListener(PLAYLIST_DIALOG_REQUEST, onRequest);
     return () => window.removeEventListener(PLAYLIST_DIALOG_REQUEST, onRequest);
-  }, []);
+  }, [controller]);
 
+  const playlistItems = state.library.collections.playlists.items;
   const availablePlaylists = useMemo(
-    () => localPlaylists(state),
-    [state.library.collections.playlists.items],
+    () => localPlaylists(playlistItems),
+    [playlistItems],
   );
 
   useEffect(() => {
@@ -214,7 +216,7 @@ export function PlaylistDialogs(): JSX.Element | null {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") {
         event.preventDefault();
-        closeDialog();
+        closeDialogRef.current();
         return;
       }
       if (event.key !== "Tab") return;
@@ -246,6 +248,7 @@ export function PlaylistDialogs(): JSX.Element | null {
     setDialog(null);
     if (focusTarget) window.setTimeout(() => focusTarget.focus(), 0);
   };
+  closeDialogRef.current = closeDialog;
 
   const addToPlaylist = (playlist: PlaylistOption): void => {
     if (!dialog?.tracks.length || !controller.addTracksToPlaylist) {
@@ -267,7 +270,7 @@ export function PlaylistDialogs(): JSX.Element | null {
       });
   };
 
-  const submitCreate = (event: JSX.TargetedEvent<HTMLFormElement>): void => {
+  const submitCreate = (event: TargetedEvent<HTMLFormElement>): void => {
     event.preventDefault();
     const generation = dialogGeneration.current;
     const trimmed = name.trim();
