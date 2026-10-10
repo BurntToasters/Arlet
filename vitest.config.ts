@@ -13,6 +13,14 @@ export default defineConfig({
       reportsDirectory: "coverage",
       include: ["src/**/*.ts"],
       exclude: ["src/__tests__/**", "src/vite-env.d.ts"],
+      // A floor a little under today's numbers, so coverage cannot erode
+      // unnoticed. E2E remains the main test; raise these as it grows.
+      thresholds: {
+        statements: 53,
+        branches: 43,
+        functions: 50,
+        lines: 56,
+      },
     },
   },
 });

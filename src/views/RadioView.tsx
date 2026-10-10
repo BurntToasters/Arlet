@@ -106,11 +106,15 @@ export function RadioView(): JSX.Element {
     radio.live.items.length > 0 ||
     radio.recent.items.length > 0;
 
+  // Also reloads once a sign-in finishes, which resets Radio to idle. A
+  // load already in flight is not started again.
+  const idle = radio.status === "idle";
+  const pending = state.auth.pending;
   useEffect(() => {
-    if (authorized) {
+    if (authorized && !pending && !loading) {
       void Promise.resolve(controller.loadRadio?.()).catch(() => undefined);
     }
-  }, [authorized, controller]);
+  }, [authorized, pending, idle, controller]);
 
   if (!authorized) {
     return (

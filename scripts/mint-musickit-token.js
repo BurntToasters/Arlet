@@ -117,14 +117,24 @@ export function assertP8OutsideRepo(p8Path, root = repoRoot) {
 export function upsertEnvKey(filePath, key, value) {
   let text = fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : "";
   const line = `${key}=${value}`;
-  const pattern = new RegExp(`^${key}=.*$`, "m");
-  if (pattern.test(text)) {
-    text = text.replace(pattern, () => line);
-  } else {
+  // The first line is replaced in place and later duplicates removed:
+  // dotenv keeps the last one, so a stale token further down would win.
+  const pattern = new RegExp(`^${key}=.*(\\r?\\n|$)`, "gm");
+  let replaced = false;
+  text = text.replace(pattern, (_match, ending) => {
+    if (replaced) return "";
+    replaced = true;
+    return `${line}${ending}`;
+  });
+  if (!replaced) {
     if (text.length > 0 && !text.endsWith("\n")) text += "\n";
     text += `${line}\n`;
   }
-  fs.writeFileSync(filePath, text);
+  // Written beside the target and renamed over it, so a crash cannot leave
+  // a truncated .env; owner-only where the platform honors the mode.
+  const temporary = `${filePath}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, text, { mode: 0o600 });
+  fs.renameSync(temporary, filePath);
 }
 
 export function resolveMintInput(env, root = repoRoot) {

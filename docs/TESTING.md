@@ -2,7 +2,8 @@
 
 ## Offline application smoke
 
-`npm run test:e2e` is an offline smoke gate for the production frontend. It
+`npm run test:e2e` is an offline smoke gate for the production frontend, not
+an end-to-end test of the app; the native suite below is. It
 builds the Vite output, confirms that `dist/index.html` references the local
 entrypoint and stylesheet, and checks the emitted bundle for the native
 diagnostics, updater target, startup-check, and update-modal paths. It also
@@ -16,14 +17,15 @@ reachable.
 
 ## Native app E2E
 
-`npm run test:e2e:app` (Windows only, opt-in) builds a release binary into
+`npm run test:e2e:app` (Windows only) builds a release binary into
 `src-tauri/target/e2e` with a synthetic MusicKit token, moves the per-user
 Arlet data folders aside, launches the app with WebView2 remote debugging, and
 drives it over the DevTools Protocol. It restores the data folders afterwards
 and writes `e2e-artifacts/<timestamp>/report.json` (binary SHA-256, commit,
 per-check results), `screenshot.png`, and the run's `arlet.log`. Close every
 running Arlet first; the app is single-instance. `--skip-build` reuses the
-last E2E binary.
+last E2E binary. `npm run test:all -- --require-clean-proof` (every release
+proof) runs this suite on Windows, so no release is recorded without it.
 
 Failure modes it covers:
 
@@ -36,8 +38,9 @@ Failure modes it covers:
 7. Removed plugins (`dialog`, `notification`) are still reachable.
 8. The app does not run on `http://tauri.localhost`, so origin-scoped
    tokens would break.
-9. A cache written by the former SQL plugin is lost on upgrade, the fixed
-   cache commands fail, or the generic SQL plugin is still reachable.
+9. A cache written by the former SQL plugin is lost on upgrade, is not moved
+   from the roaming config folder to local app data, the fixed cache commands
+   fail, or the generic SQL plugin is still reachable.
 10. The open-source licenses dialog is empty.
 11. With Apple's CDN unreachable, the cached library is not shown.
 12. A renderer crash leaves a blank window.
@@ -238,6 +241,22 @@ closing the window quits.
 - Top songs from a previous artist flash on the next artist page.
 - The shortcut list in Settings drifts from the real key handling.
 
+## Search, playlist dialogs, and support report
+
+`scripts/e2e-flows.js` drives these through the real UI against the fixture.
+
+- A submitted search shows no results, or results from the wrong source.
+- Playing a search result queues the wrong song or nothing at all.
+- Add to playlist sends the song to the wrong playlist, or the dialog stays
+  open after a successful add.
+- New playlist drops the typed name or the selected song, or a late reply
+  closes a dialog opened after it.
+- The copied diagnostics report is empty, lacks the app version, or contains
+  the developer or user token.
+
+The update-ready dialog is not driven here: it needs a signed installer from
+a live feed, so it is checked by hand on each release (see below).
+
 ## Release-only evidence
 
 The following checks require a Windows release environment and are kept out of
@@ -248,7 +267,9 @@ the deterministic smoke gate:
 - A real signed x64 and ARM64 canary installer is required to prove install,
   restart, architecture selection, and rollback behavior.
 - A published, signed updater manifest and its installer/signature sidecar are
-  required to prove the live stable or beta feed. Use the existing read-only
+  required to prove the live stable or beta feed, and the update-ready dialog
+  (it opens only once a real installer has downloaded; Install hands off to
+  the NSIS installer). Use the existing read-only
   release verification commands after publishing; they must not be replaced by
   provider-account fixtures.
 - Apple developer-token/account credentials are required for the manual

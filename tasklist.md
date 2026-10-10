@@ -1,8 +1,22 @@
 # Arlet Project Tasklist & Context
 
-This document tracks our progress through the Arlet `plan.md` architecture brief to easily pick up where we left off.
+This document tracks our progress through the Arlet `docs/history/plan.md` architecture brief to easily pick up where we left off.
 
-## 📌 Status (2026-10-02 — read first)
+## 📌 Status (2026-10-09 — read first)
+
+Stable releases have shipped (see `CHANGELOG.md`); `next-0.2.4` is in progress.
+
+- [x] **0.2.4 audit fixes (2026-10-09):** account switch cancels all
+      account-scoped work; queue loads no longer cancel a pending play;
+      sign-out keeps volume/mode state; pins backup validated; atomic writes
+      fsync; file commands off the UI thread with ordered saves; WebView2
+      restart-loop guard; main/diagnostic window navigation guards; library
+      cache in local app data with orphan cleanup; CHANGELOG parser handles
+      fences, RC headings, and every download link; SHA256SUMS.asc pinned to
+      the release key; native E2E is part of the release proof.
+- [ ] **Release VM `.env`:** set `GPG_RELEASE_FINGERPRINT` (full release key
+      fingerprint); release verification now requires it (or a long
+      `GPG_KEY_ID`).
 
 The Preact shell, library, search, browse, radio, playlists, queue, SMTC, and
 window materials are implemented; the 2026-09-11 notes below are history.
@@ -30,7 +44,7 @@ window materials are implemented; the 2026-09-11 notes below are history.
 - [ ] **Release VM `.env`:** `MUSICKIT_DEVELOPER_TOKEN` (≥ 30 days left),
       updater key + password, `AZURE_*`, `GPG_KEY_ID`, `AFTER_PACK_LOC`.
       Back up the updater key offline.
-- [ ] **Review `CHANGELOG.md` `v0.1.0`** wording before preflight.
+
 - [ ] **Final app icon:** current art is the temporary icon.
 - [ ] **Token expiry calendar:** the embedded token caps at 6 months; ship a
       release before it expires.
@@ -240,7 +254,7 @@ window materials are implemented; the 2026-09-11 notes below are history.
 
 ## 🚀 Milestones
 
-_See `plan.md` for full milestone details. "Implemented" means code exists;
+_See `docs/history/plan.md` for full milestone details. "Implemented" means code exists;
 protected playback still needs the Phase 0 matrix._
 
 - [x] **Milestone 1:** Core structure (navigation, window management, shell) — implemented
@@ -248,4 +262,4 @@ protected playback still needs the Phase 0 matrix._
 - [x] **Milestone 3:** User Library (albums, playlists, paged fetching, cache) — implemented
 - [x] **Milestone 4:** OS Integration (SMTC with timeline, Acrylic/Mica/Solid) — implemented
 - [x] **Milestone 5:** Polish & Performance (virtualized lists, offline cache, crash recovery)
-- [ ] **Milestone 6:** Release Engineering — tooling done; first release pending
+- [x] **Milestone 6:** Release Engineering — tooling done; stable releases shipping

@@ -120,6 +120,11 @@ export function PlaylistDialogs(): JSX.Element | null {
   const [description, setDescription] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
+  // Bumped whenever a dialog opens or closes. Async work for an earlier
+  // dialog must not close or update the one shown now.
+  const dialogGeneration = useRef(0);
+  const isOpenDialog = (generation: number): boolean =>
+    dialogGeneration.current === generation;
 
   useEffect(() => {
     const onRequest = (event: Event): void => {
@@ -131,6 +136,7 @@ export function PlaylistDialogs(): JSX.Element | null {
           detail.mode !== "folder")
       )
         return;
+      const generation = ++dialogGeneration.current;
       setDialog({
         mode: detail.mode,
         tracks: detail.tracks ?? [],
@@ -147,8 +153,12 @@ export function PlaylistDialogs(): JSX.Element | null {
       if (detail.mode === "picker" && controller.loadLibrarySection) {
         void Promise.resolve()
           .then(() => controller.loadLibrarySection?.("playlists"))
-          .catch((reason: unknown) => setError(errorMessage(reason)))
-          .finally(() => setLoadingPlaylists(false));
+          .catch((reason: unknown) => {
+            if (isOpenDialog(generation)) setError(errorMessage(reason));
+          })
+          .finally(() => {
+            if (isOpenDialog(generation)) setLoadingPlaylists(false);
+          });
       } else {
         setLoadingPlaylists(false);
       }
@@ -231,6 +241,7 @@ export function PlaylistDialogs(): JSX.Element | null {
   }, [dialog]);
 
   const closeDialog = (): void => {
+    dialogGeneration.current += 1;
     const focusTarget = dialog?.restoreFocus;
     setDialog(null);
     if (focusTarget) window.setTimeout(() => focusTarget.focus(), 0);
@@ -241,12 +252,16 @@ export function PlaylistDialogs(): JSX.Element | null {
       closeDialog();
       return;
     }
+    const generation = dialogGeneration.current;
     setBusy(true);
     setError(undefined);
     void controller
       .addTracksToPlaylist(playlist.id, dialog.tracks)
-      .then(() => closeDialog())
+      .then(() => {
+        if (isOpenDialog(generation)) closeDialog();
+      })
       .catch((reason: unknown) => {
+        if (!isOpenDialog(generation)) return;
         setBusy(false);
         setError(errorMessage(reason));
       });
@@ -254,6 +269,7 @@ export function PlaylistDialogs(): JSX.Element | null {
 
   const submitCreate = (event: JSX.TargetedEvent<HTMLFormElement>): void => {
     event.preventDefault();
+    const generation = dialogGeneration.current;
     const trimmed = name.trim();
     if (dialog?.mode === "folder") {
       if (!trimmed) {
@@ -268,8 +284,11 @@ export function PlaylistDialogs(): JSX.Element | null {
       setError(undefined);
       void controller
         .createPlaylistFolder(trimmed)
-        .then(() => closeDialog())
+        .then(() => {
+          if (isOpenDialog(generation)) closeDialog();
+        })
         .catch((reason: unknown) => {
+          if (!isOpenDialog(generation)) return;
           setBusy(false);
           setError(errorMessage(reason));
         });
@@ -291,8 +310,11 @@ export function PlaylistDialogs(): JSX.Element | null {
       description.trim(),
       dialog?.tracks ?? [],
     )
-      .then(() => closeDialog())
+      .then(() => {
+        if (isOpenDialog(generation)) closeDialog();
+      })
       .catch((reason: unknown) => {
+        if (!isOpenDialog(generation)) return;
         setBusy(false);
         setError(errorMessage(reason));
       });
@@ -355,7 +377,7 @@ export function PlaylistDialogs(): JSX.Element | null {
             </label>
             <div
               className="playlist-dialog-list"
-              role="listbox"
+              role="group"
               aria-label="Editable playlists"
             >
               {searching || (loadingPlaylists && results.length === 0) ? (
@@ -370,7 +392,6 @@ export function PlaylistDialogs(): JSX.Element | null {
                   <button
                     className="playlist-dialog-option"
                     type="button"
-                    role="option"
                     key={playlist.id}
                     disabled={busy}
                     onClick={() => addToPlaylist(playlist)}

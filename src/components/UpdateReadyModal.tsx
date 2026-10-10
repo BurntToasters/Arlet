@@ -35,6 +35,12 @@ export function UpdateReadyModal(): JSX.Element | null {
     };
   }, [controller, open]);
 
+  // Installing disables both buttons, which drops focus to <body> and out of
+  // the dialog's key handling; the dialog itself holds focus instead.
+  useEffect(() => {
+    if (open && installing) dialogRef.current?.focus();
+  }, [open, installing]);
+
   if (!open) return null;
 
   const version = state.updates.version ?? "the latest version";
@@ -71,6 +77,7 @@ export function UpdateReadyModal(): JSX.Element | null {
       <section
         ref={dialogRef}
         className="update-modal"
+        tabIndex={-1}
         onKeyDown={onDialogKeyDown}
         role="dialog"
         aria-modal="true"

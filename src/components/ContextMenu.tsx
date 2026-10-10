@@ -52,6 +52,7 @@ import {
 } from "./context-menu-events.ts";
 import { requestPlaylistDialog } from "./playlist-events.ts";
 import { reportActionError, reportQueueEdit } from "./action-errors.ts";
+import { safeErrorMessage } from "../app/controller-support.ts";
 import type { QueueEditTier } from "../musickit/queue-edit.ts";
 import type { StationTarget } from "../musickit/stations.ts";
 
@@ -367,7 +368,11 @@ export function ContextMenu(): JSX.Element | null {
             );
           })
           .catch((error: unknown) => {
-            if (menuRequestRef.current === requestId) reportActionError(error);
+            // A background lookup (offline, or a library-only song) must not
+            // toast just because the menu opened; the menu keeps its items.
+            controller.log(
+              `Song navigation lookup failed: ${safeErrorMessage(error)}`,
+            );
           });
       }
       // Rebuild once the rating is known so Love/Dislike labels are current.
@@ -443,6 +448,11 @@ export function ContextMenu(): JSX.Element | null {
         restoreFocusRef.current?.focus();
         return;
       }
+      // Tab moves focus out of the menu, so the menu closes with it.
+      if (event.key === "Tab") {
+        close();
+        return;
+      }
       const items = Array.from(
         menuRef.current?.querySelectorAll<HTMLButtonElement>(
           "button.context-menu-item:not(:disabled)",
@@ -465,9 +475,20 @@ export function ContextMenu(): JSX.Element | null {
         }
       }
     };
+    // Scrolling the page moves the anchor away; scrolling a menu that
+    // overflows is just reading it.
+    const onScroll = (event: Event): void => {
+      if (
+        event.target instanceof Node &&
+        menuRef.current?.contains(event.target)
+      ) {
+        return;
+      }
+      close();
+    };
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("scroll", close, true);
+    document.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", close);
     window.addEventListener("blur", close);
     const first = menuRef.current?.querySelector<HTMLButtonElement>(
@@ -477,7 +498,7 @@ export function ContextMenu(): JSX.Element | null {
     return () => {
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("scroll", close, true);
+      document.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", close);
       window.removeEventListener("blur", close);
     };
@@ -786,11 +807,18 @@ function buildItems({
         ),
       });
     }
+    // The same artist can be listed twice with one source; one entry each.
+    const artists = trackNavigation.artists.filter(
+      (artist, index, all) =>
+        all.findIndex(
+          (other) => other.id === artist.id && other.source === artist.source,
+        ) === index,
+    );
     const artistCounts = new Map<string, number>();
-    for (const artist of trackNavigation.artists) {
+    for (const artist of artists) {
       artistCounts.set(artist.id, (artistCounts.get(artist.id) ?? 0) + 1);
     }
-    for (const artist of trackNavigation.artists) {
+    for (const artist of artists) {
       items.push({
         id: `go-to-artist-${encodeURIComponent(artist.id)}${
           artistCounts.get(artist.id) === 1 ? "" : `-${artist.source}`

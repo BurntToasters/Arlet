@@ -6,8 +6,16 @@ pub fn supports_windows_build(build: u32) -> bool {
     build >= MINIMUM_WINDOWS_BUILD
 }
 
+/// The registry build is read first: `GetVersionExW` reports the real
+/// build only while the app manifest declares Windows 10 support, and
+/// otherwise claims 9200, which would refuse to start.
 #[cfg(windows)]
 pub fn current_windows_build() -> Option<u32> {
+    if let Some(build) =
+        read_current_version_string("CurrentBuild").and_then(|text| text.parse::<u32>().ok())
+    {
+        return Some(build);
+    }
     use windows::Win32::System::SystemInformation::{GetVersionExW, OSVERSIONINFOEXW};
     let mut version = OSVERSIONINFOEXW {
         dwOSVersionInfoSize: std::mem::size_of::<OSVERSIONINFOEXW>() as u32,
@@ -15,6 +23,28 @@ pub fn current_windows_build() -> Option<u32> {
     };
     unsafe { GetVersionExW((&mut version as *mut OSVERSIONINFOEXW).cast()) }.ok()?;
     Some(version.dwBuildNumber)
+}
+
+/// Shows a blocking error dialog. Release builds have no console, so a
+/// startup failure would otherwise exit without any message.
+pub fn show_error_dialog(message: &str) {
+    #[cfg(windows)]
+    {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+        let text: Vec<u16> = message.encode_utf16().chain([0]).collect();
+        let title: Vec<u16> = "Arlet".encode_utf16().chain([0]).collect();
+        unsafe {
+            let _ = MessageBoxW(
+                Some(HWND(std::ptr::null_mut())),
+                PCWSTR(text.as_ptr()),
+                PCWSTR(title.as_ptr()),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+    }
+    eprintln!("{message}");
 }
 
 #[cfg(not(windows))]

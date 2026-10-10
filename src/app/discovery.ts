@@ -7,6 +7,7 @@ import {
 import type { Track } from "../domain/music.ts";
 import {
   getState,
+  resetDiscoveryState,
   setBrowseState,
   setRadioState,
   setSearchState,
@@ -294,10 +295,17 @@ export function createDiscovery(
     setSearchSource,
     searchTracks,
     lastSearchTracks: (): Track[] => lastSearchTracks,
-    /** Invalidates in-flight searches and forgets results (sign-out). */
-    resetSearch(): void {
+    /**
+     * Invalidates in-flight browse, radio, and search responses and forgets
+     * search results. Runs on sign-out and authorization so a late response
+     * cannot land in the next account's state.
+     */
+    resetAccount(): void {
+      browseRequestId += 1;
+      radioRequestId += 1;
       searchRequestId += 1;
       lastSearchTracks = [];
+      resetDiscoveryState();
     },
   };
 }

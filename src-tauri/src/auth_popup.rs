@@ -33,6 +33,20 @@ pub fn decide_new_window<R: Runtime>(url: Url) -> NewWindowResponse<R> {
     }
 }
 
+/// The privileged main webview may only show the bundled app (or the dev
+/// server). Anything else would put a remote page inside the app chrome.
+pub fn is_allowed_main_navigation(url: &Url, dev_url: Option<&Url>) -> bool {
+    match url.scheme() {
+        "about" => url.as_str() == "about:blank",
+        "tauri" => true,
+        "http" | "https" => {
+            url.host_str() == Some("tauri.localhost")
+                || dev_url.is_some_and(|dev| dev.origin() == url.origin())
+        }
+        _ => false,
+    }
+}
+
 pub fn create_main_window(app: &App) -> Result<WebviewWindow, Box<dyn std::error::Error>> {
     let config = app
         .config()
@@ -42,11 +56,26 @@ pub fn create_main_window(app: &App) -> Result<WebviewWindow, Box<dyn std::error
         .find(|window| window.label == MAIN_WINDOW_LABEL)
         .cloned()
         .ok_or("tauri.conf.json is missing a window with label \"main\"")?;
+    let dev_url = if cfg!(debug_assertions) {
+        app.config().build.dev_url.clone()
+    } else {
+        None
+    };
     Ok(WebviewWindowBuilder::from_config(app.handle(), &config)?
         // Keep the window hidden through webview creation. Startup applies the
         // saved native material and custom chrome before the first show.
         .visible(false)
         .on_new_window(|url, _features| decide_new_window(url))
+        .on_navigation(move |url| {
+            let allowed = is_allowed_main_navigation(url, dev_url.as_ref());
+            if !allowed {
+                eprintln!(
+                    "Blocked main window navigation to {}",
+                    url.origin().ascii_serialization()
+                );
+            }
+            allowed
+        })
         .build()?)
 }
 

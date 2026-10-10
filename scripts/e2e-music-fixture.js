@@ -468,6 +468,9 @@ function installMusicKitFixture() {
     if (pathname === "/v1/me/library/songs") {
       return { data: Object.values(navResources).map(clone) };
     }
+    if (pathname === "/v1/catalog/us/search") {
+      return { results: { songs: { data: topSongItems.map(clone) } } };
+    }
     return { data: [] };
   };
 

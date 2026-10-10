@@ -27,28 +27,13 @@ use logging::LogFileLock;
 
 fn main() {
     if let Err(error) = commands::ensure_supported_windows() {
-        #[cfg(windows)]
-        {
-            use windows::core::PCWSTR;
-            use windows::Win32::Foundation::HWND;
-            use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
-            let mut text: Vec<u16> = error.encode_utf16().collect();
-            text.push(0);
-            let title: Vec<u16> = "Arlet".encode_utf16().chain([0]).collect();
-            unsafe {
-                let _ = MessageBoxW(
-                    Some(HWND(std::ptr::null_mut())),
-                    PCWSTR(text.as_ptr()),
-                    PCWSTR(title.as_ptr()),
-                    MB_OK | MB_ICONERROR,
-                );
-            }
-        }
-        eprintln!("{error}");
+        commands::show_error_dialog(&error);
         return;
     }
-    let mut builder = tauri::Builder::default().plugin(tauri_plugin_clipboard_manager::init());
+    let mut builder = tauri::Builder::default();
 
+    // Single-instance must be the first plugin, so a second launch exits
+    // before any other plugin initializes.
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -56,6 +41,10 @@ fn main() {
             // is minimized or hidden to the tray; focus alone leaves it on the taskbar.
             tray::show_main_window(app);
         }));
+    }
+    builder = builder.plugin(tauri_plugin_clipboard_manager::init());
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     }
 
@@ -177,5 +166,8 @@ fn main() {
             windows_media::clear_windows_media_session,
         ])
         .run(tauri::generate_context!())
-        .expect("failed to initialize Arlet");
+        .unwrap_or_else(|error| {
+            commands::show_error_dialog(&format!("Arlet could not start: {error}"));
+            std::process::exit(1);
+        });
 }

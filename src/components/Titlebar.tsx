@@ -138,18 +138,22 @@ export function Titlebar(): JSX.Element {
 
   useEffect(() => {
     let active = true;
-    void isWindowMaximized().then((value) => {
-      if (active && value !== undefined) setMaximized(value);
-    });
+    // A denied or failed IPC call only leaves the maximize icon as it is.
+    const syncMaximized = (): void => {
+      void isWindowMaximized()
+        .then((value) => {
+          if (active && value !== undefined) setMaximized(value);
+        })
+        .catch(() => undefined);
+    };
+    syncMaximized();
     let stopResize: (() => void) | undefined;
-    void listenWindowResize(() => {
-      void isWindowMaximized().then((value) => {
-        if (active && value !== undefined) setMaximized(value);
-      });
-    }).then((cleanup) => {
-      if (active) stopResize = cleanup;
-      else cleanup();
-    });
+    void listenWindowResize(syncMaximized)
+      .then((cleanup) => {
+        if (active) stopResize = cleanup;
+        else cleanup();
+      })
+      .catch(() => undefined);
     return () => {
       active = false;
       stopResize?.();

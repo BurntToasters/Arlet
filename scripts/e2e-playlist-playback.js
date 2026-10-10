@@ -5,6 +5,21 @@ const ALBUM_ID = "album-1";
 const SECOND_PLAYLIST_PAGE =
   "/v1/me/library/playlists/playlist-1/tracks?offset=4";
 
+/**
+ * Waits until the playlist's second page was requested and the play it
+ * belongs to finished (no control is busy), instead of a fixed delay that
+ * passes vacuously when the request is slow.
+ */
+async function waitForPlaylistLoadSettled(page, requestsBefore) {
+  return waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().requests
+        .slice(${requestsBefore})
+        .some((request) => String(request.path).includes(${JSON.stringify(SECOND_PLAYLIST_PAGE)})) &&
+      !document.querySelector('[aria-busy="true"]')`,
+  );
+}
+
 async function waitFor(page, expression, timeoutMs = 10_000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -323,7 +338,7 @@ export async function runPlaylistPlayback({ page, check }) {
     document.querySelectorAll(".library-track-row")[0]?.click();
     return true;
   `);
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await waitForPlaylistLoadSettled(page, workingQueue.requests.length);
   const afterRepeatedCursor = await page.evaluate(
     "return window.__ARLET_E2E_MUSIC__.snapshot();",
   );
@@ -345,6 +360,7 @@ export async function runPlaylistPlayback({ page, check }) {
     },
   );
 
+  const requestsBeforeFailure = afterRepeatedCursor.requests.length;
   await page.evaluate(`
     window.__ARLET_E2E_MUSIC__.configure({
       repeatPlaylistCursor: false,
@@ -353,7 +369,7 @@ export async function runPlaylistPlayback({ page, check }) {
     document.querySelectorAll(".library-track-row")[1]?.click();
     return true;
   `);
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await waitForPlaylistLoadSettled(page, requestsBeforeFailure);
   const afterPageFailure = await page.evaluate(
     "return window.__ARLET_E2E_MUSIC__.snapshot();",
   );

@@ -45,7 +45,7 @@
     "test:all": "node scripts/test-all.js",
     "test:scripts": "node --test scripts/*.test.js scripts/*.test.cjs",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src/ scripts/ && npm run lint:comments",
+    "lint": "eslint --max-warnings 0 src/ scripts/ && npm run lint:comments",
     "lint:comments": "node scripts/lint-comments.mjs src src-tauri/src scripts",
     "lint:fix": "eslint src/ scripts/ --fix",
     "format": "prettier --write \"src/**/*.{ts,css,html,json}\" \"scripts/**/*.{js,mjs,cjs,ts,json}\" \".github/workflows/*.{yml,yaml}\" \"*.{json,md,ts}\"",
@@ -73,7 +73,6 @@
     "b": "git fetch origin && git switch -C beta origin/beta && npm run vi",
     "r": "git fetch origin && git switch -C main origin/main && npm run vi && npm run gitprune:force",
     "u": "node scripts/npm-safe-update.mjs && node scripts/cargo-safe-update.mjs --manifest-path src-tauri/Cargo.toml && node scripts/sync-version.js",
-    "u2": "node scripts/npm-safe-update.mjs && node scripts/cargo-safe-update.mjs --manifest-path src-tauri/Cargo.toml && node scripts/sync-version.js",
     "win-compiler:x64": "powershell -NoProfile -ExecutionPolicy Bypass -NoExit -File scripts/launch-vs-devshell.ps1 -Arch x64",
     "win-compiler:arm64": "powershell -NoProfile -ExecutionPolicy Bypass -NoExit -File scripts/launch-vs-devshell.ps1 -Arch arm64",
     "setup:win:artifact-signing": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-windows-artifact-signing.ps1",
@@ -121,7 +120,7 @@
     "@types/node": "^24.19.1",
     "@typescript-eslint/eslint-plugin": "^8.71.0",
     "@typescript-eslint/parser": "^8.71.0",
-    "@vitest/coverage-v8": "^4.0.0",
+    "@vitest/coverage-v8": "^4.1.11",
     "dotenv-cli": "^11.0.0",
     "eslint": "^9.39.5",
     "jsdom": "^27.4.0",
@@ -129,6 +128,6 @@
     "prettier": "^3.9.9",
     "typescript": "^5.9.3",
     "vite": "^7.3.6",
-    "vitest": "^4.0.0"
+    "vitest": "^4.1.11"
   }
 }

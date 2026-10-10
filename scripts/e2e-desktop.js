@@ -313,13 +313,15 @@ export async function runDesktop({ page, check }) {
       events.emit("windows-media-seek", 999);
       events.emit("windows-media-seek", NaN);
       events.emit("windows-media-seek", -5);
+      // Sentinel: handled after the bad requests, so once it lands any
+      // seek they caused would already be recorded.
+      events.emit("windows-media-seek", 10);
       return true;`);
     const seekApplied = await waitFor(
       page,
-      "window.__ARLET_E2E_MUSIC__.snapshot().transitions.some((t) => t.type === 'seekToTime' && t.seconds === 180)",
+      "window.__ARLET_E2E_MUSIC__.snapshot().transitions.some((t) => t.type === 'seekToTime' && t.seconds === 10)",
       3000,
     );
-    await new Promise((resolve) => setTimeout(resolve, 300));
     const seeks = await page.evaluate(
       "return window.__ARLET_E2E_MUSIC__.snapshot().transitions.filter((t) => t.type === 'seekToTime').map((t) => t.seconds);",
     );
@@ -327,8 +329,9 @@ export async function runDesktop({ page, check }) {
       "system seek clamps to the duration and drops NaN or negative requests",
       emitted &&
         seekApplied &&
-        seeks.length === seeksBefore + 1 &&
-        seeks.at(-1) === 180,
+        seeks.length === seeksBefore + 2 &&
+        seeks.at(-2) === 180 &&
+        seeks.at(-1) === 10,
       {
         emitted,
         seekApplied,
@@ -359,11 +362,17 @@ export async function runDesktop({ page, check }) {
       3000,
     );
     await emitNative(page, "windows-media-repeat", "loop");
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    // Sentinel: the shuffle event is handled after "loop", so once it lands
+    // the unknown repeat value has been processed too.
+    await emitNative(page, "windows-media-shuffle", false);
+    await waitFor(
+      page,
+      "window.__ARLET_E2E_MUSIC__.snapshot().modes.shuffle === false",
+      3000,
+    );
     const unknownRepeatIgnored = await page.evaluate(
       "return window.__ARLET_E2E_MUSIC__.snapshot().modes.repeat === 2;",
     );
-    await emitNative(page, "windows-media-shuffle", false);
     await emitNative(page, "windows-media-repeat", "off");
     check(
       "system shuffle and repeat requests reach MusicKit",

@@ -18,8 +18,12 @@ import {
 import { safeErrorMessage } from "./controller-support.ts";
 
 export const MAX_SESSION_ITEMS = 500;
+/** Must match MAX_SESSION_BYTES in src-tauri/src/playback_session.rs. */
+export const MAX_SESSION_BYTES = 256 * 1024;
 export const SESSION_SAVE_DEBOUNCE_MS = 2_000;
 export const SESSION_SAVE_INTERVAL_MS = 15_000;
+
+const utf8Encoder = new TextEncoder();
 
 const artworkSchema = z.object({
   url: z.string().startsWith("https://").max(2048),
@@ -102,28 +106,36 @@ export function parsePlaybackSession(
   };
 }
 
-/** Writes at most MAX_SESSION_ITEMS entries, windowed around the current track. */
+/** Writes a bounded UTF-8 snapshot window that always contains the current track. */
 export function serializePlaybackSession(snapshot: {
   tracks: readonly Track[];
   index: number;
   positionSeconds: number;
   savedAt: number;
 }): string {
-  const start = Math.max(
+  const currentIndex = snapshot.tracks.length
+    ? Math.max(
+        0,
+        Math.min(Math.trunc(snapshot.index), snapshot.tracks.length - 1),
+      )
+    : 0;
+  const windowStart = Math.max(
     0,
     Math.min(
-      snapshot.index - Math.floor(MAX_SESSION_ITEMS / 2),
+      currentIndex - Math.floor(MAX_SESSION_ITEMS / 2),
       snapshot.tracks.length - MAX_SESSION_ITEMS,
     ),
   );
-  const window = snapshot.tracks.slice(start, start + MAX_SESSION_ITEMS);
-  const index = Math.max(
-    0,
-    Math.min(snapshot.index - start, window.length - 1),
+  const windowEnd = Math.min(
+    windowStart + MAX_SESSION_ITEMS,
+    snapshot.tracks.length,
   );
-  return JSON.stringify({
-    schemaVersion: 1,
-    items: window.map((track) => ({
+  const selectedIndex = currentIndex - windowStart;
+  let start = 0;
+  let end = windowEnd - windowStart;
+  const items: Record<string, unknown>[] = snapshot.tracks
+    .slice(windowStart, windowEnd)
+    .map((track) => ({
       id: track.id,
       catalogId: track.catalogId,
       resourceType: track.resourceType,
@@ -138,11 +150,77 @@ export function serializePlaybackSession(snapshot: {
           }
         : undefined,
       durationMs: track.durationMs,
-    })),
+    }));
+  const itemBytes = items.map(
+    (item) => utf8Encoder.encode(JSON.stringify(item)).byteLength,
+  );
+  const prefixBytes = [0];
+  for (const size of itemBytes) {
+    prefixBytes.push(prefixBytes[prefixBytes.length - 1] + size);
+  }
+
+  const serializedSize = (): number => {
+    const count = end - start;
+    const index = count > 0 ? selectedIndex - start : 0;
+    const envelope = JSON.stringify({
+      schemaVersion: 1,
+      items: [],
+      index,
+      positionSeconds: snapshot.positionSeconds,
+      savedAt: snapshot.savedAt,
+    });
+    const envelopeBytes = utf8Encoder.encode(envelope).byteLength;
+    if (count === 0) return envelopeBytes;
+    return envelopeBytes + prefixBytes[end] - prefixBytes[start] + count - 1;
+  };
+
+  while (end - start > 1 && serializedSize() > MAX_SESSION_BYTES) {
+    const leftOfCurrent = selectedIndex - start;
+    const rightOfCurrent = end - 1 - selectedIndex;
+    if (
+      leftOfCurrent > 0 &&
+      (leftOfCurrent >= rightOfCurrent || rightOfCurrent === 0)
+    ) {
+      start += 1;
+    } else if (rightOfCurrent > 0) {
+      end -= 1;
+    } else {
+      break;
+    }
+  }
+
+  if (end - start === 1 && serializedSize() > MAX_SESSION_BYTES) {
+    items[start] = {
+      id: snapshot.tracks[currentIndex].id,
+      title: snapshot.tracks[currentIndex].title,
+      artistName: snapshot.tracks[currentIndex].artistName,
+    };
+    itemBytes[start] = utf8Encoder.encode(
+      JSON.stringify(items[start]),
+    ).byteLength;
+    prefixBytes[0] = 0;
+    for (let position = 0; position < itemBytes.length; position += 1) {
+      prefixBytes[position + 1] = prefixBytes[position] + itemBytes[position];
+    }
+    if (serializedSize() > MAX_SESSION_BYTES) {
+      throw new RangeError(
+        "The current track exceeds the playback session size limit.",
+      );
+    }
+  }
+
+  const index = end > start ? selectedIndex - start : 0;
+  const json = JSON.stringify({
+    schemaVersion: 1,
+    items: items.slice(start, end),
     index,
     positionSeconds: snapshot.positionSeconds,
     savedAt: snapshot.savedAt,
   });
+  if (utf8Encoder.encode(json).byteLength > MAX_SESSION_BYTES) {
+    throw new RangeError("Playback session exceeds the serialized size limit.");
+  }
+  return json;
 }
 
 export interface PlaybackSessionDependencies {
@@ -151,6 +229,11 @@ export interface PlaybackSessionDependencies {
   log: (message: string) => void;
   playTracks: (tracks: readonly Track[], startIndex: number) => Promise<void>;
   seek: (seconds: number) => Promise<void>;
+  /**
+   * Changes with every play request. When it moved during the restored play,
+   * a newer play replaced it and the saved position must not be applied.
+   */
+  playIntent?: () => number;
 }
 
 export interface PlaybackSession {
@@ -166,6 +249,8 @@ export interface PlaybackSession {
    * it handled the request, so the caller skips the normal toggle.
    */
   resumePendingRestore(): Promise<boolean>;
+  /** True while the restored queue is being started. */
+  isResuming(): boolean;
   /** Deletes the saved file and cancels any save already scheduled. */
   clear(): Promise<void>;
 }
@@ -227,13 +312,23 @@ export function createPlaybackSession(
     if (!canSave()) return;
     const { playback } = getState();
     const savedAt = now();
+    let json: string;
+    try {
+      json = serializePlaybackSession({
+        tracks: playback.queue,
+        index: playback.queueIndex,
+        positionSeconds: playback.positionSeconds,
+        savedAt,
+      });
+    } catch (error) {
+      // Runs inside timers, pagehide, and position subscribers; a throw here
+      // would stop the remaining subscribers.
+      dependencies.log(
+        `Playback session not saved: ${safeErrorMessage(error)}`,
+      );
+      return;
+    }
     lastSaveAt = savedAt;
-    const json = serializePlaybackSession({
-      tracks: playback.queue,
-      index: playback.queueIndex,
-      positionSeconds: playback.positionSeconds,
-      savedAt,
-    });
     const saveGeneration = generation;
     void enqueue(async () => {
       if (saveGeneration !== generation) return;
@@ -336,8 +431,16 @@ export function createPlaybackSession(
     const { playback } = getState();
     const pending = playback.pendingRestore;
     try {
-      await dependencies.playTracks(playback.queue, playback.queueIndex);
-      if (pending && pending.positionSeconds > 0) {
+      const played = dependencies.playTracks(
+        playback.queue,
+        playback.queueIndex,
+      );
+      // playTracks registers its request before its first await.
+      const intent = dependencies.playIntent?.();
+      await played;
+      const replaced =
+        intent !== undefined && dependencies.playIntent?.() !== intent;
+      if (!replaced && pending && pending.positionSeconds > 0) {
         try {
           await dependencies.seek(pending.positionSeconds);
         } catch (error) {
@@ -393,6 +496,8 @@ export function createPlaybackSession(
     },
 
     tryRestore,
+
+    isResuming: (): boolean => resuming !== undefined,
 
     resumePendingRestore(): Promise<boolean> {
       // A second press while the first resume is running waits for it.

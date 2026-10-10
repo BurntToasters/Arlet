@@ -181,15 +181,6 @@ export function saveChecklistState(state: Record<string, boolean>): void {
   sessionStorage.setItem(CHECKLIST_STORAGE_KEY, JSON.stringify(state));
 }
 
-export function toggleChecklistItem(
-  state: Record<string, boolean>,
-  id: string,
-): Record<string, boolean> {
-  const next = { ...state, [id]: !state[id] };
-  saveChecklistState(next);
-  return next;
-}
-
 export function getSessionStartedAt(): Date {
   const existing = sessionStorage.getItem(SESSION_STARTED_KEY);
   if (existing) {
@@ -252,7 +243,7 @@ export function startNetworkObserver(
   observedHosts.clear();
 
   const originalFetch = window.fetch.bind(window);
-  window.fetch = (input, init) => {
+  const observingFetch: typeof window.fetch = (input, init) => {
     if (typeof input === "string") {
       recordHost(input, onHostsChanged);
     } else if (input instanceof URL) {
@@ -262,6 +253,7 @@ export function startNetworkObserver(
     }
     return originalFetch(input, init);
   };
+  window.fetch = observingFetch;
 
   let observer: PerformanceObserver | undefined;
   if (typeof PerformanceObserver !== "undefined") {
@@ -279,7 +271,8 @@ export function startNetworkObserver(
   }
 
   return () => {
-    window.fetch = originalFetch;
+    // A wrapper installed after this one stays in place.
+    if (window.fetch === observingFetch) window.fetch = originalFetch;
     observer?.disconnect();
   };
 }

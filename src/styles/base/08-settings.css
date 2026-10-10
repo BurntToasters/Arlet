@@ -85,7 +85,6 @@
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  outline: 0;
   background: var(--surface-raised);
   color: var(--text);
   font-size: 12px;

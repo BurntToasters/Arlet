@@ -3,7 +3,6 @@
 // reasserted whenever an existing draft is reused, because a wrong flag makes
 // GitHub's /releases/latest point at the wrong channel.
 
-const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { assertGitHubCliAuthenticated, githubApi } = require("./github-cli.cjs");

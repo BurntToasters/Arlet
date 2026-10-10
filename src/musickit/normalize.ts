@@ -282,6 +282,8 @@ function relationshipTotal(
 }
 
 function validArtworkUrl(value: string): boolean {
+  // An unfilled template placeholder would load as a broken image.
+  if (/[{}]/u.test(value)) return false;
   try {
     const parsed = new URL(value);
     return parsed.protocol === "https:" || parsed.protocol === "http:";
@@ -293,12 +295,19 @@ function validArtworkUrl(value: string): boolean {
 export function normalizeArtworkUrl(url: string, size: number): string {
   const dimension = Number.isFinite(size) && size > 0 ? Math.round(size) : 300;
   const source = typeof url === "string" ? url : "";
+  // Editorial and playlist art also template the crop ({c}) and format
+  // ({f}); "bb" keeps the whole image inside the box.
   return source
     .replace(/\{w\}/gu, String(dimension))
-    .replace(/\{h\}/gu, String(dimension));
+    .replace(/\{h\}/gu, String(dimension))
+    .replace(/\{c\}/gu, "bb")
+    .replace(/\{f\}/gu, "jpg");
 }
 
-function artworkFromUnknown(value: unknown, size = 300): Artwork | undefined {
+export function artworkFromUnknown(
+  value: unknown,
+  size = 300,
+): Artwork | undefined {
   const artwork = asRecord(value);
   const rawUrl = stringValue(artwork?.url);
   if (!rawUrl) return undefined;
@@ -445,7 +454,8 @@ function normalizeResourceTrack(
     stringValue(playParams?.catalogId) ??
     firstResourceId(relationshipData(resource, "catalog"));
   if (catalogId) track.catalogId = catalogId;
-  const catalogUrl = stringValue(attributes.url) ?? stringValue(resource.href);
+  // `href` is an API path (/v1/...), not a page link.
+  const catalogUrl = stringValue(attributes.url);
   if (catalogUrl) track.catalogUrl = catalogUrl;
   return track;
 }
@@ -612,13 +622,6 @@ export function normalizeMusicResourceRef(
   return { id, type: type as PlaylistTrackResourceType };
 }
 
-export function normalizeMusicResource(
-  value: unknown,
-): LibraryItem | undefined {
-  const resource = asRecord(value) as AppleMusicResource | undefined;
-  return resource ? normalizeLibraryItemResource(resource) : undefined;
-}
-
 export function normalizeTrackResource(
   resource: AppleMusicResource,
 ): Track | undefined {
@@ -633,12 +636,3 @@ export function normalizeTrackResource(
   }
   return normalizeResourceTrack(resource, type);
 }
-
-// Short aliases keep call sites readable while resource-suffixed names remain
-// available for callers that want to make the API boundary explicit.
-export const normalizeArtist = normalizeArtistResource;
-export const normalizeAlbum = normalizeAlbumResource;
-export const normalizePlaylist = normalizePlaylistResource;
-export const normalizePlaylistFolder = normalizePlaylistFolderResource;
-export const normalizeLibraryItem = normalizeLibraryItemResource;
-export const normalizeTrackFromResource = normalizeTrackResource;

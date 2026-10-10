@@ -138,15 +138,16 @@ function checkCredentialLeaks() {
       "release-preflight: warning: .env.local is ignored. House style is `.env`.",
     );
   }
-  // Private-key markers must not be staged.
+  // Private-key markers must not be staged. The staged content is scanned;
+  // file names alone can never contain the marker.
   const diff = (() => {
     try {
-      return git(["diff", "--cached", "--name-only"]);
+      return git(["diff", "--cached", "-U0", "--no-color", "--text"]);
     } catch {
       return "";
     }
   })();
-  if (diff && /BEGIN.*PRIVATE KEY/.test(diff)) {
+  if (diff && /^\+.*-----BEGIN[A-Z ]*PRIVATE KEY-----/m.test(diff)) {
     throw new Error("Staged diff appears to contain a private key.");
   }
 }

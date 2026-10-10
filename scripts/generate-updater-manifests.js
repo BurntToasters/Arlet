@@ -229,11 +229,6 @@ function main() {
       `[updater-manifests] Wrote ${name} (${Object.keys(manifest.platforms).length} platform(s)).`,
     );
   }
-  if (Object.keys(manifests).length < 2) {
-    console.warn(
-      "[updater-manifests] WARNING: fewer than 2 arch manifests; releases must ship x64 + ARM64.",
-    );
-  }
 }
 
 function isDirectExecution() {

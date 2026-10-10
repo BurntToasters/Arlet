@@ -112,16 +112,15 @@ function resourceSource(resource: ResourceLike): DetailSource | undefined {
 }
 
 function findResource(
-  state: ReturnType<typeof useAppState>,
-  kind: DetailKind,
+  items: readonly unknown[],
   id: string,
 ): ResourceLike | undefined {
-  const section =
-    kind === "album" ? "albums" : kind === "artist" ? "artists" : "playlists";
-  const collection = readCollection(state, section);
-  return collection.items
-    .map(toResource)
-    .find((resource) => resource?.id === id);
+  // Converts until the match instead of the whole collection.
+  for (const item of items) {
+    const resource = toResource(item);
+    if (resource?.id === id) return resource;
+  }
+  return undefined;
 }
 
 function detailResource(
@@ -269,11 +268,23 @@ export function LibraryDetailView({
     sourceDetail && sourceDetail.status !== "idle"
       ? sourceDetail
       : readDetail(state, kind, id);
-  const fallback = findResource(state, kind, id);
-  const resource = detailResource(detail, fallback);
+  // Keyed on the raw state arrays, which keep their identity between
+  // renders; `detail` and `resource` are rebuilt every render.
+  const collectionItems = readCollection(
+    state,
+    kind === "album" ? "albums" : kind === "artist" ? "artists" : "playlists",
+  ).items;
+  const fallback = useMemo(
+    () => findResource(collectionItems, id),
+    [collectionItems, id],
+  );
+  const resource = useMemo(
+    () => detailResource(detail, fallback),
+    [detail.resource, detail.item, fallback],
+  );
   const resources = useMemo(
     () => detailItems(detail, resource),
-    [detail, resource],
+    [detail.tracks, detail.albums, detail.items, resource],
   );
   const copy = detailCopy(kind);
   const DetailIcon = copy.icon;

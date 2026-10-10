@@ -3,7 +3,7 @@
 Arlet uses Windows System Media Transport Controls (SMTC) on Windows 10
 22H2 (build 19045) and newer, including Windows 11.
 
-## Target design (from `plan.md` sections 11.2 and 12)
+## Target design (from `docs/history/plan.md` sections 11.2 and 12)
 
 A narrow Rust adapter (`src-tauri/src/windows_media.rs`) bridges the
 frontend and Windows SMTC. The frontend stays the source of truth for

@@ -1,7 +1,9 @@
 /* Update confirmation */
 .update-modal-scrim {
   position: absolute;
-  z-index: 50;
+  /* Above the context menu (100) and playlist dialogs (110): the update
+     prompt can open while either is showing. */
+  z-index: 120;
   inset: 0;
   display: flex;
   align-items: center;

@@ -382,11 +382,12 @@ export function HomeView(): JSX.Element {
       discoveryCards(home.recentPlaylists, "library").filter(
         (card) => card.kind === "playlist",
       ),
-    [home.recentPlaylists],
+    // readHome rebuilds its sections each render; the state arrays do not.
+    [state.home.recentPlaylists],
   );
   const heavyCards = useMemo(
     () => discoveryCards(home.heavyRotation, "catalog"),
-    [home.heavyRotation],
+    [state.home.heavyRotation],
   );
   const loading = home.status === "loading" || home.status === "refreshing";
 

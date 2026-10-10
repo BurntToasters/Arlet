@@ -661,13 +661,47 @@ export function libraryDetailKey(
   return source === "catalog" ? `catalog:${id}` : id;
 }
 
+/** Detail entries kept per kind; each can hold thousands of songs. */
+const MAX_DETAIL_ENTRIES = 24;
+
+/**
+ * Writes `key` as the newest entry and drops the oldest ones past the cap,
+ * so visiting many albums or playlists does not grow memory all session.
+ */
+function withRecentDetail<T>(
+  entries: T,
+  key: string,
+  next: LibraryDetailState,
+): T {
+  const recent = { ...(entries as Record<string, unknown>) };
+  delete recent[key];
+  recent[key] = next;
+  // The kind object also carries its own unkeyed detail fields.
+  const baseFields = new Set(Object.keys(emptyLibraryDetail()));
+  const keys = Object.keys(recent).filter((name) => !baseFields.has(name));
+  for (const old of keys.slice(
+    0,
+    Math.max(0, keys.length - MAX_DETAIL_ENTRIES),
+  )) {
+    delete recent[old];
+  }
+  return recent as T;
+}
+
 export function setLibraryDetailState(
   kind: LibraryDetailKind,
   patch: Partial<LibraryDetailState>,
   id?: string,
   source?: MusicSource,
 ): void {
-  const current = state.library.details[kind];
+  // Keyed kinds hold one entry per ID; merge into that entry, not the map.
+  const key = id ? libraryDetailKey(id, source) : undefined;
+  const kindState = state.library.details[kind];
+  const current = key
+    ? ((kindState as unknown as Record<string, LibraryDetailState | undefined>)[
+        key
+      ] ?? emptyLibraryDetail())
+    : kindState;
   const next = {
     ...current,
     ...patch,
@@ -675,14 +709,10 @@ export function setLibraryDetailState(
       ? {}
       : { error: sanitizeRenderableError(patch.error) }),
   };
-  const key = id ? libraryDetailKey(id, source) : id;
   const details = key
     ? {
         ...state.library.details,
-        [kind]: {
-          ...current,
-          [key]: next,
-        },
+        [kind]: withRecentDetail(kindState, key, next),
       }
     : { ...state.library.details, [kind]: next };
   update({
@@ -767,6 +797,27 @@ export function setRadioState(patch: Partial<RadioState>): void {
   update({ ...state, radio: { ...state.radio, ...patch } });
 }
 
+/**
+ * Drops Browse, Radio, and search results for an account change. Requests in
+ * flight were invalidated, so their loading states would never settle; the
+ * views reload from idle. The search query and source stay as typed.
+ */
+export function resetDiscoveryState(): void {
+  update({
+    ...state,
+    browse: createInitialBrowseState(),
+    radio: createInitialRadioState(),
+    search: {
+      ...state.search,
+      status: "idle",
+      results: [],
+      catalog: emptySearchGroups(),
+      library: emptySearchGroups(),
+      error: undefined,
+    },
+  });
+}
+
 export function setPlaybackModes(
   patch: Partial<
     Pick<PlaybackState, "shuffleMode" | "repeatMode" | "modeCapabilities">
@@ -820,10 +871,13 @@ export function appendDiagnosticLog(line: string, failure = false): void {
   const failures = failure
     ? [...state.diagnostics.failures, safeLine].slice(-100)
     : state.diagnostics.failures;
-  update({
+  state = {
     ...state,
     diagnostics: { ...state.diagnostics, logs, failures },
-  });
+  };
+  // Only failures are rendered; notifying for every log line re-rendered
+  // the whole shell.
+  if (failure) notify();
 }
 
 export function clearDiagnosticLogs(): void {
@@ -931,8 +985,10 @@ export function setQueueSnapshot(
   countAsPlayed = true,
 ): void {
   setQueue(queue, queueIndex);
-  const current = queue[queueIndex];
-  if (current) setCurrentTrack(current, Math.max(0, queueIndex), countAsPlayed);
+  // setQueue clamps the index; read the song at the clamped position.
+  const index = state.playback.queueIndex;
+  const current = queue[index];
+  if (current) setCurrentTrack(current, index, countAsPlayed);
 }
 
 export function setPlaybackError(code: AppErrorCode, message: string): void {
@@ -982,6 +1038,11 @@ export function setRating(key: string, value: RatingValue): void {
   update({ ...state, ratings: { ...state.ratings, [key]: value } });
 }
 
+export function clearRatings(): void {
+  if (Object.keys(state.ratings).length === 0) return;
+  update({ ...state, ratings: {} });
+}
+
 export function resetState(): void {
   const settings = state.settings;
   const windowEffect = state.windowEffect;
@@ -991,8 +1052,24 @@ export function resetState(): void {
   // fields keeps the rendered route and URL synchronized.
   const navigation = state.navigation;
   const ui = state.ui;
+  // These describe the MusicKit instance and the app build, not the
+  // account. The instance outlives sign-out, so resetting them would leave
+  // the volume slider, mode buttons, and token notice out of sync.
+  const { volume, muted, modeCapabilities, shuffleMode, repeatMode } =
+    state.playback;
+  const developerTokenExpiresAt = state.developerTokenExpiresAt;
+  const initial = cloneInitialState();
   state = {
-    ...cloneInitialState(),
+    ...initial,
+    playback: {
+      ...initial.playback,
+      volume,
+      muted,
+      modeCapabilities,
+      shuffleMode,
+      repeatMode,
+    },
+    developerTokenExpiresAt,
     settings,
     windowEffect,
     updates,

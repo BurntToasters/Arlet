@@ -129,25 +129,104 @@ function cachedDetailPatch(
  */
 export function createLibraryLoader(
   context: ControllerContext,
-  libraryCache: LibraryCache,
+  storedCache: LibraryCache,
 ) {
   const { requireMusic, getMusic, now, log } = context;
   let libraryClient: AppleMusicLibraryClient | null = null;
   let cacheReady: Promise<void> | undefined;
+  /**
+   * False after a clear failed: the file may still hold the previous
+   * account's library, so reads skip it until a clear succeeds.
+   */
+  let cacheTrusted = true;
+  const libraryCache: LibraryCache = {
+    initialize: () => storedCache.initialize(),
+    readPage: (scope, section, cursor) =>
+      cacheTrusted
+        ? storedCache.readPage(scope, section, cursor)
+        : Promise.resolve(undefined),
+    readSection: (scope, section) =>
+      cacheTrusted
+        ? storedCache.readSection(scope, section)
+        : Promise.resolve(undefined),
+    writePage: (scope, section, page) =>
+      storedCache.writePage(scope, section, page),
+    clearSection: (scope, section) => storedCache.clearSection(scope, section),
+    setMeta: (meta) => storedCache.setMeta(meta),
+    getMeta: (scope) =>
+      cacheTrusted ? storedCache.getMeta(scope) : Promise.resolve(undefined),
+    clear: async (scope) => {
+      try {
+        await storedCache.clear(scope);
+      } catch (first) {
+        // One retry covers a briefly locked file.
+        try {
+          await storedCache.clear(scope);
+        } catch {
+          cacheTrusted = false;
+          throw first;
+        }
+      }
+      cacheTrusted = true;
+    },
+  };
+  /** Account generation whose cache metadata is already in state. */
+  let hydratedGeneration: number | undefined;
+  /** Sections with a refresh in flight; "load more" waits for it. */
+  const refreshingSections = new Set<LibrarySection>();
   const refreshedSections = new Set<LibrarySection>();
   const libraryRequests = new Map<LibrarySection, number>();
   const detailRequests = new Map<string, number>();
   let homeRequestId = 0;
+  let accountGeneration = 0;
+  let cacheMutationQueue: Promise<void> = Promise.resolve();
+  let cacheResetBarrier: Promise<void> = Promise.resolve();
 
-  const ensureLibraryCache = async (): Promise<void> => {
+  const isAccountGenerationCurrent = (generation: number): boolean =>
+    accountGeneration === generation;
+
+  const waitForCacheReset = async (generation: number): Promise<boolean> => {
+    const barrier = cacheResetBarrier;
+    await barrier;
+    return isAccountGenerationCurrent(generation);
+  };
+
+  const enqueueCacheMutation = (
+    isCurrent: () => boolean,
+    operation: () => Promise<void>,
+  ): Promise<boolean> => {
+    const queued = cacheMutationQueue.then(async () => {
+      if (!isCurrent()) return false;
+      await operation();
+      return true;
+    });
+    cacheMutationQueue = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+    return queued;
+  };
+
+  const ensureLibraryCache = async (
+    generation = accountGeneration,
+  ): Promise<void> => {
+    if (!(await waitForCacheReset(generation))) return;
     cacheReady ??= libraryCache.initialize().catch((error: unknown) => {
       log(`Library cache unavailable: ${safeErrorMessage(error)}`);
     });
     await cacheReady;
-    setLibraryHydrated(true);
+    if (!isAccountGenerationCurrent(generation)) return;
+    // Meta is read once per account; repeating it on every load cost two
+    // full-app notifies each time.
+    if (hydratedGeneration === generation) return;
+    hydratedGeneration = generation;
+    if (!getState().library.hydrated) setLibraryHydrated(true);
     try {
       const meta = await libraryCache.getMeta(LIBRARY_CACHE_SCOPE);
-      if (meta?.storefront || meta?.lastRefreshAt) {
+      if (
+        isAccountGenerationCurrent(generation) &&
+        (meta?.storefront || meta?.lastRefreshAt)
+      ) {
         setAccountSummary({
           storefront: meta.storefront,
           lastRefreshAt: meta.lastRefreshAt,
@@ -159,12 +238,24 @@ export function createLibraryLoader(
   };
 
   const clearLibraryCache = async (): Promise<void> => {
+    const generation = ++accountGeneration;
     refreshedSections.clear();
+    refreshingSections.clear();
+    libraryRequests.clear();
+    detailRequests.clear();
     homeRequestId += 1;
     clearHomeState();
     clearLibraryState();
+    const clear = enqueueCacheMutation(
+      () => isAccountGenerationCurrent(generation),
+      () => libraryCache.clear(LIBRARY_CACHE_SCOPE),
+    );
+    cacheResetBarrier = clear.then(
+      () => undefined,
+      () => undefined,
+    );
     try {
-      await libraryCache.clear(LIBRARY_CACHE_SCOPE);
+      await clear;
     } catch (error) {
       log(`Library cache clear failed: ${safeErrorMessage(error)}`);
     }
@@ -177,9 +268,11 @@ export function createLibraryLoader(
    * cache holds a signed-in library (sign-out clears it), show that instead.
    */
   const enterOfflineMode = async (): Promise<boolean> => {
+    const generation = accountGeneration;
     try {
-      await ensureLibraryCache();
+      await ensureLibraryCache(generation);
       const meta = await libraryCache.getMeta(LIBRARY_CACHE_SCOPE);
+      if (!isAccountGenerationCurrent(generation)) return false;
       if (!meta?.storefront && !meta?.lastRefreshAt) return false;
       setLibraryOffline(true);
       return true;
@@ -195,11 +288,15 @@ export function createLibraryLoader(
     cacheSection: string,
     id?: string,
     source?: MusicSource,
+    isCurrent: () => boolean = () => true,
   ): Promise<void> => {
+    await cacheResetBarrier;
+    if (!isCurrent()) return;
     const cached = await libraryCache.readSection<LibraryEntity>(
       LIBRARY_CACHE_SCOPE,
       cacheSection,
     );
+    if (!isCurrent()) return;
     if (!cached?.items.length) {
       setLibraryDetailState(
         kind,
@@ -260,10 +357,15 @@ export function createLibraryLoader(
   const libraryPage = async (
     section: LibrarySection,
     cursor: string | undefined,
+    isCurrent: () => boolean = () => true,
   ): Promise<CachedPage<LibraryEntity>> => {
     const raw = await fetchSectionPage(requireLibrary(), section, cursor);
     const storefront = String(requireMusic().storefrontId ?? "").trim();
-    if (storefront && storefront !== getState().library.account.storefront) {
+    if (
+      isCurrent() &&
+      storefront &&
+      storefront !== getState().library.account.storefront
+    ) {
       setAccountSummary({ storefront });
     }
     return asPage(raw, cursor, now());
@@ -271,14 +373,17 @@ export function createLibraryLoader(
 
   const hydrateLibrarySection = async (
     section: LibrarySection,
+    generation = accountGeneration,
   ): Promise<CachedPage<LibraryEntity> | undefined> => {
-    await ensureLibraryCache();
+    const isCurrent = (): boolean => isAccountGenerationCurrent(generation);
+    await ensureLibraryCache(generation);
+    if (!isCurrent()) return undefined;
     try {
       const cached = await libraryCache.readSection<LibraryEntity>(
         LIBRARY_CACHE_SCOPE,
         section,
       );
-      if (cached && cached.items.length > 0) {
+      if (isCurrent() && cached && cached.items.length > 0) {
         setLibraryCollectionItems(section, cached.items, {
           source: "cache",
           status: "success",
@@ -296,27 +401,54 @@ export function createLibraryLoader(
 
   const refreshLibrarySection = async (
     section: LibrarySection,
+    generation = accountGeneration,
   ): Promise<void> => {
+    if (!isAccountGenerationCurrent(generation)) return;
     if (isOffline()) throw new Error(OFFLINE_MESSAGE);
     const requestId = (libraryRequests.get(section) ?? 0) + 1;
     libraryRequests.set(section, requestId);
+    const isCurrent = (): boolean =>
+      isAccountGenerationCurrent(generation) &&
+      libraryRequests.get(section) === requestId;
     const current = getState().library.collections[section];
     setLibraryCollectionState(section, {
       status: current.items.length > 0 ? "refreshing" : "loading",
       error: undefined,
     });
+    refreshingSections.add(section);
     try {
-      const page = await libraryPage(section, undefined);
-      if (libraryRequests.get(section) !== requestId) return;
-      await ensureLibraryCache();
+      await refreshSectionPage(section, generation, isCurrent);
+    } finally {
+      if (
+        libraryRequests.get(section) === requestId ||
+        !isAccountGenerationCurrent(generation)
+      ) {
+        refreshingSections.delete(section);
+      }
+    }
+  };
+
+  const refreshSectionPage = async (
+    section: LibrarySection,
+    generation: number,
+    isCurrent: () => boolean,
+  ): Promise<void> => {
+    try {
+      const page = await libraryPage(section, undefined, isCurrent);
+      if (!isCurrent()) return;
+      await ensureLibraryCache(generation);
+      if (!isCurrent()) return;
       try {
-        await libraryCache.clearSection(LIBRARY_CACHE_SCOPE, section);
-        await libraryCache.writePage(LIBRARY_CACHE_SCOPE, section, page);
+        await enqueueCacheMutation(isCurrent, async () => {
+          await libraryCache.clearSection(LIBRARY_CACHE_SCOPE, section);
+          await libraryCache.writePage(LIBRARY_CACHE_SCOPE, section, page);
+        });
       } catch (error) {
         log(
           `Library cache write failed (${section}): ${safeErrorMessage(error)}`,
         );
       }
+      if (!isCurrent()) return;
       setLibraryCollectionItems(section, page.items, {
         source: "network",
         status: "success",
@@ -327,16 +459,18 @@ export function createLibraryLoader(
       const storefront = getState().library.account.storefront;
       setAccountSummary({ lastRefreshAt: page.updatedAt });
       try {
-        await libraryCache.setMeta({
-          scope: LIBRARY_CACHE_SCOPE,
-          storefront,
-          lastRefreshAt: page.updatedAt,
-        });
+        await enqueueCacheMutation(isCurrent, () =>
+          libraryCache.setMeta({
+            scope: LIBRARY_CACHE_SCOPE,
+            storefront,
+            lastRefreshAt: page.updatedAt,
+          }),
+        );
       } catch (error) {
         log(`Library cache metadata write failed: ${safeErrorMessage(error)}`);
       }
     } catch (error) {
-      if (libraryRequests.get(section) !== requestId) return;
+      if (!isCurrent()) return;
       const message = safeErrorMessage(error);
       const latest = getState().library.collections[section];
       setLibraryCollectionState(section, {
@@ -353,11 +487,14 @@ export function createLibraryLoader(
   const loadHome = async (
     options: { refresh?: boolean } = {},
   ): Promise<void> => {
+    const generation = accountGeneration;
     if (isOffline()) throw new Error(OFFLINE_MESSAGE);
     requireLibrary();
     const current = getState().home;
     if (!options.refresh && current.status === "success") return;
     const requestId = ++homeRequestId;
+    const isCurrent = (): boolean =>
+      isAccountGenerationCurrent(generation) && homeRequestId === requestId;
     setHomeState({
       status:
         current.recentPlaylists.length ||
@@ -379,7 +516,7 @@ export function createLibraryLoader(
         libraryMethod(client, "getRecommendations")(10),
       ),
     ]);
-    if (homeRequestId !== requestId) return;
+    if (!isCurrent()) return;
 
     const errors: HomeState["errors"] = {};
     let successful = 0;
@@ -440,39 +577,49 @@ export function createLibraryLoader(
     section: LibrarySection,
     options: { refresh?: boolean; cursor?: string } = {},
   ): Promise<void> => {
+    const generation = accountGeneration;
     if (isOffline()) {
-      await hydrateLibrarySection(section);
+      await hydrateLibrarySection(section, generation);
       return;
     }
     requireLibrary();
     if (options.cursor) {
-      await loadMoreLibrarySection(section, options.cursor);
+      await loadMoreLibrarySection(section, options.cursor, generation);
       return;
     }
     const current = getState().library.collections[section];
     let cached: CachedPage<LibraryEntity> | undefined;
     if (!options.refresh && current.items.length === 0) {
-      cached = await hydrateLibrarySection(section);
+      cached = await hydrateLibrarySection(section, generation);
     }
+    if (!isAccountGenerationCurrent(generation)) return;
     if (options.refresh || !refreshedSections.has(section)) {
       refreshedSections.add(section);
-      await refreshLibrarySection(section);
+      await refreshLibrarySection(section, generation);
     } else if (!cached && current.items.length === 0) {
-      await refreshLibrarySection(section);
+      await refreshLibrarySection(section, generation);
     }
   };
 
   const loadMoreLibrarySection = async (
     section: LibrarySection,
     cursorOverride?: string,
+    generation = accountGeneration,
   ): Promise<void> => {
+    if (!isAccountGenerationCurrent(generation)) return;
     if (isOffline()) return;
+    // A refresh replaces the list from its first page; appending a page now
+    // would cancel that refresh, so wait for the refreshed list instead.
+    if (refreshingSections.has(section)) return;
     const client = requireLibrary();
     const current = getState().library.collections[section];
     const cursor = cursorOverride ?? current.next;
     if (!cursor) return;
     const requestId = (libraryRequests.get(section) ?? 0) + 1;
     libraryRequests.set(section, requestId);
+    const isCurrent = (): boolean =>
+      isAccountGenerationCurrent(generation) &&
+      libraryRequests.get(section) === requestId;
     setLibraryCollectionState(section, {
       status: "loading",
       error: undefined,
@@ -480,22 +627,26 @@ export function createLibraryLoader(
     try {
       const raw = await fetchSectionPage(client, section, cursor);
       const page = asPage(raw, cursor, now());
-      if (libraryRequests.get(section) !== requestId) return;
-      await ensureLibraryCache();
+      if (!isCurrent()) return;
+      await ensureLibraryCache(generation);
+      if (!isCurrent()) return;
       try {
-        await libraryCache.writePage(LIBRARY_CACHE_SCOPE, section, page);
+        await enqueueCacheMutation(isCurrent, () =>
+          libraryCache.writePage(LIBRARY_CACHE_SCOPE, section, page),
+        );
       } catch (error) {
         log(
           `Library cache write failed (${section}): ${safeErrorMessage(error)}`,
         );
       }
+      if (!isCurrent()) return;
       appendLibraryCollectionItems(section, page.items, {
         source: "network",
         next: page.next,
         lastUpdatedAt: page.updatedAt,
       });
     } catch (error) {
-      if (libraryRequests.get(section) !== requestId) return;
+      if (!isCurrent()) return;
       const message = safeErrorMessage(error);
       const latest = getState().library.collections[section];
       setLibraryCollectionState(section, {
@@ -559,6 +710,23 @@ export function createLibraryLoader(
       );
       return normalizedLibraryEntities(rawAlbums);
     }
+    const client = libraryClient;
+    // Test and preview clients may not implement the relationship.
+    if (client && typeof client.getArtistAlbums === "function") {
+      // The artist's own albums relationship lists every album, not just
+      // those on the first loaded page of the whole library.
+      const albums: LibraryEntity[] = [];
+      const seen = new Set<string>();
+      let cursor: string | undefined;
+      do {
+        const page = await client.getArtistAlbums(id, cursor);
+        albums.push(...asLibraryEntities(page));
+        cursor = asNext(page);
+        if (cursor && seen.has(cursor)) break;
+        if (cursor) seen.add(cursor);
+      } while (cursor && albums.length < MAX_DETAIL_ITEMS);
+      return albums;
+    }
     await loadLibrarySection("albums");
     return getState().library.collections.albums.items.filter((album) => {
       const candidate = album as LibraryEntity;
@@ -588,6 +756,7 @@ export function createLibraryLoader(
     isCurrent: () => boolean,
     onPage?: (items: LibraryEntity[], next: string | undefined) => void,
   ): Promise<{ items: LibraryEntity[]; next?: string } | undefined> => {
+    const generation = accountGeneration;
     const cacheSection = detailCacheSection(kind, id, source);
     const cursors = new Set<string>();
     let items = first.items;
@@ -612,17 +781,21 @@ export function createLibraryLoader(
     }
     if (!isCurrent()) return undefined;
     try {
-      await ensureLibraryCache();
-      await libraryCache.clearSection(LIBRARY_CACHE_SCOPE, cacheSection);
-      await libraryCache.writePage(LIBRARY_CACHE_SCOPE, cacheSection, {
-        cursor: undefined,
-        items: first.item ? [first.item, ...items] : items,
-        next: cursor,
-        updatedAt: now(),
+      await ensureLibraryCache(generation);
+      if (!isCurrent()) return undefined;
+      await enqueueCacheMutation(isCurrent, async () => {
+        await libraryCache.clearSection(LIBRARY_CACHE_SCOPE, cacheSection);
+        await libraryCache.writePage(LIBRARY_CACHE_SCOPE, cacheSection, {
+          cursor: undefined,
+          items: first.item ? [first.item, ...items] : items,
+          next: cursor,
+          updatedAt: now(),
+        });
       });
     } catch (error) {
       log(`${detailLabels(kind).write}: ${safeErrorMessage(error)}`);
     }
+    if (!isCurrent()) return undefined;
     return { items, next: cursor };
   };
 
@@ -644,12 +817,16 @@ export function createLibraryLoader(
       cursor: string,
     ) => Promise<{ items: LibraryEntity[]; next?: string }>,
   ): Promise<void> => {
+    const generation = accountGeneration;
+    const isAccountCurrent = (): boolean =>
+      isAccountGenerationCurrent(generation);
     if (isOffline()) {
       await loadOfflineDetail(
         kind,
         detailCacheSection(kind, id, source),
         id,
         source,
+        isAccountCurrent,
       );
       return;
     }
@@ -660,7 +837,7 @@ export function createLibraryLoader(
     const requestId = (detailRequests.get(requestKey) ?? 0) + 1;
     detailRequests.set(requestKey, requestId);
     const isCurrent = (): boolean =>
-      detailRequests.get(requestKey) === requestId;
+      isAccountCurrent() && detailRequests.get(requestKey) === requestId;
     const labels = detailLabels(kind);
     const setLoading = (): void =>
       setLibraryDetailState(
@@ -673,7 +850,8 @@ export function createLibraryLoader(
     let stalePage: CachedPage<LibraryEntity> | undefined;
     if (!explicit) {
       try {
-        await ensureLibraryCache();
+        await ensureLibraryCache(generation);
+        if (!isAccountCurrent()) return;
         const cached = await libraryCache.readSection<LibraryEntity>(
           LIBRARY_CACHE_SCOPE,
           cacheSection,
@@ -698,6 +876,7 @@ export function createLibraryLoader(
     } else {
       setLoading();
     }
+    if (!isAccountCurrent()) return;
     try {
       const detail = await fetchDetail(client, isCurrent);
       if (!detail || !isCurrent()) return;
@@ -712,10 +891,17 @@ export function createLibraryLoader(
       // revisit never collapses to the first page and jumps the scroll.
       const quiet = morePages && Boolean(stalePage?.items.length);
       if (!morePages) {
-        await ensureLibraryCache();
+        await ensureLibraryCache(generation);
+        if (!isCurrent()) return;
         try {
-          await libraryCache.clearSection(LIBRARY_CACHE_SCOPE, cacheSection);
-          await libraryCache.writePage(LIBRARY_CACHE_SCOPE, cacheSection, page);
+          await enqueueCacheMutation(isCurrent, async () => {
+            await libraryCache.clearSection(LIBRARY_CACHE_SCOPE, cacheSection);
+            await libraryCache.writePage(
+              LIBRARY_CACHE_SCOPE,
+              cacheSection,
+              page,
+            );
+          });
         } catch (error) {
           log(`${labels.write}: ${safeErrorMessage(error)}`);
         }
@@ -768,7 +954,8 @@ export function createLibraryLoader(
         return;
       }
       try {
-        await ensureLibraryCache();
+        await ensureLibraryCache(generation);
+        if (!isCurrent()) return;
         const cached = await libraryCache.readSection<LibraryEntity>(
           LIBRARY_CACHE_SCOPE,
           cacheSection,
@@ -888,8 +1075,21 @@ export function createLibraryLoader(
 
   const loadPlaylistFolder = async (id?: string): Promise<void> => {
     const section = `playlist-folder:${id ?? "root"}`;
+    const generation = accountGeneration;
+    const requestKey = `playlist-folder:${id ?? "root"}`;
+    const requestId = (detailRequests.get(requestKey) ?? 0) + 1;
+    detailRequests.set(requestKey, requestId);
+    const isCurrent = (): boolean =>
+      isAccountGenerationCurrent(generation) &&
+      detailRequests.get(requestKey) === requestId;
     if (isOffline()) {
-      await loadOfflineDetail("playlistFolder", section);
+      await loadOfflineDetail(
+        "playlistFolder",
+        section,
+        undefined,
+        undefined,
+        isCurrent,
+      );
       return;
     }
     const client = requireLibrary();
@@ -901,21 +1101,26 @@ export function createLibraryLoader(
       const raw = id
         ? await libraryMethod(client, "getPlaylistFolder")(id)
         : await libraryMethod(client, "getRootPlaylistFolder")();
+      if (!isCurrent()) return;
       const detail = detailFromResponse(raw);
       const items = flattenFolderChildren(raw);
       const updatedAt = now();
-      await ensureLibraryCache();
+      await ensureLibraryCache(generation);
+      if (!isCurrent()) return;
       try {
-        await libraryCache.clearSection(LIBRARY_CACHE_SCOPE, section);
-        await libraryCache.writePage(LIBRARY_CACHE_SCOPE, section, {
-          items: detail.item ? [detail.item, ...items] : items,
-          updatedAt,
+        await enqueueCacheMutation(isCurrent, async () => {
+          await libraryCache.clearSection(LIBRARY_CACHE_SCOPE, section);
+          await libraryCache.writePage(LIBRARY_CACHE_SCOPE, section, {
+            items: detail.item ? [detail.item, ...items] : items,
+            updatedAt,
+          });
         });
       } catch (cacheError) {
         log(
           `Playlist folder cache write failed: ${safeErrorMessage(cacheError)}`,
         );
       }
+      if (!isCurrent()) return;
       setLibraryDetailState("playlistFolder", {
         status: "success",
         source: "network",
@@ -926,12 +1131,15 @@ export function createLibraryLoader(
         stale: false,
       });
     } catch (error) {
+      if (!isCurrent()) return;
       try {
-        await ensureLibraryCache();
+        await ensureLibraryCache(generation);
+        if (!isCurrent()) return;
         const cached = await libraryCache.readSection<LibraryEntity>(
           LIBRARY_CACHE_SCOPE,
           section,
         );
+        if (!isCurrent()) return;
         if (cached?.items.length) {
           setLibraryDetailState("playlistFolder", {
             status: "success",
@@ -965,10 +1173,13 @@ export function createLibraryLoader(
   const refreshPlaylistsAfterMutation = async (
     failureLabel: string,
   ): Promise<void> => {
+    const generation = accountGeneration;
     refreshedSections.delete("playlists");
     try {
-      await refreshLibrarySection("playlists");
+      await refreshLibrarySection("playlists", generation);
+      if (!isAccountGenerationCurrent(generation)) return;
       await loadPlaylistFolder();
+      if (!isAccountGenerationCurrent(generation)) return;
       refreshedSections.add("playlists");
     } catch (error) {
       log(`${failureLabel}: ${safeErrorMessage(error)}`);

@@ -34,7 +34,9 @@ export default [
     },
   },
   {
-    files: ["scripts/**/*.{js,ts}", "e2e/**/*.js"],
+    // .cjs/.mjs carry most of the release tooling; without them listed
+    // here those files were linted with no rules at all.
+    files: ["scripts/**/*.{js,cjs,mjs,ts}"],
     languageOptions: {
       parser: tsParser,
     },

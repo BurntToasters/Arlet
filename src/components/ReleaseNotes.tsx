@@ -110,11 +110,17 @@ function inlineChildren(source: string, keyPrefix: string): InlineChild[] {
     }
 
     const marker = source[index];
-    if (marker === "*" || marker === "_") {
+    if (
+      (marker === "*" || marker === "_") &&
+      !(marker === "_" && isWordChar(source[index - 1]))
+    ) {
       const strongMarker = marker.repeat(2);
       if (source.startsWith(strongMarker, index)) {
         const strongEnd = find(strongMarker, index + 2);
-        if (strongEnd > index + 2) {
+        if (
+          strongEnd > index + 2 &&
+          !(marker === "_" && isWordChar(source[strongEnd + 2]))
+        ) {
           const content = source.slice(index + 2, strongEnd);
           if (!/^\s|\s$/u.test(content)) {
             children.push(
@@ -134,6 +140,7 @@ function inlineChildren(source: string, keyPrefix: string): InlineChild[] {
       const emphasisEnd = find(marker, index + 1);
       if (
         emphasisEnd > index + 1 &&
+        !(marker === "_" && isWordChar(source[emphasisEnd + 1])) &&
         !/^\s|\s$/u.test(source.slice(index + 1, emphasisEnd))
       ) {
         children.push(
@@ -156,6 +163,26 @@ function inlineChildren(source: string, keyPrefix: string): InlineChild[] {
 }
 
 const FENCE_PATTERN = /^\s*(`{3,}|~{3,})(.*)$/u;
+
+/**
+ * `_` inside a word (snake_case) is literal text, not emphasis, as in
+ * CommonMark. `*` has no such rule.
+ */
+function isWordChar(char: string | undefined): boolean {
+  return char !== undefined && /[\p{L}\p{N}]/u.test(char);
+}
+
+/**
+ * A closing fence repeats the opening character at least as many times,
+ * with only whitespace after it; ```js inside a block is content.
+ */
+function isClosingFence(line: string, marker: string): boolean {
+  const trimmed = line.trimStart();
+  let count = 0;
+  while (trimmed[count] === marker[0]) count += 1;
+  return count >= marker.length && trimmed.slice(count).trim() === "";
+}
+
 // Linear: closing hashes are stripped by headingText, not by backtracking.
 const HEADING_PATTERN = /^\s{0,3}(#{1,6})[ \t]+(\S.*)$/u;
 const UNORDERED_ITEM_PATTERN = /^\s{0,3}[-+*][ \t]+(.+)$/u;
@@ -205,7 +232,7 @@ function renderBlocks(
       index += 1;
       while (
         index < lines.length &&
-        !lines[index].trimStart().startsWith(fenceMarker)
+        !isClosingFence(lines[index], fenceMarker)
       ) {
         codeLines.push(lines[index]);
         index += 1;

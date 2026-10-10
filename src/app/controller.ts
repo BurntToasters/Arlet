@@ -352,6 +352,9 @@ export function createAppController(
     playTracks: playback.playTracks,
     setShuffleMode: playback.setShuffleMode,
   });
+  // A pause, including toggling a playing queue to pause, stops any playlist
+  // or station still loading so it cannot start after the pause.
+  const stopPauseListener = playback.onPause(() => collections.invalidate());
   const playTracks = (
     tracks: readonly Track[],
     startIndex = 0,
@@ -380,6 +383,7 @@ export function createAppController(
     log,
     playTracks,
     seek: playback.seek,
+    playIntent: playback.playIntent,
   });
   const updater =
     dependencies.updater ??
@@ -403,13 +407,22 @@ export function createAppController(
     }
   };
 
+  /**
+   * Every settings save goes through one queue and reads the settings when it
+   * runs, so an older snapshot can never land after a newer one.
+   */
+  const queueSettingsSave = (): Promise<void> => {
+    volumeSaveQueue = volumeSaveQueue
+      .then(() => savePersistedSettings(getState().settings, invokeFn))
+      .catch((error: unknown) => {
+        log(`Settings save failed: ${errorMessage(error)}`);
+      });
+    return volumeSaveQueue;
+  };
+
   const persistSettings = async (settings: AppSettings): Promise<void> => {
     setSettings(settings);
-    try {
-      await savePersistedSettings(settings, invokeFn);
-    } catch (error) {
-      log(`Settings save failed: ${errorMessage(error)}`);
-    }
+    await queueSettingsSave();
   };
 
   const autoSkip = createAutoSkip({
@@ -420,7 +433,12 @@ export function createAppController(
   });
 
   const sleepTimer = createSleepTimer({
-    pause: () => music?.pause(),
+    pause: () => {
+      if (!music) return;
+      void playback.pause().catch((error: unknown) => {
+        log(`Sleep timer pause failed: ${safeErrorMessage(error)}`);
+      });
+    },
     setState: setSleepTimer,
     readPlayback: () => getState().playback,
   });
@@ -440,15 +458,30 @@ export function createAppController(
     volumeSaveTimer = undefined;
     const waiters = volumeSaveWaiters;
     volumeSaveWaiters = [];
-    const settings = getState().settings;
-    volumeSaveQueue = volumeSaveQueue
-      .then(() => savePersistedSettings(settings, invokeFn))
-      .catch((error: unknown) => {
-        log(`Settings save failed: ${errorMessage(error)}`);
-      });
-    void volumeSaveQueue.then(() => {
+    void queueSettingsSave().then(() => {
       for (const resolve of waiters) resolve();
     });
+  };
+
+  /** Bumped on sign-in and sign-out; work started earlier must not land. */
+  let accountGeneration = 0;
+
+  /**
+   * Cancels everything tied to the current account. Sign-in runs it too,
+   * because the popup may sign in a different Apple ID.
+   */
+  const resetAccountScope = (): void => {
+    accountGeneration += 1;
+    collections.invalidate();
+    ratings.reset();
+    discovery.resetAccount();
+    playback.cancelPendingPlayback();
+    // A timer armed for this account must not pause the next sign-in.
+    sleepTimer.cancel();
+    playback.clearContinuation();
+    // Library artist mappings belong to the previous account.
+    stationResolver = undefined;
+    trackNavigation.clear();
   };
 
   const persistPins = async (
@@ -599,6 +632,7 @@ export function createAppController(
         const instance = requireMusic();
         authorizationStarted = true;
         setAuthPending(true);
+        resetAccountScope();
         // A fresh authorization may belong to a different Apple account. Drop
         // the previous session's metadata before MusicKit opens its popup.
         log("Authorizing… waiting for Apple Music sign-in window.");
@@ -614,6 +648,10 @@ export function createAppController(
         registerSensitiveValue(userToken);
         // Keep the user token private to MusicKit; only expose auth status.
         setAuthState({ status: "authorized" });
+        // A lookup made while the popup was open used the old sign-in; look
+        // the playing song's rating up again for the new one.
+        ratings.reset();
+        ratings.syncCurrentTrack();
         try {
           if (!library.client()) {
             library.setClient(createLibraryClient(instance));
@@ -653,10 +691,8 @@ export function createAppController(
     },
 
     async signOut(): Promise<void> {
-      collections.invalidate();
-      // A timer armed for this account must not pause the next sign-in.
-      sleepTimer.cancel();
-      playback.clearContinuation();
+      // Late responses from this account must not land after sign-out.
+      resetAccountScope();
       try {
         const instance = requireMusic();
         // Sign-out resets the UI to idle; audio must not keep playing.
@@ -666,9 +702,6 @@ export function createAppController(
           log(`Stop before sign-out failed: ${safeErrorMessage(error)}`);
         }
         await unauthorize(instance);
-        trackNavigation.clear();
-        // Library artist mappings belong to the signed-out account.
-        stationResolver = undefined;
         await clearLibraryCache();
         // Pins are local and not tied to an Apple ID; the next account to
         // sign in on this PC must not see them.
@@ -678,7 +711,7 @@ export function createAppController(
           log(`Pinned playlists clear failed: ${safeErrorMessage(error)}`);
         }
         await playbackSession.clear();
-        discovery.resetSearch();
+        discovery.resetAccount();
         resetState();
         setPins([]);
         setInitializationState({ status: "ready" });
@@ -944,9 +977,18 @@ export function createAppController(
       collections.invalidate();
       const mine = collections.generation();
       const instance = requireMusic();
-      const station = await stations().stationFor(target);
+      const superseded = (): boolean =>
+        collections.generation() !== mine || instance !== music;
+      let station: Station | undefined;
+      try {
+        station = await stations().stationFor(target);
+      } catch (error) {
+        // A lookup the user already replaced must not surface its failure.
+        if (superseded()) return;
+        throw error;
+      }
       // Other playback may have started while the lookup was pending.
-      if (collections.generation() !== mine || instance !== music) return;
+      if (superseded()) return;
       if (!station) {
         throw new Error(`No station is available for this ${target.kind}.`);
       }
@@ -954,15 +996,24 @@ export function createAppController(
     },
     async queueCollection(kind, id, source, where): Promise<void> {
       const instance = requireMusic();
+      const account = accountGeneration;
+      const playsBefore = collections.generation();
+      // Sign-out keeps the MusicKit instance, so the account generation is
+      // what stops a load from queueing the previous account's songs.
+      const stale = (): boolean =>
+        instance !== music || account !== accountGeneration;
       const tracks = await loadAllTracks(
         kind,
         id,
         source,
         requireLibrary(),
-        () => instance !== music,
+        stale,
       );
-      if (!tracks) return;
-      collections.invalidate();
+      if (!tracks || stale()) return;
+      // An older play still loading would replace the queue and drop these
+      // songs, so it is cancelled. A play started while this load ran is
+      // newer than the queue action and keeps going.
+      if (collections.generation() === playsBefore) collections.invalidate();
       await (where === "next"
         ? playback.playNextTracks(tracks)
         : playback.playLaterTracks(tracks));
@@ -989,6 +1040,8 @@ export function createAppController(
     },
 
     async togglePlayback(): Promise<void> {
+      // A second press while the restored queue starts means pause.
+      if (playbackSession.isResuming()) return playback.pause();
       if (await playbackSession.resumePendingRestore()) return;
       return playback.togglePlayback();
     },
@@ -1170,6 +1223,7 @@ export function createAppController(
 
     dispose(): void {
       playbackSession.stop();
+      stopPauseListener();
       collections.invalidate();
       sleepTimer.cancel();
       trackNavigation.clear();

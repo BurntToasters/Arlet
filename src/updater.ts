@@ -390,7 +390,9 @@ export function createUpdaterService(
         clearPending();
         emit({ releaseNotes: undefined });
       }
-      if (pendingUpdate) {
+      // A check that started before Install must not flip "installing" back
+      // to "ready", which would re-enable Install on the same resource.
+      if (pendingUpdate && !installInFlight) {
         emit({
           status: "ready",
           releaseNotes: releaseNotesForUpdate(pendingUpdate),
@@ -573,7 +575,7 @@ export function createUpdaterService(
 
     async installPending(): Promise<void> {
       const update = pendingUpdate;
-      if (!update || state.status === "installing") return;
+      if (!update || installInFlight) return;
       const installGeneration = generation;
       installInFlight = true;
       emit({
@@ -650,15 +652,4 @@ export function createUpdaterService(
       emit({ releaseNotes: undefined });
     },
   };
-}
-
-export function updateChannelLabel(channel: UpdateChannel): string {
-  switch (channel) {
-    case "stable":
-      return "Stable releases";
-    case "beta":
-      return "Beta releases";
-    case "auto":
-      return "Follow installed version";
-  }
 }

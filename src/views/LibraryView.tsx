@@ -239,7 +239,8 @@ export function toResource(value: unknown): ResourceLike | undefined {
         : typeof attributes.contentRating === "string"
           ? attributes.contentRating.toLowerCase() === "explicit"
           : undefined,
-    catalogUrl: stringValue(raw.catalogUrl, attributes.url, raw.href),
+    // `href` is an API path (/v1/...), not a page link.
+    catalogUrl: stringValue(raw.catalogUrl, attributes.url),
     catalogId: stringValue(raw.catalogId, attributes.catalogId),
     playable: typeof raw.playable === "boolean" ? raw.playable : undefined,
     addable: typeof raw.addable === "boolean" ? raw.addable : undefined,
@@ -339,13 +340,16 @@ export function readDetail(
   };
 }
 
+/** Shared empty list, so memos keyed on it do not rerun every render. */
+const NO_ITEMS: readonly unknown[] = [];
+
 function readPlaylistFolderItems(
   state: ReturnType<typeof useAppState>,
-): unknown[] {
+): readonly unknown[] {
   const library = readLibrary(state);
   const details = objectValue(library.details);
   const folder = objectValue(details?.playlistFolder);
-  return Array.isArray(folder?.items) ? folder.items : [];
+  return Array.isArray(folder?.items) ? folder.items : NO_ITEMS;
 }
 
 function formatUpdated(value: number | string | undefined): string {
@@ -631,7 +635,7 @@ export function LibraryView({
   const offline = state.library.offline;
   const canView = authorized || offline;
   const folderItems =
-    section === "playlists" ? readPlaylistFolderItems(state) : [];
+    section === "playlists" ? readPlaylistFolderItems(state) : NO_ITEMS;
   const resources = useMemo(() => {
     const items = [...folderItems, ...collection.items]
       .map(toResource)

@@ -6,8 +6,10 @@
 //
 // Runs: version drift check, typecheck, lint, format:check, vitest with
 // coverage, cargo fmt --check, cargo clippy -D warnings, cargo test, and the
-// deterministic built frontend smoke gate. Records a quality-gate proof for
-// the release pipeline on success.
+// deterministic built frontend smoke gate. With --require-clean-proof on
+// Windows it also runs the native app E2E (test:e2e:app) against a release
+// build, so a release proof always includes the real app. Records a
+// quality-gate proof for the release pipeline on success.
 //
 // Flags: --require-clean-proof --skip-e2e
 
@@ -37,6 +39,8 @@ const colors = {
 };
 const defaultTimeoutMs = 300_000;
 const rustTimeoutMs = process.platform === "win32" ? 1_200_000 : 600_000;
+// Includes the release build the native E2E makes first.
+const E2E_APP_TIMEOUT_MS = 2_400_000;
 
 function createInitialResults() {
   return {
@@ -50,6 +54,7 @@ function createInitialResults() {
     clippy: { status: "pending" },
     rust: { status: "pending" },
     e2e: { status: "pending" },
+    e2eApp: { status: "pending" },
   };
 }
 
@@ -221,6 +226,15 @@ function main({
     console.log(`${colors.blue}Skipping E2E (--skip-e2e).${colors.reset}\n`);
   } else {
     runner("e2e", npm, ["run", "test:e2e"], null, results);
+  }
+  // The native suite drives a release build of the real app and needs
+  // Windows; it gates every release proof but not everyday runs.
+  if (requireCleanProof && process.platform === "win32") {
+    runner("e2eApp", npm, ["run", "test:e2e:app"], null, results, {
+      timeout: E2E_APP_TIMEOUT_MS,
+    });
+  } else {
+    results.e2eApp.status = "skipped";
   }
 
   const exitCode = printSummary(results);

@@ -1,6 +1,6 @@
 import { createContext } from "preact";
 import { useContext, useEffect, useState } from "preact/hooks";
-import type { ComponentChildren, Context, JSX } from "preact";
+import type { ComponentChildren, JSX } from "preact";
 import {
   getState,
   subscribe,
@@ -64,8 +64,6 @@ export function usePlaybackPosition(): PlaybackPosition {
 export function useOptionalAppController(): AppController | null {
   return useContext(AppControllerContext);
 }
-
-export const AppContext: Context<AppController | null> = AppControllerContext;
 
 export function useAppRouter(): HashRouter {
   const router = useContext(AppRouterContext);

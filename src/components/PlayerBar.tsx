@@ -14,6 +14,7 @@ import {
   useAppRouter,
   useAppState,
 } from "../app/context.tsx";
+import { safeErrorMessage } from "../app/controller-support.ts";
 import { ratingKeyOf, trackRatingTarget } from "../app/ratings.ts";
 import type { AppErrorCode } from "../domain/errors.ts";
 import type { Track } from "../domain/music.ts";
@@ -96,7 +97,12 @@ export function PlayerBar(): JSX.Element {
         if (active) setResolvedNavigation({ track: current, value });
       })
       .catch((error: unknown) => {
-        if (active) reportActionError(error);
+        // A passive lookup on every song change must not toast offline.
+        if (active) {
+          controller.log(
+            `Song navigation lookup failed: ${safeErrorMessage(error)}`,
+          );
+        }
       });
     return () => {
       active = false;
@@ -190,7 +196,10 @@ export function PlayerBar(): JSX.Element {
           <div className="player-track-links">
             {navigation.artists.length ? (
               navigation.artists.map((artist, index) => (
-                <span className="player-track-link-group" key={artist.id}>
+                <span
+                  className="player-track-link-group"
+                  key={`${artist.source}:${artist.id}`}
+                >
                   {index > 0 ? <span aria-hidden="true">, </span> : null}
                   <button
                     type="button"

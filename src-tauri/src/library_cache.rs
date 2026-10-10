@@ -26,7 +26,7 @@ pub struct CacheMeta {
     pub last_refresh_at: Option<i64>,
 }
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 /// Apple pages hold a few hundred items; this bounds a hostile write.
 pub const MAX_PAGE_ITEMS: usize = 10_000;
 pub const MAX_KEY_LENGTH: usize = 2048;
@@ -50,6 +50,26 @@ CREATE TABLE IF NOT EXISTS music_page_items (
 CREATE TABLE IF NOT EXISTS cache_meta (
   scope TEXT PRIMARY KEY, storefront TEXT, last_refresh_at INTEGER);
 ";
+
+/// Version 2 indexes item links by resource so unreferenced resources can be
+/// found cheaply, and drops the orphans earlier builds left behind.
+const SCHEMA_V2: &str = "
+CREATE INDEX IF NOT EXISTS music_page_items_resource
+  ON music_page_items(scope, resource_type, resource_id);
+DELETE FROM music_resources WHERE NOT EXISTS (
+  SELECT 1 FROM music_page_items i WHERE i.scope = music_resources.scope
+    AND i.resource_type = music_resources.resource_type
+    AND i.resource_id = music_resources.resource_id);
+";
+
+/// Deletes a resource once no page links to it.
+const DELETE_IF_ORPHAN: &str = "DELETE FROM music_resources
+  WHERE scope = ?1 AND resource_type = ?2 AND resource_id = ?3
+    AND NOT EXISTS (SELECT 1 FROM music_page_items
+      WHERE scope = ?1 AND resource_type = ?2 AND resource_id = ?3)";
+
+/// Free pages above this share of the file trigger a VACUUM on open.
+const VACUUM_FREE_RATIO: f64 = 0.25;
 
 fn sql_error(error: rusqlite::Error) -> String {
     format!("Library cache error: {error}")
@@ -75,17 +95,78 @@ pub fn migrate(conn: &mut Connection) -> Result<(), String> {
     if version < 1 {
         tx.execute_batch(SCHEMA_V1).map_err(sql_error)?;
     }
+    if version < 2 {
+        tx.execute_batch(SCHEMA_V2).map_err(sql_error)?;
+    }
     tx.pragma_update(None, "user_version", SCHEMA_VERSION)
         .map_err(sql_error)?;
     tx.commit().map_err(sql_error)
 }
 
-fn open_and_migrate(path: &std::path::Path) -> Result<Connection, String> {
-    let mut conn = Connection::open(path).map_err(sql_error)?;
+struct OpenError {
+    message: String,
+    /// Only a corrupt file or one from a newer build may be deleted. A
+    /// transient error (busy, disk full) keeps the cache for the next try.
+    disposable: bool,
+}
+
+fn is_corruption(error: &rusqlite::Error) -> bool {
+    matches!(
+        error.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseCorrupt | rusqlite::ErrorCode::NotADatabase)
+    )
+}
+
+fn open_and_migrate(path: &std::path::Path) -> Result<Connection, OpenError> {
+    let sqlite = |error: rusqlite::Error| OpenError {
+        disposable: is_corruption(&error),
+        message: sql_error(error),
+    };
+    let mut conn = Connection::open(path).map_err(sqlite)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(sql_error)?;
-    migrate(&mut conn)?;
+        .map_err(sqlite)?;
+    let version: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(sqlite)?;
+    if version > SCHEMA_VERSION {
+        return Err(OpenError {
+            message: format!(
+                "Library cache schema {version} is newer than this build ({SCHEMA_VERSION})"
+            ),
+            disposable: true,
+        });
+    }
+    migrate(&mut conn).map_err(|message| OpenError {
+        disposable: message.contains("malformed") || message.contains("not a database"),
+        message,
+    })?;
+    compact_if_sparse(&conn);
     Ok(conn)
+}
+
+/// Deleted rows leave free pages behind; reclaim them once they make up a
+/// large share of the file.
+fn compact_if_sparse(conn: &Connection) {
+    let pragma =
+        |name: &str| conn.query_row(&format!("PRAGMA {name}"), [], |row| row.get::<_, i64>(0));
+    if let (Ok(pages), Ok(free)) = (pragma("page_count"), pragma("freelist_count")) {
+        if pages > 0 && free as f64 / pages as f64 > VACUUM_FREE_RATIO {
+            if let Err(error) = conn.execute_batch("VACUUM") {
+                eprintln!("Library cache VACUUM failed: {error}");
+            }
+        }
+    }
+}
+
+fn database_files(path: &std::path::Path) -> Vec<std::path::PathBuf> {
+    ["", "-journal", "-wal", "-shm"]
+        .iter()
+        .map(|suffix| {
+            let mut file = path.as_os_str().to_owned();
+            file.push(suffix);
+            std::path::PathBuf::from(file)
+        })
+        .collect()
 }
 
 /// The cache is disposable: a corrupt file or one from a newer build is
@@ -93,13 +174,30 @@ fn open_and_migrate(path: &std::path::Path) -> Result<Connection, String> {
 pub fn open_at(path: &std::path::Path) -> Result<Connection, String> {
     match open_and_migrate(path) {
         Ok(conn) => Ok(conn),
-        Err(first) => {
-            for suffix in ["", "-journal", "-wal", "-shm"] {
-                let mut file = path.as_os_str().to_owned();
-                file.push(suffix);
-                let _ = std::fs::remove_file(std::path::PathBuf::from(file));
+        Err(first) if first.disposable => {
+            for file in database_files(path) {
+                let _ = std::fs::remove_file(file);
             }
-            open_and_migrate(path).map_err(|second| format!("{first}; reset failed: {second}"))
+            open_and_migrate(path)
+                .map_err(|second| format!("{}; reset failed: {}", first.message, second.message))
+        }
+        Err(first) => Err(first.message),
+    }
+}
+
+/// Moves a cache from the roaming config dir (where the former SQL plugin
+/// kept it) to the local data dir, so a large disposable file does not roam
+/// with domain profiles. A failed move just starts a fresh cache.
+fn move_legacy_cache(legacy: &std::path::Path, target: &std::path::Path) {
+    if target.exists() || !legacy.exists() {
+        return;
+    }
+    for (from, to) in database_files(legacy)
+        .into_iter()
+        .zip(database_files(target))
+    {
+        if from.exists() && std::fs::rename(&from, &to).is_err() {
+            let _ = std::fs::remove_file(&from);
         }
     }
 }
@@ -299,6 +397,12 @@ pub fn write_page(
         rusqlite::params![scope, section, cursor, page.next, page.updated_at],
     )
     .map_err(sql_error)?;
+    let previous = linked_resources(
+        &tx,
+        "SELECT resource_type, resource_id FROM music_page_items
+         WHERE scope = ?1 AND section = ?2 AND cursor = ?3",
+        &[scope, section, cursor],
+    )?;
     tx.execute(
         "DELETE FROM music_page_items WHERE scope = ?1 AND section = ?2 AND cursor = ?3",
         [scope, section, cursor],
@@ -344,13 +448,52 @@ pub fn write_page(
             .map_err(sql_error)?;
         }
     }
+    delete_orphans(&tx, scope, &previous)?;
     tx.commit().map_err(sql_error)
+}
+
+fn linked_resources(
+    conn: &Connection,
+    query: &str,
+    params: &[&str],
+) -> Result<Vec<(String, String)>, String> {
+    conn.prepare(query)
+        .and_then(|mut statement| {
+            statement
+                .query_map(rusqlite::params_from_iter(params), |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()
+        })
+        .map_err(sql_error)
+}
+
+/// Drops resources that lost their last page link, or the table grows
+/// with every refresh that removes items.
+fn delete_orphans(
+    conn: &Connection,
+    scope: &str,
+    candidates: &[(String, String)],
+) -> Result<(), String> {
+    let mut statement = conn.prepare(DELETE_IF_ORPHAN).map_err(sql_error)?;
+    for (kind, id) in candidates {
+        statement
+            .execute(rusqlite::params![scope, kind, id])
+            .map_err(sql_error)?;
+    }
+    Ok(())
 }
 
 pub fn clear_section(conn: &mut Connection, scope: &str, section: &str) -> Result<(), String> {
     check_key("scope", scope)?;
     check_key("section", section)?;
     let tx = conn.transaction().map_err(sql_error)?;
+    let previous = linked_resources(
+        &tx,
+        "SELECT DISTINCT resource_type, resource_id FROM music_page_items
+         WHERE scope = ?1 AND section = ?2",
+        &[scope, section],
+    )?;
     for table in ["music_page_items", "music_pages"] {
         tx.execute(
             &format!("DELETE FROM {table} WHERE scope = ?1 AND section = ?2"),
@@ -358,6 +501,7 @@ pub fn clear_section(conn: &mut Connection, scope: &str, section: &str) -> Resul
         )
         .map_err(sql_error)?;
     }
+    delete_orphans(&tx, scope, &previous)?;
     tx.commit().map_err(sql_error)
 }
 
@@ -408,8 +552,8 @@ pub fn clear(conn: &mut Connection, scope: &str) -> Result<(), String> {
     tx.commit().map_err(sql_error)
 }
 
-/// Lazily opened connection; the file sits where the former SQL plugin kept
-/// it (app config dir) so existing caches carry over.
+/// Lazily opened connection in the local app data dir; a cache in the former
+/// roaming location is moved there on first open.
 #[derive(Default)]
 pub struct LibraryCacheState(std::sync::Mutex<Option<Connection>>);
 
@@ -424,9 +568,13 @@ fn with_conn<T>(
         .lock()
         .map_err(|_| "Library cache lock poisoned".to_string())?;
     if guard.is_none() {
-        let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+        let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        *guard = Some(open_at(&dir.join(DATABASE_FILE))?);
+        let path = dir.join(DATABASE_FILE);
+        if let Ok(legacy_dir) = app.path().app_config_dir() {
+            move_legacy_cache(&legacy_dir.join(DATABASE_FILE), &path);
+        }
+        *guard = Some(open_at(&path)?);
     }
     run(guard.as_mut().expect("connection opened above"))
 }

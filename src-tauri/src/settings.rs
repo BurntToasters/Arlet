@@ -150,7 +150,15 @@ pub fn atomic_write_text(path: &std::path::Path, content: &str) -> Result<(), St
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, content).map_err(|e| e.to_string())?;
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        file.write_all(content.as_bytes())
+            .map_err(|e| e.to_string())?;
+        // Flush data before the swap, or a power loss can leave the renamed
+        // file empty.
+        file.sync_all().map_err(|e| e.to_string())?;
+    }
 
     // `std::fs::rename` maps to MoveFileExW on Windows, but its default
     // semantics refuse to replace an existing destination. ReplaceFileW
@@ -245,13 +253,13 @@ fn write_settings_text(path: &std::path::Path, json: &str) -> Result<(), String>
     atomic_write_text(path, json)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn load_settings(app: tauri::AppHandle) -> Result<String, String> {
     let _guard = lock_settings()?;
     read_settings_text(&settings_path(&app)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_settings(app: tauri::AppHandle, json: String) -> Result<(), String> {
     let _guard = lock_settings()?;
     if RESET_PENDING.load(std::sync::atomic::Ordering::SeqCst) {
@@ -265,6 +273,10 @@ pub fn save_settings(app: tauri::AppHandle, json: String) -> Result<(), String> 
     }
     let parsed: serde_json::Value =
         serde_json::from_str(&json).map_err(|e| format!("Invalid settings JSON: {e}"))?;
+    // Load accepts only objects, so anything else would silently roll back.
+    if !parsed.is_object() {
+        return Err("Invalid settings JSON: expected an object".to_string());
+    }
     write_settings_text(&settings_path(&app)?, &json)?;
     let tray_icon = tray_icon_setting(&parsed);
     set_tray_icon(tray_icon);
@@ -284,16 +296,23 @@ pub fn reset_settings(app: tauri::AppHandle) -> Result<(), String> {
     {
         let _guard = lock_settings()?;
         RESET_PENDING.store(true, std::sync::atomic::Ordering::SeqCst);
-        let path = settings_path(&app)?;
-        // The backup goes too, or the next start would restore from it.
-        for file in [backup_path(&path), path] {
-            if file.exists() {
-                std::fs::remove_file(&file).map_err(|e| e.to_string())?;
+        let removed = (|| -> Result<(), String> {
+            let path = settings_path(&app)?;
+            // The backup goes too, or the next start would restore from it.
+            for file in [backup_path(&path), path] {
+                if file.exists() {
+                    std::fs::remove_file(&file).map_err(|e| e.to_string())?;
+                }
             }
+            // Window size and position reset too; RESET_PENDING stops the
+            // closing window from writing them back.
+            crate::window_state::remove_saved_state(&app)
+        })();
+        if let Err(error) = removed {
+            // No restart follows, so saves must keep working this session.
+            RESET_PENDING.store(false, std::sync::atomic::Ordering::SeqCst);
+            return Err(error);
         }
-        // Window size and position reset too; RESET_PENDING stops the closing
-        // window from writing them back.
-        crate::window_state::remove_saved_state(&app)?;
     }
     app.request_restart();
     Ok(())

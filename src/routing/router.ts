@@ -109,14 +109,6 @@ export function serializeRoute(route: Route): string {
   }
 }
 
-export function routeToHash(route: Route): string {
-  return serializeRoute(route);
-}
-
-export function hashToRoute(hash: string): Route {
-  return parseRoute(hash);
-}
-
 export interface HashRouter {
   getRoute(): Route;
   navigate(route: Route, replace?: boolean): void;

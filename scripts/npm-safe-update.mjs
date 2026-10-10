@@ -16,7 +16,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 import npmCli from "./npm-cli.cjs";
 import { isDirectExecutionOf } from "./direct-execution.mjs";
@@ -199,16 +199,28 @@ export function usesWindowsCmdShell(command) {
   return process.platform === "win32" && /\.cmd$/i.test(String(command));
 }
 
+/**
+ * With `shell: true` Node joins the arguments with spaces, unquoted. A cache
+ * path under a profile with a space would split, and cmd metacharacters
+ * would run; anything but plain characters is quoted.
+ */
+export function quoteCmdArgument(argument) {
+  const text = String(argument);
+  if (/^[\w@.:=/\\+-]+$/u.test(text)) return text;
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
 function run(
   command,
   args,
   { cwd = process.cwd(), env = process.env, capture = false } = {},
 ) {
-  const result = spawnSync(command, args, {
+  const shell = usesWindowsCmdShell(command);
+  const result = spawnSync(command, shell ? args.map(quoteCmdArgument) : args, {
     cwd,
     env,
     encoding: "utf8",
-    shell: usesWindowsCmdShell(command),
+    shell,
     windowsHide: true,
     stdio: capture ? "pipe" : "inherit",
   });

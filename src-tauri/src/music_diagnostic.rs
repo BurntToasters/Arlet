@@ -26,6 +26,14 @@ pub fn open_music_diagnostic(app: AppHandle) -> Result<String, String> {
         .title("Arlet — music.apple.com diagnostic (unprivileged)")
         .inner_size(1100.0, 800.0)
         .resizable(true)
+        // Apple's sign-in and player hosts only; the window shares the
+        // app's cookies, so it must not wander to arbitrary sites.
+        .on_navigation(|url| {
+            url.scheme() == "https"
+                && url
+                    .host_str()
+                    .is_some_and(|host| host == "apple.com" || host.ends_with(".apple.com"))
+        })
         .build()
         .map_err(|err| err.to_string())?;
     Ok("opened".to_string())

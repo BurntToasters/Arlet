@@ -76,6 +76,10 @@ export interface AppleMusicLibraryClient {
     cursor?: string | LibraryPageOptions,
   ): Promise<Page<Track>>;
   getArtist(id: string, source?: MusicSource): Promise<Artist | undefined>;
+  getArtistAlbums(
+    id: string,
+    cursor?: string | LibraryPageOptions,
+  ): Promise<Page<Album>>;
   getPlaylist(id: string, source?: MusicSource): Promise<Playlist | undefined>;
   getPlaylistTracks(
     id: string,
@@ -468,6 +472,40 @@ function mutationOptions(method: string, body?: unknown): RequestOptions {
   return { ...init, fetchOptions };
 }
 
+/**
+ * Apple's `next` cursor does not always repeat the page size, so later pages
+ * would fall back to 25 items; the requested limit is carried over.
+ */
+function withLimit(cursor: string, limit: number | undefined): string {
+  if (limit === undefined || /[?&]limit=/u.test(cursor)) return cursor;
+  return `${cursor}${cursor.includes("?") ? "&" : "?"}limit=${limit}`;
+}
+
+const FOLDER_REQUEST_CONCURRENCY = 4;
+
+/** Runs at most `limit` tasks at once, the rest in call order. */
+function createRequestLimiter(
+  limit: number,
+): <T>(task: () => Promise<T>) => Promise<T> {
+  let active = 0;
+  const waiting: (() => void)[] = [];
+  return async <T>(task: () => Promise<T>): Promise<T> => {
+    // A finished task hands its slot straight to the next waiter.
+    if (active >= limit) {
+      await new Promise<void>((resolve) => waiting.push(resolve));
+    } else {
+      active += 1;
+    }
+    try {
+      return await task();
+    } finally {
+      const next = waiting.shift();
+      if (next) next();
+      else active -= 1;
+    }
+  };
+}
+
 export function createAppleMusicLibraryClient(
   instance: MusicKit.MusicKitInstance,
 ): AppleMusicLibraryClient {
@@ -484,7 +522,7 @@ export function createAppleMusicLibraryClient(
     const firstQuery =
       limit === undefined ? query : { ...(query ?? {}), limit };
     const raw = cursorValue?.trim()
-      ? await request(cursorValue)
+      ? await request(withLimit(cursorValue, limit))
       : firstQuery === undefined
         ? await request(path)
         : await request(path, firstQuery);
@@ -510,6 +548,11 @@ export function createAppleMusicLibraryClient(
     return resource ? normalize(resource) : undefined;
   }
 
+  // Sibling folders load in parallel; this caps the requests in flight.
+  // Only network calls take a slot, so a parent waiting on its children
+  // never holds one.
+  const folderRequests = createRequestLimiter(FOLDER_REQUEST_CONCURRENCY);
+
   async function folderChildren(
     folderId: string,
     visited: Set<string>,
@@ -520,26 +563,29 @@ export function createAppleMusicLibraryClient(
     let pages = 0;
     do {
       pages += 1;
-      const raw = cursor
-        ? await request(cursor)
-        : await request(
-            `/v1/me/library/playlist-folders/${encodePathPart(folderId)}/children`,
-            { limit: 100 },
-          );
+      const pageCursor = cursor;
+      const raw = await folderRequests(() =>
+        pageCursor
+          ? request(pageCursor)
+          : request(
+              `/v1/me/library/playlist-folders/${encodePathPart(folderId)}/children`,
+              { limit: 100 },
+            ),
+      );
       const resources = resourceArray(raw) ?? [];
-      for (const value of resources) {
-        const resource = asRecord(value) as AppleMusicResource | undefined;
-        if (!resource) continue;
-        const item = normalizeLibraryItemResource(resource);
-        if (!item) continue;
-        if (item.resourceType?.includes("playlist-folder")) {
-          children.push(
-            await hydrateFolder(item as PlaylistFolder, folderId, visited),
-          );
-        } else {
-          children.push({ ...item, parentId: folderId } as LibraryItem);
-        }
-      }
+      const pageChildren = await Promise.all(
+        resources.map(async (value): Promise<LibraryItem | undefined> => {
+          const resource = asRecord(value) as AppleMusicResource | undefined;
+          if (!resource) return undefined;
+          const item = normalizeLibraryItemResource(resource);
+          if (!item) return undefined;
+          if (item.resourceType?.includes("playlist-folder")) {
+            return hydrateFolder(item as PlaylistFolder, folderId, visited);
+          }
+          return { ...item, parentId: folderId } as LibraryItem;
+        }),
+      );
+      for (const child of pageChildren) if (child) children.push(child);
       cursor = nextValue(raw);
       // A repeated or endless cursor must not hang the folder tree.
       if (cursor && seenCursors.has(cursor)) break;
@@ -672,6 +718,17 @@ export function createAppleMusicLibraryClient(
           ? `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/artists/${encodePathPart(id)}`
           : `/v1/me/library/artists/${encodePathPart(id)}`;
       return getOne(path, normalizeArtistResource);
+    },
+    async getArtistAlbums(
+      id: string,
+      cursor?: string | LibraryPageOptions,
+    ): Promise<Page<Album>> {
+      return getPage(
+        `/v1/me/library/artists/${encodePathPart(id)}/albums`,
+        cursor,
+        undefined,
+        normalizeAlbumResource,
+      );
     },
     async getPlaylist(
       id: string,
@@ -826,6 +883,8 @@ function ratingPath(type: RatingResourceType, id: string): string {
   return `/v1/me/ratings/${type}/${encodePathPart(trimmed)}`;
 }
 
+const MAX_RATING_IDS = 100;
+
 /** Loads ratings for the given ids; unrated ids are absent from the map. */
 export async function getRatings(
   request: MusicRequest,
@@ -834,14 +893,19 @@ export async function getRatings(
 ): Promise<Map<string, RatingValue>> {
   const values = new Map<string, RatingValue>();
   const list = ids.map((id) => id.trim()).filter(Boolean);
-  if (list.length === 0) return values;
-  const raw = await request(`/v1/me/ratings/${type}`, { ids: list.join(",") });
-  for (const value of resourceArray(raw) ?? []) {
-    const resource = asRecord(value);
-    const id = nonEmptyString(resource?.id);
-    if (!id) continue;
-    const rating = asRecord(resource?.attributes)?.value;
-    values.set(id, rating === 1 ? 1 : rating === -1 ? -1 : 0);
+  // Apple caps the ids in one ratings request.
+  for (let start = 0; start < list.length; start += MAX_RATING_IDS) {
+    const chunk = list.slice(start, start + MAX_RATING_IDS);
+    const raw = await request(`/v1/me/ratings/${type}`, {
+      ids: chunk.join(","),
+    });
+    for (const value of resourceArray(raw) ?? []) {
+      const resource = asRecord(value);
+      const id = nonEmptyString(resource?.id);
+      if (!id) continue;
+      const rating = asRecord(resource?.attributes)?.value;
+      values.set(id, rating === 1 ? 1 : rating === -1 ? -1 : 0);
+    }
   }
   return values;
 }

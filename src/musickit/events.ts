@@ -39,8 +39,10 @@ export function registerMusicKitEvents(
   onModeChange?: () => void,
 ): () => void {
   const onPlaybackStateChange = (event: Record<string, unknown>): void => {
-    const state = (event.state ?? event.oldState ?? 0) as number;
-    setPlaybackStatus(mapPlaybackState(state));
+    // `oldState` is the state being left; without `state`, ask the player.
+    const state =
+      typeof event.state === "number" ? event.state : instance.playbackState;
+    if (typeof state === "number") setPlaybackStatus(mapPlaybackState(state));
     onStateChange?.();
   };
   const onNowPlayingItemChange = (event: Record<string, unknown>): void => {

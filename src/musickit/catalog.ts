@@ -5,12 +5,13 @@ import type {
   Station,
   Track,
 } from "../domain/music.ts";
-import { mapErrorToCode } from "./errors.ts";
+import { httpStatusOf, mapErrorToCode } from "./errors.ts";
 import {
   normalizeAlbumResource,
   normalizeArtistResource,
   normalizeCatalogSong,
   normalizePlaylistResource,
+  artworkFromUnknown,
   normalizeTrackResource,
   type AppleMusicResource,
   type CatalogSongResource,
@@ -129,16 +130,26 @@ export interface MusicRequestOptions {
   languages?: () => readonly string[];
 }
 
+// MKError keeps the HTTP status and Response on `data`, and reports a 429
+// as errorCode QUOTA_EXCEEDED; httpStatusOf reads all of these.
 function isRateLimited(error: unknown): boolean {
-  const record = asRecord(error);
-  if (record?.status === 429 || record?.statusCode === 429) return true;
+  if (httpStatusOf(error) === 429) return true;
   return mapErrorToCode(error) === "RATE_LIMITED";
 }
 
 function retryAfterMs(error: unknown): number | undefined {
-  const headers = asRecord(asRecord(error)?.response)?.headers as
-    { get?: (name: string) => string | null } | undefined;
-  const seconds = Number(headers?.get?.("retry-after"));
+  const record = asRecord(error);
+  const header = [record?.data, record?.response]
+    .map(
+      (value) =>
+        asRecord(value)?.headers as
+          { get?: (name: string) => string | null } | undefined,
+    )
+    .map((headers) => headers?.get?.("retry-after"))
+    .find((value) => value !== undefined && value !== null);
+  // An absent header must not read as Number(null) === 0.
+  if (header === undefined || header === null) return undefined;
+  const seconds = Number(header);
   return Number.isFinite(seconds) && seconds >= 0
     ? Math.min(seconds * 1000, MAX_RETRY_AFTER_MS)
     : undefined;
@@ -211,9 +222,11 @@ export function createMusicRequest(
   };
 
   const resolveLanguage = (): Promise<string | undefined> => {
+    const storefront = String(instance.storefrontId ?? "").trim();
+    // Before sign-in there is no storefront yet; nothing is cached, so the
+    // language is looked up once one exists.
+    if (!storefront) return Promise.resolve(undefined);
     language ??= (async () => {
-      const storefront = String(instance.storefrontId ?? "").trim();
-      if (!storefront) return undefined;
       try {
         const resource = asRecord(
           (
@@ -323,6 +336,14 @@ export function songsFromSearchResponse(raw: unknown): CatalogSongResource[] {
   });
 }
 
+/** Apple accepts 1 to 25 search results per type; anything else is a 400. */
+function searchLimit(requested: number | undefined, fallback: number): number {
+  const value = requested ?? fallback;
+  return Number.isFinite(value)
+    ? Math.min(25, Math.max(1, Math.floor(value)))
+    : fallback;
+}
+
 export async function searchCatalogSongs(
   instance: MusicKit.MusicKitInstance,
   term: string,
@@ -332,11 +353,14 @@ export async function searchCatalogSongs(
   if (!trimmed) return [];
   const storefront = await resolveStorefront(instance);
   const request = resolveMusicKitMusicRequest(instance);
-  const raw = await request(`/v1/catalog/${storefront}/search`, {
-    term: trimmed,
-    types: "songs",
-    limit: options.limit ?? 25,
-  });
+  const raw = await request(
+    `/v1/catalog/${encodeURIComponent(storefront)}/search`,
+    {
+      term: trimmed,
+      types: "songs",
+      limit: searchLimit(options.limit, 25),
+    },
+  );
   return songsFromSearchResponse(raw).map(normalizeCatalogSong);
 }
 
@@ -351,17 +375,17 @@ export async function searchMusicResources(
     return { songs: [], albums: [], artists: [], playlists: [] };
   }
   const request = resolveMusicKitMusicRequest(instance);
-  const requestedLimit = options.limit ?? 10;
-  const limit = Number.isFinite(requestedLimit)
-    ? Math.max(0, Math.floor(requestedLimit))
-    : 10;
+  const limit = searchLimit(options.limit, 10);
   if (source === "catalog") {
     const storefront = await resolveStorefront(instance);
-    const raw = await request(`/v1/catalog/${storefront}/search`, {
-      term: trimmed,
-      types: "songs,albums,artists,playlists",
-      limit,
-    });
+    const raw = await request(
+      `/v1/catalog/${encodeURIComponent(storefront)}/search`,
+      {
+        term: trimmed,
+        types: "songs,albums,artists,playlists",
+        limit,
+      },
+    );
     return limitSearchGroups(normalizeSearchGroups(raw), limit);
   }
   const raw = await request("/v1/me/library/search", {
@@ -382,7 +406,7 @@ export async function loadBrowseCharts(
     : 20;
   const storefront = await resolveStorefront(instance);
   const raw = await resolveMusicKitMusicRequest(instance)(
-    `/v1/catalog/${storefront}/charts`,
+    `/v1/catalog/${encodeURIComponent(storefront)}/charts`,
     {
       chart: "most-played",
       types: "songs,albums,playlists",
@@ -421,11 +445,9 @@ export function normalizeStation(
   const attributes = asRecord(record?.attributes);
   const id = typeof record?.id === "string" ? record.id : undefined;
   if (!id) return undefined;
-  const artwork = asRecord(attributes?.artwork);
-  const artworkUrl = typeof artwork?.url === "string" ? artwork.url : undefined;
-  const url = artworkUrl
-    ? artworkUrl.replace(/\{w\}/gu, "300").replace(/\{h\}/gu, "300")
-    : undefined;
+  // Shared with every other resource: fills all template fields and drops
+  // URLs that are not http(s).
+  const artwork = artworkFromUnknown(attributes?.artwork, 300);
   const resourceType =
     typeof record?.type === "string" ? record.type : "stations";
   const isLive =
@@ -448,7 +470,7 @@ export function normalizeStation(
       typeof attributes?.description === "string"
         ? attributes.description
         : undefined,
-    artwork: url ? { url, width: 300, height: 300 } : undefined,
+    artwork,
     url: stationUrl(resource),
     isLive,
     resourceType,
@@ -475,7 +497,7 @@ export async function loadRadioStations(
   const path =
     kind === "recent"
       ? "/v1/me/recent/radio-stations"
-      : `/v1/catalog/${await resolveStorefront(instance)}/stations`;
+      : `/v1/catalog/${encodeURIComponent(await resolveStorefront(instance))}/stations`;
   const query =
     kind === "personal"
       ? { "filter[identity]": "personal", limit: 10 }

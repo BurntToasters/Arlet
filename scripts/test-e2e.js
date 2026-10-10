@@ -110,14 +110,15 @@ function verifyBuiltShell() {
 
   // These markers are emitted by separate runtime paths. Seeing them in the
   // same built entrypoint catches a disconnected entrypoint or tree-shaking
-  // mistake while remaining independent of any provider account.
+  // mistake while remaining independent of any provider account. They are
+  // command names and class names, not UI copy, so rewording text does not
+  // break the smoke; the native E2E covers behavior.
   for (const marker of [
     "Arlet shell ready.",
     "startupUpdateCheck",
     "get_app_info",
     "get_beta_updater_target",
-    "Update downloaded",
-    "Restart and update",
+    "update-modal-scrim",
   ]) {
     requireText(bundle, marker, "frontend entrypoint bundle");
   }

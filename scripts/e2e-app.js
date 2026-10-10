@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { MUSIC_FIXTURE_SEED, musicFixtureSource } from "./e2e-music-fixture.js";
 import { runLibraryActions } from "./e2e-library-actions.js";
 import { runPlaylistPlayback } from "./e2e-playlist-playback.js";
+import { runFlows } from "./e2e-flows.js";
 import { runSongNavigation } from "./e2e-song-navigation.js";
 import { runTransport } from "./e2e-transport.js";
 import { runQueueEdit } from "./e2e-queue-edit.js";
@@ -194,7 +195,25 @@ const DEFAULT_SETTINGS_FOR_E2E = {
   autoCheckUpdates: true,
   updateChannel: "auto",
   volume: 1,
+  autoplay: true,
+  restoreSession: true,
+  trayIcon: true,
 };
+
+/** Polls a condition instead of guessing how long the app needs. */
+async function waitUntil(condition, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) return true;
+    await sleep(250);
+  }
+  return condition();
+}
+
+/** Waits until no Arlet process is left, so files are no longer locked. */
+function waitForArletExit(timeoutMs = 15_000) {
+  return waitUntil(() => runningArletPid() === undefined, timeoutMs);
+}
 
 function processAlive(pid) {
   const out = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/NH"], {
@@ -941,6 +960,7 @@ async function run() {
         ["unavailable", runUnavailable],
         ["layout", runLayout],
         ["desktop", runDesktop],
+        ["flows", runFlows],
         // Last: it signs out at the end.
         ["session-restore", runSessionRestore],
       ]) {
@@ -989,8 +1009,10 @@ async function run() {
     void settle(page, "plugin:window|close", { label: "main" }).catch(
       () => undefined,
     );
-    await sleep(1500);
-    const hiddenInTray = visibleArletWindows(appPid) === 0;
+    const hiddenInTray = await waitUntil(
+      () => visibleArletWindows(appPid) === 0,
+      10_000,
+    );
     const aliveAfterClose = processAlive(appPid);
     const relaunch = spawn(EXE, [], {
       env: { ...process.env, MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN },
@@ -1068,24 +1090,31 @@ async function run() {
       { trayDisabled: trayDisabled.ok, appPid, alive: processAlive(appPid) },
     );
 
-    // Stop the app, then confirm the cache file was migrated in place.
+    // Stop the app, then confirm the roaming cache moved to the local data
+    // dir and migrated to the current schema.
     killArlet();
-    await sleep(1500);
-    const db = new DatabaseSync(path.join(dataDirs()[0], "arlet-library.db"), {
+    await waitForArletExit();
+    const legacyDb = path.join(dataDirs()[0], "arlet-library.db");
+    const db = new DatabaseSync(path.join(dataDirs()[1], "arlet-library.db"), {
       readOnly: true,
     });
     const version = db.prepare("PRAGMA user_version").get().user_version;
     db.close();
-    check("legacy cache database migrated to schema 1", version === 1, {
-      version,
-    });
+    check(
+      "legacy roaming cache moved to local data and migrated to schema 2",
+      version === 2 && !fs.existsSync(legacyDb),
+      {
+        version,
+        legacyLeft: fs.existsSync(legacyDb),
+      },
+    );
   } catch (error) {
     check("native E2E completes", false, String(error?.message ?? error));
   } finally {
     page?.close();
     if (child?.pid) {
       killArlet();
-      await sleep(1500);
+      await waitForArletExit();
     }
     restore(moved);
   }

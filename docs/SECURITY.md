@@ -18,9 +18,14 @@ grants the webview no additional permissions.
 
 The Phase 0 `music-diagnostic` window loads `https://music.apple.com/` with an
 empty permission list, `local: false`, and remote URL scope limited to that
-origin. It has zero Tauri commands. Do not scrape Apple's DOM, inject scripts
-into that page, or add privileges to that capability unless a later gate
-failure documents a narrowly scoped need.
+origin. It has zero Tauri commands, and its navigation is limited to
+`https://*.apple.com` because it shares the app's cookies. Do not scrape
+Apple's DOM, inject scripts into that page, or add privileges to that
+capability unless a later gate failure documents a narrowly scoped need.
+
+The main window refuses top-level navigation to anything but the bundled app
+(`tauri.localhost`, or the dev server in debug builds). A popup or a stray link
+can therefore never turn the privileged window into a remote page.
 
 MusicKit `authorize()` uses `window.open` to `authorize.music.apple.com`. Tauri
 2 denies webview popups unless `on_new_window` allows them. The main window is
@@ -28,8 +33,9 @@ created from Rust (`create: false`) so that handler can allow only Apple auth
 hosts and `about:blank`. Allowed popups use WebView2's default window (no Tauri
 IPC). Never log the authorize URL; the query string is the developer JWT.
 
-Content Security Policy in `src-tauri/tauri.conf.json` currently uses exact
-hosts for the MusicKit CDN and authorization frame, plus provisional
+Content Security Policy in `src-tauri/tauri.conf.json` limits scripts to the
+`https://js-cdn.music.apple.com/musickit/` path and uses an exact host for the
+authorization frame, plus provisional
 `https://*.apple.com` and `https://*.mzstatic.com` subdomain wildcards for
 image, connect, and media traffic. The observed host list is still pending;
 `docs/MUSICKIT_NETWORK_SURFACE.md` records that status and the provisional
@@ -92,8 +98,13 @@ Subresource Integrity because Apple updates it in place. The mitigation is to
 keep the grant small: the webview has no generic SQL, filesystem, shell,
 dialog, notification, or process access, and the library cache is reachable
 only through fixed, size-bounded commands (`src-tauri/src/library_cache.rs`).
-Clipboard read remains for paste in the context menu. Tauri's isolation
-pattern is the next step if the grant ever needs to grow.
+Clipboard read remains for paste in the context menu. Window permissions are
+the ones the custom title bar uses, plus `set-size` for the native E2E.
+Tauri's isolation pattern is the next step if the grant ever needs to grow.
+
+Now-playing artwork is fetched by Windows itself for the media overlay, so
+only `*.mzstatic.com` and `*.apple.com` artwork URLs are passed on; any other
+host would learn the user's IP address.
 
 ## Sign-out
 

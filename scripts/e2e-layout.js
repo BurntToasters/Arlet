@@ -76,7 +76,12 @@ export async function runLayout({ page, check }) {
     `);
     const playing = await waitFor(page, `${TITLE} === "Track C"`);
     await fixtureCall(page, "shuffleLikeMusicKit");
-    await sleep(500);
+    // The fixture announces shuffle last; once the button shows it, the
+    // player bar has rendered every queue event before it.
+    await waitFor(
+      page,
+      `document.querySelector('[aria-label="Toggle shuffle"]')?.getAttribute("aria-pressed") === "true"`,
+    );
     const titleAfter = await page.evaluate(`return ${TITLE};`);
     const snap = await fixtureCall(page, "snapshot");
     check(

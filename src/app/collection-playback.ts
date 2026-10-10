@@ -17,8 +17,13 @@ export interface CollectionPlayOptions {
 
 /** Uniform random index in [0, length) from the platform CSPRNG. */
 export function randomIndex(length: number): number {
+  // Values past the last whole multiple of `length` are redrawn, so the
+  // modulo below has no bias toward low indexes.
+  const limit = 2 ** 32 - (2 ** 32 % length);
   const values = new Uint32Array(1);
-  crypto.getRandomValues(values);
+  do {
+    crypto.getRandomValues(values);
+  } while (values[0] >= limit);
   return values[0] % length;
 }
 
@@ -66,7 +71,8 @@ export async function loadAllTracks(
 
 /**
  * Loads every page of a playlist or album, then starts the clicked occurrence
- * inside the full queue. Any newer playback request supersedes a pending load.
+ * inside the full queue. Any newer playback request or pause supersedes a
+ * pending load.
  */
 export function createCollectionPlayback(deps: CollectionPlaybackDeps) {
   let generation = 0;
@@ -98,7 +104,10 @@ export function createCollectionPlayback(deps: CollectionPlaybackDeps) {
   const playShuffled = async (tracks: readonly Track[]): Promise<void> => {
     if (tracks.length === 0) throw new Error("No songs are available.");
     invalidate();
+    const mine = generation;
     const { queue, index } = await prepareShuffle(deps.requireMusic(), tracks);
+    // A pause or newer request during shuffle setup supersedes this play.
+    if (mine !== generation) return;
     await deps.playTracks(queue, index);
   };
 
@@ -127,11 +136,17 @@ export function createCollectionPlayback(deps: CollectionPlaybackDeps) {
       let index = startIndex;
       if (options.shuffle) {
         ({ queue, index } = await prepareShuffle(instance, tracks));
+        // A pause or newer request during shuffle setup supersedes this play.
+        if (mine !== generation) return;
       }
       if (!Number.isInteger(index) || index < 0 || index >= queue.length) {
         throw new Error(`The selected ${kind} song is unavailable.`);
       }
       await deps.playTracks(queue, index);
+    } catch (error) {
+      // A request the user already replaced must not surface its failure.
+      if (mine !== generation) return;
+      throw error;
     } finally {
       if (mine === generation && getState().ui.pendingCollection) {
         setUiState({ pendingCollection: undefined });

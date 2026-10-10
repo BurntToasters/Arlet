@@ -95,7 +95,7 @@ fn redact_sensitive(text: &str) -> String {
     result
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn append_local_log(app: tauri::AppHandle, entry: String) -> Result<(), String> {
     let state = app.state::<LogFileLock>();
     let _guard = state
@@ -108,10 +108,18 @@ pub fn append_local_log(app: tauri::AppHandle, entry: String) -> Result<(), Stri
     }
     if let Ok(metadata) = std::fs::metadata(&path) {
         if metadata.len() > MAX_LOG_FILE_BYTES {
-            let _ = std::fs::remove_file(&path);
+            // Keep one rotated file so the history before a crash survives.
+            let rotated = path.with_extension("log.1");
+            let _ = std::fs::remove_file(&rotated);
+            if std::fs::rename(&path, &rotated).is_err() {
+                let _ = std::fs::remove_file(&path);
+            }
         }
     }
-    let safe_entry = redact_sensitive(&truncate_entry(&entry));
+    // Embedded line breaks would let one entry forge further log lines.
+    let safe_entry = redact_sensitive(&truncate_entry(&entry))
+        .replace('\r', "\\r")
+        .replace('\n', "\\n");
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -126,7 +134,7 @@ pub fn get_log_dir(app: tauri::AppHandle) -> Result<String, String> {
     log_dir(&app).map(|p| p.to_string_lossy().to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn clear_logs(app: tauri::AppHandle) -> Result<(), String> {
     let state = app.state::<LogFileLock>();
     let _guard = state

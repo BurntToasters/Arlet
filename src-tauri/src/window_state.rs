@@ -43,26 +43,52 @@ fn overlap(a: i32, a_len: u32, b: i32, b_len: u32) -> i64 {
 
 /// Returns the state to apply, or `None` when it would be off-screen or
 /// unusable. Sizes are clamped between the minimum and the monitor.
+#[cfg(test)]
 pub fn usable_state(state: WindowState, monitors: &[Rect]) -> Option<WindowState> {
+    let scales = vec![1.0; monitors.len()];
+    usable_state_scaled(state, monitors, &scales)
+}
+
+/// Like [`usable_state`], with each monitor's scale factor. The minimum size
+/// is logical, so it is scaled to the physical pixels the state is saved in.
+/// The monitor holding most of the window wins, so a window on a large
+/// secondary monitor is not shrunk to fit the primary.
+pub fn usable_state_scaled(
+    state: WindowState,
+    monitors: &[Rect],
+    scales: &[f64],
+) -> Option<WindowState> {
     if state.width == 0 || state.height == 0 {
         return None;
     }
     // Clamp first: a tiny saved size is still a usable position once it is
     // grown to the minimum.
-    monitors.iter().find_map(|monitor| {
-        let clamped = WindowState {
-            width: state.width.clamp(MIN_WIDTH, monitor.width.max(MIN_WIDTH)),
-            height: state
-                .height
-                .clamp(MIN_HEIGHT, monitor.height.max(MIN_HEIGHT)),
-            ..state
-        };
-        let visible = overlap(clamped.x, clamped.width, monitor.x, monitor.width)
-            >= i64::from(MIN_VISIBLE)
-            && overlap(clamped.y, clamped.height, monitor.y, monitor.height)
-                >= i64::from(MIN_VISIBLE);
-        visible.then_some(clamped)
-    })
+    monitors
+        .iter()
+        .zip(scales.iter().copied().chain(std::iter::repeat(1.0)))
+        .filter_map(|(monitor, scale)| {
+            let scale = if scale.is_finite() && scale > 0.0 {
+                scale
+            } else {
+                1.0
+            };
+            let min_width = (f64::from(MIN_WIDTH) * scale).round() as u32;
+            let min_height = (f64::from(MIN_HEIGHT) * scale).round() as u32;
+            let clamped = WindowState {
+                width: state.width.clamp(min_width, monitor.width.max(min_width)),
+                height: state
+                    .height
+                    .clamp(min_height, monitor.height.max(min_height)),
+                ..state
+            };
+            let visible_x = overlap(clamped.x, clamped.width, monitor.x, monitor.width);
+            let visible_y = overlap(clamped.y, clamped.height, monitor.y, monitor.height);
+            let visible =
+                visible_x >= i64::from(MIN_VISIBLE) && visible_y >= i64::from(MIN_VISIBLE);
+            visible.then_some((visible_x * visible_y, clamped))
+        })
+        .max_by_key(|(area, _)| *area)
+        .map(|(_, clamped)| clamped)
 }
 
 pub fn parse_state(text: &str) -> Option<WindowState> {
@@ -78,6 +104,9 @@ fn state_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
 
 /// Deletes the saved geometry (settings reset).
 pub fn remove_saved_state(app: &tauri::AppHandle) -> Result<(), String> {
+    let _guard = WRITE_LOCK
+        .lock()
+        .map_err(|_| "Window state lock poisoned".to_string())?;
     if let Some(path) = state_path(app) {
         if path.exists() {
             std::fs::remove_file(&path).map_err(|e| e.to_string())?;
@@ -86,21 +115,24 @@ pub fn remove_saved_state(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn monitor_rects(window: &WebviewWindow) -> Vec<Rect> {
+fn monitor_rects(window: &WebviewWindow) -> (Vec<Rect>, Vec<f64>) {
     window
         .available_monitors()
         .unwrap_or_default()
         .iter()
         .map(|monitor| {
             let area = monitor.work_area();
-            Rect {
-                x: area.position.x,
-                y: area.position.y,
-                width: area.size.width,
-                height: area.size.height,
-            }
+            (
+                Rect {
+                    x: area.position.x,
+                    y: area.position.y,
+                    width: area.size.width,
+                    height: area.size.height,
+                },
+                monitor.scale_factor(),
+            )
         })
-        .collect()
+        .unzip()
 }
 
 /// Applies the saved geometry to the still-hidden main window. Call
@@ -112,9 +144,12 @@ pub fn restore(window: &WebviewWindow) -> Option<WindowState> {
         return None;
     }
     let saved = parse_state(&std::fs::read_to_string(&path).ok()?)?;
-    let state = usable_state(saved, &monitor_rects(window))?;
-    let _ = window.set_size(PhysicalSize::new(state.width, state.height));
+    let (monitors, scales) = monitor_rects(window);
+    let state = usable_state_scaled(saved, &monitors, &scales)?;
+    // Position first: moving onto a monitor with another DPI rescales the
+    // window, which would undo a size set before the move.
     let _ = window.set_position(PhysicalPosition::new(state.x, state.y));
+    let _ = window.set_size(PhysicalSize::new(state.width, state.height));
     if let Some(cache) = app.try_state::<WindowStateCache>() {
         if let Ok(mut current) = cache.0.lock() {
             *current = Some(state);
@@ -127,6 +162,13 @@ pub fn restore(window: &WebviewWindow) -> Option<WindowState> {
 /// caption height to a size set while hidden (+30 px per launch otherwise).
 /// Re-apply the saved size, then maximize if the window was maximized.
 pub fn settle_after_show(window: &WebviewWindow, state: WindowState) {
+    let position = PhysicalPosition::new(state.x, state.y);
+    if window
+        .outer_position()
+        .is_ok_and(|current| current != position)
+    {
+        let _ = window.set_position(position);
+    }
     let expected = PhysicalSize::new(state.width, state.height);
     if window.inner_size().is_ok_and(|size| size != expected) {
         let _ = window.set_size(expected);
@@ -153,28 +195,62 @@ pub fn record(window: &tauri::Window) {
     if maximized {
         if let Some(state) = current.as_mut() {
             state.maximized = true;
+            drop(current);
+            schedule_persist(window.app_handle());
+            return;
         }
-        return;
     }
     let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) else {
         return;
     };
+    // A window maximized before any normal move has no earlier geometry;
+    // seed it so the maximized flag is still kept.
     *current = Some(WindowState {
         x: position.x,
         y: position.y,
         width: size.width,
         height: size.height,
-        maximized: false,
+        maximized,
+    });
+    drop(current);
+    schedule_persist(window.app_handle());
+}
+
+/// Bumped by each move or resize; a pending save only writes if no newer
+/// change arrived during the debounce.
+static PERSIST_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+const PERSIST_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Saves shortly after the window settles, so a crash, logoff, or shutdown
+/// while hidden in the tray keeps the geometry.
+fn schedule_persist(app: &tauri::AppHandle) {
+    use std::sync::atomic::Ordering;
+    let generation = PERSIST_GENERATION.fetch_add(1, Ordering::SeqCst) + 1;
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(PERSIST_DEBOUNCE).await;
+        if PERSIST_GENERATION.load(Ordering::SeqCst) == generation {
+            persist_app(&app);
+        }
     });
 }
 
 /// Writes the last recorded geometry when the main window closes, unless a
 /// settings reset is pending.
 pub fn persist(window: &tauri::Window) {
+    persist_app(window.app_handle());
+}
+
+/// Serializes the close-time save, debounced saves, and the reset delete.
+static WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+fn persist_app(app: &tauri::AppHandle) {
+    let Ok(_guard) = WRITE_LOCK.lock() else {
+        return;
+    };
     if crate::settings::reset_pending() {
         return;
     }
-    let app = window.app_handle();
     let Some(state) = app
         .try_state::<WindowStateCache>()
         .and_then(|cache| cache.0.lock().ok().and_then(|current| *current))

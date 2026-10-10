@@ -95,19 +95,19 @@ fn remove_session_files(path: &std::path::Path) {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn load_playback_session(app: tauri::AppHandle) -> Result<Option<String>, String> {
     let _guard = lock_session()?;
     Ok(read_session_text(&session_path(&app)?))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_playback_session(app: tauri::AppHandle, json: String) -> Result<(), String> {
     let _guard = lock_session()?;
     write_session_text(&session_path(&app)?, &json)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_playback_session(app: tauri::AppHandle) -> Result<(), String> {
     let _guard = lock_session()?;
     remove_session_files(&session_path(&app)?);

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useMemo, useState } from "preact/hooks";
 import {
   Album,
   Clock3,
@@ -154,8 +154,26 @@ function artworkUrlOf(value: unknown): string | undefined {
   return undefined;
 }
 
+/** Playlists by id, in lookup priority order, built once per state change. */
+function playlistIndex(
+  sources: readonly (readonly unknown[] | undefined)[],
+): Map<string, unknown[]> {
+  const index = new Map<string, unknown[]>();
+  for (const items of sources) {
+    for (const item of items ?? []) {
+      const id = (item as { id?: unknown }).id;
+      if (typeof id !== "string") continue;
+      const list = index.get(id);
+      if (list) list.push(item);
+      else index.set(id, [item]);
+    }
+  }
+  return index;
+}
+
 function resolvePinDisplay(
   state: ReturnType<typeof useAppState>,
+  index: Map<string, unknown[]>,
   pin: PinnedPlaylist,
 ): { name?: string; artworkUrl?: string } {
   // A pinned playlist that is open but not in the loaded list still has a name.
@@ -163,14 +181,13 @@ function resolvePinDisplay(
     state.library?.details?.playlist as Record<string, unknown> | undefined
   )?.[libraryDetailKey(pin.id, pin.source)] as { item?: unknown } | undefined;
   const candidates = [
-    ...(state.library?.collections?.playlists?.items ?? []),
     ...(opened?.item ? [opened.item] : []),
-    ...(state.library?.details?.playlistFolder?.items ?? []),
-    ...(state.home?.recentPlaylists ?? []),
-    ...(state.home?.heavyRotation ?? []),
+    ...(index.get(pin.id) ?? []),
   ];
   for (const item of candidates) {
-    if ((item as { id?: unknown }).id !== pin.id) continue;
+    // An item that names its source must match the pin's source.
+    const source = (item as { source?: unknown }).source;
+    if (source !== undefined && source !== pin.source) continue;
     const name = displayNameOf(item);
     if (name) return { name, artworkUrl: artworkUrlOf(item) };
   }
@@ -235,6 +252,20 @@ export function Sidebar(): JSX.Element {
   };
 
   const pins = state.pins ?? [];
+  const playlistItems = state.library?.collections?.playlists?.items;
+  const folderItems = state.library?.details?.playlistFolder?.items;
+  const recentPlaylists = state.home?.recentPlaylists;
+  const heavyRotation = state.home?.heavyRotation;
+  const pinIndex = useMemo(
+    () =>
+      playlistIndex([
+        playlistItems,
+        folderItems,
+        recentPlaylists,
+        heavyRotation,
+      ]),
+    [playlistItems, folderItems, recentPlaylists, heavyRotation],
+  );
   const playlistsStatus = state.library?.collections?.playlists?.status;
   const pinsSettled =
     playlistsStatus === "success" || playlistsStatus === "refreshing";
@@ -245,7 +276,7 @@ export function Sidebar(): JSX.Element {
         ? { kind: "playlist", id: pin.id, source: "catalog" }
         : { kind: "playlist", id: pin.id };
     const active = sameRoute(state.navigation, route);
-    const display = resolvePinDisplay(state, pin);
+    const display = resolvePinDisplay(state, pinIndex, pin);
     const name = display.name;
     if (name) {
       return (

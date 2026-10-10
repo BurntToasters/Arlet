@@ -48,15 +48,6 @@ export async function listenWindowResize(
   return window.onResized(() => listener());
 }
 
-export async function listenWindowEvent<T>(
-  event: string,
-  listener: (payload: T) => void,
-  window = currentWindow(),
-): Promise<() => void> {
-  if (!window) return () => undefined;
-  return window.listen<T>(event, ({ payload }) => listener(payload));
-}
-
 export interface SnapBounds {
   x: number;
   y: number;

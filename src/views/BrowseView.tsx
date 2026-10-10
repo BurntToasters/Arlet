@@ -70,10 +70,14 @@ export function BrowseView(): JSX.Element {
     browse.songs.length > 0 ||
     browse.albums.length > 0 ||
     browse.playlists.length > 0;
+  // Also reloads once a sign-in finishes, which resets Browse to idle. A
+  // load already in flight is not started again.
+  const idle = browse.status === "idle";
+  const pending = state.auth.pending;
   useEffect(() => {
-    if (authorized)
+    if (authorized && !pending && !loading)
       void Promise.resolve(controller.loadBrowse?.()).catch(() => undefined);
-  }, [authorized, controller]);
+  }, [authorized, pending, idle, controller]);
 
   if (!authorized) {
     return (

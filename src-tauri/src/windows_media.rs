@@ -191,7 +191,11 @@ mod platform {
                     SystemMediaTransportControlsButton::Previous => "previous",
                     _ => return Ok(()),
                 };
-                let _ = button_app.emit("windows-media-control", event);
+                let _ = button_app.emit_to(
+                    crate::auth_popup::MAIN_WINDOW_LABEL,
+                    "windows-media-control",
+                    event,
+                );
                 Ok(())
             },
         );
@@ -209,7 +213,11 @@ mod platform {
                 let args = args.ok()?;
                 let ticks = args.RequestedPlaybackPosition()?.Duration;
                 if let Some(seconds) = super::seek_seconds(ticks, super::known_duration()) {
-                    let _ = position_app.emit("windows-media-seek", seconds);
+                    let _ = position_app.emit_to(
+                        crate::auth_popup::MAIN_WINDOW_LABEL,
+                        "windows-media-seek",
+                        seconds,
+                    );
                 }
                 Ok(())
             },
@@ -227,7 +235,11 @@ mod platform {
                   args: Ref<'_, ShuffleEnabledChangeRequestedEventArgs>| {
                 let args = args.ok()?;
                 let enabled = args.RequestedShuffleEnabled()?;
-                let _ = shuffle_app.emit("windows-media-shuffle", enabled);
+                let _ = shuffle_app.emit_to(
+                    crate::auth_popup::MAIN_WINDOW_LABEL,
+                    "windows-media-shuffle",
+                    enabled,
+                );
                 Ok(())
             },
         );
@@ -248,7 +260,11 @@ mod platform {
                     MediaPlaybackAutoRepeatMode::List => RepeatMode::All,
                     _ => RepeatMode::Off,
                 };
-                let _ = repeat_app.emit("windows-media-repeat", mode.to_wire());
+                let _ = repeat_app.emit_to(
+                    crate::auth_popup::MAIN_WINDOW_LABEL,
+                    "windows-media-repeat",
+                    mode.to_wire(),
+                );
                 Ok(())
             },
         );
@@ -320,7 +336,7 @@ mod platform {
         }
         if let Some(url) = payload
             .artwork_url
-            .filter(|value| value.starts_with("https://"))
+            .filter(|value| super::is_trusted_artwork_url(value))
         {
             if let Ok(uri) = Uri::CreateUri(&HSTRING::from(url)) {
                 if let Ok(reference) = RandomAccessStreamReference::CreateFromUri(&uri) {
@@ -469,6 +485,17 @@ pub fn clear_windows_media_session(window: WebviewWindow) -> Result<(), String> 
 pub fn dispose() {
     #[cfg(target_os = "windows")]
     platform::dispose();
+}
+
+/// Windows fetches the thumbnail itself, so only Apple's artwork hosts are
+/// passed on; any other host would learn the user's IP address.
+fn is_trusted_artwork_url(value: &str) -> bool {
+    url::Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url
+                .host_str()
+                .is_some_and(|host| host.ends_with(".mzstatic.com") || host.ends_with(".apple.com"))
+    })
 }
 
 #[cfg(test)]
