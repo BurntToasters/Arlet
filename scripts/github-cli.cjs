@@ -25,6 +25,16 @@ function githubStatusCode(detail) {
   return match ? Number(match[1] || match[2]) : undefined;
 }
 
+/** @param {Error} error */
+function isMissingCommand(error) {
+  return /** @type {NodeJS.ErrnoException} */ (error).code === "ENOENT";
+}
+
+/**
+ * @param {string[]} args
+ * @param {{ input?: string, encoding?: BufferEncoding }} [options]
+ * @returns {string}
+ */
 function runGitHub(args, { input, encoding = "utf8" } = {}) {
   const result = spawnSync("gh", args, {
     cwd: process.cwd(),
@@ -35,7 +45,7 @@ function runGitHub(args, { input, encoding = "utf8" } = {}) {
     maxBuffer: TEXT_RESPONSE_MAX_BYTES,
   });
   if (result.error) {
-    if (result.error.code === "ENOENT") {
+    if (isMissingCommand(result.error)) {
       throw new Error(
         "GitHub CLI is required. Install gh and run `gh auth login` on this release VM.",
       );
@@ -48,6 +58,7 @@ function runGitHub(args, { input, encoding = "utf8" } = {}) {
       .map(String)
       .join("\n")
       .trim();
+    /** @type {Error & { statusCode?: number }} */
     const error = new Error(
       `gh ${args.join(" ")} failed with status ${result.status}${detail ? `:\n${detail}` : ""}`,
     );
@@ -124,7 +135,7 @@ function githubApiToFile(
       },
     );
     if (result.error) {
-      if (result.error.code === "ENOENT") {
+      if (isMissingCommand(result.error)) {
         throw new Error(
           "GitHub CLI is required. Install gh and run `gh auth login` on this release VM.",
         );
@@ -137,6 +148,7 @@ function githubApiToFile(
         .map(String)
         .join("\n")
         .trim();
+      /** @type {Error & { statusCode?: number }} */
       const error = new Error(
         `gh api --method ${method} ${endpoint} failed with status ${result.status}${detail ? `:\n${detail}` : ""}`,
       );

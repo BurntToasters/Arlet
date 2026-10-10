@@ -345,7 +345,8 @@ export function createUpdaterService(
           throw error;
         }
         if (disposed || checkGeneration !== generation) return false;
-        const delayMs = UPDATE_DOWNLOAD_RETRY_DELAYS_MS[retryIndex];
+        // The guard above keeps retryIndex inside the delay list.
+        const delayMs = UPDATE_DOWNLOAD_RETRY_DELAYS_MS[retryIndex] ?? 0;
         retryIndex += 1;
         onLog(
           `Beta update download returned 404; retrying in ${delayMs}ms (${retryIndex}/${UPDATE_DOWNLOAD_RETRY_DELAYS_MS.length}).`,

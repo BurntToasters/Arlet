@@ -21,10 +21,12 @@ export function randomIndex(length: number): number {
   // modulo below has no bias toward low indexes.
   const limit = 2 ** 32 - (2 ** 32 % length);
   const values = new Uint32Array(1);
+  let value = 0;
   do {
     crypto.getRandomValues(values);
-  } while (values[0] >= limit);
-  return values[0] % length;
+    value = values[0] ?? 0;
+  } while (value >= limit);
+  return value % length;
 }
 
 /** Fisher-Yates over a copy, used when the provider cannot shuffle. */
@@ -32,7 +34,8 @@ export function shuffled(tracks: readonly Track[]): Track[] {
   const result = [...tracks];
   for (let i = result.length - 1; i > 0; i -= 1) {
     const j = randomIndex(i + 1);
-    [result[i], result[j]] = [result[j], result[i]];
+    // Both indexes are in range, so the reads cannot be undefined.
+    [result[i], result[j]] = [result[j] as Track, result[i] as Track];
   }
   return result;
 }

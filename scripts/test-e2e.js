@@ -68,6 +68,12 @@ function resolveDistAsset(assetUrl, label) {
   return assetPath;
 }
 
+/**
+ * @param {string} html
+ * @param {string} tagName
+ * @param {string} attributeName
+ * @param {(tag: string) => boolean} [tagFilter]
+ */
 function findAssetTag(html, tagName, attributeName, tagFilter = () => true) {
   const tagPattern = new RegExp(`<${tagName}\\b[^>]*>`, "iu");
   const tag = html.match(new RegExp(tagPattern.source, "giu"))?.find(tagFilter);

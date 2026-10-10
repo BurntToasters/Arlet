@@ -128,6 +128,19 @@ export function findSignedInstallers(
   return results;
 }
 
+/**
+ * @param {*} installers
+ * @param {{
+ *   version?: string,
+ *   tag?: string,
+ *   owner?: string,
+ *   repo?: string,
+ *   notes?: string,
+ *   pubDate?: string,
+ *   pubdate?: string,
+ *   readSig?: (path: string) => string,
+ * }} [options]
+ */
 export function buildManifests(
   installers,
   {

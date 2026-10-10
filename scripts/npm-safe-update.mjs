@@ -346,6 +346,7 @@ function main() {
     const snapshot = readSnapshot(packageLock);
     tempRoot = mkdtempSync(path.join(os.tmpdir(), "npm-safe-update-"));
     const cachePath = path.join(tempRoot, "cache");
+    /** @type {NodeJS.ProcessEnv} */
     const env = {
       ...process.env,
       npm_config_cache: cachePath,

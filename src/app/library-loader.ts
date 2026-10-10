@@ -1002,7 +1002,7 @@ export function createLibraryLoader(
       async (client, isCurrent) => {
         const raw = await libraryMethod(
           client,
-          `get${kind[0].toUpperCase()}${kind.slice(1)}`,
+          `get${kind.charAt(0).toUpperCase()}${kind.slice(1)}`,
         )(id, source);
         if (!isCurrent()) return undefined;
         const detail = detailFromResponse(raw);

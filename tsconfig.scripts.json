@@ -1,0 +1,23 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    // Plain JavaScript: types are inferred or come from JSDoc, so implicit
+    // any stays allowed while mismatched calls and shapes are still caught.
+    "strict": false,
+    "noUncheckedIndexedAccess": false,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "types": ["node"]
+  },
+  "include": ["scripts/**/*.js", "scripts/**/*.mjs", "scripts/**/*.cjs"],
+  "exclude": [
+    "scripts/**/*.test.js",
+    "scripts/**/*.test.cjs",
+    "scripts/e2e-*.js",
+    "scripts/license-texts/**"
+  ]
+}

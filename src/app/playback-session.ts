@@ -94,6 +94,7 @@ export function parsePlaybackSession(
   });
   if (tracks.length === 0) return undefined;
   const selected = tracks[Math.min(index, tracks.length - 1)];
+  if (!selected) return undefined;
   const durationSeconds = selected.durationMs ? selected.durationMs / 1000 : 0;
   const maxPosition =
     durationSeconds > 0 ? durationSeconds : Number.POSITIVE_INFINITY;
@@ -154,10 +155,12 @@ export function serializePlaybackSession(snapshot: {
   const itemBytes = items.map(
     (item) => utf8Encoder.encode(JSON.stringify(item)).byteLength,
   );
+  // prefixBytes[n] is the total size of the first n items.
   const prefixBytes = [0];
   for (const size of itemBytes) {
-    prefixBytes.push(prefixBytes[prefixBytes.length - 1] + size);
+    prefixBytes.push((prefixBytes.at(-1) ?? 0) + size);
   }
+  const prefixAt = (position: number): number => prefixBytes[position] ?? 0;
 
   const serializedSize = (): number => {
     const count = end - start;
@@ -171,7 +174,7 @@ export function serializePlaybackSession(snapshot: {
     });
     const envelopeBytes = utf8Encoder.encode(envelope).byteLength;
     if (count === 0) return envelopeBytes;
-    return envelopeBytes + prefixBytes[end] - prefixBytes[start] + count - 1;
+    return envelopeBytes + prefixAt(end) - prefixAt(start) + count - 1;
   };
 
   while (end - start > 1 && serializedSize() > MAX_SESSION_BYTES) {
@@ -190,17 +193,20 @@ export function serializePlaybackSession(snapshot: {
   }
 
   if (end - start === 1 && serializedSize() > MAX_SESSION_BYTES) {
+    const current = snapshot.tracks[currentIndex];
+    if (!current) throw new RangeError("The current track is missing.");
     items[start] = {
-      id: snapshot.tracks[currentIndex].id,
-      title: snapshot.tracks[currentIndex].title,
-      artistName: snapshot.tracks[currentIndex].artistName,
+      id: current.id,
+      title: current.title,
+      artistName: current.artistName,
     };
     itemBytes[start] = utf8Encoder.encode(
       JSON.stringify(items[start]),
     ).byteLength;
     prefixBytes[0] = 0;
     for (let position = 0; position < itemBytes.length; position += 1) {
-      prefixBytes[position + 1] = prefixBytes[position] + itemBytes[position];
+      prefixBytes[position + 1] =
+        prefixAt(position) + (itemBytes[position] ?? 0);
     }
     if (serializedSize() > MAX_SESSION_BYTES) {
       throw new RangeError(

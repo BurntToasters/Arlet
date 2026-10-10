@@ -268,7 +268,7 @@ export function assertDraftReleaseShape({
       `Draft ${tag} is missing updater manifests: ${missingManifests.join(", ")}.`,
     );
   }
-  const installers = requiredDraftInstallerNames(assetNames, version);
+  const installers = requiredDraftInstallerNames(assetNames);
   const arches = new Set(
     installers.map((name) => publishedInstallerArch(name)),
   );
@@ -496,6 +496,11 @@ function validSignatureFingerprints(statusOutput) {
   return fingerprints;
 }
 
+/**
+ * @param {string} signaturePath
+ * @param {string} dataPath
+ * @param {{ rootDir?: string, runner?: typeof spawnSync, signer?: string }} [options]
+ */
 export function verifyDetachedGpgSignature(
   signaturePath,
   dataPath,

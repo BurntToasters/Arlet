@@ -94,7 +94,7 @@ describe("song row actions", () => {
     });
     expect(playNext).toHaveBeenCalledOnce();
     expect(request).toHaveBeenCalledOnce();
-    expect(request.mock.calls[0][0].detail.target.dataset.contextId).toBe(
+    expect(request.mock.calls[0]?.[0].detail.target.dataset.contextId).toBe(
       track.id,
     );
     window.removeEventListener(CONTEXT_MENU_REQUEST, request);

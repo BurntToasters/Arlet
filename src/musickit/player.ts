@@ -342,6 +342,7 @@ export function syncMusicKitQueue(
     if (previousIndex < 0) return normalized;
     claimedPrevious.add(previousIndex);
     const existing = previous[previousIndex];
+    if (!existing) return normalized;
     return {
       ...normalized,
       ...(normalized.albumRef || !existing.albumRef

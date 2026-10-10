@@ -113,6 +113,7 @@ export function createDiscovery(
     };
     results.forEach((result, index) => {
       const kind = kinds[index];
+      if (!kind) return;
       if (result.status === "fulfilled") {
         successCount += 1;
         next[kind] = { status: "success", items: result.value };

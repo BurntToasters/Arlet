@@ -113,7 +113,12 @@ async function downloadToFile(
     descriptor = fs.openSync(destination, "wx");
     created = true;
     await pipeline(
-      Readable.fromWeb(response.body),
+      // fetch's DOM ReadableStream type differs from node:stream/web's.
+      Readable.fromWeb(
+        /** @type {import("node:stream/web").ReadableStream} */ (
+          /** @type {unknown} */ (response.body)
+        ),
+      ),
       fs.createWriteStream(null, { fd: descriptor, autoClose: true }),
     );
     descriptor = undefined;

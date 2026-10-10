@@ -25,7 +25,7 @@ describe("support: diagnostics report", () => {
     });
     await controller.copyDiagnosticsReport?.();
     expect(writeClipboardText).toHaveBeenCalledOnce();
-    const report = String(writeClipboardText.mock.calls[0][0]);
+    const report = String(writeClipboardText.mock.calls[0]?.[0]);
     expect(report).toContain("# Arlet diagnostics report");
     expect(report).toContain("Playback failed");
     expect(report).not.toContain("AqmL0f7xY2Zp9wR3kT8vN1b");

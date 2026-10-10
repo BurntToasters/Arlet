@@ -51,7 +51,7 @@ describe("action error toasts", () => {
         `Music-User-Token: AqmL0f7xY2Zp9wR3kT8vN1bC4dE6gH ${"x".repeat(500)}`,
       ),
     );
-    const [message] = messages();
+    const [message = ""] = messages();
     expect(message).not.toContain("AqmL0f7xY2Zp9wR3kT8vN1bC4dE6gH");
     expect(message.length).toBeLessThanOrEqual(200);
   });

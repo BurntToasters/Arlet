@@ -393,7 +393,7 @@ export function categorizeObservedHost(
 }
 
 export function formatNetworkSurfaceMarkdown(hosts: readonly string[]): string {
-  const grouped: Record<string, string[]> = {
+  const grouped: Record<ReturnType<typeof categorizeObservedHost>, string[]> = {
     script: [],
     api: [],
     auth: [],
