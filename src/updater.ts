@@ -373,7 +373,9 @@ export function createUpdaterService(
           : undefined,
         message: interactive ? undefined : "Checking for updates…",
         error: undefined,
-        promptOpen: false,
+        // An open prompt for a downloaded update stays open; a periodic
+        // re-check must not close it under the user.
+        promptOpen: pendingUpdate ? state.promptOpen : false,
       });
       const feed = await resolveFeed(checkChannel);
       if (disposed || checkGeneration !== generation) return;
@@ -389,18 +391,21 @@ export function createUpdaterService(
           pendingResolvedChannel !== feed.resolvedChannel)
       ) {
         clearPending();
-        emit({ releaseNotes: undefined });
+        emit({ releaseNotes: undefined, promptOpen: false });
       }
-      // A check that started before Install must not flip "installing" back
-      // to "ready", which would re-enable Install on the same resource.
-      if (pendingUpdate && !installInFlight) {
-        emit({
-          status: "ready",
-          releaseNotes: releaseNotesForUpdate(pendingUpdate),
-          promptOpen: interactive || state.promptOpen,
-          error: undefined,
-          message: "Update downloaded and ready to install.",
-        });
+      if (pendingUpdate) {
+        // A check that started before Install must not flip "installing"
+        // back to "ready", which would re-enable Install on the same
+        // resource, nor download the update again during the install.
+        if (!installInFlight) {
+          emit({
+            status: "ready",
+            releaseNotes: releaseNotesForUpdate(pendingUpdate),
+            promptOpen: interactive || state.promptOpen,
+            error: undefined,
+            message: "Update downloaded and ready to install.",
+          });
+        }
         return;
       }
 

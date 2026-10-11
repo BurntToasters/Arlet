@@ -15,8 +15,8 @@ Stable releases have shipped (see `CHANGELOG.md`); `next-0.2.4` is in progress.
       fences, RC headings, and every download link; SHA256SUMS.asc pinned to
       the release key; native E2E is part of the release proof.
 - [ ] **Release VM `.env`:** set `GPG_RELEASE_FINGERPRINT` (full release key
-      fingerprint); release verification now requires it (or a long
-      `GPG_KEY_ID`).
+      fingerprint, or a long `GPG_KEY_ID`). `release:draft` checks it before
+      the build and stops the release if it is missing or too short.
 
 The Preact shell, library, search, browse, radio, playlists, queue, SMTC, and
 window materials are implemented; the 2026-09-11 notes below are history.

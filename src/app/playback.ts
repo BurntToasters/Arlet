@@ -103,7 +103,12 @@ export function createPlayback(context: ControllerContext) {
         // Nothing is playing yet, so no audio restarts.
         return "native";
       }
-      return await editQueue(instance, plan);
+      // A rebuild drops unplayable songs; say so like the other play paths.
+      return await editQueue(instance, plan, (count) => {
+        log(`Skipped ${count} unavailable songs.`);
+        const message = skippedMessage(count);
+        if (message) reportActionError(new Error(message));
+      });
     } catch (error) {
       log(`${label}: ${errorMessage(error)}`);
       throw error;

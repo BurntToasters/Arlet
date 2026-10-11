@@ -44,6 +44,7 @@ export function installAuthPopupProbe(
   };
   window.open = wrapped;
   return () => {
-    window.open = openFn;
+    // A wrapper installed after this one stays in place.
+    if (window.open === wrapped) window.open = openFn;
   };
 }

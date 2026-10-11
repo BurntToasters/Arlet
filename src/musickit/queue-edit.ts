@@ -143,6 +143,7 @@ async function rebuildQueue(
   next: readonly Track[],
   index: number,
   positionSeconds: number,
+  onSkipped?: (count: number) => void,
 ): Promise<{ queue: Track[]; index: number }> {
   if (!canSelectIndex(instance)) {
     throw new Error(
@@ -158,11 +159,15 @@ async function rebuildQueue(
   }
   let applied: { queue: Track[]; index: number } = { queue: [...next], index };
   try {
-    const { entries } = await withResolvableTracks(next, async (attempt) => {
-      await instance.setQueue(
-        queueOptionsForTracks(attempt.map((entry) => entry.track)),
-      );
-    });
+    const { entries, skipped } = await withResolvableTracks(
+      next,
+      async (attempt) => {
+        await instance.setQueue(
+          queueOptionsForTracks(attempt.map((entry) => entry.track)),
+        );
+      },
+    );
+    if (skipped.length) onSkipped?.(skipped.length);
     applied = {
       queue: entries.map((entry) => entry.track),
       index: keptStartIndex(entries, index),
@@ -192,6 +197,8 @@ async function rebuildQueue(
 export async function editQueue(
   instance: MusicKit.MusicKitInstance,
   plan: (queue: readonly Track[], current: number) => QueueEditPlan | undefined,
+  /** Told how many unplayable songs a rebuild dropped, so it can say so. */
+  onSkipped?: (count: number) => void,
 ): Promise<QueueEditTier> {
   syncMusicKitQueue(instance);
   const playback = getState().playback;
@@ -211,6 +218,7 @@ export async function editQueue(
         edit.next,
         before.index,
         playback.positionSeconds,
+        onSkipped,
       );
     }
   } catch (error) {

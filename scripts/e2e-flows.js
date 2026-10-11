@@ -184,19 +184,24 @@ async function createPlaylist({ page, check }) {
   );
 }
 
-/** Reads the system clipboard text; a failed read counts as empty. */
+/**
+ * Reads the system clipboard text. A failed read (no text, or an image)
+ * returns null, so the caller can tell it apart from empty text.
+ */
 function readClipboardText(page) {
   return page.evaluate(`
     try {
       return await window.__TAURI_INTERNALS__.invoke("plugin:clipboard-manager|read_text");
     } catch (error) {
-      return "";
+      return null;
     }`);
 }
 
 async function supportReport({ page, check }) {
-  // The check borrows the clipboard, so the user's text is put back afterwards.
-  const previousClipboard = String((await readClipboardText(page)) ?? "");
+  // The check borrows the clipboard, so the user's text is put back
+  // afterwards. Non-text content (an image) cannot be restored; the
+  // clipboard is then left empty rather than holding the report.
+  const previousClipboard = (await readClipboardText(page)) ?? "";
   await page.evaluate(`location.hash = "#/settings"; return true;`);
   const shown = await waitFor(
     page,
@@ -214,14 +219,12 @@ async function supportReport({ page, check }) {
   // Reads back what the app put on the system clipboard.
   const report = await readClipboardText(page);
   const text = String(report ?? "");
-  if (previousClipboard) {
-    try {
-      await page.evaluate(`
-        await window.__TAURI_INTERNALS__.invoke("plugin:clipboard-manager|write_text", { text: ${JSON.stringify(previousClipboard)} });
-        return true;`);
-    } catch {
-      // Restoring is best effort; it must never fail the support report check.
-    }
+  try {
+    await page.evaluate(`
+      await window.__TAURI_INTERNALS__.invoke("plugin:clipboard-manager|write_text", { text: ${JSON.stringify(String(previousClipboard))} });
+      return true;`);
+  } catch {
+    // Restoring is best effort; it must never fail the support report check.
   }
   check(
     "the support report names the version and carries no tokens",
