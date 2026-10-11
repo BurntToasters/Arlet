@@ -189,14 +189,20 @@ pub fn open_at(path: &std::path::Path) -> Result<Connection, String> {
 /// kept it) to the local data dir, so a large disposable file does not roam
 /// with domain profiles. A failed move just starts a fresh cache.
 fn move_legacy_cache(legacy: &std::path::Path, target: &std::path::Path) {
-    if target.exists() || !legacy.exists() {
+    if !legacy.exists() {
         return;
     }
+    // A target from an earlier upgrade wins; leftover legacy files would
+    // otherwise linger forever after a downgrade and re-upgrade.
+    let target_exists = target.exists();
     for (from, to) in database_files(legacy)
         .into_iter()
         .zip(database_files(target))
     {
-        if from.exists() && std::fs::rename(&from, &to).is_err() {
+        if !from.exists() {
+            continue;
+        }
+        if target_exists || std::fs::rename(&from, &to).is_err() {
             let _ = std::fs::remove_file(&from);
         }
     }

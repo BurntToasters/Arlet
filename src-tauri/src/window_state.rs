@@ -191,26 +191,25 @@ pub fn record(window: &tauri::Window) {
     let Ok(mut current) = cache.0.lock() else {
         return;
     };
-    let maximized = window.is_maximized().unwrap_or(false);
-    if maximized {
+    if window.is_maximized().unwrap_or(false) {
+        // Without an earlier normal geometry the maximized rectangle would be
+        // saved as the normal size, so wait for a normal move or resize.
         if let Some(state) = current.as_mut() {
             state.maximized = true;
             drop(current);
             schedule_persist(window.app_handle());
-            return;
         }
+        return;
     }
     let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) else {
         return;
     };
-    // A window maximized before any normal move has no earlier geometry;
-    // seed it so the maximized flag is still kept.
     *current = Some(WindowState {
         x: position.x,
         y: position.y,
         width: size.width,
         height: size.height,
-        maximized,
+        maximized: false,
     });
     drop(current);
     schedule_persist(window.app_handle());

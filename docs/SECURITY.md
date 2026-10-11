@@ -34,10 +34,12 @@ hosts and `about:blank`. Allowed popups use WebView2's default window (no Tauri
 IPC). Never log the authorize URL; the query string is the developer JWT.
 
 Content Security Policy in `src-tauri/tauri.conf.json` limits scripts to the
-`https://js-cdn.music.apple.com/musickit/` path and uses an exact host for the
-authorization frame, plus provisional
-`https://*.apple.com` and `https://*.mzstatic.com` subdomain wildcards for
-image, connect, and media traffic. The observed host list is still pending;
+exact `js-cdn.music.apple.com` host and uses an exact host for the
+authorization frame, plus provisional `https://*.apple.com` and
+`https://*.mzstatic.com` subdomain wildcards for image, connect, and media
+traffic. Narrowing scripts to the `/musickit/` path waits on a signed-in
+playback check, because MusicKit may load further code from that host during
+playback. The observed host list is still pending;
 `docs/MUSICKIT_NETWORK_SURFACE.md` records that status and the provisional
 surface. Reconcile those entries after a fresh Phase 0 export. Never broaden
 CSP or capabilities to make a bug disappear; document the required origin

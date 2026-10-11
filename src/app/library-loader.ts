@@ -715,17 +715,23 @@ export function createLibraryLoader(
     if (client && typeof client.getArtistAlbums === "function") {
       // The artist's own albums relationship lists every album, not just
       // those on the first loaded page of the whole library.
-      const albums: LibraryEntity[] = [];
-      const seen = new Set<string>();
-      let cursor: string | undefined;
-      do {
-        const page = await client.getArtistAlbums(id, cursor);
-        albums.push(...asLibraryEntities(page));
-        cursor = asNext(page);
-        if (cursor && seen.has(cursor)) break;
-        if (cursor) seen.add(cursor);
-      } while (cursor && albums.length < MAX_DETAIL_ITEMS);
-      return albums;
+      try {
+        const albums: LibraryEntity[] = [];
+        const seen = new Set<string>();
+        let cursor: string | undefined;
+        do {
+          const page = await client.getArtistAlbums(id, cursor);
+          albums.push(...asLibraryEntities(page));
+          cursor = asNext(page);
+          if (cursor && seen.has(cursor)) break;
+          if (cursor) seen.add(cursor);
+        } while (cursor && albums.length < MAX_DETAIL_ITEMS);
+        return albums;
+      } catch (error) {
+        // Fall back to the loaded library so a failed relationship request
+        // does not leave the artist with no albums.
+        log(`Artist albums request failed: ${safeErrorMessage(error)}`);
+      }
     }
     await loadLibrarySection("albums");
     return getState().library.collections.albums.items.filter((album) => {

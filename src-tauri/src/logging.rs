@@ -145,6 +145,11 @@ pub fn clear_logs(app: tauri::AppHandle) -> Result<(), String> {
     if path.exists() {
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     }
+    // Rotation keeps the previous history here, so clearing must drop it too.
+    let rotated = path.with_extension("log.1");
+    if rotated.exists() {
+        std::fs::remove_file(&rotated).map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
