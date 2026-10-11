@@ -8,6 +8,7 @@ const { execFileSync } = require("node:child_process");
 const { assertGitHubCliAuthenticated, githubApi } = require("./github-cli.cjs");
 const { readChangelogReleaseBody } = require("./changelog.cjs");
 const { assertStableReleaseOverridesAllowed } = require("./release-policy.cjs");
+const { expectedReleaseSigner } = require("./release-signer.cjs");
 
 try {
   require("dotenv").config();
@@ -199,6 +200,8 @@ function ensureDraftRelease() {
 
 if (require.main === module) {
   try {
+    // Fail before the build and upload if the release key is missing.
+    expectedReleaseSigner();
     ensureDraftRelease();
   } catch (error) {
     console.error(

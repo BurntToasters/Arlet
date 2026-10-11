@@ -44,6 +44,10 @@ const {
   selectDraftRelease,
 } = require("./release-draft-metadata.cjs");
 const { publishedInstallerArch } = require("./release-assets.cjs");
+const { expectedReleaseSigner } = require("./release-signer.cjs");
+
+// Re-exported so existing imports keep working; the logic lives in the helper.
+export { expectedReleaseSigner };
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(scriptDir, "..");
@@ -465,23 +469,6 @@ export function verifyChecksums(
     );
   }
   return true;
-}
-
-/**
- * The release key, from GPG_RELEASE_FINGERPRINT (preferred) or GPG_KEY_ID.
- * Short 8-hex ids collide easily, so at least a 16-hex long id is required.
- */
-export function expectedReleaseSigner(env = process.env) {
-  const raw = String(env.GPG_RELEASE_FINGERPRINT || env.GPG_KEY_ID || "")
-    .replace(/^0x/i, "")
-    .replace(/\s+/g, "")
-    .toUpperCase();
-  if (!/^[0-9A-F]{16,40}$/.test(raw)) {
-    throw new Error(
-      "Set GPG_RELEASE_FINGERPRINT (or GPG_KEY_ID) to the release key's full fingerprint so SHA256SUMS.asc is checked against that key, not any key in the local keyring.",
-    );
-  }
-  return raw;
 }
 
 /** Fingerprints gpg reports for a good signature (signing and primary key). */

@@ -46,6 +46,7 @@ import {
   setUpdateState,
   setUiState,
   setWindowEffectState,
+  subscribePlaybackPosition,
   type AppSettings,
   type LibraryEntity,
   type LibrarySection,
@@ -442,6 +443,11 @@ export function createAppController(
     setState: setSleepTimer,
     readPlayback: () => getState().playback,
   });
+  // Position ticks do not reach the MusicKit state callback, so the timer also
+  // checks on each tick to catch a same-track restart and a late minutes timer.
+  const stopSleepTimerPositions = subscribePlaybackPosition(() =>
+    sleepTimer.observe(getState().playback),
+  );
 
   /** Pushes the saved autoplay preference to MusicKit once it is available. */
   const applyAutoplaySetting = (instance: MusicKit.MusicKitInstance): void => {
@@ -1225,6 +1231,7 @@ export function createAppController(
       playbackSession.stop();
       stopPauseListener();
       collections.invalidate();
+      stopSleepTimerPositions();
       sleepTimer.cancel();
       trackNavigation.clear();
       if (volumeSaveTimer !== undefined) {

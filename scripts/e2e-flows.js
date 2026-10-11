@@ -184,7 +184,19 @@ async function createPlaylist({ page, check }) {
   );
 }
 
+/** Reads the system clipboard text; a failed read counts as empty. */
+function readClipboardText(page) {
+  return page.evaluate(`
+    try {
+      return await window.__TAURI_INTERNALS__.invoke("plugin:clipboard-manager|read_text");
+    } catch (error) {
+      return "";
+    }`);
+}
+
 async function supportReport({ page, check }) {
+  // The check borrows the clipboard, so the user's text is put back afterwards.
+  const previousClipboard = String((await readClipboardText(page)) ?? "");
   await page.evaluate(`location.hash = "#/settings"; return true;`);
   const shown = await waitFor(
     page,
@@ -200,13 +212,17 @@ async function supportReport({ page, check }) {
     `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Copied")`,
   );
   // Reads back what the app put on the system clipboard.
-  const report = await page.evaluate(`
-    try {
-      return await window.__TAURI_INTERNALS__.invoke("plugin:clipboard-manager|read_text");
-    } catch (error) {
-      return "";
-    }`);
+  const report = await readClipboardText(page);
   const text = String(report ?? "");
+  if (previousClipboard) {
+    try {
+      await page.evaluate(`
+        await window.__TAURI_INTERNALS__.invoke("plugin:clipboard-manager|write_text", { text: ${JSON.stringify(previousClipboard)} });
+        return true;`);
+    } catch {
+      // Restoring is best effort; it must never fail the support report check.
+    }
+  }
   check(
     "the support report names the version and carries no tokens",
     shown &&
