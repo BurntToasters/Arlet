@@ -115,6 +115,8 @@ pub fn request_quit(app: &AppHandle) {
     QUITTING.store(true, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window(auth_popup::MAIN_WINDOW_LABEL) {
         window_state::persist(&window.as_ref().window());
+        // Quitting looks immediate while the page saves in the background.
+        let _ = window.hide();
     }
     let asked = app
         .emit_to(auth_popup::MAIN_WINDOW_LABEL, BEFORE_QUIT_EVENT, ())

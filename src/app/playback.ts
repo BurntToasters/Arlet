@@ -412,8 +412,8 @@ export function createPlayback(context: ControllerContext) {
         }
       }
       step(`setQueue (${batch.length} songs${usedDetails ? ", details" : ""})`);
-      const queue = resolved.entries.map((entry) => entry.track);
-      const start = keptStartIndex(resolved.entries, batchStart);
+      let queue = resolved.entries.map((entry) => entry.track);
+      let start = keptStartIndex(resolved.entries, batchStart);
       const skipped = [...skippedBefore, ...resolved.skipped];
       if (skipped.length) {
         log(`Skipped ${skipped.length} unavailable songs.`);
@@ -453,10 +453,26 @@ export function createPlayback(context: ControllerContext) {
         );
         usedDetails = false;
         retriedById = true;
-        await instance.setQueue({
-          ...queueOptionsForTracks(queue),
-          startWith: start,
+        // By ID MusicKit looks the songs up, so one it cannot resolve is
+        // dropped (or retried by its library ID) as on the first setup.
+        const retried = await withResolvableTracks(queue, async (entries) => {
+          await instance.setQueue({
+            ...queueOptionsForTracks(entries.map((entry) => entry.track)),
+            startWith: keptStartIndex(entries, start),
+          });
         });
+        const retriedStart = keptStartIndex(retried.entries, start);
+        queue = retried.entries.map((entry) => entry.track);
+        start = retriedStart;
+        if (retried.skipped.length) {
+          log(`Skipped ${retried.skipped.length} unavailable songs.`);
+          if (request.current()) {
+            setQueue(queue, start);
+            const message = skippedMessage(retried.skipped.length);
+            if (message) reportActionError(new Error(message));
+          }
+        }
+        if (request.current()) historyAnchor = queue[start];
         await startAudio(instance, request);
       }
       step(retriedById ? "play() after ID retry" : "play()");
@@ -535,12 +551,34 @@ export function createPlayback(context: ControllerContext) {
         if (!instance || typeof insert !== "function") return;
         // A refill for a queue that was replaced must not reach the provider.
         if (options.isCurrent?.() === false) return;
-        const queueOptions = byId
-          ? { songs: attempt.map((entry) => entry.track.id) }
-          : queueOptionsForTracks(attempt.map((entry) => entry.track));
-        await (
-          insert as (options: MusicKit.QueueOptions) => Promise<void>
-        ).call(instance, queueOptions);
+        const run = (queueOptions: MusicKit.QueueOptions): Promise<void> =>
+          (insert as (options: MusicKit.QueueOptions) => Promise<void>).call(
+            instance,
+            queueOptions,
+          );
+        const attemptTracks = attempt.map((entry) => entry.track);
+        // Song details skip MusicKit's lookup (one request per 16 songs).
+        const detailed = byId
+          ? undefined
+          : queueDescriptorsForTracks(attemptTracks);
+        if (detailed) {
+          try {
+            await run(detailed);
+            return;
+          } catch (error) {
+            if (unresolvedIds(error) || options.isCurrent?.() === false) {
+              throw error;
+            }
+            log(
+              `Adding songs by details failed; using IDs: ${errorMessage(error)}`,
+            );
+          }
+        }
+        await run(
+          byId
+            ? { songs: attemptTracks.map((track) => track.id) }
+            : queueOptionsForTracks(attemptTracks),
+        );
       },
     );
     if (options.isCurrent?.() === false) return [];
@@ -654,6 +692,29 @@ export function createPlayback(context: ControllerContext) {
     /** Identifies the current queue for `appendContinuation`. */
     continuationToken: (): number => restGeneration,
 
+    /**
+     * The whole queue as the user sees it: the songs before the one a Play
+     * started at, MusicKit's queue, and the rest still to be added. Saved
+     * for restore and for Save as playlist.
+     */
+    fullQueue(): { tracks: Track[]; index: number } {
+      const { queue, queueIndex, pendingRestore } = getState().playback;
+      if (pendingRestore) return { tracks: [...queue], index: queueIndex };
+      const history =
+        queue[0] !== undefined && isSameTrack(queue[0], historyAnchor)
+          ? startHistory
+          : [];
+      const rest =
+        queueRest.length > 0 &&
+        queue.some((track) => isSameTrack(track, restAnchor))
+          ? queueRest
+          : [];
+      return {
+        tracks: [...history, ...queue, ...rest],
+        index: history.length + queueIndex,
+      };
+    },
+
     async playStation(station: Station): Promise<void> {
       const url = station.url?.trim();
       const id = station.id.trim();
@@ -720,12 +781,22 @@ export function createPlayback(context: ControllerContext) {
         log(
           "Queue selection unavailable; rebuilding the queue from the selected song.",
         );
-        const queue = snapshot.queue.slice(index);
-        await instance.setQueue(queueOptionsForTracks(queue));
+        const { entries, skipped } = await withResolvableTracks(
+          snapshot.queue.slice(index),
+          async (attempt) => {
+            await instance.setQueue(
+              queueOptionsForTracks(attempt.map((entry) => entry.track)),
+            );
+          },
+        );
+        const queue = entries.map((entry) => entry.track);
+        if (skipped.length) log(`Skipped ${skipped.length} unavailable songs.`);
         await startAudio(instance, request);
         if (request.current()) {
           setQueue(queue, 0);
           setCurrentTrack(queue[0], 0);
+          const message = skippedMessage(skipped.length);
+          if (message) reportActionError(new Error(message));
         }
       } catch (error) {
         // A superseded or signed-out selection reports nothing.

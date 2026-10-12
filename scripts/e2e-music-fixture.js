@@ -180,6 +180,9 @@ function installMusicKitFixture() {
     // Catalog IDs the item loader cannot resolve, and IDs that resolve but
     // are not playable (MusicKit drops those silently).
     unresolvedIds: [],
+    // Real MusicKit does not look up songs queued as details, so an
+    // unresolvable song is only found when it plays. Off by default.
+    detailsSkipLookup: false,
     unplayableIds: [],
     nativeQueueEdit: false,
     queueEditDelayMs: 0,
@@ -656,8 +659,13 @@ function installMusicKitFixture() {
 
   // Mirrors MusicKit's item loader: any unresolved ID rejects the whole call
   // with NOT_FOUND, and unplayable items are dropped without an error.
-  const loadQueueItems = (type, itemIds) => {
-    const missing = itemIds.filter((id) => state.unresolvedIds.includes(id));
+  const loadQueueItems = (type, itemIds, options) => {
+    const lookedUp = !(
+      state.detailsSkipLookup && Array.isArray(options?.items)
+    );
+    const missing = lookedUp
+      ? itemIds.filter((id) => state.unresolvedIds.includes(id))
+      : [];
     if (missing.length) {
       state.transitions.push({ type: `${type}Unresolved`, ids: missing });
       const error = new Error(
@@ -746,7 +754,11 @@ function installMusicKitFixture() {
       this.isAuthorized = false;
     },
     async setQueue(options) {
-      const itemIds = loadQueueItems("setQueue", idsFromOptions(options));
+      const itemIds = loadQueueItems(
+        "setQueue",
+        idsFromOptions(options),
+        options,
+      );
       state.queue = itemIds.map(mediaItem);
       // MusicKit positions the new queue on `startWith` (index or item ID).
       const startWith = options?.startWith;
@@ -837,7 +849,11 @@ function installMusicKitFixture() {
       });
     },
     async playNext(options) {
-      const itemIds = loadQueueItems("playNext", idsFromOptions(options));
+      const itemIds = loadQueueItems(
+        "playNext",
+        idsFromOptions(options),
+        options,
+      );
       const start = Math.min(state.queue.length, state.queueIndex + 1);
       state.queue.splice(start, 0, ...itemIds.map(mediaItem));
       state.transitions.push({
@@ -848,9 +864,17 @@ function installMusicKitFixture() {
       syncProviderQueue(true, false);
     },
     async playLater(options) {
-      const itemIds = loadQueueItems("playLater", idsFromOptions(options));
+      const itemIds = loadQueueItems(
+        "playLater",
+        idsFromOptions(options),
+        options,
+      );
       state.queue.push(...itemIds.map(mediaItem));
-      state.transitions.push({ type: "playLater", ids: [...itemIds] });
+      state.transitions.push({
+        type: "playLater",
+        ids: [...itemIds],
+        shape: Object.keys(options ?? {}),
+      });
       syncProviderQueue(true, false);
     },
   };
@@ -886,6 +910,9 @@ function installMusicKitFixture() {
           Number(options.rejectPlayTimes) || 0,
         );
       }
+      if (Object.prototype.hasOwnProperty.call(options, "detailsSkipLookup")) {
+        state.detailsSkipLookup = options.detailsSkipLookup === true;
+      }
       if (Object.prototype.hasOwnProperty.call(options, "rejectPlay")) {
         state.rejectPlay = options.rejectPlay === true;
       }
@@ -912,6 +939,7 @@ function installMusicKitFixture() {
       state.rejectPlayTimes = 0;
       state.playlistPrepended = false;
       state.unresolvedIds = [];
+      state.detailsSkipLookup = false;
       state.unplayableIds = [];
       state.nativeQueueEdit = false;
       state.queueEditDelayMs = 0;

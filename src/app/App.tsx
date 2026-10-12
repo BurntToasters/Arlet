@@ -204,6 +204,7 @@ function AppLayout({
     repeatMode,
   } = state.playback;
   const queueLength = state.playback.queue.length;
+  const queueRest = state.playback.queueRest ?? 0;
   useEffect(() => {
     if (
       !current ||
@@ -222,8 +223,11 @@ function AppLayout({
       playbackStatus: playbackStatus === "playing" ? "playing" : "paused",
       playEnabled: playbackStatus !== "playing",
       pauseEnabled: playbackStatus === "playing",
-      nextEnabled: queueIndex < queueLength - 1,
-      previousEnabled: queueIndex > 0,
+      // More of a long playlist is still to be added after the last song.
+      nextEnabled: queueIndex < queueLength - 1 || queueRest > 0,
+      // Previous restarts the song or steps back into the playlist, as the
+      // in-app button does; a Play always starts at queue index 0.
+      previousEnabled: true,
       shuffle: shuffleMode === "songs",
       repeat: repeatMode ?? "off",
     }).catch(() => undefined);
@@ -232,6 +236,7 @@ function AppLayout({
     playbackStatus,
     queueIndex,
     queueLength,
+    queueRest,
     shuffleMode,
     repeatMode,
   ]);

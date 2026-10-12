@@ -78,6 +78,32 @@ function dataDirs() {
   });
 }
 
+/**
+ * Injected for the expired-token check only: answers `get_developer_token`
+ * with the release build's expiry error, as Tauri's IPC protocol does.
+ */
+const EXPIRED_TOKEN_SOURCE = `(() => {
+  if (sessionStorage.getItem("arlet-e2e-expired-token") !== "1") return;
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    try {
+      const url = new URL(String(input?.url ?? input));
+      if (
+        url.hostname === "ipc.localhost" &&
+        decodeURIComponent(url.pathname.slice(1)) === "get_developer_token"
+      ) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify("Arlet's Apple Music access token has expired. Install the latest Arlet update."),
+            { headers: { "Content-Type": "application/json", "Tauri-Response": "error" } },
+          ),
+        );
+      }
+    } catch {}
+    return nativeFetch(input, init);
+  };
+})();`;
+
 // Written into the test profile so a later run can tell it from real data.
 const TEST_PROFILE_MARKER = ".arlet-e2e-test-profile";
 
@@ -136,8 +162,15 @@ function moveAside(stamp) {
 }
 
 function restore(moved) {
+  // One profile that cannot be deleted must not stop the other restores.
   for (const dir of dataDirs()) {
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
+    } catch (error) {
+      console.error(
+        `[e2e-app] Could not remove the test profile at ${dir}: ${error.message}`,
+      );
+    }
   }
   for (const { dir, backup } of moved) {
     try {
@@ -1037,6 +1070,41 @@ async function run() {
       path.join(artifactDir, "screenshot-offline.png"),
       Buffer.from(offlineShot.data, "base64"),
     );
+
+    // 11b. An expired embedded token: the update notice shows, not the
+    // offline banner (its Reconnect could never work). The token command is
+    // answered with the release-build error through Tauri's IPC transport.
+    await page.send("Page.enable");
+    const expiredScript = await page.send(
+      "Page.addScriptToEvaluateOnNewDocument",
+      { source: EXPIRED_TOKEN_SOURCE },
+    );
+    await page.evaluate(
+      "sessionStorage.setItem('arlet-e2e-expired-token', '1'); return true;",
+    );
+    await page.send("Page.reload", { ignoreCache: true });
+    await sleep(1000);
+    const expiredNotice = await waitFor(
+      page,
+      `document.querySelector(".token-expiry-notice")?.textContent.includes("expired")`,
+      30_000,
+    );
+    const expiredView = await page.evaluate(`return {
+      offlineBanner: Boolean(document.querySelector(".offline-banner")),
+      notice: document.querySelector(".token-expiry-notice")?.textContent ?? null,
+    };`);
+    check(
+      "an expired embedded token shows the update notice, not the offline banner",
+      expiredNotice && !expiredView.offlineBanner,
+      expiredView,
+    );
+    await page.evaluate(
+      "sessionStorage.removeItem('arlet-e2e-expired-token'); return true;",
+    );
+    await page.send("Page.removeScriptToEvaluateOnNewDocument", {
+      identifier: expiredScript.identifier,
+    });
+
     await page.send("Network.setBlockedURLs", { urls: [] });
 
     // 12. Renderer crash: the window reloads instead of staying blank.

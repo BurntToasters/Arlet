@@ -44,6 +44,10 @@ const trackLiteSchema = z.object({
   albumTitle: z.string().max(1000).optional().catch(undefined),
   artwork: artworkSchema.optional().catch(undefined),
   durationMs: z.number().positive().optional().catch(undefined),
+  // Queued as song details, a restored song is not looked up again, so its
+  // rating and playability must come from the file.
+  explicit: z.boolean().optional().catch(undefined),
+  playable: z.boolean().optional().catch(undefined),
 });
 
 const sessionSchema = z.object({
@@ -151,6 +155,8 @@ export function serializePlaybackSession(snapshot: {
           }
         : undefined,
       durationMs: track.durationMs,
+      explicit: track.explicit,
+      playable: track.playable,
     }));
   const itemBytes = items.map(
     (item) => utf8Encoder.encode(JSON.stringify(item)).byteLength,
@@ -240,6 +246,11 @@ export interface PlaybackSessionDependencies {
    * a newer play replaced it and the saved position must not be applied.
    */
   playIntent?: () => number;
+  /**
+   * The queue to save, when it holds more than the provider queue (songs
+   * before the Play and the rest still to be added). Defaults to state.
+   */
+  fullQueue?: () => { tracks: readonly Track[]; index: number };
 }
 
 export interface PlaybackSession {
@@ -288,6 +299,7 @@ export function createPlaybackSession(
     queue: getState().playback.queue,
     index: getState().playback.queueIndex,
     status: getState().playback.status,
+    rest: getState().playback.queueRest,
   };
   let unsubscribeState: (() => void) | undefined;
   let unsubscribePosition: (() => void) | undefined;
@@ -320,11 +332,15 @@ export function createPlaybackSession(
     if (!canSave()) return;
     const { playback } = getState();
     const savedAt = now();
+    const full = dependencies.fullQueue?.() ?? {
+      tracks: playback.queue,
+      index: playback.queueIndex,
+    };
     let json: string;
     try {
       json = serializePlaybackSession({
-        tracks: playback.queue,
-        index: playback.queueIndex,
+        tracks: full.tracks,
+        index: full.index,
         positionSeconds: playback.positionSeconds,
         savedAt,
       });
@@ -366,7 +382,8 @@ export function createPlaybackSession(
     if (
       playback.queue === observed.queue &&
       playback.queueIndex === observed.index &&
-      playback.status === observed.status
+      playback.status === observed.status &&
+      playback.queueRest === observed.rest
     ) {
       return;
     }
@@ -374,6 +391,7 @@ export function createPlaybackSession(
       queue: playback.queue,
       index: playback.queueIndex,
       status: playback.status,
+      rest: playback.queueRest,
     };
     scheduleSave();
   };
@@ -471,6 +489,7 @@ export function createPlaybackSession(
         queue: getState().playback.queue,
         index: getState().playback.queueIndex,
         status: getState().playback.status,
+        rest: getState().playback.queueRest,
       };
       unsubscribeState = subscribe(onStateChange);
       unsubscribePosition = subscribePlaybackPosition(onPosition);

@@ -391,6 +391,54 @@ export async function runUnavailable({ page, check }) {
         restAfter,
       },
     );
+    check(
+      "background top-ups queue song details, not IDs (no lookup per 16 songs)",
+      refills.length === 2 &&
+        refills.every((item) => item.shape?.includes("items")),
+      { shapes: refills.map((item) => item.shape) },
+    );
+
+    // The saved session holds the whole playlist, not only the songs
+    // already handed to MusicKit, so a restart does not cut it short.
+    await sleep(2600);
+    const savedSession = await page.evaluate(`
+      const raw = await window.__TAURI_INTERNALS__.invoke("load_playback_session");
+      const session = raw ? JSON.parse(raw) : null;
+      return {
+        count: session?.items?.length ?? 0,
+        current: session?.items?.[session.index]?.id ?? null,
+        hasRest: Boolean(session?.items?.some((item) => item.id === "big-0400")),
+      };`);
+    check(
+      "the saved session includes the rest of a long playlist",
+      savedSession.count === 500 &&
+        savedSession.current === "big-0071" &&
+        savedSession.hasRest,
+      savedSession,
+    );
+
+    // Save as playlist offers every song, including the ones still to come.
+    await page.evaluate(`
+      [...document.querySelectorAll(".queue-toolbar button")]
+        .find((node) => node.textContent.trim() === "Save as playlist")?.click();
+      return true;
+    `);
+    const saveOffersAll = await waitFor(
+      page,
+      `document.querySelector(".playlist-dialog")?.textContent.includes("1199 selected songs")`,
+    );
+    const saveText = await page.evaluate(
+      `return document.querySelector(".playlist-dialog")?.textContent ?? null;`,
+    );
+    await page.evaluate(`
+      document.querySelector('button[aria-label="Close playlist dialog"]')?.click();
+      return true;
+    `);
+    check(
+      "Save as playlist includes the songs still waiting to be queued",
+      saveOffersAll,
+      { saveText: String(saveText).slice(0, 200) },
+    );
 
     // Clear drops the rest of the playlist too.
     await page.evaluate(`

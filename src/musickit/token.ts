@@ -39,9 +39,12 @@ export function createNativeTokenProvider(
             : typeof error === "string" && error.trim()
               ? error
               : "MusicKit developer token is not available.";
-        throw Object.assign(new Error(message), {
-          code: "TOKEN_EXPIRED" satisfies AppErrorCode,
-        });
+        // Only an expired token is TOKEN_EXPIRED: it shows the update notice.
+        // A build without a token cannot start MusicKit at all.
+        const code: AppErrorCode = /expired/iu.test(message)
+          ? "TOKEN_EXPIRED"
+          : "MUSICKIT_INIT_FAILED";
+        throw Object.assign(new Error(message), { code });
       }
       if (typeof token !== "string" || !token.trim()) {
         throw Object.assign(
@@ -49,7 +52,7 @@ export function createNativeTokenProvider(
             "MUSICKIT_DEVELOPER_TOKEN is not set. " +
               "Copy .env.example to .env and set your Apple Music developer token.",
           ),
-          { code: "TOKEN_EXPIRED" satisfies AppErrorCode },
+          { code: "MUSICKIT_INIT_FAILED" satisfies AppErrorCode },
         );
       }
       return { token, source: "env" };

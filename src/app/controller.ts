@@ -121,6 +121,8 @@ export type { DetailLoadOptions } from "./library-loader.ts";
 const VOLUME_SAVE_DELAY_MS = 300;
 /** A clipboard write still pending after this is reported as failed. */
 const CLIPBOARD_WRITE_TIMEOUT_MS = 5_000;
+/** Longest wait for the queue save before an update installs (as tray.rs). */
+const QUIT_SAVE_TIMEOUT_MS = 1_500;
 
 export interface ControllerDependencies {
   initializeMusicKit?: typeof initializeMusicKit;
@@ -254,6 +256,8 @@ export interface AppController {
   playConsecutive(): Promise<void>;
   /** Saves the queue position and pending settings before Arlet quits. */
   prepareToQuit?(): Promise<void>;
+  /** Every queued song, including the rest of a long playlist still to come. */
+  fullQueue?(): Track[];
   togglePlayback(): Promise<void>;
   play?(): Promise<void>;
   pause?(): Promise<void>;
@@ -399,6 +403,7 @@ export function createAppController(
     playTracks,
     seek: playback.seek,
     playIntent: playback.playIntent,
+    fullQueue: playback.fullQueue,
   });
   const updater =
     dependencies.updater ??
@@ -679,6 +684,12 @@ export function createAppController(
       const message = safeErrorMessage(error);
       setInitializationState({ status: "error", message });
       log(`MusicKit init failed: ${message}`);
+      // An expired embedded token is not a connection problem: show the
+      // update notice instead of an offline banner whose Reconnect never works.
+      if ((error as { code?: unknown } | null)?.code === "TOKEN_EXPIRED") {
+        setDeveloperTokenExpiry(now());
+        return;
+      }
       if (await library.enterOfflineMode()) {
         log("Showing the cached library offline.");
       }
@@ -772,6 +783,8 @@ export function createAppController(
       volumeSaveWaiters = [];
       for (const resolve of waiters) resolve();
       await volumeSaveQueue;
+      // The restart exits without the quit handshake; save the queue first.
+      await playbackSession.saveNow().catch(() => undefined);
       log("Resetting settings to defaults and restarting.");
       await resetPersistedSettings(invokeFn);
     },
@@ -1039,6 +1052,8 @@ export function createAppController(
       playCollection("album", id, source, startIndex, { trackId }),
     resolveTrackNavigation: trackNavigation.resolve,
 
+    fullQueue: (): Track[] => playback.fullQueue().tracks,
+
     async prepareToQuit(): Promise<void> {
       // A volume change still waiting on its debounce is saved too.
       if (volumeSaveTimer !== undefined) {
@@ -1202,7 +1217,15 @@ export function createAppController(
       updater.dismissPending();
     },
 
-    installUpdate(): Promise<void> {
+    async installUpdate(): Promise<void> {
+      // The Windows installer exits Arlet at once, without the quit
+      // handshake; save the queue and settings first, briefly.
+      await Promise.race([
+        controller.prepareToQuit?.(),
+        new Promise<void>((resolve) =>
+          setTimeout(resolve, QUIT_SAVE_TIMEOUT_MS),
+        ),
+      ]);
       return updater.installPending();
     },
 

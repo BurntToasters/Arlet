@@ -259,7 +259,12 @@ export function createMusicRequest(
   };
 
   return async (path, query, requestOptions) => {
-    if (path.startsWith("/v1/catalog/") && query?.l === undefined) {
+    // Apple's next-page paths can already carry `l`; never send it twice.
+    if (
+      path.startsWith("/v1/catalog/") &&
+      query?.l === undefined &&
+      !/[?&]l=/u.test(path)
+    ) {
       const tag = await resolveLanguage();
       if (tag)
         return withRetry(path, { ...(query ?? {}), l: tag }, requestOptions);

@@ -885,5 +885,64 @@ export async function runPlaylistPlayback({ page, check }) {
       )),
     { retryOrder },
   );
-  await page.evaluate(`location.hash = "#/home"; return true;`);
+
+  // The same retry when the song cannot be resolved by ID (removed from
+  // Apple Music; MusicKit only finds out when it plays a details queue): it
+  // is dropped, or retried by its library ID, and the Play still starts.
+  const missingId = retry.transitions.find((item) => item.type === "setQueue")
+    ?.ids?.[0];
+  await page.evaluate(`
+    window.__ARLET_E2E_MUSIC__.reset();
+    window.__ARLET_E2E_MUSIC__.configure({
+      detailsSkipLookup: true,
+      unresolvedIds: [${JSON.stringify(String(missingId))}],
+      rejectPlayTimes: 1,
+    });
+    document.querySelectorAll(".library-track-row")[2]?.click();
+    return true;
+  `);
+  const unresolvedRetried = await waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().transitions.some((item) => item.type === "play")`,
+  );
+  const unresolved = await page.evaluate(
+    "return window.__ARLET_E2E_MUSIC__.snapshot();",
+  );
+  const unresolvedOrder = unresolved.transitions
+    .filter((item) =>
+      ["setQueue", "setQueueUnresolved", "playRejected", "play"].includes(
+        item.type,
+      ),
+    )
+    .map((item) =>
+      item.type === "setQueue"
+        ? `setQueue:${item.shape?.includes("items") ? "details" : "ids"}`
+        : item.type,
+    );
+  const finalQueue = unresolved.transitions
+    .filter((item) => item.type === "setQueue")
+    .at(-1);
+  check(
+    "a details retry that hits an unresolvable song drops it and still plays",
+    Boolean(missingId) &&
+      unresolvedRetried &&
+      JSON.stringify(unresolvedOrder) ===
+        JSON.stringify([
+          "setQueue:details",
+          "playRejected",
+          "setQueueUnresolved",
+          "setQueue:ids",
+          "play",
+        ]) &&
+      !finalQueue?.ids?.includes(String(missingId)) &&
+      !(await page.evaluate(
+        `return Boolean(document.querySelector(".player-error"));`,
+      )),
+    { missingId, unresolvedOrder, finalIds: finalQueue?.ids },
+  );
+  await page.evaluate(`
+    window.__ARLET_E2E_MUSIC__.reset();
+    location.hash = "#/home";
+    return true;
+  `);
 }

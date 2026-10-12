@@ -46,7 +46,10 @@ Azure signing, and live updater feeds remain explicit release-environment gates.
    - With only some set, it fails rather than reuse a stale token.
 
    `build.rs` and `release:preflight` then refuse a missing token, a
-   non-ES256 JWT, fewer than 30 days left, or any `origin` claim. The
+   non-ES256 JWT, or any `origin` claim. `build.rs` needs 30 days left;
+   `release:preflight` needs 150, so the token outlives the canary's
+   150-day warning (mint a fresh 180-day token when a pasted one is older
+   than 30 days). The
    preflight then sends the token to Apple's catalog API and stops unless
    Apple answers 200.
 

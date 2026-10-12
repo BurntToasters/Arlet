@@ -24,8 +24,18 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 - **Fix - Quitting:** Quitting Arlet while a song plays, from the tray or by closing the window with the tray off, now saves where you were. Before, up to the last 30 seconds could be lost.
 - **Fix - Playing Next:** Moving a song up or down moves the song you picked, even if the queue changed a moment before.
 - **Improvement - Faster starts:** Songs that are only in your library (such as uploads) now start as quickly as other songs. If Apple Music can't start a song from the details Arlet sends, Arlet retries the usual way once instead of showing an error.
+- **Fix - Songs Apple Music removed:** If a song can't start from its details and Apple Music no longer has it, Arlet skips it (or plays your library copy) instead of failing the whole Play.
+- **Fix - Resuming after a restart:** A long playlist now resumes in full after you restart Arlet. Before, it stopped about 100 songs later. Restored songs also keep their explicit rating.
+- **Fix - Media keys:** The keyboard's Previous key and the Windows media controls now work on the first song you play, like the Previous button in Arlet. Next stays available while more songs of a long playlist are still to be added.
+- **Fix - Save as playlist:** `Save as playlist` in `Playing Next` now saves every song of a long playlist, including the ones not yet added to the queue.
+- **Fix - Updates and Reset:** Installing an update or resetting settings now saves where you were first, as quitting does.
+- **Fix - Expired versions:** A version of Arlet whose Apple Music access has expired now says to install the latest update, instead of saying you're offline.
+- **Fix - Quitting:** With the tray icon off, closing the window now hides it at once while Arlet saves and quits.
+- **Fix - Windows media controls:** The media overlay no longer stays out of date after a failed update, and the tray's `Play/Pause` plays again after playback has stopped.
 - **Improvement - Crash records:** If Windows' web view crashes, a short note is now saved in the log even with `Debug Mode` off, so the problem can be found.
-- **Testing:** End-to-end tests now check that quitting saves the latest position, that library-only songs are queued as library songs, that a song Apple Music can't start from its details plays after one retry, and that a web view crash is logged.
+- **Improvement - Fewer requests:** Songs added to the queue in the background, and with `Play Next` or `Play Later`, are sent with their details, so Apple Music no longer looks each one up.
+- **Release:** A release now needs a developer token with at least 150 days left, so it never expires before the weekly reminder to ship a new release.
+- **Testing:** End-to-end tests now check that quitting saves the latest position, that library-only songs are queued as library songs, that a song Apple Music can't start from its details plays after one retry (or is skipped when Apple Music no longer has it), that a web view crash is logged, that the saved session and `Save as playlist` hold the whole playlist, that restored songs keep their explicit rating, that background additions send song details, that Windows offers Previous on the first song, and that an expired version shows the update notice.
 
 ## Changes in `v0.3.0-beta.1:`
 

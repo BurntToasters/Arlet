@@ -64,7 +64,8 @@ first.
   left), or fails the build. At runtime `get_developer_token` serves only the
   embedded token, never the user's environment, and reports an expired token
   as "install the latest update". `release-preflight.js` runs the same check
-  before a draft release exists.
+  before a draft release exists and needs 150 days left, so the token
+  outlives the weekly canary's 150-day release-age warning.
 - The embedded JWT can be extracted from the binary, as with any MusicKit web
   app. Its lifetime is the exposure window: Apple caps it at 6 months, so a
   new release must ship before the embedded token expires.
@@ -120,8 +121,9 @@ host would learn the user's IP address.
 ## Sign-out
 
 Signing out stops playback, revokes MusicKit authorization, clears the SQLite
-library cache, and deletes the local pinned-playlist file, so the next Apple ID
-on the same Windows account starts clean.
+library cache, and deletes the local pinned-playlist file and the saved
+playback queue, so the next Apple ID on the same Windows account starts
+clean.
 
 ## Signing separation
 

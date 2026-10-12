@@ -55,6 +55,9 @@ The harness itself must not lose the real data folders:
   a marker file, so the next run puts the backup back before it starts.
 - Data without that marker is never deleted. With more than one backup, or
   unmarked data in place, the run stops and asks for a manual restore.
+- Deleting the test profile fails (a WebView2 process still holds a file),
+  and the run stops before it renames any backup back, so Arlet opens on the
+  test profile until the next run.
 
 It also writes `screenshot-offline.png`. CI runs this gate on Windows x64 and
 uploads the report as the `e2e-report` artifact.
@@ -65,7 +68,14 @@ release origin and that it carries no `origin` claim. That proves the token
 on this machine; `release:preflight` checks the release VM's token against
 Apple separately. Library (`/v1/me`) requests need a signed-in user, so
 confirm them by hand on an installed build.
-The E2E binary then contains that token; it stays in `src-tauri/target/e2e`.
+
+Release token age:
+
+- The weekly canary warns 150 days after the latest stable release, assuming
+  its token was freshly minted for 180 days. A release built with an older
+  pasted token (30 days left passes the build) stops playback for everyone
+  before the canary warns. `release:preflight` now requires 150 days left.
+  The E2E binary then contains that token; it stays in `src-tauri/target/e2e`.
 
 It does not sign in to Apple Music or play protected audio.
 
@@ -132,6 +142,16 @@ MusicKit's item loader rejects the whole `setQueue`, `playNext`, or
 `playLater` call with `NOT_FOUND` ("One or more items could not be resolved")
 when any catalog ID is missing, and it silently drops songs that resolve but
 are not playable. Failure scenarios:
+
+- A song MusicKit took as song details (no lookup) but could not start is
+  queued again by ID, and that retry hits an unresolved ID: the Play fails
+  instead of skipping the song (or retrying a library song by its library
+  ID), as the first queue setup would.
+- Rebuilding the queue from a chosen row (runtimes without
+  `changeToMediaAtIndex`) fails on one unresolved song instead of dropping it.
+- Background top-ups and Play Next/Later queue by ID, so MusicKit looks up
+  every added song (one Apple request per 16). Details are tried first; a
+  rejected details call falls back to IDs once.
 
 - One removed or temporarily unavailable song stops a whole playlist or album
   from playing.
@@ -223,6 +243,8 @@ are not playable. Failure scenarios:
   shifted after the user picked it (a sync or top-up); the move must follow
   the song's ID. (Code-reviewed; the existing move checks cover the normal
   path, and the shift itself is not driven here.)
+- `Save as playlist` saves only the songs already handed to MusicKit and
+  leaves out the rest of a long playlist that the drawer says is coming.
 
 ## Ratings and library
 
@@ -260,6 +282,16 @@ are not playable. Failure scenarios:
 - `End of track` lets the next song play audibly, or never fires at queue end.
 - Autoplay is offered when the runtime does not support it, or the setting is
   saved even though the runtime rejected it.
+- Windows media keys and the flyout cannot go Previous on the first song of
+  a Play (every Play now starts at queue index 0), while the in-app Previous
+  restarts the song or steps back into the playlist. Next is disabled on the
+  last queued song while more songs of the playlist are still to be added.
+- A failed media-overlay update is remembered as shown, so the overlay stays
+  stale until the song changes.
+- After playback stops, the tray Play/Pause item sends Pause, because the
+  last playing state is never cleared.
+  (These two are native-only and code-reviewed: the overlay and the tray
+  need a real desktop, see Release-only evidence.)
 
 ## Tray
 
@@ -277,6 +309,9 @@ closing the window quits.
   when shown).
 - Tray commands arrive before the frontend listens.
 - A second launch does not show a window hidden in the tray.
+- With the tray off, closing leaves the window on screen while the page
+  saves before quitting. (Code-reviewed; the close-with-tray-off check still
+  proves the save and the exit.)
 - A missing or non-boolean `trayIcon` value disables the tray instead of
   using the default.
 
@@ -295,6 +330,19 @@ closing the window quits.
 - Next, Previous, or a seek shortcut on a restored queue does nothing, or
   calls the provider before Play: there is no provider queue yet.
 - A seek before Play is lost, and Play resumes at the old saved position.
+- A restored long playlist ends after the songs MusicKit already held (50 to
+  150), because the rest still to be added, and the songs before the one the
+  Play started at, were not saved.
+- A restored song loses its explicit rating, so it is queued without
+  `contentRating` (no badge, and no content limit if MusicKit applies it
+  client-side), or a song Apple marks unplayable is sent again.
+- Installing an update or resetting settings exits without the quit save, so
+  up to 30 seconds of position and a pending volume change are lost.
+  (Code-reviewed: both now run the same save the quit check covers; an
+  update install needs a published release.)
+- An expired embedded developer token shows "You're offline" with a Reconnect
+  button that fails forever; the token notice never appears because the
+  expiry is only known after MusicKit started.
 
 ## Radio and artist pages
 
@@ -307,6 +355,9 @@ closing the window quits.
 - Artist top songs for a library artist call the catalog with a library ID.
 - Top songs from a previous artist flash on the next artist page.
 - The shortcut list in Settings drifts from the real key handling.
+- A catalog next-page path Apple returns with `l=` already in it gets a
+  second `l` added, so later pages can come back in another language or fail.
+  (Code-reviewed; the fixture's catalog pages carry no language.)
 - An artist page shows "No albums found" because a catalog response wrapped
   by MusicKit (`{ data: { data: [...] } }`) is read as empty, or lists only
   the first page (25) of an artist's albums.

@@ -205,7 +205,12 @@ export function QueueDrawer(): JSX.Element | null {
             <button
               type="button"
               onClick={(event) =>
-                requestPlaylistDialog("create", queue, event.currentTarget)
+                requestPlaylistDialog(
+                  "create",
+                  // The whole playlist, including songs still to be added.
+                  controller.fullQueue?.() ?? queue,
+                  event.currentTarget,
+                )
               }
             >
               <ListPlus aria-hidden="true" size={15} />
