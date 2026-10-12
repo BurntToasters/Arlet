@@ -47,6 +47,10 @@ function asItems(value: unknown): unknown[] {
   for (const key of ["items", "data", "tracks", "resources"]) {
     if (Array.isArray(record?.[key])) return record[key] as unknown[];
   }
+  // MusicKit's `api.music` wraps Apple's body: `{ data: { data: [...] } }`.
+  // Read one level down, or a catalog response reads as empty.
+  const body = asRecord(record?.data);
+  if (body && body !== record) return asItems(body);
   return [];
 }
 

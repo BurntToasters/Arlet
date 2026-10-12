@@ -444,6 +444,32 @@ function installMusicKitFixture() {
         ...(relation ? { relationships: clone(relation) } : {}),
       });
     }
+    // A catalog artist's albums: 30, paged 25 at a time like Apple, with
+    // release dates (newest is Album 30).
+    if (pathname === "/v1/catalog/us/artists/nav-artist-two/albums") {
+      const offset = Number(
+        new URLSearchParams(String(path).split("?")[1] ?? "").get("offset") ??
+          0,
+      );
+      const albums = Array.from({ length: 30 }, (_, index) => ({
+        id: `artist-two-album-${index + 1}`,
+        type: "albums",
+        attributes: {
+          name: `Artist Two Album ${index + 1}`,
+          artistName: "Artist Two",
+          releaseDate: `${1995 + index}-06-01`,
+          playParams: { id: `artist-two-album-${index + 1}`, kind: "album" },
+        },
+      }));
+      return {
+        data: albums.slice(offset, offset + 25),
+        ...(offset + 25 < albums.length
+          ? {
+              next: `/v1/catalog/us/artists/nav-artist-two/albums?offset=${offset + 25}`,
+            }
+          : {}),
+      };
+    }
     const artistMatch = pathname.match(
       /^\/v1\/(me\/library|catalog\/us)\/artists\/([^/]+)(\/view\/top-songs)?$/u,
     );

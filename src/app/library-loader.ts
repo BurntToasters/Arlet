@@ -1,7 +1,4 @@
-import {
-  resolveMusicKitMusicRequest,
-  resolveStorefront,
-} from "../musickit/catalog.ts";
+import { resolveMusicKitMusicRequest } from "../musickit/catalog.ts";
 import type { AppleMusicLibraryClient } from "../musickit/library.ts";
 import {
   LIBRARY_CACHE_SCOPE,
@@ -702,14 +699,6 @@ export function createLibraryLoader(
     source: MusicSource,
     artistName: unknown,
   ): Promise<LibraryEntity[]> => {
-    const music = getMusic();
-    if (source === "catalog" && music) {
-      const storefront = await resolveStorefront(music);
-      const rawAlbums = await resolveMusicKitMusicRequest(music)(
-        `/v1/catalog/${encodeURIComponent(storefront)}/artists/${encodeURIComponent(id)}/albums`,
-      );
-      return normalizedLibraryEntities(rawAlbums);
-    }
     const client = libraryClient;
     // Test and preview clients may not implement the relationship.
     if (client && typeof client.getArtistAlbums === "function") {
@@ -720,7 +709,8 @@ export function createLibraryLoader(
         const seen = new Set<string>();
         let cursor: string | undefined;
         do {
-          const page = await client.getArtistAlbums(id, cursor);
+          // Apple pages an artist's albums (25 at a time in the catalog).
+          const page = await client.getArtistAlbums(id, cursor, source);
           albums.push(...asLibraryEntities(page));
           cursor = asNext(page);
           if (cursor && seen.has(cursor)) break;
@@ -733,6 +723,9 @@ export function createLibraryLoader(
         log(`Artist albums request failed: ${safeErrorMessage(error)}`);
       }
     }
+    // A catalog artist is not in the library, so the library holds none of
+    // its albums to fall back on.
+    if (source === "catalog") return [];
     await loadLibrarySection("albums");
     return getState().library.collections.albums.items.filter((album) => {
       const candidate = album as LibraryEntity;

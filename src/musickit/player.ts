@@ -1,4 +1,4 @@
-import { isSameTrack, type Track } from "../domain/music.ts";
+import { idSource, isSameTrack, type Track } from "../domain/music.ts";
 import { normalizeTrack } from "./normalize.ts";
 import { getState, setCurrentTrack, setQueue } from "../state.ts";
 
@@ -416,6 +416,52 @@ export function queueOptionsForTracks(
     return { musicVideos: tracks.map(usableId) };
   }
   return { songs: tracks.map(usableId) };
+}
+
+/**
+ * Queue options carrying each song's details instead of its ID. MusicKit then
+ * skips its per-song lookup (one Apple request per 16 songs), measured on
+ * live MusicKit: one lookup by IDs, none with details. Undefined when any
+ * song lacks a catalog ID or details (library-only songs, music videos), so
+ * the caller queues by ID.
+ */
+export function queueDescriptorsForTracks(
+  tracks: readonly Track[],
+): MusicKit.QueueOptions | undefined {
+  const items: Record<string, unknown>[] = [];
+  for (const track of tracks) {
+    const id =
+      track.catalogId ??
+      (idSource(track.id) === "catalog" ? track.id : undefined);
+    const video =
+      track.resourceType === "music-videos" ||
+      track.resourceType === "library-music-videos";
+    if (!id || video || !track.title.trim()) return undefined;
+    items.push({
+      id,
+      type: "songs",
+      attributes: {
+        name: track.title,
+        artistName: track.artistName,
+        ...(track.albumTitle ? { albumName: track.albumTitle } : {}),
+        ...(track.durationMs ? { durationInMillis: track.durationMs } : {}),
+        // Without a lookup MusicKit only knows a rating it is given; the
+        // explicit badge and any account content limit rely on it.
+        ...(track.explicit === true ? { contentRating: "explicit" } : {}),
+        ...(track.artwork
+          ? {
+              artwork: {
+                url: track.artwork.url,
+                width: track.artwork.width,
+                height: track.artwork.height,
+              },
+            }
+          : {}),
+        playParams: { id, kind: "song" },
+      },
+    });
+  }
+  return items.length ? { items } : undefined;
 }
 
 export async function pause(

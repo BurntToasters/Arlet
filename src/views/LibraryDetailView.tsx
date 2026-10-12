@@ -35,6 +35,9 @@ import { SongRow } from "../components/SongRow.tsx";
 import { OfflineBanner } from "../components/OfflineBanner.tsx";
 import { VirtualList } from "../components/VirtualList.tsx";
 
+/** Top Songs rows an artist page shows; Play still uses every top song. */
+const ARTIST_TOP_SONGS_SHOWN = 10;
+
 type DetailKind = "album" | "artist" | "playlist";
 type DetailSource = "library" | "catalog";
 
@@ -325,10 +328,33 @@ export function LibraryDetailView({
 
   const playbackSource: DetailSource =
     source ?? (resource ? resourceSource(resource) : undefined) ?? "library";
+  // The page's songs, when it holds every one: Play starts from them
+  // instead of fetching the pages again.
+  const shownTracks = (): Track[] | undefined => {
+    if (detail.next || detail.status === "loading") return undefined;
+    const tracks = resources
+      .map(toTrack)
+      .filter((track): track is Track => Boolean(track));
+    return tracks.length ? tracks : undefined;
+  };
   const playCollection = (
     startIndex: number,
     trackId?: string,
   ): Promise<void> | undefined => {
+    const shown = shownTracks();
+    if (
+      (kind === "playlist" || kind === "album") &&
+      shown &&
+      extendedController.playCollection
+    ) {
+      return extendedController.playCollection(
+        kind,
+        id,
+        playbackSource,
+        startIndex,
+        { trackId, shown },
+      );
+    }
     if (kind === "playlist" && extendedController.playPlaylist) {
       return extendedController.playPlaylist(
         id,
@@ -362,6 +388,7 @@ export function LibraryDetailView({
     act(() =>
       extendedController.playCollection?.(kind, id, playbackSource, 0, {
         shuffle: true,
+        shown: shownTracks(),
       }),
     );
   };
@@ -454,13 +481,31 @@ export function LibraryDetailView({
   const artist = resource?.artistName;
   const artworkTrack = resource ? toTrack(resource) : undefined;
   const isArtist = kind === "artist";
+  const artistBackdrop = isArtist ? artworkTrack?.artwork?.url : undefined;
+  // Albums newest first, so an artist's latest work leads the shelf.
+  const artistAlbums = isArtist
+    ? [...resources].sort((left, right) =>
+        String(right.releaseDate ?? "").localeCompare(
+          String(left.releaseDate ?? ""),
+        ),
+      )
+    : [];
   return (
     <>
       {offline ? <OfflineBanner /> : null}
       <section
-        className="library-detail-hero"
+        className={`library-detail-hero${isArtist ? " artist-hero" : ""}`}
         {...(resource ? detailContext(resource, kind) : {})}
       >
+        {/* An image, not a CSS url(): the artwork URL never enters CSS. */}
+        {artistBackdrop ? (
+          <img
+            className="artist-hero-backdrop"
+            src={artistBackdrop}
+            alt=""
+            aria-hidden="true"
+          />
+        ) : null}
         <div className="library-detail-art">
           {artworkTrack ? (
             <Artwork
@@ -574,8 +619,8 @@ export function LibraryDetailView({
         >
           <h2 id="top-songs-heading">Top Songs</h2>
           <div className="library-list-panel">
-            <ol className="library-track-list">
-              {topSongs.map((track, index) => (
+            <ol className="library-track-list artist-top-songs-grid">
+              {topSongs.slice(0, ARTIST_TOP_SONGS_SHOWN).map((track, index) => (
                 <SongRow
                   key={`${track.id}:${index}`}
                   track={track}
@@ -617,33 +662,43 @@ export function LibraryDetailView({
       ) : null}
       {isArtist ? (
         resources.length ? (
-          <section className="library-card-grid" aria-label="Artist albums">
-            {resources.map((album) => (
-              <button
-                key={album.id}
-                className="library-card"
-                type="button"
-                {...detailContext(album, "album")}
-                onClick={() =>
-                  router.navigate({
-                    kind: "album",
-                    id: album.id,
-                    source: resourceSource(album) ?? source,
-                  } as Parameters<typeof router.navigate>[0])
-                }
-              >
-                <Artwork
-                  track={toTrack(album)}
-                  size="lg"
-                  alt={`${album.title} artwork`}
-                  className="library-card-art"
-                />
-                <span className="library-card-copy">
-                  <strong>{album.title}</strong>
-                  <small>{album.artistName ?? "Album"}</small>
-                </span>
-              </button>
-            ))}
+          <section
+            className="artist-albums"
+            aria-labelledby="artist-albums-heading"
+          >
+            <h2 id="artist-albums-heading">Albums</h2>
+            <div className="library-card-grid" aria-label="Artist albums">
+              {artistAlbums.map((album) => (
+                <button
+                  key={album.id}
+                  className="library-card"
+                  type="button"
+                  {...detailContext(album, "album")}
+                  onClick={() =>
+                    router.navigate({
+                      kind: "album",
+                      id: album.id,
+                      source: resourceSource(album) ?? source,
+                    } as Parameters<typeof router.navigate>[0])
+                  }
+                >
+                  <Artwork
+                    track={toTrack(album)}
+                    size="lg"
+                    alt={`${album.title} artwork`}
+                    className="library-card-art"
+                  />
+                  <span className="library-card-copy">
+                    <strong>{album.title}</strong>
+                    <small>
+                      {/^\d{4}/u.test(String(album.releaseDate ?? ""))
+                        ? String(album.releaseDate).slice(0, 4)
+                        : (album.artistName ?? "Album")}
+                    </small>
+                  </span>
+                </button>
+              ))}
+            </div>
           </section>
         ) : (
           <EmptyState

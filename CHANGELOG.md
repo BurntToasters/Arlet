@@ -1,7 +1,7 @@
 # ⬇️ Downloads
 
-| <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                            | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
-| :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
+| <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                                          | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
+| :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
 | **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.1/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.1/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
@@ -21,7 +21,10 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 
 ## Changes in `v0.3.0-beta.1:`
 
-- **Fix:** (add release notes)
+- **NEW - Artist pages:** Artists get their own look: a banner over a soft, blurred photo of the artist, a round portrait, and a larger name. `Top Songs` shows the top ten, in two columns on wide windows, and `Albums` lists every album newest first, with its year.
+- **Fix - Artist albums:** Artist pages from Apple Music (such as artists you open from a song) no longer say `No albums found`, and artists with more than 25 albums now list all of them.
+- **Improvement - Faster starts:** Playing a song from a playlist or album page starts from the songs already on screen instead of loading them again. Arlet also hands Apple Music the song details it already has, so Apple Music no longer looks each song up before it starts.
+- **Testing:** End-to-end tests now check that playing from a playlist page makes no extra requests and sends song details, that an artist lists every album newest first with years, and that the artist banner keeps its content inside it. A run with the real Apple Music developer token measures how song details skip Apple Music's lookup.
 
 ## Changes in `v0.2.6:`
 

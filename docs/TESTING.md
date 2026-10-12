@@ -299,6 +299,20 @@ closing the window quits.
 - Artist top songs for a library artist call the catalog with a library ID.
 - Top songs from a previous artist flash on the next artist page.
 - The shortcut list in Settings drifts from the real key handling.
+- An artist page shows "No albums found" because a catalog response wrapped
+  by MusicKit (`{ data: { data: [...] } }`) is read as empty, or lists only
+  the first page (25) of an artist's albums.
+- An artist page looks like an album page, its banner text is unreadable over
+  the artwork, or its Top Songs grid scrolls sideways at narrow widths.
+- Play on a playlist page fetches the songs already on screen again before
+  any audio starts.
+- Queuing songs by ID makes MusicKit look each one up first (one Apple
+  request per 16 songs). Arlet queues song details instead; the real-token
+  run (`test:e2e:app:real`) records the probe: one lookup by ID, none with
+  details. Library-only songs and music videos still queue by ID, and a
+  rejected details queue falls back to IDs. With details MusicKit does not
+  look songs up, so a song since removed from Apple Music fails when it
+  starts and is skipped by auto-skip (covered above).
 
 ## Search, playlist dialogs, and support report
 

@@ -657,6 +657,53 @@ async function run() {
         catalog.ok,
         catalog,
       );
+      // Probe: does queuing full song details skip MusicKit's per-song
+      // lookup (one Apple request per 16 songs) that queuing IDs makes?
+      // Informational; it decides whether Arlet queues details. No sign-in
+      // or playback: setQueue only.
+      const probe = await page.evaluate(`
+        const instance = window.MusicKit?.getInstance?.();
+        if (!instance) return { ok: false, error: "no MusicKit" };
+        const lookups = () => performance.getEntriesByType("resource")
+          .filter((entry) => entry.name.includes("/v1/catalog/") &&
+            (entry.name.includes("/songs?") || entry.name.includes("/songs/"))).length;
+        const measure = async (options) => {
+          const before = lookups();
+          const startedAt = performance.now();
+          try {
+            await instance.setQueue(options);
+          } catch (error) {
+            return { ok: false, error: String(error?.message ?? error).slice(0, 200) };
+          }
+          const items = instance.queue?.items ?? [];
+          return {
+            ok: true,
+            ms: Math.round(performance.now() - startedAt),
+            lookups: lookups() - before,
+            length: items.length,
+            first: items[0] ? { id: items[0].id, title: items[0].title ?? items[0].attributes?.name } : null,
+          };
+        };
+        try {
+          const response = await instance.api.music("/v1/catalog/us/search", {
+            term: "daft punk",
+            types: "songs",
+            limit: 5,
+          });
+          const songs = response?.data?.results?.songs?.data ?? [];
+          if (songs.length === 0) return { ok: false, error: "no search results" };
+          performance.clearResourceTimings();
+          const byIds = await measure({ songs: songs.map((song) => song.id) });
+          const byItems = await measure({ items: songs });
+          return { ok: byIds.ok && byItems.ok, byIds, byItems };
+        } catch (error) {
+          return { ok: false, error: String(error?.message ?? error).slice(0, 200) };
+        }`);
+      check(
+        "probe: setQueue with song details vs IDs (informational)",
+        probe.ok,
+        probe,
+      );
     }
 
     // 3. Corrupt settings fall back to the backup.

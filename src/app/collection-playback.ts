@@ -37,6 +37,11 @@ export interface CollectionPlayOptions {
    * play it, and may have changed since its page was shown.
    */
   trackId?: string;
+  /**
+   * Every song of the collection as the page shows it. When given, Play
+   * starts from it instead of fetching the pages again.
+   */
+  shown?: readonly Track[];
 }
 
 /** Uniform random index in [0, length) from the platform CSPRNG. */
@@ -212,13 +217,17 @@ export function createCollectionPlayback(deps: CollectionPlaybackDeps) {
       const client = deps.requireLibrary();
       const stale = (): boolean =>
         mine !== generation || instance !== deps.getMusic();
-      // Shuffle needs the whole collection. In order, Play starts once the
-      // chosen song's page is in; the rest loads while it plays.
-      const pager = createTrackPager(kind, id, source, client);
-      const tracks: Track[] = [];
+      // The page already holds every song: no fetch before audio. Otherwise
+      // shuffle needs the whole collection, and in order Play starts once
+      // the chosen song's page is in; the rest loads while it plays.
+      const shown = options.shown?.length ? options.shown : undefined;
+      const pager = shown
+        ? undefined
+        : createTrackPager(kind, id, source, client);
+      const tracks: Track[] = shown ? [...shown] : [];
       let pages = 0;
       const loadUntil = async (enough: () => boolean): Promise<boolean> => {
-        while (!pager.done && !enough()) {
+        while (pager && !pager.done && !enough()) {
           const items = await pager.next();
           if (stale()) return false;
           pages += 1;
@@ -247,7 +256,9 @@ export function createCollectionPlayback(deps: CollectionPlaybackDeps) {
       const timing: PlayTiming = {
         startedAt,
         steps: [
-          `${kind} pages ${pages} (${tracks.length} songs) ${Math.round(performance.now() - startedAt)}ms`,
+          pager
+            ? `${kind} pages ${pages} (${tracks.length} songs) ${Math.round(performance.now() - startedAt)}ms`
+            : `shown list (${tracks.length} songs)`,
         ],
       };
 
@@ -270,7 +281,7 @@ export function createCollectionPlayback(deps: CollectionPlaybackDeps) {
       // The token comes from this Play: a newer Play that started meanwhile
       // must not receive this collection's later pages.
       const token = await deps.playTracks(queue, index, timing);
-      if (token !== undefined && !pager.done) {
+      if (token !== undefined && pager && !pager.done) {
         void loadRest(pager, token, instance);
       }
     } catch (error) {
