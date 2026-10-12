@@ -119,6 +119,18 @@ function restore(moved) {
   }
 }
 
+/** The test profile's arlet.log (Tauri's app log dir), or "" when absent. */
+function readTestLog() {
+  try {
+    return fs.readFileSync(
+      path.join(dataDirs()[1], "logs", "arlet.log"),
+      "utf8",
+    );
+  } catch {
+    return "";
+  }
+}
+
 function seedCorruptSettings() {
   const roaming = dataDirs()[0];
   fs.mkdirSync(roaming, { recursive: true });
@@ -1177,12 +1189,26 @@ async function run() {
       },
     );
   } catch (error) {
-    check("native E2E completes", false, String(error?.message ?? error));
+    // The panic hook writes native crashes to the test profile's log, which
+    // restore() deletes; carry the crash line into the report.
+    const crash = readTestLog()
+      .split(/\r?\n/u)
+      .filter((line) => line.includes("[native] Arlet crashed"))
+      .at(-1);
+    check(
+      "native E2E completes",
+      false,
+      [String(error?.message ?? error), crash].filter(Boolean).join(" | "),
+    );
   } finally {
     page?.close();
     if (child?.pid) {
       killArlet();
       await waitForArletExit();
+    }
+    const testLog = readTestLog();
+    if (testLog && !fs.existsSync(path.join(artifactDir, "arlet.log"))) {
+      fs.writeFileSync(path.join(artifactDir, "arlet.log"), testLog);
     }
     restore(moved);
   }

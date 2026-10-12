@@ -95,6 +95,84 @@ fn redact_sensitive(text: &str) -> String {
     result
 }
 
+/// Must match `identifier` in tauri.conf.json; Tauri's app log dir is
+/// `%LOCALAPPDATA%\<identifier>\logs` on Windows.
+const APP_IDENTIFIER: &str = "run.rosie.arlet";
+
+/// Release builds abort on panic with no console, which leaves only exit
+/// code 0xC0000409. The hook writes the message and source location to
+/// `arlet.log` first; it runs before Tauri exists, so it finds the log
+/// directory itself.
+pub fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let dir = std::path::PathBuf::from(local)
+                .join(APP_IDENTIFIER)
+                .join("logs");
+            let location = info
+                .location()
+                .map(|l| format!("{}:{}", l.file(), l.line()))
+                .unwrap_or_else(|| "unknown location".to_string());
+            let payload = info.payload();
+            let message = payload
+                .downcast_ref::<&str>()
+                .map(|s| (*s).to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "non-text panic".to_string());
+            let thread = std::thread::current();
+            let entry = format!(
+                "[{}] [native] Arlet crashed (thread {}): {} at {}",
+                iso_timestamp_now(),
+                thread.name().unwrap_or("unnamed"),
+                message,
+                location
+            );
+            let safe_entry = redact_sensitive(&truncate_entry(&entry))
+                .replace('\r', "\\r")
+                .replace('\n', "\\n");
+            // Best effort: nothing in a panic hook may panic again.
+            if std::fs::create_dir_all(&dir).is_ok() {
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(dir.join(LOG_FILE_NAME))
+                {
+                    let _ = writeln!(file, "{safe_entry}");
+                }
+            }
+        }
+        default_hook(info);
+    }));
+}
+
+/// UTC time in the same `2026-01-31T12:00:00.000Z` form the app logs use.
+fn iso_timestamp_now() -> String {
+    let since_epoch = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = since_epoch.as_secs();
+    let millis = since_epoch.subsec_millis();
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    // Howard Hinnant's days-to-civil conversion.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{millis:03}Z",
+        rem / 3_600,
+        (rem % 3_600) / 60,
+        rem % 60
+    )
+}
+
 #[tauri::command(async)]
 pub fn append_local_log(app: tauri::AppHandle, entry: String) -> Result<(), String> {
     let state = app.state::<LogFileLock>();

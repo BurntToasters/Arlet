@@ -26,6 +26,7 @@ use std::sync::Mutex;
 use logging::LogFileLock;
 
 fn main() {
+    logging::install_panic_hook();
     if let Err(error) = commands::ensure_supported_windows() {
         commands::show_error_dialog(&error);
         return;
