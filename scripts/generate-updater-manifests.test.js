@@ -34,7 +34,7 @@ function fixtureEnvelope() {
   return Buffer.from(inner, "utf8").toString("base64");
 }
 
-function fixtureBundle() {
+function fixtureBundle(version = "0.1.0") {
   const root = mkdtempSync(path.join(tmpdir(), "arlet-manifests-"));
   const nsis = path.join(
     root,
@@ -48,7 +48,7 @@ function fixtureBundle() {
   mkdirSync(nsis, { recursive: true });
   const sig = fixtureEnvelope();
   for (const arch of ["x64", "arm64"]) {
-    const exe = path.join(nsis, `Arlet_0.1.0_${arch}-setup.exe`);
+    const exe = path.join(nsis, `Arlet_${version}_${arch}-setup.exe`);
     writeFileSync(exe, "fake-exe");
     writeFileSync(`${exe}.sig`, sig);
   }
@@ -119,15 +119,15 @@ test("manifests carry deterministic URLs and valid shape", () => {
 });
 
 test("every stable and beta manifest carries only the selected section", () => {
-  const root = fixtureBundle();
+  const root = fixtureBundle("1.2.3");
+  const betaRoot = fixtureBundle("1.2.3-beta.1");
   try {
-    const installers = findSignedInstallers(root);
-    const stable = buildManifests(installers, {
+    const stable = buildManifests(findSignedInstallers(root), {
       version: "1.2.3",
       tag: "v1.2.3",
       notes: "- Stable release notes.",
     });
-    const beta = buildManifests(installers, {
+    const beta = buildManifests(findSignedInstallers(betaRoot), {
       version: "1.2.3-beta.1",
       tag: "v1.2.3-beta.1",
       notes: "- Beta release notes.",
@@ -144,6 +144,7 @@ test("every stable and beta manifest carries only the selected section", () => {
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
+    rmSync(betaRoot, { recursive: true, force: true });
   }
 });
 
@@ -153,7 +154,7 @@ test("duplicate arch installers fail closed", () => {
     const installers = findSignedInstallers(root);
     const doubled = [...installers, installers[0]];
     assert.throws(
-      () => buildManifests(doubled, { notes: "notes" }),
+      () => buildManifests(doubled, { version: "0.1.0", notes: "notes" }),
       /Duplicate/,
     );
   } finally {

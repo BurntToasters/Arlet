@@ -19,6 +19,7 @@ import {
   useAppRouter,
   useAppState,
 } from "../app/context.tsx";
+import { nearestTrackIndex } from "../app/queue-window.ts";
 import type { AppController } from "../app/controller.ts";
 import { Artwork } from "../components/Artwork.tsx";
 import { SongRow } from "../components/SongRow.tsx";
@@ -721,8 +722,19 @@ export function LibraryView({
     collection.error,
     section,
   ]);
-  const playTrack = (track: Track): void =>
-    act(() => controller.playTracks([track]));
+  // Like Apple Music: the clicked song plays first and the rest of the list
+  // follows (the songs loaded so far; long queues continue as they play).
+  const playTrack = (track: Track, index: number): void => {
+    const tracks = trackResources
+      .map(toTrack)
+      .filter((item): item is Track => Boolean(item));
+    const start = nearestTrackIndex(tracks, index, track.id);
+    act(() =>
+      start >= 0
+        ? controller.playTracks(tracks, start)
+        : controller.playTracks([track]),
+    );
+  };
   return (
     <>
       <div className="page-heading library-heading">

@@ -2,7 +2,7 @@
 
 | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                            | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
 | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.4/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.4/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.5/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.5/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -18,6 +18,19 @@
 ### ℹ️ Enjoying Arlet? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
+
+## Changes in `v0.2.5:`
+
+- **NEW - Debug Mode:** A `Debug Mode` switch at the bottom of Settings, off by default. Arlet only saves its log file (`arlet.log`) while it's on, and turning it on or off takes effect right away. `Copy diagnostics report` works either way. If Arlet crashes or can't open its window, a short note about it is still saved so the problem can be found.
+- **NEW - Songs list:** Clicking a song in `Songs`, `Recently Added`, or `Recently Played` now plays it and then the rest of the list, like the Apple Music app. Before, only that one song was queued.
+- **Fix - Playlists and albums:** Clicking a song in a playlist that changed since you opened it (for example, a song added on another device) now plays the song you clicked, not whichever song moved into its place. If the song was removed, Arlet says so.
+- **Fix - Add to Library:** Adding an item now confirms with `Added to your library.` and shows it in your Library without a manual refresh.
+- **Fix - Signing in:** Closing the Apple Music sign-in window no longer clears your saved library and queue.
+- **Fix - Diagnostics report:** If another app is holding the clipboard, `Copy diagnostics report` now tells you after a few seconds instead of doing nothing.
+- **Fix - Settings:** If the settings file is damaged, Arlet's window style and tray icon now come from the backup at startup, matching the rest of your settings.
+- **Fix - Stability:** One failing part of the app can no longer stop the player, queue saving, or the sleep timer from updating.
+- **Improvement - Diagnostics:** The log now records how long each song takes to start playing, broken into steps, to help track down slow starts.
+- **Testing:** End-to-end tests now check that Debug Mode keeps the log file off by default, starts and stops it right away, and is turned off by `Reset settings`, and that every Play records how long it took. They also cover playing a playlist that changed after it was opened and the `Songs` list queue. Arlet is now tested end to end only; the separate frontend unit tests were removed.
 
 ## Changes in `v0.2.4:`
 

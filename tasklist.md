@@ -18,6 +18,15 @@ Stable releases have shipped (see `CHANGELOG.md`); `next-0.2.4` is in progress.
       fingerprint, or a long `GPG_KEY_ID`). `release:draft` checks it before
       the build and stops the release if it is missing or too short.
 
+- [ ] **0.2.5: update dialog readability.** With a window material on,
+      the "Update downloaded" dialog lets too much of the blurred app show
+      through, and the release notes are hard to read (reported on the
+      0.2.3 → 0.2.4 update). Keep the glassy look, but make the dialog and
+      its notes panel close to opaque, and darken the scrim behind it
+      (`src/styles/base/09-update-modal.css`: `.update-modal-scrim`,
+      `.update-modal`, `.update-modal-notes`). Check light and dark themes
+      and every window material.
+
 The Preact shell, library, search, browse, radio, playlists, queue, SMTC, and
 window materials are implemented; the 2026-09-11 notes below are history.
 
@@ -35,8 +44,9 @@ window materials are implemented; the 2026-09-11 notes below are history.
       open-source licenses); fail-closed license gate; native E2E in CI; 429
       retry and catalog language; token-expiry notice; `base.css` split;
       list virtualization; WebView2 crash recovery.
-- [ ] **Test policy:** AGENTS.md says never write unit tests after code; the
-      repo has ~260. Owner decision pending.
+- [x] **Test policy (2026-10-12):** app behaviour is tested end to end only.
+      The Vitest suite is removed; lint, typecheck, release-tooling script
+      tests, and Rust tests remain.
 - [ ] **Phase 0 matrix still open:** full protected track, seek, skip,
       20 consecutive tracks, 2-hour session, logout/relogin
       (`docs/MUSICKIT_TAURI_FEASIBILITY.md`). Run it on a signed release
@@ -48,7 +58,7 @@ window materials are implemented; the 2026-09-11 notes below are history.
       updater key + password, `AZURE_*`, `GPG_KEY_ID`, `AFTER_PACK_LOC`.
       Back up the updater key offline.
 
-- [ ] **Final app icon:** current art is the temporary icon.
+- [x] **Final app icon:** `src-tauri/icons` holds the production icons.
 - [ ] **Token expiry calendar:** the embedded token caps at 6 months; ship a
       release before it expires.
 

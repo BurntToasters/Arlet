@@ -4,9 +4,10 @@
 // no browser-driver suite, no flatpak, no archive fixtures, no vendor updater
 // tree).
 //
-// Runs: version drift check, typecheck, lint, format:check, vitest with
-// coverage, cargo fmt --check, cargo clippy -D warnings, cargo test, and the
-// deterministic built frontend smoke gate. With --require-clean-proof on
+// Runs: version drift check, typecheck, lint, format:check, the release
+// tooling script tests, cargo fmt --check, cargo clippy -D warnings, cargo
+// test, and the deterministic built frontend smoke gate. App behaviour is
+// tested end to end only (AGENTS.md); there is no frontend unit suite. With --require-clean-proof on
 // Windows it also runs the native app E2E (test:e2e:app) against a release
 // build, so a release proof always includes the real app. Records a
 // quality-gate proof for the release pipeline on success.
@@ -50,7 +51,6 @@ function createInitialResults() {
     typecheck: { status: "pending" },
     lint: { status: "pending" },
     format: { status: "pending" },
-    test: { status: "pending", passed: null, failed: null, files: null },
     scripts: { status: "pending" },
     rustfmt: { status: "pending" },
     clippy: { status: "pending" },
@@ -74,16 +74,6 @@ function printTail(output, label) {
   const tail = clean.split("\n").slice(-60).join("\n");
   console.log(`${colors.red}${label}:${colors.reset}`);
   console.log(`${colors.red}${tail}${colors.reset}`);
-}
-
-function parseTest(output, results) {
-  const clean = stripAnsi(output);
-  const passed = clean.match(/Tests?\s+(\d+)\s+passed/);
-  const failed = clean.match(/Tests?\s+(\d+)\s+failed/);
-  const files = clean.match(/Test Files\s+(\d+)\s+passed/);
-  results.test.passed = passed ? Number.parseInt(passed[1], 10) : null;
-  results.test.failed = failed ? Number.parseInt(failed[1], 10) : 0;
-  if (files) results.test.files = Number.parseInt(files[1], 10);
 }
 
 function runCommand(name, command, args, parser, results, options = {}) {
@@ -185,13 +175,6 @@ function main({
   runner("typecheck", npm, ["run", "typecheck"], null, results);
   runner("lint", npm, ["run", "lint"], null, results);
   runner("format", npm, ["run", "format:check"], null, results);
-  runner(
-    "test",
-    npm,
-    ["run", "test", "--", "--coverage.enabled", "false"],
-    parseTest,
-    results,
-  );
   runner("scripts", npm, ["run", "test:scripts"], null, results);
   runner(
     "rustfmt",
@@ -295,7 +278,6 @@ export {
   getNpmCommand,
   isSshSession,
   main,
-  parseTest,
   printSummary,
   runCommand,
 };

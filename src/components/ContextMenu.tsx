@@ -546,11 +546,13 @@ interface AppControllerWithContext extends Record<string, unknown> {
     id: string,
     source?: MusicSource,
     startIndex?: number,
+    trackId?: string,
   ) => Promise<void>;
   playPlaylist?: (
     id: string,
     source?: MusicSource,
     startIndex?: number,
+    trackId?: string,
   ) => Promise<void>;
   playCollection?: (
     kind: "playlist" | "album",
@@ -718,6 +720,7 @@ function buildItems({
           target.parentId,
           target.parentSource,
           target.parentIndex,
+          track.id,
         ).catch(reportActionError);
         return;
       }

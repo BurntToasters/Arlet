@@ -373,8 +373,15 @@ function installMusicKitFixture() {
       };
     }
     if (pathname === "/v1/me/library/playlists/playlist-1/tracks") {
+      // `playlistPrepended` models the playlist changing on another device
+      // after its page was shown: one new song now comes first.
       return {
-        data: playlistItems.slice(0, 4).map(clone),
+        data: [
+          ...(state.playlistPrepended
+            ? [track("song-new", "Newly Added Song")]
+            : []),
+          ...playlistItems.slice(0, 4),
+        ].map(clone),
         next: secondPlaylistPage,
       };
     }
@@ -822,6 +829,9 @@ function installMusicKitFixture() {
           state[key] = [...(options[key] ?? [])].map(String);
         }
       }
+      if (Object.prototype.hasOwnProperty.call(options, "playlistPrepended")) {
+        state.playlistPrepended = options.playlistPrepended === true;
+      }
       if (Object.prototype.hasOwnProperty.call(options, "rejectPlay")) {
         state.rejectPlay = options.rejectPlay === true;
       }
@@ -845,6 +855,7 @@ function installMusicKitFixture() {
       state.delayMs = 800;
       state.repeatPlaylistCursor = false;
       state.rejectPlay = false;
+      state.playlistPrepended = false;
       state.unresolvedIds = [];
       state.unplayableIds = [];
       state.nativeQueueEdit = false;

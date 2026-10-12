@@ -11,6 +11,9 @@ static RESET_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 /// Mirrors the `trayIcon` setting for the window close handler, which runs on
 /// the event loop and must not take `SETTINGS_LOCK`.
 static TRAY_ICON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// Mirrors the `debugMode` setting. Off until settings are read, so nothing
+/// is logged to disk for a user who never turned it on.
+static DEBUG_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 const MAX_SETTINGS_BYTES: usize = 512 * 1024;
 pub const SETTINGS_SCHEMA_VERSION: u64 = 1;
@@ -52,6 +55,7 @@ pub struct StartupAppearance {
     pub theme: ThemePreference,
     pub window_effect: WindowEffectPreference,
     pub tray_icon: bool,
+    pub debug_mode: bool,
 }
 
 impl Default for StartupAppearance {
@@ -60,6 +64,7 @@ impl Default for StartupAppearance {
             theme: ThemePreference::System,
             window_effect: WindowEffectPreference::Acrylic,
             tray_icon: true,
+            debug_mode: false,
         }
     }
 }
@@ -70,6 +75,23 @@ fn tray_icon_setting(value: &Value) -> bool {
         .get("trayIcon")
         .and_then(Value::as_bool)
         .unwrap_or(true)
+}
+
+/// Reads the `debugMode` flag; only an explicit `true` turns logging on.
+fn debug_mode_setting(value: &Value) -> bool {
+    value
+        .get("debugMode")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// True when Debug Mode is on and the app log is written to disk.
+pub fn debug_mode() -> bool {
+    DEBUG_MODE.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+pub fn set_debug_mode(enabled: bool) {
+    DEBUG_MODE.store(enabled, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// True when the tray icon is shown and closing the window hides to it.
@@ -108,6 +130,7 @@ pub fn parse_startup_appearance(json: &str) -> StartupAppearance {
             object.get("windowEffect").and_then(Value::as_str),
         ),
         tray_icon: tray_icon_setting(&value),
+        debug_mode: debug_mode_setting(&value),
     }
 }
 
@@ -119,13 +142,17 @@ pub fn load_startup_appearance(app: &tauri::AppHandle) -> StartupAppearance {
     let Ok(path) = settings_path(app) else {
         return StartupAppearance::default();
     };
-    let Ok(metadata) = std::fs::metadata(&path) else {
-        return StartupAppearance::default();
-    };
-    if metadata.len() > MAX_SETTINGS_BYTES as u64 {
-        return StartupAppearance::default();
-    }
-    std::fs::read_to_string(path)
+    // Same fallback as `load_settings`: a corrupt file uses the backup, so
+    // the native startup state matches what the frontend loads.
+    [path.clone(), backup_path(&path)]
+        .iter()
+        .find_map(|candidate| {
+            let metadata = std::fs::metadata(candidate).ok()?;
+            if metadata.len() > MAX_SETTINGS_BYTES as u64 {
+                return None;
+            }
+            read_valid_settings(candidate)
+        })
         .map(|content| parse_startup_appearance(&content))
         .unwrap_or_default()
 }
@@ -278,6 +305,7 @@ pub fn save_settings(app: tauri::AppHandle, json: String) -> Result<(), String> 
         return Err("Invalid settings JSON: expected an object".to_string());
     }
     write_settings_text(&settings_path(&app)?, &json)?;
+    set_debug_mode(debug_mode_setting(&parsed));
     let tray_icon = tray_icon_setting(&parsed);
     set_tray_icon(tray_icon);
     crate::tray::apply(&app, tray_icon);

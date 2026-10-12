@@ -584,9 +584,105 @@ export async function runPlaylistPlayback({ page, check }) {
     "a library-only song queues its i. ID under songs, which MusicKit loads from the library",
     libraryRowReady &&
       libraryOnlyStarted &&
-      JSON.stringify(libraryOnlySet?.options?.songs) ===
-        JSON.stringify(["i.library-only"]) &&
+      // The rest of the Songs list is queued with it; this song is the start.
+      libraryOnlySet?.options?.songs?.[libraryOnlySet?.options?.startWith] ===
+        "i.library-only" &&
       !libraryOnlySet?.shape?.includes("items"),
     { setQueue: libraryOnlySet, queue: libraryOnlySnapshot.queue },
   );
+
+  // The playlist gains a song at the top after its page was shown. Playback
+  // reloads it, so the clicked row must still start the song it showed.
+  await page.evaluate(`
+    window.__ARLET_E2E_MUSIC__.reset();
+    location.hash = "#/home";
+    return true;
+  `);
+  await page.evaluate(
+    `location.hash = "#/playlist/${PLAYLIST_ID}"; return true;`,
+  );
+  const shiftedRowsReady = await waitFor(
+    page,
+    `[...document.querySelectorAll(".library-track-row")].some((row) => row.textContent.includes("Track C"))`,
+  );
+  await page.evaluate(`
+    window.__ARLET_E2E_MUSIC__.configure({ playlistPrepended: true });
+    [...document.querySelectorAll(".library-track-row")]
+      .find((row) => row.textContent.includes("Track C"))
+      ?.click();
+    return true;
+  `);
+  const shiftedStarted = await waitFor(
+    page,
+    `document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Track C"`,
+  );
+  const shiftedSnapshot = await page.evaluate(
+    "return window.__ARLET_E2E_MUSIC__.snapshot();",
+  );
+  // Reload the page so the cached copy no longer holds the extra song; later
+  // scenarios click this playlist's rows by position.
+  await page.evaluate(`
+    window.__ARLET_E2E_MUSIC__.configure({ playlistPrepended: false });
+    location.hash = "#/home";
+    return true;
+  `);
+  await page.evaluate(
+    `location.hash = "#/playlist/${PLAYLIST_ID}"; return true;`,
+  );
+  await waitFor(
+    page,
+    `document.querySelector(".library-track-row")?.textContent.includes("Track A")`,
+  );
+  check(
+    "a playlist that changed after it was shown still plays the clicked song",
+    shiftedRowsReady &&
+      shiftedStarted &&
+      ids(shiftedSnapshot)[0] === "song-new" &&
+      ids(shiftedSnapshot)[currentIndex(shiftedSnapshot)] === "song-c",
+    {
+      shiftedRowsReady,
+      nowPlaying: await page.evaluate(
+        'return document.querySelector(".player-bar .player-track-copy strong")?.textContent ?? null;',
+      ),
+      queue: shiftedSnapshot.queue,
+    },
+  );
+
+  // Library › Songs: the clicked song plays first and the list follows it.
+  await page.evaluate(`
+    window.__ARLET_E2E_MUSIC__.reset();
+    location.hash = "#/library/songs";
+    return true;
+  `);
+  const songsReady = await waitFor(
+    page,
+    `document.querySelectorAll(".library-track-list .library-track-row").length >= 3`,
+  );
+  const listed = await page.evaluate(`
+    return [...document.querySelectorAll(".library-track-list .library-track-row")]
+      .map((row) => row.closest("[data-context-id]")?.getAttribute("data-context-id") ?? null);
+  `);
+  await page.evaluate(`
+    document.querySelectorAll(".library-track-list .library-track-row")[1]?.click();
+    return true;
+  `);
+  const songsQueued = await waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().transitions.some((item) => item.type === "setQueue")`,
+  );
+  const songsSet = (
+    await page.evaluate("return window.__ARLET_E2E_MUSIC__.snapshot();")
+  ).transitions
+    .filter((item) => item.type === "setQueue")
+    .at(-1);
+  check(
+    "a song clicked in Library › Songs plays first, with the rest of the list after it",
+    songsReady &&
+      songsQueued &&
+      listed.length >= 3 &&
+      (songsSet?.ids?.length ?? 0) === listed.length &&
+      songsSet?.options?.startWith === 1,
+    { listed, setQueue: songsSet },
+  );
+  await page.evaluate(`location.hash = "#/home"; return true;`);
 }

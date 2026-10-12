@@ -330,6 +330,11 @@ function mergeQueueTrack(normalized: Track, existing: Track): Track {
   if (merged.addable === undefined && existing.addable !== undefined) {
     merged.addable = existing.addable;
   }
+  // Queue items can report a singular type ("song"), which add-to-playlist
+  // and navigation do not recognise; the type it was queued with is exact.
+  if (existing.resourceType && !merged.resourceType?.endsWith("s")) {
+    merged.resourceType = existing.resourceType;
+  }
   return merged;
 }
 

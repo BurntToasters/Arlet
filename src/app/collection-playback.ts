@@ -2,17 +2,35 @@ import type { MusicSource, Track } from "../domain/music.ts";
 import { getState, setUiState } from "../state.ts";
 import { readPlaybackModes } from "../musickit/player.ts";
 import type { LibraryLoader } from "./library-loader.ts";
+import { nearestTrackIndex } from "./queue-window.ts";
 
 export interface CollectionPlaybackDeps {
   requireMusic(): MusicKit.MusicKitInstance;
   getMusic(): MusicKit.MusicKitInstance | null | undefined;
   requireLibrary: LibraryLoader["requireLibrary"];
-  playTracks(tracks: readonly Track[], startIndex?: number): Promise<void>;
+  playTracks(
+    tracks: readonly Track[],
+    startIndex?: number,
+    timing?: PlayTiming,
+  ): Promise<void>;
   setShuffleMode(mode: "off" | "songs"): Promise<void>;
+}
+
+/** What happened before playTracks, so its timing log covers the whole Play. */
+export interface PlayTiming {
+  /** `performance.now()` when the user asked to play. */
+  startedAt: number;
+  /** Already-formatted steps that ran before playTracks, such as page loads. */
+  steps: string[];
 }
 
 export interface CollectionPlayOptions {
   shuffle?: boolean;
+  /**
+   * The song the user picked at `startIndex`. The collection is reloaded to
+   * play it, and may have changed since its page was shown.
+   */
+  trackId?: string;
 }
 
 /** Uniform random index in [0, length) from the platform CSPRNG. */
@@ -50,6 +68,7 @@ export async function loadAllTracks(
   source: MusicSource,
   client: ReturnType<LibraryLoader["requireLibrary"]>,
   isStale: () => boolean = () => false,
+  onPage: () => void = () => undefined,
 ): Promise<Track[] | undefined> {
   const tracks: Track[] = [];
   const cursors = new Set<string>();
@@ -60,6 +79,7 @@ export async function loadAllTracks(
         ? await client.getPlaylistTracks(id, cursor, source)
         : await client.getAlbumTracks(id, source, cursor);
     if (isStale()) return undefined;
+    onPage();
     tracks.push(...page.items);
     cursor = page.next;
     if (cursor) {
@@ -122,18 +142,29 @@ export function createCollectionPlayback(deps: CollectionPlaybackDeps) {
     options: CollectionPlayOptions = {},
   ): Promise<void> => {
     const mine = ++generation;
+    const startedAt = performance.now();
     setUiState({ pendingCollection: { kind, id } });
     try {
       const instance = deps.requireMusic();
       const client = deps.requireLibrary();
+      let pages = 0;
       const tracks = await loadAllTracks(
         kind,
         id,
         source,
         client,
         () => mine !== generation || instance !== deps.getMusic(),
+        () => {
+          pages += 1;
+        },
       );
       if (!tracks) return;
+      const timing: PlayTiming = {
+        startedAt,
+        steps: [
+          `${kind} pages ${pages} (${tracks.length} songs) ${Math.round(performance.now() - startedAt)}ms`,
+        ],
+      };
 
       let queue: readonly Track[] = tracks;
       let index = startIndex;
@@ -142,10 +173,16 @@ export function createCollectionPlayback(deps: CollectionPlaybackDeps) {
         // A pause or newer request during shuffle setup supersedes this play.
         if (mine !== generation) return;
       }
+      if (!options.shuffle && options.trackId) {
+        index = nearestTrackIndex(queue, index, options.trackId);
+        if (index < 0) {
+          throw new Error(`That song is no longer in this ${kind}.`);
+        }
+      }
       if (!Number.isInteger(index) || index < 0 || index >= queue.length) {
         throw new Error(`The selected ${kind} song is unavailable.`);
       }
-      await deps.playTracks(queue, index);
+      await deps.playTracks(queue, index, timing);
     } catch (error) {
       // A request the user already replaced must not surface its failure.
       if (mine !== generation) return;

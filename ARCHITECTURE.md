@@ -34,7 +34,7 @@ split into focused modules:
 | `music_diagnostic.rs` | Unprivileged `music.apple.com` webview (Phase 0 DRM probe)    |
 | `auth_popup.rs`       | Main-window creation and Apple auth popup allowlist           |
 | `settings.rs`         | Settings load/save/reset with backup and startup parsing      |
-| `logging.rs`          | Rolling local diagnostics log with sensitive-value redaction  |
+| `logging.rs`          | Opt-in (Debug Mode) rolling log with redaction; crash lines   |
 | `window_fx.rs`        | Windows Acrylic/Mica effects with Solid fallback              |
 | `window_snap.rs`      | Native Windows Snap Layout maximize-button overlay            |
 
@@ -94,12 +94,14 @@ release builds serve the token `build.rs` validated and embedded.
 
 ## Testing
 
-- Frontend: Vitest + jsdom. Tauri mocks in `src/__tests__/setup-dom.ts`; shell
-  and diagnostics components have focused render/store tests.
+- Frontend: end to end only, through the native E2E below. There is no
+  frontend unit suite; lint and typecheck cover the rest.
+- Release tooling: `npm run test:scripts` (Node's test runner) covers the
+  changelog parser, updater manifests, signer pinning, and release rules.
 - Backend: `cargo test`; unit tests live beside each module, including command
   validation and Windows-targeted code paths where practical.
-- Full gate: `node scripts/test-all.js` (typecheck, lint, format, Vitest,
-  cargo fmt, Clippy `-D warnings`, cargo test, and the offline build smoke).
+- Full gate: `node scripts/test-all.js` (typecheck, lint, format, script
+  tests, cargo fmt, Clippy `-D warnings`, cargo test, and the offline build smoke).
 - Native E2E: `npm run test:e2e:app` (Windows) builds a release binary and
   drives the real app over WebView2's DevTools Protocol; see
   `docs/TESTING.md`. Titlebar, material, DPI, protected playback, and

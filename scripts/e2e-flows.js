@@ -87,6 +87,22 @@ async function searchAndPlay({ page, check }) {
     page,
     `${FIXTURE}.snapshot().transitions.some((item) => item.type === "setQueue" && item.ids?.[0] === "top-2")`,
   );
+  // Slow starts are diagnosed from this line in support reports.
+  let timingLine;
+  const timingDeadline = Date.now() + 8000;
+  while (!timingLine && Date.now() < timingDeadline) {
+    timingLine = (await readAppLog(page))
+      .split(/\r?\n/u)
+      .find(
+        (line) =>
+          line.includes("Play timing: audible after") &&
+          line.includes("setQueue"),
+      );
+    if (!timingLine) await sleep(250);
+  }
+  check("a Play logs how long it took to become audible", Boolean(timingLine), {
+    timingLine: timingLine ?? null,
+  });
   check(
     "a search result plays that song first",
     typed &&

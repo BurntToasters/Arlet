@@ -85,8 +85,8 @@
 
 ## Checks
 
-- `npm run test:all`: typecheck, lint, format, Vitest, script tests, Rust
-  fmt/Clippy/tests, and the offline build smoke.
+- `npm run test:all`: typecheck, lint, format, release-tooling script tests,
+  Rust fmt/Clippy/tests, and the offline build smoke.
 - `npm run test:e2e:app`: native E2E against a release build (Windows).
 
 ## Documentation

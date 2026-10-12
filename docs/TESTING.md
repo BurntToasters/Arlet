@@ -45,6 +45,16 @@ Failure modes it covers:
 11. With Apple's CDN unreachable, the cached library is not shown.
 12. A renderer crash leaves a blank window.
 
+The harness itself must not lose the real data folders:
+
+- Ctrl+C during a run leaves them moved aside. The run now restores them
+  before exiting.
+- A run killed outright (a `test:all` timeout, a closed terminal) cannot
+  restore, and Windows gives it no signal to catch. The test profile carries
+  a marker file, so the next run puts the backup back before it starts.
+- Data without that marker is never deleted. With more than one backup, or
+  unmarked data in place, the run stops and asks for a manual restore.
+
 It also writes `screenshot-offline.png`. CI runs this gate on Windows x64 and
 uploads the report as the `e2e-report` artifact.
 
@@ -83,6 +93,11 @@ Failure scenarios to cover before changing production code:
   after a page request fails.
 - Context-menu Play now loses playlist context; Play next or Play later adds
   the entire playlist instead of the selected song.
+- A playlist that changed after its page was shown (a song added at the top
+  on another device) starts a different song than the row clicked, because
+  playback reloads the playlist and plays by position.
+- Clicking a song in Library › Songs queues only that song, so the rest of
+  the list does not follow it.
 
 The report records the fixture seed and per-scenario results. Additional
 artifacts retain navigation/playback screenshots and provider queue transitions
@@ -252,12 +267,17 @@ closing the window quits.
 
 - A submitted search shows no results, or results from the wrong source.
 - Playing a search result queues the wrong song or nothing at all.
+- A Play leaves no timing line in `arlet.log`, so a slow start reported by
+  a user cannot be broken down into page loads, queue setup, and play.
 - Add to playlist sends the song to the wrong playlist, or the dialog stays
   open after a successful add.
 - New playlist drops the typed name or the selected song, or a late reply
   closes a dialog opened after it.
 - The copied diagnostics report is empty, lacks the app version, or contains
   the developer or user token.
+- A clipboard write that never finishes (another app holding the clipboard)
+  leaves `Copy diagnostics report` with no confirmation and no error. It now
+  fails after 5 seconds with an error toast, which the check's detail shows.
 
 - A page that throws while rendering blanks the whole frameless window,
   taking the title bar, sidebar, and player with it.
@@ -268,6 +288,21 @@ closing the window quits.
 
 The update-ready dialog is not driven here: it needs a signed installer from
 a live feed, so it is checked by hand on each release (see below).
+
+## Debug Mode
+
+`scripts/e2e-app.js` starts with Debug Mode off (the default), checks it,
+then turns it on through Settings for the rest of the run.
+
+- With Debug Mode off, startup or app activity still writes `arlet.log`.
+  The run starts from a settings file with no `debugMode` key.
+- Turning Debug Mode on in Settings is not saved, or logging only starts
+  after a restart.
+- Turning it off keeps writing until restart.
+
+A native crash or a failed window start is written to `arlet.log` even with
+Debug Mode off, because nothing else records it. That path is not driven
+here.
 
 ## Release-only evidence
 

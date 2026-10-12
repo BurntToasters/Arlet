@@ -1,4 +1,5 @@
 import {
+  Bug,
   Check,
   ClipboardCopy,
   Download,
@@ -575,6 +576,41 @@ export function SettingsView(): JSX.Element {
             <RotateCcw aria-hidden="true" size={15} strokeWidth={1.8} />
             Reset settings…
           </button>
+        </section>
+
+        <section className="settings-section" aria-labelledby="debug-heading">
+          <div className="settings-section-heading">
+            <span className="settings-icon">
+              <Bug aria-hidden="true" size={19} strokeWidth={1.8} />
+            </span>
+            <div>
+              <h2 id="debug-heading">Debug Mode</h2>
+              <p>Save a detailed log to help track down problems.</p>
+            </div>
+          </div>
+          <div className="settings-fields">
+            <label className="settings-field settings-toggle-field">
+              <span>
+                <Bug aria-hidden="true" size={16} strokeWidth={1.8} /> Debug
+                Mode
+              </span>
+              <input
+                type="checkbox"
+                checked={settings.debugMode}
+                onChange={(event) =>
+                  void Promise.resolve(
+                    controller.setDebugMode?.(event.currentTarget.checked),
+                  ).catch(reportActionError)
+                }
+              />
+            </label>
+          </div>
+          <p className="settings-field-help">
+            With this on, Arlet writes its log, including how long each song
+            takes to start, to arlet.log in its app data folder. The log never
+            contains your Apple Music tokens. Leave it off unless you are
+            looking into a problem.
+          </p>
         </section>
 
         {import.meta.env.DEV ? (
