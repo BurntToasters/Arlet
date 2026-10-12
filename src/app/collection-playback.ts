@@ -2,6 +2,7 @@ import type { MusicSource, Track } from "../domain/music.ts";
 import { getState, setUiState } from "../state.ts";
 import { readPlaybackModes } from "../musickit/player.ts";
 import type { LibraryLoader } from "./library-loader.ts";
+import { nearestTrackIndex } from "./queue-window.ts";
 
 export interface CollectionPlaybackDeps {
   requireMusic(): MusicKit.MusicKitInstance;
@@ -25,6 +26,11 @@ export interface PlayTiming {
 
 export interface CollectionPlayOptions {
   shuffle?: boolean;
+  /**
+   * The song the user picked at `startIndex`. The collection is reloaded to
+   * play it, and may have changed since its page was shown.
+   */
+  trackId?: string;
 }
 
 /** Uniform random index in [0, length) from the platform CSPRNG. */
@@ -166,6 +172,12 @@ export function createCollectionPlayback(deps: CollectionPlaybackDeps) {
         ({ queue, index } = await prepareShuffle(instance, tracks));
         // A pause or newer request during shuffle setup supersedes this play.
         if (mine !== generation) return;
+      }
+      if (!options.shuffle && options.trackId) {
+        index = nearestTrackIndex(queue, index, options.trackId);
+        if (index < 0) {
+          throw new Error(`That song is no longer in this ${kind}.`);
+        }
       }
       if (!Number.isInteger(index) || index < 0 || index >= queue.length) {
         throw new Error(`The selected ${kind} song is unavailable.`);

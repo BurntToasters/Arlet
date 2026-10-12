@@ -59,9 +59,10 @@ export async function runQueueEdit({ page, check }) {
     location.hash = "#/playlist/${PLAYLIST_ID}";
     return true;
   `);
+  // The hero confirms these rows are the playlist's, not the previous page's.
   const rowsReady = await waitFor(
     page,
-    `document.querySelectorAll(".library-track-row").length >= 4`,
+    `document.querySelector(".library-detail-hero") && document.querySelectorAll(".library-track-row").length >= 4 && document.querySelector(".library-track-row")?.textContent.includes("Track A")`,
   );
   check("queue-edit playlist renders its first page", rowsReady);
   if (!rowsReady) return;

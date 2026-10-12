@@ -90,7 +90,16 @@ redact JWT-shaped values and values labelled by a token key
 (`Music-User-Token`, `media-user-token`, `musicUserToken`, `developerToken`).
 The frontend also redacts the exact developer and Music User Token values
 once MusicKit has produced them. Request logs record method/path/status/
-duration only. Both redactors have unit tests.
+duration only. The Rust redactor has unit tests; the native E2E checks that a
+Music User Token never reaches the log file.
+
+The log file (`arlet.log` in the local app data folder) is opt-in: it is
+written only while Settings › Debug Mode is on, which is off by default. The
+in-memory recent log that `Copy diagnostics report` uses works either way and
+never leaves the machine unless the user pastes it. One exception is written
+regardless of Debug Mode: a native crash, or the main window failing to open,
+appends a single redacted `[native]` line, because nothing else would record
+it.
 
 ## Third-party script
 

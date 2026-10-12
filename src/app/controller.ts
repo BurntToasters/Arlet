@@ -119,6 +119,8 @@ import {
 export type { DetailLoadOptions } from "./library-loader.ts";
 
 const VOLUME_SAVE_DELAY_MS = 300;
+/** A clipboard write still pending after this is reported as failed. */
+const CLIPBOARD_WRITE_TIMEOUT_MS = 5_000;
 
 export interface ControllerDependencies {
   initializeMusicKit?: typeof initializeMusicKit;
@@ -230,15 +232,18 @@ export interface AppController {
     startIndex?: number,
     options?: CollectionPlayOptions,
   ): Promise<void>;
+  /** `trackId` is the song at `startIndex` when the user picked it. */
   playPlaylist?(
     id: string,
     source?: MusicSource,
     startIndex?: number,
+    trackId?: string,
   ): Promise<void>;
   playAlbum?(
     id: string,
     source?: MusicSource,
     startIndex?: number,
+    trackId?: string,
   ): Promise<void>;
   resolveTrackNavigation?(track: Track): Promise<TrackNavigation>;
   playConsecutive(): Promise<void>;
@@ -641,16 +646,13 @@ export function createAppController(
         // A fresh authorization may belong to a different Apple account. Drop
         // the previous session's metadata before MusicKit opens its popup.
         log("Authorizing… waiting for Apple Music sign-in window.");
-        // Start both operations immediately: the in-memory library is cleared
-        // synchronously, the persisted cache is purged, and MusicKit can open
-        // its popup without an extra event-loop delay.
-        // The saved queue may belong to the previous account, so drop it too.
-        const [, , userToken] = await Promise.all([
-          clearLibraryCache(),
-          playbackSession.clear(),
-          authorize(instance),
-        ]);
+        const userToken = await authorize(instance);
         registerSensitiveValue(userToken);
+        // The cached library and saved queue may belong to the previous
+        // account. They are dropped only once sign-in succeeds, so closing
+        // the sign-in window keeps them; the new account's data loads after
+        // this, once auth is marked authorized below.
+        await Promise.all([clearLibraryCache(), playbackSession.clear()]);
         // Keep the user token private to MusicKit; only expose auth status.
         setAuthState({ status: "authorized" });
         // A lookup made while the popup was open used the old sign-in; look
@@ -807,8 +809,14 @@ export function createAppController(
       return ratings.loadRating(target);
     },
 
-    addToLibrary(target: RatingTarget): Promise<void> {
-      return ratings.addToLibrary(target);
+    async addToLibrary(target: RatingTarget): Promise<void> {
+      const section = await ratings.addToLibrary(target);
+      // Show the new item in Library without waiting for a manual refresh.
+      if (section) {
+        void library.refreshLibrarySection(section).catch((error: unknown) => {
+          log(`Library refresh after add failed: ${safeErrorMessage(error)}`);
+        });
+      }
     },
 
     playNextTracks(
@@ -941,10 +949,10 @@ export function createAppController(
       stations().topSongs(id, catalogId, source),
     playCollection: (kind, id, source = "library", startIndex = 0, options) =>
       playCollection(kind, id, source, startIndex, options),
-    playPlaylist: (id, source = "library", startIndex = 0) =>
-      playCollection("playlist", id, source, startIndex),
-    playAlbum: (id, source = "library", startIndex = 0) =>
-      playCollection("album", id, source, startIndex),
+    playPlaylist: (id, source = "library", startIndex = 0, trackId) =>
+      playCollection("playlist", id, source, startIndex, { trackId }),
+    playAlbum: (id, source = "library", startIndex = 0, trackId) =>
+      playCollection("album", id, source, startIndex, { trackId }),
     resolveTrackNavigation: trackNavigation.resolve,
 
     async playConsecutive(): Promise<void> {
@@ -1139,7 +1147,27 @@ export function createAppController(
         throw new Error("Diagnostics are unavailable in this session.");
       }
       const write = dependencies.writeClipboardText ?? writeText;
-      await write(createSupportReport(diagnosticsStore.getSnapshot()));
+      // Another app holding the clipboard can leave the write pending with no
+      // error; the button would then never confirm or fail.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          write(createSupportReport(diagnosticsStore.getSnapshot())),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () =>
+                reject(
+                  new Error(
+                    "Couldn't copy the report: the clipboard is busy. Try again.",
+                  ),
+                ),
+              CLIPBOARD_WRITE_TIMEOUT_MS,
+            );
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
       log("Diagnostics report copied to the clipboard.");
     },
 

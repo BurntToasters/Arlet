@@ -142,13 +142,17 @@ pub fn load_startup_appearance(app: &tauri::AppHandle) -> StartupAppearance {
     let Ok(path) = settings_path(app) else {
         return StartupAppearance::default();
     };
-    let Ok(metadata) = std::fs::metadata(&path) else {
-        return StartupAppearance::default();
-    };
-    if metadata.len() > MAX_SETTINGS_BYTES as u64 {
-        return StartupAppearance::default();
-    }
-    std::fs::read_to_string(path)
+    // Same fallback as `load_settings`: a corrupt file uses the backup, so
+    // the native startup state matches what the frontend loads.
+    [path.clone(), backup_path(&path)]
+        .iter()
+        .find_map(|candidate| {
+            let metadata = std::fs::metadata(candidate).ok()?;
+            if metadata.len() > MAX_SETTINGS_BYTES as u64 {
+                return None;
+            }
+            read_valid_settings(candidate)
+        })
         .map(|content| parse_startup_appearance(&content))
         .unwrap_or_default()
 }

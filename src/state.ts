@@ -504,8 +504,26 @@ const subscribers = new Set<() => void>();
 // channel so library views do not re-render while music plays.
 const positionSubscribers = new Set<() => void>();
 
+/**
+ * Runs every listener even when one throws. A throw would otherwise skip the
+ * rest (the UI, session saving, the sleep timer) and surface in whichever
+ * MusicKit event changed the state. The error is rethrown asynchronously, so
+ * it still reaches the uncaught-error log.
+ */
+function runListeners(listeners: Iterable<() => void>): void {
+  for (const listener of listeners) {
+    try {
+      listener();
+    } catch (error) {
+      queueMicrotask(() => {
+        throw error;
+      });
+    }
+  }
+}
+
 function notify(): void {
-  for (const subscriber of subscribers) subscriber();
+  runListeners(subscribers);
 }
 
 function update(next: RuntimeAppState): void {
@@ -955,7 +973,7 @@ export function setPlaybackPosition(
       durationSeconds: finiteNonNegative(durationSeconds),
     },
   };
-  for (const subscriber of positionSubscribers) subscriber();
+  runListeners(positionSubscribers);
 }
 
 export function setVolume(volume: number): void {

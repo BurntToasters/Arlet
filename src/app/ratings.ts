@@ -1,4 +1,7 @@
-import { reportActionError } from "../components/action-errors.ts";
+import {
+  reportActionError,
+  reportNotice,
+} from "../components/action-errors.ts";
 import { resolveMusicKitMusicRequest } from "../musickit/catalog.ts";
 import {
   addToLibrary as addToLibraryRequest,
@@ -23,7 +26,7 @@ export interface RatingTarget {
   id: string;
 }
 
-type RatableKind = "songs" | "albums" | "playlists";
+export type RatableKind = "songs" | "albums" | "playlists";
 
 const RATABLE_KINDS: readonly string[] = ["songs", "albums", "playlists"];
 
@@ -63,7 +66,8 @@ export function trackRatingTarget(track: Track): RatingTarget {
 export interface Ratings {
   rate(target: RatingTarget, value: RatingValue): Promise<void>;
   loadRating(target: RatingTarget): Promise<void>;
-  addToLibrary(target: RatingTarget): Promise<void>;
+  /** Resolves to the library section that gained the item, if it was added. */
+  addToLibrary(target: RatingTarget): Promise<RatableKind | undefined>;
   /** Loads the rating once per now-playing track; a no-op otherwise. */
   syncCurrentTrack(): void;
   /** Invalidates account-specific state and actions at sign-out or reauth. */
@@ -207,7 +211,9 @@ export function createRatings(
     await write;
   };
 
-  const addToLibrary = async (target: RatingTarget): Promise<void> => {
+  const addToLibrary = async (
+    target: RatingTarget,
+  ): Promise<RatableKind | undefined> => {
     const accountAtStart = accountGeneration;
     try {
       const kind = ratableKind(target);
@@ -216,13 +222,20 @@ export function createRatings(
         throw new Error("This item is already in your library.");
       }
       const flight = `${kind}:${target.id}`;
-      if (added.has(flight) || adding.has(flight)) return;
+      if (added.has(flight)) {
+        reportNotice("Already added to your library.");
+        return undefined;
+      }
+      if (adding.has(flight)) return undefined;
       adding.add(flight);
       try {
         const ids: AddToLibraryIds = {};
         ids[kind] = [target.id];
         await addToLibraryRequest(request(), ids);
-        if (accountGeneration === accountAtStart) added.add(flight);
+        if (accountGeneration !== accountAtStart) return undefined;
+        added.add(flight);
+        reportNotice("Added to your library.");
+        return kind;
       } finally {
         if (accountGeneration === accountAtStart) adding.delete(flight);
       }
@@ -231,6 +244,7 @@ export function createRatings(
         context.log(`Add to library failed: ${safeErrorMessage(error)}`);
         reportActionError(error);
       }
+      return undefined;
     }
   };
 

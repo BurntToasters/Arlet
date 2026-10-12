@@ -24,6 +24,13 @@ export function reportActionError(error: unknown): void {
   );
 }
 
+/** A short confirmation in the same toast, for actions with no other feedback. */
+export function reportNotice(message: string): void {
+  window.dispatchEvent(
+    new CustomEvent<string>(ACTION_ERROR_EVENT, { detail: message }),
+  );
+}
+
 let queueRebuildNoticeShown = false;
 
 /**

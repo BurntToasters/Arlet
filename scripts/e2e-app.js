@@ -78,28 +78,59 @@ function dataDirs() {
   });
 }
 
-function moveAside(stamp) {
-  // A crashed run leaves real data in a backup and test data in place.
-  // Moving again would bury that backup, so stop until it is restored.
+// Written into the test profile so a later run can tell it from real data.
+const TEST_PROFILE_MARKER = ".arlet-e2e-test-profile";
+
+function isTestProfile(dir) {
+  return fs.existsSync(path.join(dir, TEST_PROFILE_MARKER));
+}
+
+/**
+ * A run that was killed (a timeout, a closed terminal) cannot restore in
+ * `finally`, and Windows gives no signal to catch. It leaves the real data in
+ * a backup and the marked test profile in place; put the real data back
+ * before anything else. Real data without a marker is never deleted.
+ */
+function recoverInterruptedRun() {
   for (const dir of dataDirs()) {
     const parent = path.dirname(dir);
-    const stale = fs.existsSync(parent)
+    const backups = fs.existsSync(parent)
       ? fs
           .readdirSync(parent)
           .filter((name) => name.startsWith(`${IDENTIFIER}.e2e-backup-`))
+          .sort()
       : [];
-    if (stale.length > 0) {
+    if (backups.length === 0) {
+      // A run with no real data to move leaves only the test profile.
+      if (isTestProfile(dir)) {
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
+      }
+      continue;
+    }
+    if (backups.length > 1 || (fs.existsSync(dir) && !isTestProfile(dir))) {
       fail(
-        `previous E2E backup found: ${path.join(parent, stale[0])}. Delete ${dir} and rename the backup back to ${IDENTIFIER} first.`,
+        `previous E2E backup found: ${path.join(parent, backups[0])}. ${dir} holds data this run did not create, so it is left alone. Restore the backup by hand first.`,
       );
     }
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
+    fs.renameSync(path.join(parent, backups[0]), dir);
+    console.log(
+      `[e2e-app] Restored ${dir} from an interrupted run (${backups[0]}).`,
+    );
   }
+}
+
+function moveAside(stamp) {
+  recoverInterruptedRun();
   const moved = [];
   for (const dir of dataDirs()) {
-    if (!fs.existsSync(dir)) continue;
-    const backup = `${dir}.e2e-backup-${stamp}`;
-    fs.renameSync(dir, backup);
-    moved.push({ dir, backup });
+    if (fs.existsSync(dir)) {
+      const backup = `${dir}.e2e-backup-${stamp}`;
+      fs.renameSync(dir, backup);
+      moved.push({ dir, backup });
+    }
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, TEST_PROFILE_MARKER), "");
   }
   return moved;
 }
@@ -461,6 +492,16 @@ async function run() {
   };
 
   const moved = moveAside(stamp);
+  // Ctrl+C skips `finally`; put the real data back before exiting. A hard
+  // kill is recovered by the next run instead (recoverInterruptedRun).
+  const onInterrupt = () => {
+    console.error("[e2e-app] Interrupted; restoring your Arlet data.");
+    killArlet();
+    restore(moved);
+    process.exit(130);
+  };
+  process.once("SIGINT", onInterrupt);
+  process.once("SIGBREAK", onInterrupt);
   let child;
   let page;
   let musicRuntimeCapabilities;

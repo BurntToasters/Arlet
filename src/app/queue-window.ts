@@ -20,6 +20,27 @@ export interface QueueWindow {
   rest: Track[];
 }
 
+/**
+ * Index of `trackId` nearest `index`, or -1 when it is gone. Lists can shift
+ * between what the user saw and what is played, so a chosen position is
+ * re-checked against the chosen song.
+ */
+export function nearestTrackIndex(
+  tracks: readonly Track[],
+  index: number,
+  trackId: string,
+): number {
+  if (tracks[index]?.id === trackId) return index;
+  let nearest = -1;
+  tracks.forEach((track, position) => {
+    if (track.id !== trackId) return;
+    if (nearest < 0 || Math.abs(position - index) < Math.abs(nearest - index)) {
+      nearest = position;
+    }
+  });
+  return nearest;
+}
+
 /** Fisher-Yates over a copy. */
 export function shuffledCopy<T>(items: readonly T[]): T[] {
   const result = [...items];

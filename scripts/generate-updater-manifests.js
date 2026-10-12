@@ -162,6 +162,14 @@ export function buildManifests(
     if (!arch) {
       throw new Error(`Cannot map installer to a platform: ${exe}`);
     }
+    // A bundle left from another release would publish its signature under
+    // this release's URL, and every update download would fail to verify.
+    const builtVersion = builtInstallerInfo(path.basename(exe))?.version;
+    if (builtVersion !== undefined && builtVersion !== version) {
+      throw new Error(
+        `Installer ${path.basename(exe)} is version ${builtVersion}, not ${version}. Run npm run dist:clean-release-artifacts and build again.`,
+      );
+    }
     if (installersByArch.has(arch)) {
       throw new Error(`Duplicate installer for architecture ${arch}: ${exe}`);
     }

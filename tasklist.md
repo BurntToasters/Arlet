@@ -44,8 +44,9 @@ window materials are implemented; the 2026-09-11 notes below are history.
       open-source licenses); fail-closed license gate; native E2E in CI; 429
       retry and catalog language; token-expiry notice; `base.css` split;
       list virtualization; WebView2 crash recovery.
-- [ ] **Test policy:** AGENTS.md says never write unit tests after code; the
-      repo has ~260. Owner decision pending.
+- [x] **Test policy (2026-10-12):** app behaviour is tested end to end only.
+      The Vitest suite is removed; lint, typecheck, release-tooling script
+      tests, and Rust tests remain.
 - [ ] **Phase 0 matrix still open:** full protected track, seek, skip,
       20 consecutive tracks, 2-hour session, logout/relogin
       (`docs/MUSICKIT_TAURI_FEASIBILITY.md`). Run it on a signed release
@@ -57,7 +58,7 @@ window materials are implemented; the 2026-09-11 notes below are history.
       updater key + password, `AZURE_*`, `GPG_KEY_ID`, `AFTER_PACK_LOC`.
       Back up the updater key offline.
 
-- [ ] **Final app icon:** current art is the temporary icon.
+- [x] **Final app icon:** `src-tauri/icons` holds the production icons.
 - [ ] **Token expiry calendar:** the embedded token caps at 6 months; ship a
       release before it expires.
 

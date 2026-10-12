@@ -25,6 +25,7 @@ import { reportActionError } from "../components/action-errors.ts";
 import type { PlayTiming } from "./collection-playback.ts";
 import {
   MAX_QUEUE_LENGTH,
+  nearestTrackIndex,
   QUEUE_REFILL_SIZE,
   QUEUE_REFILL_THRESHOLD,
   shuffledCopy,
@@ -67,23 +68,6 @@ import {
 type QueueInsertMethod = "playNext" | "playLater";
 
 /** Queue and transport commands over the MusicKit instance. */
-/** Index of `trackId` in the queue nearest `index`, or -1 when it is gone. */
-function nearestTrackIndex(
-  queue: readonly Track[],
-  index: number,
-  trackId: string,
-): number {
-  if (queue[index]?.id === trackId) return index;
-  let nearest = -1;
-  queue.forEach((track, position) => {
-    if (track.id !== trackId) return;
-    if (nearest < 0 || Math.abs(position - index) < Math.abs(nearest - index)) {
-      nearest = position;
-    }
-  });
-  return nearest;
-}
-
 /** A Play that is not audible by then is not timed. */
 const PLAY_TIMING_TIMEOUT_MS = 60_000;
 

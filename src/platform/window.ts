@@ -106,6 +106,8 @@ export function bindSnapLayout(
         // Browser preview and older Tauri hosts use devicePixelRatio.
       }
     }
+    // Disposed during the await: the zero bounds dispose() sent must win.
+    if (disposed) return;
     await setSnapOverlayBounds(physicalRect(button, scale), invokeFn);
   };
 
