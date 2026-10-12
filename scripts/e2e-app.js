@@ -324,11 +324,22 @@ async function sleep(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function findPageTarget(deadline) {
+/**
+ * Waits for the app page on the debugging port. `launched` is the process
+ * just started; its early exit is reported instead of a 60-second timeout.
+ */
+async function findPageTarget(deadline, launched) {
+  let lastSeen = "port never answered";
   while (Date.now() < deadline) {
+    if (launched && launched.exitCode !== null) {
+      fail(`Arlet exited during startup (exit code ${launched.exitCode})`);
+    }
     try {
       const response = await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/list`);
       const targets = await response.json();
+      lastSeen = `targets: ${JSON.stringify(
+        targets.map((target) => ({ type: target.type, url: target.url })),
+      ).slice(0, 300)}`;
       const page = targets.find(
         (target) =>
           target.type === "page" &&
@@ -337,12 +348,17 @@ async function findPageTarget(deadline) {
           ),
       );
       if (page) return page;
-    } catch {
+    } catch (error) {
       // WebView2 has not opened the debugging port yet.
+      lastSeen = String(error?.cause?.code ?? error?.message ?? error);
     }
     await sleep(250);
   }
-  fail("app webview never exposed a debugging target");
+  // A port that never answers usually means WebView2 ignored
+  // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS (policy) or another app holds it.
+  fail(
+    `app webview never exposed a debugging target on port ${DEBUG_PORT} (${lastSeen})`,
+  );
 }
 
 function connect(url) {
@@ -417,6 +433,11 @@ async function run() {
   const check = (name, passed, detail) => {
     checks.push({ name, passed: Boolean(passed), detail });
     console.log(`[e2e-app] ${passed ? "PASS" : "FAIL"} ${name}`);
+    // test:all shows only an output tail, so the reason must be printed too.
+    if (!passed && detail !== undefined) {
+      const text = typeof detail === "string" ? detail : JSON.stringify(detail);
+      console.log(`[e2e-app]   ${String(text).slice(0, 600)}`);
+    }
   };
 
   const moved = moveAside(stamp);
@@ -438,7 +459,7 @@ async function run() {
       },
       stdio: "ignore",
     });
-    const target = await findPageTarget(Date.now() + 60_000);
+    const target = await findPageTarget(Date.now() + 60_000, child);
     page = connect(target.webSocketDebuggerUrl);
     await page.opened;
 
