@@ -476,8 +476,9 @@ async function run() {
     check(`app origin is ${RELEASE_ORIGIN}`, origin === RELEASE_ORIGIN, {
       origin,
     });
+    // Generous: a slow CDN must not read as Apple removing MusicKit.
     musicRuntimeCapabilities = await page.evaluate(`
-      const deadline = Date.now() + 12000;
+      const deadline = Date.now() + 30000;
       while (Date.now() < deadline) {
         try {
           const music = window.MusicKit?.getInstance?.();
@@ -490,6 +491,38 @@ async function run() {
             queueAppend: typeof music.queue?.append === "function",
             queuePrepend: typeof music.queue?.prepend === "function",
             autoplayEnabled: "autoplayEnabled" in music,
+            // Everything Arlet calls without a fallback. MusicKit loads from
+            // Apple's CDN unversioned, so this is the early warning when
+            // Apple changes it; see .github/workflows/musickit-canary.yml.
+            missingRequired: [
+              ...[
+                "setQueue", "play", "pause", "stop", "seekToTime",
+                "skipToNextItem", "skipToPreviousItem", "authorize",
+                "unauthorize", "addEventListener", "removeEventListener",
+                "playNext", "playLater",
+              ].filter((name) => typeof music[name] !== "function"),
+              ...(typeof music.api?.music === "function" ? [] : ["api.music"]),
+              ...["playbackState", "storefrontId", "isAuthorized", "volume"]
+                .filter((name) => !(name in music)),
+              ...[
+                "playbackStateDidChange", "nowPlayingItemDidChange",
+                "playbackTimeDidChange", "queueItemsDidChange",
+                "mediaPlaybackError",
+              ].filter((name) => typeof window.MusicKit?.Events?.[name] !== "string")
+                .map((name) => "Events." + name),
+              ...(window.MusicKit?.PlaybackStates?.playing === undefined
+                ? ["PlaybackStates.playing"]
+                : []),
+            ],
+            // Optional: Arlet detects these and falls back when absent.
+            missingOptional: [
+              ...(typeof music.queue?.splice === "function" ? [] : ["queue.splice"]),
+              ...["queuePositionDidChange", "shuffleModeDidChange", "repeatModeDidChange"]
+                .filter((name) => typeof window.MusicKit?.Events?.[name] !== "string")
+                .map((name) => "Events." + name),
+              ...("shuffleMode" in music ? [] : ["shuffleMode"]),
+              ...("repeatMode" in music ? [] : ["repeatMode"]),
+            ],
           };
         } catch { /* MusicKit can load before its instance is configured. */ }
         await new Promise((resolve) => setTimeout(resolve, 100));
@@ -501,6 +534,20 @@ async function run() {
         "live MusicKit exposes indexed queue selection",
         musicRuntimeCapabilities.playerIndexSelection ||
           musicRuntimeCapabilities.instanceIndexSelection,
+        musicRuntimeCapabilities,
+      );
+      check(
+        "live MusicKit keeps every API Arlet relies on",
+        musicRuntimeCapabilities.missingRequired.length === 0,
+        {
+          missingRequired: musicRuntimeCapabilities.missingRequired,
+          missingOptional: musicRuntimeCapabilities.missingOptional,
+        },
+      );
+    } else {
+      check(
+        "live MusicKit loads from Apple's CDN",
+        false,
         musicRuntimeCapabilities,
       );
     }

@@ -4,7 +4,7 @@ import { useEffect, useRef } from "preact/hooks";
 import {
   useAppController,
   useAppRouter,
-  useAppState,
+  useAppSlices,
 } from "../app/context.tsx";
 import type { MusicEntityRef, Track } from "../domain/music.ts";
 import { setUiState } from "../state.ts";
@@ -21,13 +21,14 @@ function closeNowPlaying(): void {
 
 /** Full-window Now Playing view. Mounted only while `ui.nowPlayingOpen`. */
 export function NowPlaying(): JSX.Element | null {
-  const state = useAppState();
-  if (!state.ui.nowPlayingOpen) return null;
+  // Only `ui` decides mounting; playback ticks re-render the dialog alone.
+  const { ui } = useAppSlices("ui");
+  if (!ui.nowPlayingOpen) return null;
   return <NowPlayingDialog />;
 }
 
 function NowPlayingDialog(): JSX.Element {
-  const state = useAppState();
+  const state = useAppSlices("initialization", "playback", "ui");
   const controller = useAppController();
   const router = useAppRouter();
   const dialogRef = useRef<HTMLDivElement>(null);

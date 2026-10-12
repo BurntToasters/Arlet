@@ -1,7 +1,7 @@
 import { LoaderCircle, Plus, Search, X } from "lucide-preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { JSX, TargetedEvent } from "preact";
-import { useAppController, useAppState } from "../app/context.tsx";
+import { useAppController, useAppSlices } from "../app/context.tsx";
 import type { Track } from "../domain/music.ts";
 import {
   PLAYLIST_DIALOG_REQUEST,
@@ -106,7 +106,7 @@ async function createPlaylistWithTracks(
 
 export function PlaylistDialogs(): JSX.Element | null {
   const controller = useAppController() as PlaylistController;
-  const state = useAppState();
+  const state = useAppSlices("library");
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<PlaylistOption[]>([]);

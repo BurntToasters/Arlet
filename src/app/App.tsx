@@ -14,7 +14,7 @@ import {
   AppProvider,
   useAppController,
   useAppRouter,
-  useAppState,
+  useAppSlices,
 } from "./context.tsx";
 import { QueueDrawer } from "../components/QueueDrawer.tsx";
 import { Sidebar } from "../components/Sidebar.tsx";
@@ -91,7 +91,16 @@ function AppLayout({
 }: {
   diagnosticsStore?: DiagnosticsStore;
 }): JSX.Element {
-  const state = useAppState();
+  const state = useAppSlices(
+    "diagnostics",
+    "navigation",
+    "playback",
+    "search",
+    "settings",
+    "tracksPlayed",
+    "ui",
+    "windowEffect",
+  );
   const controller = useAppControllerForLayout();
   const router = useAppRouter();
 

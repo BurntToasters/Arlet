@@ -132,6 +132,26 @@ mod platform {
         position_token: i64,
         shuffle_token: i64,
         repeat_token: i64,
+        /// Title, artist, album, and artwork last shown. A pause or a mode
+        /// change leaves them alone, so Windows is not made to clear the
+        /// overlay and fetch the artwork again.
+        display_key: Option<String>,
+    }
+
+    /// True when the display text or artwork differs from what is shown,
+    /// and records the new key.
+    fn display_changed(key: String) -> Result<bool, String> {
+        let mut guard = session()
+            .lock()
+            .map_err(|_| "Windows media session lock poisoned".to_string())?;
+        let Some(existing) = guard.as_mut() else {
+            return Ok(true);
+        };
+        if existing.display_key.as_deref() == Some(key.as_str()) {
+            return Ok(false);
+        }
+        existing.display_key = Some(key);
+        Ok(true)
     }
 
     static SESSION: OnceLock<Mutex<Option<Session>>> = OnceLock::new();
@@ -278,6 +298,7 @@ mod platform {
             position_token,
             shuffle_token,
             repeat_token,
+            display_key: None,
         });
         Ok(controls)
     }
@@ -313,6 +334,20 @@ mod platform {
         controls
             .SetPlaybackStatus(status)
             .map_err(|error| error.to_string())?;
+        let artwork_url = payload
+            .artwork_url
+            .filter(|value| super::is_trusted_artwork_url(value));
+        // Unit separators keep field boundaries unambiguous.
+        let key = format!(
+            "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+            payload.title,
+            payload.artist,
+            payload.album.as_deref().unwrap_or(""),
+            artwork_url.as_deref().unwrap_or("")
+        );
+        if !display_changed(key)? {
+            return Ok(());
+        }
         let display = controls
             .DisplayUpdater()
             .map_err(|error| error.to_string())?;
@@ -334,10 +369,7 @@ mod platform {
                 .SetAlbumTitle(&HSTRING::from(album))
                 .map_err(|error| error.to_string())?;
         }
-        if let Some(url) = payload
-            .artwork_url
-            .filter(|value| super::is_trusted_artwork_url(value))
-        {
+        if let Some(url) = artwork_url {
             if let Ok(uri) = Uri::CreateUri(&HSTRING::from(url)) {
                 if let Ok(reference) = RandomAccessStreamReference::CreateFromUri(&uri) {
                     let _ = display.SetThumbnail(&reference);
@@ -391,9 +423,13 @@ mod platform {
         let controls = match session()
             .lock()
             .map_err(|_| "Windows media session lock poisoned".to_string())?
-            .as_ref()
+            .as_mut()
         {
-            Some(existing) => existing.controls.clone(),
+            Some(existing) => {
+                // The overlay is emptied below; the next update must refill it.
+                existing.display_key = None;
+                existing.controls.clone()
+            }
             None => match controls_for_window(window) {
                 Ok(controls) => controls,
                 Err(_) => return Ok(()),

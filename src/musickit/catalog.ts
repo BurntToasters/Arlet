@@ -195,6 +195,8 @@ export function createMusicRequest(
           ? navigator.languages
           : [navigator.language]);
   let language: Promise<string | undefined> | undefined;
+  // The instance outlives sign-out; another account can have another storefront.
+  let languageStorefront = "";
 
   const withRetry = async (
     path: string,
@@ -226,6 +228,10 @@ export function createMusicRequest(
     // Before sign-in there is no storefront yet; nothing is cached, so the
     // language is looked up once one exists.
     if (!storefront) return Promise.resolve(undefined);
+    if (storefront !== languageStorefront) {
+      languageStorefront = storefront;
+      language = undefined;
+    }
     language ??= (async () => {
       try {
         const resource = asRecord(

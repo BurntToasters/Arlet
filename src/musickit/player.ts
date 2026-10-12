@@ -300,6 +300,39 @@ function alignWithNowPlaying(
   return nearest ?? index;
 }
 
+/**
+ * Provider queue items carry less than the catalog or library resource the
+ * song was queued from, so details the queued track already had are kept.
+ */
+function mergeQueueTrack(normalized: Track, existing: Track): Track {
+  const merged: Track = { ...normalized };
+  if (!merged.albumRef && existing.albumRef)
+    merged.albumRef = existing.albumRef;
+  if (!merged.artistRefs?.length && existing.artistRefs?.length) {
+    merged.artistRefs = existing.artistRefs;
+  }
+  if (!merged.albumTitle && existing.albumTitle) {
+    merged.albumTitle = existing.albumTitle;
+  }
+  if (!merged.artwork && existing.artwork) merged.artwork = existing.artwork;
+  if (merged.explicit === undefined && existing.explicit !== undefined) {
+    merged.explicit = existing.explicit;
+  }
+  if (!merged.catalogUrl && existing.catalogUrl) {
+    merged.catalogUrl = existing.catalogUrl;
+  }
+  if (!merged.catalogId && existing.catalogId) {
+    merged.catalogId = existing.catalogId;
+  }
+  if (merged.playable === undefined && existing.playable !== undefined) {
+    merged.playable = existing.playable;
+  }
+  if (merged.addable === undefined && existing.addable !== undefined) {
+    merged.addable = existing.addable;
+  }
+  return merged;
+}
+
 /** Sync app queue from provider queue. Returns false when runtime hides queue. */
 export function syncMusicKitQueue(
   instance: MusicKit.MusicKitInstance,
@@ -343,15 +376,7 @@ export function syncMusicKitQueue(
     claimedPrevious.add(previousIndex);
     const existing = previous[previousIndex];
     if (!existing) return normalized;
-    return {
-      ...normalized,
-      ...(normalized.albumRef || !existing.albumRef
-        ? {}
-        : { albumRef: existing.albumRef }),
-      ...(normalized.artistRefs?.length || !existing.artistRefs?.length
-        ? {}
-        : { artistRefs: existing.artistRefs }),
-    };
+    return mergeQueueTrack(normalized, existing);
   });
   setQueue(tracks, snapshot.index);
   const current = tracks[snapshot.index];

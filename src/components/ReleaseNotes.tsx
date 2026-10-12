@@ -196,7 +196,10 @@ function headingText(raw: string): string {
   const text = raw.trimEnd();
   let end = text.length;
   while (end > 0 && text[end - 1] === "#") end -= 1;
-  if (end === text.length || (end > 0 && !/[ \t]/u.test(text.charAt(end - 1)))) {
+  if (
+    end === text.length ||
+    (end > 0 && !/[ \t]/u.test(text.charAt(end - 1)))
+  ) {
     return text;
   }
   return text.slice(0, end).trimEnd() || text;

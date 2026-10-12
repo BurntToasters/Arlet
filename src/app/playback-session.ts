@@ -21,7 +21,7 @@ export const MAX_SESSION_ITEMS = 500;
 /** Must match MAX_SESSION_BYTES in src-tauri/src/playback_session.rs. */
 export const MAX_SESSION_BYTES = 256 * 1024;
 export const SESSION_SAVE_DEBOUNCE_MS = 2_000;
-export const SESSION_SAVE_INTERVAL_MS = 15_000;
+export const SESSION_SAVE_INTERVAL_MS = 30_000;
 
 const utf8Encoder = new TextEncoder();
 

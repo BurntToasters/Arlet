@@ -362,6 +362,10 @@ export function normalizeTrack(item: MusicKit.MediaItem): Track {
     MusicResourceType | undefined;
   const playParams =
     asRecord(record?.playParams) ?? asRecord(attributes?.playParams);
+  const contentRating = stringValue(
+    record?.contentRating,
+    attributes?.contentRating,
+  )?.toLowerCase();
   return {
     id,
     title,
@@ -374,10 +378,10 @@ export function normalizeTrack(item: MusicKit.MediaItem): Track {
     ...(stringValue(playParams?.catalogId)
       ? { catalogId: stringValue(playParams?.catalogId) }
       : {}),
+    ...(contentRating ? { explicit: contentRating === "explicit" } : {}),
   };
 }
 
-/** Normalize a catalog song while preserving the original search shape. */
 /**
  * Apple leaves out `playParams` when a catalog song cannot be streamed, e.g.
  * removed from Apple Music or unavailable in the storefront. Library items
@@ -392,6 +396,7 @@ function streamable(
   return type !== "songs" && type !== "music-videos";
 }
 
+/** Normalize a catalog song while preserving the original search shape. */
 export function normalizeCatalogSong(resource: CatalogSongResource): Track {
   const record = asRecord(resource);
   const attributes = (asRecord(record?.attributes) ?? {}) as NonNullable<

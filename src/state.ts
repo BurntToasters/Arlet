@@ -935,6 +935,10 @@ export function setCurrentTrack(
   });
 }
 
+function finiteNonNegative(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, value) : 0;
+}
+
 export function setPlaybackPosition(
   positionSeconds: number,
   durationSeconds: number,
@@ -943,8 +947,9 @@ export function setPlaybackPosition(
     ...state,
     playback: {
       ...state.playback,
-      positionSeconds: Math.max(0, positionSeconds),
-      durationSeconds: Math.max(0, durationSeconds),
+      // MusicKit reports NaN before media metadata loads.
+      positionSeconds: finiteNonNegative(positionSeconds),
+      durationSeconds: finiteNonNegative(durationSeconds),
     },
   };
   for (const subscriber of positionSubscribers) subscriber();

@@ -573,7 +573,7 @@ interface AppControllerWithContext extends Record<string, unknown> {
   togglePin?: (id: string, source?: "library" | "catalog") => Promise<void>;
   unpin?: (id: string) => Promise<void>;
   resolveTrackNavigation?: (track: Track) => Promise<TrackNavigation>;
-  removeQueueItem?: (index: number) => Promise<QueueEditTier>;
+  removeQueueItem?: (index: number, trackId?: string) => Promise<QueueEditTier>;
   startStation?: (target: StationTarget) => Promise<void>;
   queueCollection?: (
     kind: "playlist" | "album",
@@ -785,7 +785,8 @@ function buildItems({
         icon: X,
         disabled: !removeQueueItem,
         action: run(() => {
-          if (removeQueueItem) reportQueueEdit(removeQueueItem(queueIndex));
+          if (removeQueueItem)
+            reportQueueEdit(removeQueueItem(queueIndex, track.id));
         }),
       });
     }

@@ -20,10 +20,10 @@ import appIconUrl from "../assets/app-icon.png";
 import {
   useAppController,
   useAppRouter,
-  useAppState,
+  useAppSlices,
 } from "../app/context.tsx";
 import type { AppController } from "../app/controller.ts";
-import { setUiState } from "../state.ts";
+import { setUiState, type RuntimeAppState } from "../state.ts";
 import {
   closeWindow,
   isWindowMaximized,
@@ -59,7 +59,7 @@ interface ExtendedController {
 }
 
 function readAccountSummary(
-  state: ReturnType<typeof useAppState>,
+  state: Pick<RuntimeAppState, "account">,
 ): AccountSummaryLike | undefined {
   const value = (state as unknown as ExtendedState).account;
   if (!value || typeof value !== "object") return undefined;
@@ -83,7 +83,7 @@ function readAccountSummary(
 }
 
 function readLastRefresh(
-  state: ReturnType<typeof useAppState>,
+  state: Pick<RuntimeAppState, "account" | "library">,
 ): number | undefined {
   const account = readAccountSummary(state);
   const accountRefresh = account?.lastRefreshAt;
@@ -123,7 +123,14 @@ function formatLastRefresh(value: number | undefined): string {
 }
 
 export function Titlebar(): JSX.Element {
-  const state = useAppState();
+  const state = useAppSlices(
+    "account",
+    "auth",
+    "initialization",
+    "library",
+    "navigation",
+    "ui",
+  );
   const controller = useAppController();
   const router = useAppRouter();
   const maximizeButton = useRef<HTMLButtonElement>(null);

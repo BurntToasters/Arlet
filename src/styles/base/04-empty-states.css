@@ -47,3 +47,11 @@
 .empty-action {
   margin-top: 18px;
 }
+
+/* Shown instead of the whole app when the shell fails to render; there is
+   no title bar, so it fills the window on an opaque surface. */
+.fatal-render-error {
+  min-height: 100vh;
+  background: var(--surface-base);
+  color: var(--text);
+}

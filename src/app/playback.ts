@@ -46,6 +46,7 @@ import {
   setPlaybackError,
   setPlaybackModes,
   setPlaybackPosition,
+  setPendingRestore,
   setPlaybackStatus,
   setQueue,
   setQueueRest,
@@ -64,6 +65,23 @@ import {
 type QueueInsertMethod = "playNext" | "playLater";
 
 /** Queue and transport commands over the MusicKit instance. */
+/** Index of `trackId` in the queue nearest `index`, or -1 when it is gone. */
+function nearestTrackIndex(
+  queue: readonly Track[],
+  index: number,
+  trackId: string,
+): number {
+  if (queue[index]?.id === trackId) return index;
+  let nearest = -1;
+  queue.forEach((track, position) => {
+    if (track.id !== trackId) return;
+    if (nearest < 0 || Math.abs(position - index) < Math.abs(nearest - index)) {
+      nearest = position;
+    }
+  });
+  return nearest;
+}
+
 export function createPlayback(context: ControllerContext) {
   const { requireMusic, getMusic, log } = context;
 
@@ -579,11 +597,24 @@ export function createPlayback(context: ControllerContext) {
     },
 
     // Async so a missing MusicKit instance rejects instead of throwing into the caller.
-    async removeQueueItem(index: number): Promise<QueueEditTier> {
+    /**
+     * `trackId` is the song the user chose. The queue can shift while a menu
+     * is open, so the index is re-checked and the nearest copy is removed.
+     */
+    async removeQueueItem(
+      index: number,
+      trackId?: string,
+    ): Promise<QueueEditTier> {
       return editQueueLogged(
         "Queue remove failed",
         requireMusic(),
-        (queue, current) => planRemove(queue, current, index),
+        (queue, current) => {
+          const target =
+            trackId === undefined
+              ? index
+              : nearestTrackIndex(queue, index, trackId);
+          return target < 0 ? undefined : planRemove(queue, current, target);
+        },
       );
     },
 
@@ -686,6 +717,12 @@ export function createPlayback(context: ControllerContext) {
 
     async previous(): Promise<void> {
       try {
+        // A restored queue has no MusicKit queue to step back in yet.
+        const { pendingRestore, queue, queueIndex } = getState().playback;
+        if (pendingRestore && queue.length > 0) {
+          await playTracks(queue, Math.max(0, queueIndex - 1));
+          return;
+        }
         await skipToPrevious(requireMusic());
       } catch (error) {
         log(`Previous failed: ${errorMessage(error)}`);
@@ -695,6 +732,14 @@ export function createPlayback(context: ControllerContext) {
 
     async next(): Promise<void> {
       try {
+        const { pendingRestore, queue, queueIndex } = getState().playback;
+        if (pendingRestore && queue.length > 0) {
+          // Past the last song there is nothing to skip to, as in MusicKit.
+          if (queueIndex + 1 < queue.length) {
+            await playTracks(queue, queueIndex + 1);
+          }
+          return;
+        }
         await skipToNext(requireMusic());
       } catch (error) {
         log(`Next failed: ${errorMessage(error)}`);
@@ -703,7 +748,15 @@ export function createPlayback(context: ControllerContext) {
     },
 
     async seek(seconds: number): Promise<void> {
+      if (!Number.isFinite(seconds)) return;
       const safeSeconds = Math.max(0, seconds);
+      const { pendingRestore, durationSeconds } = getState().playback;
+      if (pendingRestore) {
+        // Nothing is loaded yet; resume starts from the new position.
+        setPendingRestore({ ...pendingRestore, positionSeconds: safeSeconds });
+        setPlaybackPosition(safeSeconds, durationSeconds);
+        return;
+      }
       try {
         await seekToTime(requireMusic(), safeSeconds);
         setPlaybackPosition(safeSeconds, getState().playback.durationSeconds);

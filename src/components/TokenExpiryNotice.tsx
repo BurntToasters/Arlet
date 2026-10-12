@@ -1,7 +1,7 @@
 import { CircleAlert, X } from "lucide-preact";
 import type { JSX } from "preact";
 import { useState } from "preact/hooks";
-import { useAppState } from "../app/context.tsx";
+import { useAppSlices } from "../app/context.tsx";
 
 export const TOKEN_EXPIRY_WARNING_DAYS = 14;
 const DAY_MS = 86_400_000;
@@ -17,7 +17,7 @@ export function TokenExpiryNotice({
   now?: () => number;
   isDevelopment?: boolean;
 }): JSX.Element | null {
-  const state = useAppState();
+  const state = useAppSlices("developerTokenExpiresAt");
   const [dismissed, setDismissed] = useState(false);
   const expiresAt = state.developerTokenExpiresAt;
   if (isDevelopment || dismissed || expiresAt === undefined) return null;

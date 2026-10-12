@@ -1,7 +1,7 @@
 import { Timer } from "lucide-preact";
 import type { JSX } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { useAppController, useAppState } from "../app/context.tsx";
+import { useAppController, useAppSlices } from "../app/context.tsx";
 import type { SleepTimerOption } from "../app/sleep-timer.ts";
 import type { SleepTimerState } from "../domain/music.ts";
 import { reportActionError } from "./action-errors.ts";
@@ -21,7 +21,7 @@ export function sleepTimerLabel(
 
 /** Sleep timer menu for the player bar; the timer itself lives in the controller. */
 export function SleepTimerButton(): JSX.Element {
-  const state = useAppState();
+  const state = useAppSlices("playback");
   const controller = useAppController();
   const timer = state.playback.sleepTimer;
   const [open, setOpen] = useState(false);
@@ -133,7 +133,13 @@ export function SleepTimerButton(): JSX.Element {
           className="context-menu sleep-timer-menu"
           role="menu"
           aria-label="Sleep timer options"
-          style={anchor}
+          // Preact 11 sets numeric style values as-is, and the browser drops
+          // a length without a unit, so the units are explicit.
+          style={
+            anchor
+              ? { left: `${anchor.left}px`, bottom: `${anchor.bottom}px` }
+              : undefined
+          }
         >
           {MINUTE_OPTIONS.map((minutes) => (
             <button

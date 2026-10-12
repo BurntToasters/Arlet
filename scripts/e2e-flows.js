@@ -245,6 +245,100 @@ async function supportReport({ page, check }) {
   );
 }
 
+/** Reads the app's own log file through the native log-dir command. */
+async function readAppLog(page) {
+  const dir = await page.evaluate(`
+    try {
+      return await window.__TAURI_INTERNALS__.invoke("get_log_dir");
+    } catch (error) {
+      return null;
+    }`);
+  if (!dir) return "";
+  try {
+    return fs.readFileSync(path.join(dir, "arlet.log"), "utf8");
+  } catch {
+    return "";
+  }
+}
+
+async function errorRecovery({ page, check }) {
+  // Load songs first so the list has an "Updated …" line to format.
+  await page.evaluate(`location.hash = "#/library/songs"; return true;`);
+  await waitFor(page, `document.querySelector(".library-track-row")`);
+  await page.evaluate(`location.hash = "#/settings"; return true;`);
+  await waitFor(page, `document.querySelector(".settings-section")`);
+  // A real render failure in one view: the Library view formats its
+  // "Updated" time while rendering; nothing in the shell does.
+  await page.evaluate(`
+    window.__ARLET_E2E_INTL__ = Intl.DateTimeFormat;
+    Intl.DateTimeFormat = function () {
+      throw new Error("e2e-render-marker");
+    };
+    location.hash = "#/library/songs";
+    return true;`);
+  let contained = false;
+  let shellKept = false;
+  let recovered = false;
+  try {
+    contained = await waitFor(
+      page,
+      `[...document.querySelectorAll(".content-area h2")].some((node) => node.textContent.includes("couldn't be shown"))`,
+    );
+    shellKept = await page.evaluate(
+      `return Boolean(document.querySelector(".player-bar") && document.querySelector(".sidebar-link") && document.querySelector('[aria-label="Sleep timer"]'));`,
+    );
+  } finally {
+    await page.evaluate(`
+      if (window.__ARLET_E2E_INTL__) Intl.DateTimeFormat = window.__ARLET_E2E_INTL__;
+      return true;`);
+  }
+  await page.evaluate(`
+    [...document.querySelectorAll(".content-area button")]
+      .find((node) => node.textContent.trim() === "Try again")
+      ?.click();
+    return true;`);
+  recovered = await waitFor(
+    page,
+    `document.querySelector(".library-track-row")`,
+  );
+  check(
+    "a page that fails to render is contained, and Try again recovers it",
+    contained && shellKept && recovered,
+    { contained, shellKept, recovered },
+  );
+
+  // Errors nothing catches still reach the log for support reports.
+  await page.evaluate(`
+    setTimeout(() => {
+      throw new Error("e2e-uncaught-marker");
+    }, 0);
+    Promise.reject(new Error("e2e-rejection-marker"));
+    return true;`);
+  let log = "";
+  const deadline = Date.now() + 8000;
+  while (Date.now() < deadline) {
+    log = await readAppLog(page);
+    if (
+      log.includes("e2e-uncaught-marker") &&
+      log.includes("e2e-rejection-marker")
+    ) {
+      break;
+    }
+    await sleep(250);
+  }
+  check(
+    "render failures and uncaught errors are written to arlet.log",
+    log.includes("Page failed to render (library): e2e-render-marker") &&
+      log.includes("Uncaught error: e2e-uncaught-marker") &&
+      log.includes("Unhandled promise rejection: e2e-rejection-marker"),
+    {
+      render: log.includes("e2e-render-marker"),
+      uncaught: log.includes("e2e-uncaught-marker"),
+      rejection: log.includes("e2e-rejection-marker"),
+    },
+  );
+}
+
 /** Search, playlist dialogs, and the support report, through the real UI. */
 export async function runFlows({ page, check }) {
   for (const scenario of [
@@ -252,6 +346,7 @@ export async function runFlows({ page, check }) {
     addToPlaylist,
     createPlaylist,
     supportReport,
+    errorRecovery,
   ]) {
     try {
       await page.evaluate(

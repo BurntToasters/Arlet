@@ -12,7 +12,7 @@ import { useEffect, useState } from "preact/hooks";
 import {
   useAppController,
   useAppRouter,
-  useAppState,
+  useAppSlices,
 } from "../app/context.tsx";
 import { safeErrorMessage } from "../app/controller-support.ts";
 import { ratingKeyOf, trackRatingTarget } from "../app/ratings.ts";
@@ -52,7 +52,7 @@ export function playerErrorLabel(code: AppErrorCode): string {
 }
 
 export function PlayerBar(): JSX.Element {
-  const state = useAppState();
+  const state = useAppSlices("initialization", "playback", "ratings", "ui");
   const controller = useAppController();
   const router = useAppRouter();
   const playback = state.playback;

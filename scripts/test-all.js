@@ -45,6 +45,7 @@ const E2E_APP_TIMEOUT_MS = 2_400_000;
 function createInitialResults() {
   return {
     version: { status: "pending" },
+    deps: { status: "pending" },
     typecheck: { status: "pending" },
     lint: { status: "pending" },
     format: { status: "pending" },
@@ -161,6 +162,13 @@ function main({
     "version",
     npm,
     ["run", "sync-version", "--", "--check"],
+    null,
+    results,
+  );
+  runner(
+    "deps",
+    process.execPath,
+    ["scripts/check-webview2-com.cjs"],
     null,
     results,
   );

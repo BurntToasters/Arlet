@@ -11,6 +11,7 @@ import {
   registerDiagnosticsNetwork,
 } from "./diagnostics/index.ts";
 import type { DiagnosticsStore } from "./diagnostics/store.ts";
+import { safeErrorMessage } from "./app/controller-support.ts";
 
 interface NativeDiagnostics {
   version: string;
@@ -26,7 +27,11 @@ interface NativeDiagnostics {
 /** Long sessions re-check so a music app left open for days still updates. */
 export const UPDATE_RECHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
+/** Uncaught errors logged per session; one that repeats every frame stops here. */
+export const MAX_UNCAUGHT_ERRORS_LOGGED = 20;
+
 let diagnosticsStarted = false;
+let stopUncaughtErrorLogging: (() => void) | undefined;
 let stopPeriodicUpdateChecks: (() => void) | undefined;
 let stopLifecycleDiagnostics: (() => void) | undefined;
 let stopNetworkDiagnostics: (() => void) | undefined;
@@ -53,6 +58,38 @@ async function logNativeDiagnostics(controller: AppController): Promise<void> {
   }
 }
 
+/**
+ * Release builds have no open console, so uncaught errors and unhandled
+ * rejections go to the app log, where support reports can see them.
+ */
+function logUncaughtErrors(log: (message: string) => void): () => void {
+  let logged = 0;
+  const report = (kind: string, reason: unknown): void => {
+    const message = safeErrorMessage(reason);
+    // Chromium reports this when a ResizeObserver callback resizes what it
+    // observes; it is harmless and frequent.
+    if (message.includes("ResizeObserver loop")) return;
+    logged += 1;
+    if (logged > MAX_UNCAUGHT_ERRORS_LOGGED) return;
+    log(`${kind}: ${message}`);
+    if (logged === MAX_UNCAUGHT_ERRORS_LOGGED) {
+      log("Further uncaught errors in this session are not logged.");
+    }
+  };
+  const onError = (event: ErrorEvent): void => {
+    report("Uncaught error", event.error ?? event.message);
+  };
+  const onRejection = (event: PromiseRejectionEvent): void => {
+    report("Unhandled promise rejection", event.reason);
+  };
+  window.addEventListener("error", onError);
+  window.addEventListener("unhandledrejection", onRejection);
+  return () => {
+    window.removeEventListener("error", onError);
+    window.removeEventListener("unhandledrejection", onRejection);
+  };
+}
+
 /** Mounting is deliberately separate from this async startup path. */
 export async function initializeApplication(
   controller = createAppController(),
@@ -61,6 +98,7 @@ export async function initializeApplication(
 ): Promise<AppController> {
   if (!diagnosticsStarted) {
     diagnosticsStarted = true;
+    stopUncaughtErrorLogging = logUncaughtErrors(controller.log);
     if (diagnosticsStore) {
       stopNetworkDiagnostics = registerDiagnosticsNetwork(diagnosticsStore);
       stopLifecycleDiagnostics = registerDiagnosticsLifecycle(diagnosticsStore);
@@ -109,6 +147,8 @@ export async function initializeApplication(
 }
 
 export function disposeApplication(): void {
+  stopUncaughtErrorLogging?.();
+  stopUncaughtErrorLogging = undefined;
   stopPeriodicUpdateChecks?.();
   stopPeriodicUpdateChecks = undefined;
   stopLifecycleDiagnostics?.();

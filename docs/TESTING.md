@@ -196,6 +196,8 @@ are not playable. Failure scenarios:
 - Windows shows a shuffle or repeat state that disagrees with MusicKit.
 - A media-control event arrives before the controller exists.
 - The sleep timer fires after sign-out or after it was cancelled.
+- The sleep timer menu opens away from its button (an inline style without
+  units, which Preact 11 no longer completes).
 - `End of track` lets the next song play audibly, or never fires at queue end.
 - Autoplay is offered when the runtime does not support it, or the setting is
   saved even though the runtime rejected it.
@@ -228,6 +230,9 @@ closing the window quits.
 - A saved position beyond the song duration, or library IDs that no longer
   exist, break playback.
 - Saving on every position tick thrashes the disk.
+- Next, Previous, or a seek shortcut on a restored queue does nothing, or
+  calls the provider before Play: there is no provider queue yet.
+- A seek before Play is lost, and Play resumes at the old saved position.
 
 ## Radio and artist pages
 
@@ -253,6 +258,13 @@ closing the window quits.
   closes a dialog opened after it.
 - The copied diagnostics report is empty, lacks the app version, or contains
   the developer or user token.
+
+- A page that throws while rendering blanks the whole frameless window,
+  taking the title bar, sidebar, and player with it.
+- The failed page has no way back short of a restart, or "Try again" stays
+  broken after the cause is gone.
+- An uncaught error or unhandled promise rejection never reaches `arlet.log`,
+  so a support report cannot show it.
 
 The update-ready dialog is not driven here: it needs a signed installer from
 a live feed, so it is checked by hand on each release (see below).

@@ -2,7 +2,8 @@
 // Session restore against the MusicKit fixture. Seeds playback-session.json
 // in the app data folder, reloads, and checks that a corrupt file starts with
 // an empty queue, a valid one restores paused without provider calls, Play
-// resumes at the saved index and position, and sign-out deletes the file.
+// resumes at the saved index and position, Next and seeking work before Play,
+// and sign-out deletes the file.
 // Runs last: it signs out at the end.
 
 import fs from "node:fs";
@@ -14,6 +15,9 @@ const NOW_PLAYING = ".player-bar .player-track-copy strong";
 const SAVED_IDS = ["song-a", "song-c", "song-e"];
 const SAVED_INDEX = 1;
 const SAVED_POSITION = 42.5;
+// Shift+Right before Play moves the saved position by the seek step.
+const SEEK_STEP = 10;
+const NEXT_INDEX = SAVED_INDEX + 1;
 const SAVED_ITEMS = [
   {
     id: "song-a",
@@ -89,6 +93,30 @@ function clickByText(page, selector, text) {
     return Boolean(match);`);
 }
 
+function pressKey(page, key, modifiers) {
+  return page.evaluate(`
+    document.body.dispatchEvent(new KeyboardEvent("keydown", {
+      key: ${JSON.stringify(key)},
+      bubbles: true,
+      cancelable: true,
+      ...${JSON.stringify(modifiers)},
+    }));
+    return true;`);
+}
+
+function seedSession(sessionFile) {
+  fs.writeFileSync(
+    sessionFile,
+    JSON.stringify({
+      schemaVersion: 1,
+      items: SAVED_ITEMS,
+      index: SAVED_INDEX,
+      positionSeconds: SAVED_POSITION,
+      savedAt: Date.now() - 60_000,
+    }),
+  );
+}
+
 function setResumeToggle(page, checked) {
   return page.evaluate(`
     const label = [...document.querySelectorAll("label")]
@@ -131,16 +159,7 @@ export async function runSessionRestore({ page, check, dataDir }) {
 
   // 2. Valid main file, backup removed: queue renders paused, no provider calls.
   fs.rmSync(backupFile, { force: true });
-  fs.writeFileSync(
-    sessionFile,
-    JSON.stringify({
-      schemaVersion: 1,
-      items: SAVED_ITEMS,
-      index: SAVED_INDEX,
-      positionSeconds: SAVED_POSITION,
-      savedAt: Date.now() - 60_000,
-    }),
-  );
+  seedSession(sessionFile);
   await reloadApp(page);
   const restored = await waitFor(
     page,
@@ -179,6 +198,28 @@ export async function runSessionRestore({ page, check, dataDir }) {
     document.querySelector('button[aria-label="Toggle Playing Next"]')?.click();
     return true;`);
 
+  // 2b. A seek shortcut before Play moves the saved position only.
+  await pressKey(page, "ArrowRight", { shiftKey: true });
+  const seekShown = await waitFor(
+    page,
+    'document.querySelector(".player-progress span")?.textContent === "0:52"',
+  );
+  const seekTransitions = await page.evaluate(`
+    return window.__ARLET_E2E_MUSIC__.snapshot().transitions
+      .map((item) => item.type)
+      .filter((type) => type !== "volume");`);
+  check(
+    "a seek before Play moves the restored position without provider calls",
+    seekShown && seekTransitions.length === 0,
+    {
+      seekShown,
+      position: await page.evaluate(
+        'return document.querySelector(".player-progress span")?.textContent ?? null;',
+      ),
+      transitions: seekTransitions,
+    },
+  );
+
   // 3. Play resumes at the saved index and seeks to the saved position.
   await page.evaluate(`
     document.querySelector(".play-button")?.click();
@@ -196,15 +237,59 @@ export async function runSessionRestore({ page, check, dataDir }) {
   const played = transitions.find((item) => item.type === "play");
   const seek = transitions.find((item) => item.type === "seekToTime");
   check(
-    "Play sets the saved queue starting at the saved song, then seeks to the saved position",
+    "Play sets the saved queue starting at the saved song, then seeks to the position chosen before Play",
     resumed &&
       JSON.stringify(setQueue?.ids) === JSON.stringify(SAVED_IDS) &&
       setQueue?.options?.startWith === SAVED_INDEX &&
       played?.index === SAVED_INDEX &&
-      Math.abs((seek?.seconds ?? -1) - SAVED_POSITION) < 0.001 &&
+      Math.abs((seek?.seconds ?? -1) - (SAVED_POSITION + SEEK_STEP)) < 0.001 &&
       indexOf("setQueue") < indexOf("play") &&
       indexOf("play") < indexOf("seekToTime"),
     { order: transitions.map((item) => item.type), setQueue, played, seek },
+  );
+
+  // 3b. Next on a freshly restored queue starts the following saved song.
+  await page.evaluate("window.__ARLET_E2E_MUSIC__.reset(); return true;");
+  await sleep(2500);
+  fs.rmSync(backupFile, { force: true });
+  seedSession(sessionFile);
+  await reloadApp(page);
+  const restoredAgain = await waitFor(
+    page,
+    `document.querySelector(${JSON.stringify(NOW_PLAYING)})?.textContent === "Track C"`,
+    15_000,
+  );
+  await pressKey(page, "ArrowRight", { ctrlKey: true });
+  const skipped = await waitFor(
+    page,
+    'window.__ARLET_E2E_MUSIC__.snapshot().transitions.some((item) => item.type === "play")',
+    15_000,
+  );
+  const skipTransitions = await page.evaluate(
+    "return window.__ARLET_E2E_MUSIC__.snapshot().transitions;",
+  );
+  const skipQueue = skipTransitions.find((item) => item.type === "setQueue");
+  const skipPlay = skipTransitions.find((item) => item.type === "play");
+  const skipTitle = await waitFor(
+    page,
+    `document.querySelector(${JSON.stringify(NOW_PLAYING)})?.textContent === "Track E"`,
+  );
+  check(
+    "Next on a restored queue plays the following saved song",
+    restoredAgain &&
+      skipped &&
+      skipTitle &&
+      JSON.stringify(skipQueue?.ids) === JSON.stringify(SAVED_IDS) &&
+      skipQueue?.options?.startWith === NEXT_INDEX &&
+      skipPlay?.index === NEXT_INDEX &&
+      !skipTransitions.some((item) => item.type === "seekToTime"),
+    {
+      restoredAgain,
+      skipTitle,
+      order: skipTransitions.map((item) => item.type),
+      skipQueue,
+      skipPlay,
+    },
   );
 
   // 4. Turning Resume off deletes the file; turning it back on saves again.
@@ -229,7 +314,7 @@ export async function runSessionRestore({ page, check, dataDir }) {
     savedAgain &&
       JSON.stringify(saved?.items?.map((item) => item.id)) ===
         JSON.stringify(SAVED_IDS) &&
-      saved?.index === SAVED_INDEX,
+      saved?.index === NEXT_INDEX,
     {
       savedAgain,
       index: saved?.index,

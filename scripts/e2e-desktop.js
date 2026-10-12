@@ -211,6 +211,26 @@ export async function runDesktop({ page, check }) {
     // Minutes timer: fires and pauses.
     await startPlayback(page, ["song-a", "song-c"]);
     const beforeFire = await pauseCount(page);
+    // Inline styles need explicit units since Preact 11; a bare number is
+    // dropped and the menu opens away from its button.
+    const placement = await page.evaluate(`
+      document.querySelector('button[aria-label="Sleep timer"]')?.click();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const button = document.querySelector('button[aria-label="Sleep timer"]')?.getBoundingClientRect();
+      const menu = document.querySelector('.sleep-timer-menu')?.getBoundingClientRect();
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      return button && menu
+        ? { buttonLeft: button.left, buttonTop: button.top, menuLeft: menu.left, menuBottom: menu.bottom }
+        : null;`);
+    check(
+      "sleep timer menu opens just above its button",
+      placement !== null &&
+        Math.abs(placement.menuLeft - placement.buttonLeft) <= 2 &&
+        placement.menuBottom <= placement.buttonTop &&
+        placement.buttonTop - placement.menuBottom <= 16,
+      placement,
+    );
+    await waitFor(page, "!document.querySelector('.sleep-timer-menu')");
     const picked = await chooseSleepOption(page, "15 minutes");
     const armed = await sleepLabelShown(page, "15 min");
     const paused = await waitFor(

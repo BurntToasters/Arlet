@@ -1,7 +1,7 @@
 import { Download, RefreshCw } from "lucide-preact";
 import { useEffect, useRef } from "preact/hooks";
 import type { JSX } from "preact";
-import { useAppController, useAppState } from "../app/context.tsx";
+import { useAppController, useAppSlices } from "../app/context.tsx";
 import { ReleaseNotes } from "./ReleaseNotes.tsx";
 
 const FOCUSABLE_SELECTOR =
@@ -13,7 +13,7 @@ const FOCUSABLE_SELECTOR =
  * every route without involving native notification or dialog surfaces.
  */
 export function UpdateReadyModal(): JSX.Element | null {
-  const state = useAppState();
+  const state = useAppSlices("updates");
   const controller = useAppController();
   const dialogRef = useRef<HTMLElement>(null);
   const restartButton = useRef<HTMLButtonElement>(null);

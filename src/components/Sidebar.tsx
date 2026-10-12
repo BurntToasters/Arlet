@@ -15,8 +15,12 @@ import {
 } from "lucide-preact";
 import type { LucideIcon } from "lucide-preact";
 import type { JSX, TargetedEvent } from "preact";
-import { useAppRouter, useAppState } from "../app/context.tsx";
-import { libraryDetailKey, setUiState } from "../state.ts";
+import { useAppRouter, useAppSlices } from "../app/context.tsx";
+import {
+  libraryDetailKey,
+  setUiState,
+  type RuntimeAppState,
+} from "../state.ts";
 import { openSupportPage } from "../platform/support.ts";
 import { reportActionError } from "./action-errors.ts";
 import type { PinnedPlaylist } from "../domain/music.ts";
@@ -104,7 +108,7 @@ interface AccountSummaryLike {
 }
 
 function readAccountSummary(
-  state: ReturnType<typeof useAppState>,
+  state: Pick<RuntimeAppState, "account">,
 ): AccountSummaryLike | undefined {
   const value = (state as unknown as { account?: unknown }).account;
   if (!value || typeof value !== "object") return undefined;
@@ -172,7 +176,7 @@ function playlistIndex(
 }
 
 function resolvePinDisplay(
-  state: ReturnType<typeof useAppState>,
+  state: Pick<RuntimeAppState, "library">,
   index: Map<string, unknown[]>,
   pin: PinnedPlaylist,
 ): { name?: string; artworkUrl?: string } {
@@ -211,7 +215,15 @@ function renderPinIcon(artworkUrl?: string): JSX.Element {
 }
 
 export function Sidebar(): JSX.Element {
-  const state = useAppState();
+  const state = useAppSlices(
+    "account",
+    "auth",
+    "home",
+    "library",
+    "navigation",
+    "pins",
+    "ui",
+  );
   const router = useAppRouter();
   const account = readAccountSummary(state);
   const [query, setQuery] = useState(

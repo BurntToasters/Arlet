@@ -40,7 +40,10 @@ window materials are implemented; the 2026-09-11 notes below are history.
 - [ ] **Phase 0 matrix still open:** full protected track, seek, skip,
       20 consecutive tracks, 2-hour session, logout/relogin
       (`docs/MUSICKIT_TAURI_FEASIBILITY.md`). Run it on a signed release
-      build before publishing.
+      build before publishing. Export the observed network surface in the
+      same run, then narrow the provisional CSP from it: the `*.apple.com`
+      connect wildcard, `style-src 'unsafe-inline'`, and scripts to the
+      `/musickit/` path (`docs/SECURITY.md`).
 - [ ] **Release VM `.env`:** `MUSICKIT_DEVELOPER_TOKEN` (≥ 30 days left),
       updater key + password, `AZURE_*`, `GPG_KEY_ID`, `AFTER_PACK_LOC`.
       Back up the updater key offline.

@@ -88,14 +88,9 @@ import {
 } from "../musickit/library.ts";
 import { createLibraryCache, type LibraryCache } from "../library/cache.ts";
 import {
-  asLibraryEntities,
-  asRecord,
   errorMessage,
-  libraryMethod,
   safeErrorMessage,
   timestamp,
-  trackIds,
-  trackRefs,
   type ControllerContext,
 } from "./controller-support.ts";
 import { createDiscovery } from "./discovery.ts";
@@ -111,6 +106,10 @@ import {
 import { createPlayback } from "./playback.ts";
 import type { QueueEditTier } from "../musickit/queue-edit.ts";
 import { createRatings, type RatingTarget } from "./ratings.ts";
+import {
+  createPlaylistEditing,
+  type CreatePlaylistRequest,
+} from "./playlist-editing.ts";
 import { createPlaybackSession } from "./playback-session.ts";
 import {
   createTrackNavigationResolver,
@@ -199,7 +198,8 @@ export interface AppController {
   playNextTracks(tracks: readonly Track[] | readonly string[]): Promise<void>;
   playLaterTracks(tracks: readonly Track[] | readonly string[]): Promise<void>;
   playQueueItem(index: number): Promise<void>;
-  removeQueueItem(index: number): Promise<QueueEditTier>;
+  /** `trackId` guards against the queue shifting before the remove runs. */
+  removeQueueItem(index: number, trackId?: string): Promise<QueueEditTier>;
   moveQueueItem(from: number, to: number): Promise<QueueEditTier>;
   clearUpNext(): Promise<QueueEditTier>;
   refreshCurrentData(): Promise<void>;
@@ -284,11 +284,7 @@ export interface AppController {
   readonly consecutiveTrackTarget: number;
 }
 
-export interface CreatePlaylistRequest {
-  name: string;
-  description?: string;
-  tracks?: readonly Track[] | readonly string[];
-}
+export type { CreatePlaylistRequest } from "./playlist-editing.ts";
 
 /**
  * Composition root for the app: owns MusicKit initialization, auth,
@@ -344,6 +340,7 @@ export function createAppController(
   const discovery = createDiscovery(context, dependencies);
   const playback = createPlayback(context);
   const ratings = createRatings(context);
+  const playlists = createPlaylistEditing(context, library);
   const trackNavigation = createTrackNavigationResolver(requireMusic);
   const { requireLibrary, ensureLibraryCache, clearLibraryCache } = library;
   const collections = createCollectionPlayback({
@@ -792,99 +789,13 @@ export function createAppController(
       return getState().pins.some((pin) => pin.id === id);
     },
 
-    async searchPlaylists(query: string): Promise<LibraryEntity[]> {
-      const trimmed = query.trim();
-      if (!trimmed) return [];
-      const raw = await libraryMethod(
-        requireLibrary(),
-        "searchPlaylists",
-      )(trimmed);
-      return asLibraryEntities(raw);
-    },
+    searchPlaylists: playlists.searchPlaylists,
 
-    async createPlaylist(
-      requestOrName: CreatePlaylistRequest | string,
-      legacyDescription?: string,
-      legacyTracks?: readonly Track[] | readonly string[],
-    ): Promise<LibraryEntity | undefined> {
-      const request: CreatePlaylistRequest =
-        typeof requestOrName === "string"
-          ? {
-              name: requestOrName,
-              description: legacyDescription,
-              tracks: legacyTracks,
-            }
-          : requestOrName;
-      const trimmed = request.name.trim();
-      if (!trimmed) throw new Error("Playlist name is required.");
-      const raw = await libraryMethod(
-        requireLibrary(),
-        "createPlaylist",
-      )({
-        name: trimmed,
-        description:
-          request.description && request.description.trim().length > 0
-            ? request.description.trim()
-            : undefined,
-        ...(request.tracks && request.tracks.length > 0
-          ? { tracks: trackRefs(request.tracks) }
-          : {}),
-      });
-      const items = asLibraryEntities(raw);
-      await library.refreshPlaylistsAfterMutation(
-        "Playlist list refresh failed after create",
-      );
-      return items[0];
-    },
+    createPlaylist: playlists.createPlaylist,
 
-    async createPlaylistFolder(
-      name: string,
-    ): Promise<LibraryEntity | undefined> {
-      const trimmed = name.trim();
-      if (!trimmed) throw new Error("Folder name is required.");
-      const raw = await libraryMethod(
-        requireLibrary(),
-        "createPlaylistFolder",
-      )({ name: trimmed });
-      const items = asLibraryEntities(raw);
-      await library.refreshPlaylistsAfterMutation(
-        "Playlist list refresh failed after folder create",
-      );
-      return items[0];
-    },
+    createPlaylistFolder: playlists.createPlaylistFolder,
 
-    async addTracksToPlaylist(
-      playlistId: string,
-      tracks: readonly Track[] | readonly string[],
-    ): Promise<void> {
-      const ids = trackIds(tracks);
-      if (!playlistId.trim()) throw new Error("Playlist id is required.");
-      if (ids.length === 0) throw new Error("At least one track is required.");
-      const detail = getState().library.details.playlist[playlistId];
-      const listed = getState().library.collections.playlists.items.find(
-        (item) => item.id === playlistId,
-      );
-      const playlist = asRecord(detail)?.item ?? listed;
-      if (asRecord(playlist)?.canEdit === false) {
-        throw new Error("This playlist cannot be edited.");
-      }
-      for (const track of tracks) {
-        if (typeof track !== "string" && track.addable === false) {
-          throw new Error(`Track cannot be added to playlist: ${track.title}`);
-        }
-      }
-      await libraryMethod(requireLibrary(), "addTracksToPlaylist")(
-        playlistId,
-        trackRefs(tracks),
-      );
-      try {
-        await library.loadPlaylist(playlistId, "library", { refresh: true });
-      } catch (error) {
-        log(
-          `Playlist refresh failed after adding tracks: ${safeErrorMessage(error)}`,
-        );
-      }
-    },
+    addTracksToPlaylist: playlists.addTracksToPlaylist,
 
     rate(target: RatingTarget, value: RatingValue): Promise<void> {
       return ratings.rate(target, value);
@@ -917,9 +828,9 @@ export function createAppController(
       return playback.playQueueItem(index);
     },
 
-    removeQueueItem(index: number): Promise<QueueEditTier> {
+    removeQueueItem(index: number, trackId?: string): Promise<QueueEditTier> {
       collections.invalidate();
-      return playback.removeQueueItem(index);
+      return playback.removeQueueItem(index, trackId);
     },
 
     moveQueueItem(from: number, to: number): Promise<QueueEditTier> {
