@@ -25,6 +25,32 @@ use std::sync::Mutex;
 
 use logging::LogFileLock;
 
+/// Tauri panics when the setup hook returns an error, so a WebView2 failure
+/// would end the process silently. WebView2 asks hosts to retry controller
+/// creation once; a second failure is explained to the user and logged.
+fn create_main_window_or_exit(app: &tauri::App) -> tauri::WebviewWindow {
+    let error = match auth_popup::create_main_window(app) {
+        Ok(window) => return window,
+        Err(first) => {
+            logging::write_native_log(&format!(
+                "Main window creation failed; retrying once: {first}"
+            ));
+            match auth_popup::create_main_window(app) {
+                Ok(window) => return window,
+                Err(second) => second,
+            }
+        }
+    };
+    logging::write_native_log(&format!("Main window creation failed: {error}"));
+    commands::show_error_dialog(&format!(
+        "Arlet could not open its window because Microsoft Edge WebView2 failed to start.\n\n\
+         {error}\n\n\
+         Restart Windows and try again. If this keeps happening, reinstall the \
+         WebView2 Runtime from Microsoft."
+    ));
+    std::process::exit(1);
+}
+
 fn main() {
     logging::install_panic_hook();
     if let Err(error) = commands::ensure_supported_windows() {
@@ -54,7 +80,7 @@ fn main() {
         .manage(library_cache::LibraryCacheState::default())
         .manage(window_state::WindowStateCache::default())
         .setup(|app| {
-            let window = auth_popup::create_main_window(app)?;
+            let window = create_main_window_or_exit(app);
             // The config is declaratively frameless; repeat the setting while
             // hidden for runtimes that cache an older generated config. A
             // failure is logged but is not allowed to reintroduce a native

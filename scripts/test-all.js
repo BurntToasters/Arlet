@@ -36,6 +36,7 @@ const colors = {
   blue: "\x1b[34m",
   green: "\x1b[32m",
   red: "\x1b[31m",
+  yellow: "\x1b[33m",
 };
 const defaultTimeoutMs = 300_000;
 const rustTimeoutMs = process.platform === "win32" ? 1_200_000 : 600_000;
@@ -141,9 +142,18 @@ function printSummary(results) {
   return 1;
 }
 
+/**
+ * Windows OpenSSH runs commands elevated in a non-interactive session, where
+ * WebView2 cannot create its window (0x80070578, "Invalid window handle").
+ */
+function isSshSession(env = process.env) {
+  return Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY);
+}
+
 function main({
   requireCleanProof = false,
   skipE2e = false,
+  sshSession = isSshSession(),
   clearProof = clearQualityGateProof,
   recordProof = recordSuccessfulQualityGate,
   runner = runCommand,
@@ -237,7 +247,12 @@ function main({
   }
   // The native suite drives a release build of the real app and needs
   // Windows; it gates every release proof but not everyday runs.
-  if (requireCleanProof && process.platform === "win32") {
+  if (requireCleanProof && process.platform === "win32" && sshSession) {
+    results.e2eApp.status = "skipped";
+    console.log(
+      `${colors.yellow}Skipping the native app E2E: this is an SSH session, where WebView2 cannot open a window. Run npm run test:e2e:app at the machine's desktop before publishing.${colors.reset}\n`,
+    );
+  } else if (requireCleanProof && process.platform === "win32") {
     runner("e2eApp", npm, ["run", "test:e2e:app"], null, results, {
       timeout: E2E_APP_TIMEOUT_MS,
     });
@@ -278,6 +293,7 @@ if (isDirectExecution()) {
 export {
   createInitialResults,
   getNpmCommand,
+  isSshSession,
   main,
   parseTest,
   printSummary,

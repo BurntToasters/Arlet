@@ -422,6 +422,13 @@ async function settle(page, command, args) {
 
 async function run() {
   if (process.platform !== "win32") fail("Windows only");
+  // Windows OpenSSH sessions are elevated and have no interactive desktop;
+  // WebView2 fails there with "Invalid window handle" after a long wait.
+  if (process.env.SSH_CONNECTION || process.env.SSH_CLIENT) {
+    fail(
+      "cannot run in an SSH session (WebView2 has no desktop there); run it from a terminal at the machine's desktop",
+    );
+  }
   const running = spawnSync("tasklist", ["/FI", "IMAGENAME eq arlet.exe"], {
     encoding: "utf8",
   }).stdout;
@@ -1189,16 +1196,16 @@ async function run() {
       },
     );
   } catch (error) {
-    // The panic hook writes native crashes to the test profile's log, which
-    // restore() deletes; carry the crash line into the report.
-    const crash = readTestLog()
+    // Startup failures and panics are written to the test profile's log,
+    // which restore() deletes; carry the last of them into the report.
+    const native = readTestLog()
       .split(/\r?\n/u)
-      .filter((line) => line.includes("[native] Arlet crashed"))
-      .at(-1);
+      .filter((line) => line.includes("[native] "))
+      .slice(-2);
     check(
       "native E2E completes",
       false,
-      [String(error?.message ?? error), crash].filter(Boolean).join(" | "),
+      [String(error?.message ?? error), ...native].join(" | "),
     );
   } finally {
     page?.close();

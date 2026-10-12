@@ -131,6 +131,19 @@ npm run release:win              # prerelease:prepare (warning + token mint + pr
 npm run release:win:resume       # after a failure: prerelease:prepare + release:win:continue, reusing the build session (valid 24 h)
 ```
 
+The release VM is driven over SSH. Windows OpenSSH runs commands elevated
+with no interactive desktop, where WebView2 cannot open a window
+(`0x80070578`, "Invalid window handle"). So `test:all --require-clean-proof`
+skips the native app E2E in an SSH session (`SSH_CONNECTION` or `SSH_CLIENT`
+set) and says so, and `test:e2e:app` refuses to start there. Run
+`npm run test:e2e:app` from a terminal at a desktop (the dev machine or the
+VM console) on the release commit before publishing.
+
+This matches releases up to 0.2.3, whose gate never ran the native E2E; it
+joined `test:all --require-clean-proof` during 0.2.4 work. On the SSH-driven
+VM the gate therefore covers what it always did, and the native suite is a
+manual step at a desktop.
+
 `release:win:continue` runs: session verify → licenses → draft (single
 creator) → Rust targets → x64 + ARM64 NSIS builds (in-build Authenticode via
 `bundle.windows.signCommand`, then a skip-if-signed safety pass) → updater
