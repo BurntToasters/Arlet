@@ -99,49 +99,54 @@ fn redact_sensitive(text: &str) -> String {
 /// `%LOCALAPPDATA%\<identifier>\logs` on Windows.
 const APP_IDENTIFIER: &str = "run.rosie.arlet";
 
+/// Appends a `[native]` line to `arlet.log` without an `AppHandle`, for
+/// failures before or outside Tauri (startup, panics). Best effort: it never
+/// fails or panics, because its callers are already failing.
+pub fn write_native_log(message: &str) {
+    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(local)
+        .join(APP_IDENTIFIER)
+        .join("logs");
+    let entry = format!("[{}] [native] {}", iso_timestamp_now(), message);
+    let safe_entry = redact_sensitive(&truncate_entry(&entry))
+        .replace('\r', "\\r")
+        .replace('\n', "\\n");
+    if std::fs::create_dir_all(&dir).is_ok() {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join(LOG_FILE_NAME))
+        {
+            let _ = writeln!(file, "{safe_entry}");
+        }
+    }
+}
+
 /// Release builds abort on panic with no console, which leaves only exit
 /// code 0xC0000409. The hook writes the message and source location to
-/// `arlet.log` first; it runs before Tauri exists, so it finds the log
-/// directory itself.
+/// `arlet.log` first.
 pub fn install_panic_hook() {
     let default_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-            let dir = std::path::PathBuf::from(local)
-                .join(APP_IDENTIFIER)
-                .join("logs");
-            let location = info
-                .location()
-                .map(|l| format!("{}:{}", l.file(), l.line()))
-                .unwrap_or_else(|| "unknown location".to_string());
-            let payload = info.payload();
-            let message = payload
-                .downcast_ref::<&str>()
-                .map(|s| (*s).to_string())
-                .or_else(|| payload.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "non-text panic".to_string());
-            let thread = std::thread::current();
-            let entry = format!(
-                "[{}] [native] Arlet crashed (thread {}): {} at {}",
-                iso_timestamp_now(),
-                thread.name().unwrap_or("unnamed"),
-                message,
-                location
-            );
-            let safe_entry = redact_sensitive(&truncate_entry(&entry))
-                .replace('\r', "\\r")
-                .replace('\n', "\\n");
-            // Best effort: nothing in a panic hook may panic again.
-            if std::fs::create_dir_all(&dir).is_ok() {
-                if let Ok(mut file) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(dir.join(LOG_FILE_NAME))
-                {
-                    let _ = writeln!(file, "{safe_entry}");
-                }
-            }
-        }
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "unknown location".to_string());
+        let payload = info.payload();
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "non-text panic".to_string());
+        let thread = std::thread::current();
+        write_native_log(&format!(
+            "Arlet crashed (thread {}): {} at {}",
+            thread.name().unwrap_or("unnamed"),
+            message,
+            location
+        ));
         default_hook(info);
     }));
 }
