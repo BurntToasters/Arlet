@@ -2,18 +2,24 @@ import type { MusicSource, Track } from "../domain/music.ts";
 import { getState, setUiState } from "../state.ts";
 import { readPlaybackModes } from "../musickit/player.ts";
 import type { LibraryLoader } from "./library-loader.ts";
-import { nearestTrackIndex } from "./queue-window.ts";
+import { FIRST_BATCH_LENGTH, nearestTrackIndex } from "./queue-window.ts";
 
 export interface CollectionPlaybackDeps {
   requireMusic(): MusicKit.MusicKitInstance;
   getMusic(): MusicKit.MusicKitInstance | null | undefined;
   requireLibrary: LibraryLoader["requireLibrary"];
+  /** Resolves to the new queue's continuation token, or undefined. */
   playTracks(
     tracks: readonly Track[],
     startIndex?: number,
     timing?: PlayTiming,
-  ): Promise<void>;
+  ): Promise<number | undefined>;
   setShuffleMode(mode: "off" | "songs"): Promise<void>;
+  /** Identifies the queue a Play just set, for `appendContinuation`. */
+  continuationToken(): number;
+  /** Adds later-loaded songs to that queue's continuation, if still current. */
+  appendContinuation(token: number, tracks: readonly Track[]): void;
+  log(message: string): void;
 }
 
 /** What happened before playTracks, so its timing log covers the whole Play. */
@@ -56,6 +62,35 @@ export function shuffled(tracks: readonly Track[]): Track[] {
     [result[i], result[j]] = [result[j] as Track, result[i] as Track];
   }
   return result;
+}
+
+/** Reads a playlist or album one page at a time, refusing a repeated cursor. */
+function createTrackPager(
+  kind: "playlist" | "album",
+  id: string,
+  source: MusicSource,
+  client: ReturnType<LibraryLoader["requireLibrary"]>,
+) {
+  const cursors = new Set<string>();
+  let cursor: string | undefined;
+  let done = false;
+  return {
+    get done(): boolean {
+      return done;
+    },
+    async next(): Promise<Track[]> {
+      const page =
+        kind === "playlist"
+          ? await client.getPlaylistTracks(id, cursor, source)
+          : await client.getAlbumTracks(id, source, cursor);
+      cursor = page.next;
+      if (!cursor) done = true;
+      else if (cursors.has(cursor)) {
+        throw new Error(`Apple Music returned a repeated ${kind} page.`);
+      } else cursors.add(cursor);
+      return page.items;
+    },
+  };
 }
 
 /**
@@ -134,6 +169,34 @@ export function createCollectionPlayback(deps: CollectionPlaybackDeps) {
     await deps.playTracks(queue, index);
   };
 
+  /**
+   * Loads the remaining pages after Play started and adds them to the queue's
+   * continuation. Stops when that queue is replaced (its token changes); a
+   * pause does not stop it, so resuming keeps the whole collection.
+   */
+  const loadRest = async (
+    pager: ReturnType<typeof createTrackPager>,
+    token: number,
+    instance: MusicKit.MusicKitInstance,
+  ): Promise<void> => {
+    try {
+      while (!pager.done) {
+        const items = await pager.next();
+        if (
+          deps.continuationToken() !== token ||
+          instance !== deps.getMusic()
+        ) {
+          return;
+        }
+        deps.appendContinuation(token, items);
+      }
+    } catch (error) {
+      deps.log(
+        `Loading the rest of the queue failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  };
+
   const play = async (
     kind: "playlist" | "album",
     id: string,
@@ -147,18 +210,40 @@ export function createCollectionPlayback(deps: CollectionPlaybackDeps) {
     try {
       const instance = deps.requireMusic();
       const client = deps.requireLibrary();
+      const stale = (): boolean =>
+        mine !== generation || instance !== deps.getMusic();
+      // Shuffle needs the whole collection. In order, Play starts once the
+      // chosen song's page is in; the rest loads while it plays.
+      const pager = createTrackPager(kind, id, source, client);
+      const tracks: Track[] = [];
       let pages = 0;
-      const tracks = await loadAllTracks(
-        kind,
-        id,
-        source,
-        client,
-        () => mine !== generation || instance !== deps.getMusic(),
-        () => {
+      const loadUntil = async (enough: () => boolean): Promise<boolean> => {
+        while (!pager.done && !enough()) {
+          const items = await pager.next();
+          if (stale()) return false;
           pages += 1;
-        },
-      );
-      if (!tracks) return;
+          tracks.push(...items);
+        }
+        return true;
+      };
+      // Enough for the chosen song and MusicKit's first batch after it; the
+      // songs before it are already in, since pages arrive in order.
+      // With shuffle on, MusicKit or Arlet shuffles the whole collection,
+      // so every page is needed first.
+      const shuffleOn =
+        options.shuffle === true ||
+        readPlaybackModes(instance).shuffleMode === "songs";
+      const loadedChosen = (): boolean => {
+        if (shuffleOn) return false;
+        const chosen = options.trackId
+          ? nearestTrackIndex(tracks, startIndex, options.trackId)
+          : startIndex < tracks.length
+            ? startIndex
+            : -1;
+        if (chosen < 0) return false;
+        return tracks.length >= chosen + FIRST_BATCH_LENGTH;
+      };
+      if (!(await loadUntil(loadedChosen))) return;
       const timing: PlayTiming = {
         startedAt,
         steps: [
@@ -182,7 +267,12 @@ export function createCollectionPlayback(deps: CollectionPlaybackDeps) {
       if (!Number.isInteger(index) || index < 0 || index >= queue.length) {
         throw new Error(`The selected ${kind} song is unavailable.`);
       }
-      await deps.playTracks(queue, index, timing);
+      // The token comes from this Play: a newer Play that started meanwhile
+      // must not receive this collection's later pages.
+      const token = await deps.playTracks(queue, index, timing);
+      if (token !== undefined && !pager.done) {
+        void loadRest(pager, token, instance);
+      }
     } catch (error) {
       // A request the user already replaced must not surface its failure.
       if (mine !== generation) return;

@@ -277,9 +277,10 @@ export async function runPlaylistPlayback({ page, check }) {
     "track-row Play now keeps its playlist and occurrence context",
     rowMenuReady &&
       rowContextPlayStarted &&
+      // MusicKit's queue starts at the chosen occurrence (row 3, Track C).
       JSON.stringify(ids(rowContextPlay)) ===
-        JSON.stringify(expectedPlaylistIds) &&
-      currentIndex(rowContextPlay) === 2,
+        JSON.stringify(expectedPlaylistIds.slice(2)) &&
+      currentIndex(rowContextPlay) === 0,
     { queue: rowContextPlay.queue, transitions: rowContextPlay.transitions },
   );
 
@@ -417,8 +418,8 @@ export async function runPlaylistPlayback({ page, check }) {
     "album detail row starts its selected track in the full paginated album queue",
     albumStarted &&
       JSON.stringify(ids(albumSnapshot)) ===
-        JSON.stringify(["album-a", "album-b", "album-c", "album-d"]) &&
-      currentIndex(albumSnapshot) === 1,
+        JSON.stringify(["album-b", "album-c", "album-d"]) &&
+      currentIndex(albumSnapshot) === 0,
     {
       queue: albumSnapshot.queue,
       transitions: albumSnapshot.transitions,
@@ -464,7 +465,7 @@ export async function runPlaylistPlayback({ page, check }) {
       repeatOffReady &&
       albumAtEnd &&
       repeatOffAtEnd.transitions.some((item) => item.type === "finishEnd") &&
-      currentIndex(repeatOffAtEnd) === 3,
+      currentIndex(repeatOffAtEnd) === 2,
     {
       queue: repeatOffAtEnd.queue,
       transitions: repeatOffAtEnd.transitions.slice(-4),
@@ -551,7 +552,7 @@ export async function runPlaylistPlayback({ page, check }) {
     badgeShown &&
       badgeCleared &&
       badgeSnapshot.transitions.some((item) => item.type === "playRejected") &&
-      currentIndex(badgeSnapshot) === 1,
+      currentIndex(badgeSnapshot) === 0,
     {
       queue: badgeSnapshot.queue,
       transitions: badgeSnapshot.transitions.slice(-4),
@@ -637,7 +638,6 @@ export async function runPlaylistPlayback({ page, check }) {
     "a playlist that changed after it was shown still plays the clicked song",
     shiftedRowsReady &&
       shiftedStarted &&
-      ids(shiftedSnapshot)[0] === "song-new" &&
       ids(shiftedSnapshot)[currentIndex(shiftedSnapshot)] === "song-c",
     {
       shiftedRowsReady,
@@ -680,9 +680,122 @@ export async function runPlaylistPlayback({ page, check }) {
     songsReady &&
       songsQueued &&
       listed.length >= 3 &&
-      (songsSet?.ids?.length ?? 0) === listed.length &&
-      songsSet?.options?.startWith === 1,
+      JSON.stringify(songsSet?.ids) === JSON.stringify(listed.slice(1)) &&
+      songsSet?.options?.startWith === 0,
     { listed, setQueue: songsSet },
+  );
+
+  // A mid-playlist click starts MusicKit's queue at the clicked occurrence:
+  // no songs before it, no re-select, one lookup's worth of songs.
+  await page.evaluate(`
+    window.__ARLET_E2E_MUSIC__.reset();
+    location.hash = "#/playlist/${PLAYLIST_ID}";
+    return true;
+  `);
+  await waitFor(
+    page,
+    `document.querySelector(".library-detail-hero") && document.querySelector(".library-track-row")?.textContent.includes("Track A") && document.querySelectorAll(".library-track-row").length >= 6`,
+  );
+  // The song playing before the click is well past the restart point.
+  await page.evaluate(`
+    document.querySelectorAll(".library-track-row")[0]?.click();
+    return true;
+  `);
+  await waitFor(
+    page,
+    `document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Track A"`,
+  );
+  await page.evaluate(
+    "window.__ARLET_E2E_MUSIC__.emitPlaybackTime(150); return true;",
+  );
+  const directMark = (
+    await page.evaluate("return window.__ARLET_E2E_MUSIC__.snapshot();")
+  ).transitions.length;
+  await page.evaluate(`
+    document.querySelectorAll(".library-track-row")[3]?.click();
+    return true;
+  `);
+  const directStarted = await waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().transitions.slice(${directMark}).some((item) => item.type === "play")`,
+  );
+  const direct = await page.evaluate(
+    "return window.__ARLET_E2E_MUSIC__.snapshot();",
+  );
+  const directSet = direct.transitions
+    .slice(directMark)
+    .find((item) => item.type === "setQueue");
+  check(
+    "a mid-playlist click starts MusicKit's queue at that song with no re-select",
+    directStarted &&
+      JSON.stringify(directSet?.ids) ===
+        JSON.stringify(["song-duplicate", "song-e", "song-f"]) &&
+      directSet?.options?.startWith === 0 &&
+      directSet.ids.length <= 16 &&
+      !direct.transitions
+        .slice(directMark)
+        .some((item) => item.type === "selectIndex"),
+    { transitions: direct.transitions },
+  );
+
+  // Previous right away on that song steps back to the one before it in the
+  // playlist (the old song's 2:30 must not count), which also proves the
+  // second occurrence was the one chosen.
+  const previousMark = direct.transitions.length;
+  await page.evaluate(`
+    document.querySelector('button[aria-label="Previous track"]')?.click();
+    return true;
+  `);
+  const steppedBack = await waitFor(
+    page,
+    `document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Track C"`,
+  );
+  const back = await page.evaluate(
+    "return window.__ARLET_E2E_MUSIC__.snapshot();",
+  );
+  const backSet = back.transitions
+    .slice(previousMark)
+    .find((item) => item.type === "setQueue");
+  check(
+    "Previous on the first queued song plays the song before it in the playlist",
+    steppedBack &&
+      backSet?.ids?.[0] === "song-c" &&
+      backSet?.options?.startWith === 0,
+    { transitions: back.transitions.slice(previousMark) },
+  );
+
+  // After the queue is replaced elsewhere, Previous restarts instead of
+  // stepping back into the old playlist.
+  await page.evaluate(`
+    const music = window.MusicKit.getInstance();
+    await music.setQueue({ songs: ["album-a"] });
+    await music.play();
+    return true;
+  `);
+  await waitFor(
+    page,
+    `document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Album Track A"`,
+  );
+  const replacedMark = (
+    await page.evaluate("return window.__ARLET_E2E_MUSIC__.snapshot();")
+  ).transitions.length;
+  await page.evaluate(`
+    document.querySelector('button[aria-label="Previous track"]')?.click();
+    return true;
+  `);
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  const replaced = await page.evaluate(
+    "return window.__ARLET_E2E_MUSIC__.snapshot();",
+  );
+  check(
+    "Previous after the queue was replaced elsewhere does not return to the old playlist",
+    !replaced.transitions
+      .slice(replacedMark)
+      .some((item) => item.type === "setQueue") &&
+      (await page.evaluate(
+        `return document.querySelector(".player-bar .player-track-copy strong")?.textContent;`,
+      )) === "Album Track A",
+    { transitions: replaced.transitions.slice(replacedMark) },
   );
   await page.evaluate(`location.hash = "#/home"; return true;`);
 }

@@ -2,21 +2,39 @@ import type { Track } from "../domain/music.ts";
 import { randomIndex } from "./collection-playback.ts";
 
 /**
- * MusicKit fetches every queued song from Apple in parallel batches of 16, so
- * a few thousand songs means hundreds of requests per Play and rate limits.
+ * MusicKit fetches every queued song from Apple, 16 per request, before Play
+ * can start. A Play therefore queues only the chosen song and the next few,
+ * one request's worth, as MusicKit's first items; the rest is appended in the
+ * background once audio starts (see QUEUE_REFILL_THRESHOLD).
  */
+export const FIRST_BATCH_LENGTH = 16;
+/**
+ * With shuffle on, lists up to this size are handed to MusicKit whole so it
+ * can shuffle and unshuffle them; longer ones are sampled by Arlet.
+ */
+export const SHUFFLE_IN_ORDER_LIMIT = 100;
+/** Most songs one Play next or Play later adds at once. */
 export const MAX_QUEUE_LENGTH = 500;
-/** Songs kept before the chosen one, so Previous still has history. */
-export const QUEUE_HISTORY_LENGTH = 100;
+/**
+ * Songs before the chosen one that Arlet keeps, so Previous on the first
+ * queued song can step back through the playlist. MusicKit's queue starts at
+ * the chosen song: songs before it would make MusicKit prepare the wrong item
+ * and then switch (a re-select that cost about 1.3 seconds).
+ */
+export const QUEUE_HISTORY_LENGTH = 20;
 /** Refill when fewer upcoming songs than this remain in the queue. */
-export const QUEUE_REFILL_THRESHOLD = 100;
+export const QUEUE_REFILL_THRESHOLD = 50;
 /** Songs appended per refill. */
-export const QUEUE_REFILL_SIZE = 200;
+export const QUEUE_REFILL_SIZE = 100;
 
-export interface QueueWindow {
-  tracks: Track[];
+export interface StartWindow {
+  /** Songs before the chosen one, kept by Arlet for Previous. */
+  history: Track[];
+  /** MusicKit's first items. */
+  batch: Track[];
+  /** The chosen song's position in `batch`: 0 except a whole short shuffle. */
   startIndex: number;
-  /** Songs after the window, in play order, appended as the queue drains. */
+  /** Songs after the batch, in play order, appended as the queue drains. */
   rest: Track[];
 }
 
@@ -53,37 +71,42 @@ export function shuffledCopy<T>(items: readonly T[]): T[] {
 }
 
 /**
- * Limits a queue to MAX_QUEUE_LENGTH songs. In order, it keeps a window
- * around the chosen song. Shuffled, it keeps the chosen song plus a random
- * sample of the whole list, so shuffle still draws from every song. The
- * remaining songs are returned in play order for later refills.
+ * Splits a Play into Arlet-side history, MusicKit's first batch (the chosen
+ * song first), and the rest. Shuffled, the chosen song leads a random order
+ * of the whole list, so shuffle still draws from every song.
  */
-export function windowQueue(
+export function startWindow(
   tracks: readonly Track[],
   startIndex: number,
   shuffled: boolean,
-): QueueWindow {
-  if (tracks.length <= MAX_QUEUE_LENGTH) {
-    return { tracks: [...tracks], startIndex, rest: [] };
+): StartWindow {
+  const chosen = tracks[startIndex];
+  if (!chosen) return { history: [], batch: [], startIndex: 0, rest: [] };
+  // A short list goes to MusicKit whole and in order: MusicKit shuffles it
+  // with the chosen song first (`startWith`), and turning shuffle off then
+  // restores the playlist order.
+  if (shuffled && tracks.length <= SHUFFLE_IN_ORDER_LIMIT) {
+    return { history: [], batch: [...tracks], startIndex, rest: [] };
   }
   if (shuffled) {
     const others = shuffledCopy(
       tracks.filter((_, index) => index !== startIndex),
     );
-    const take = MAX_QUEUE_LENGTH - 1;
-    const chosen = tracks[startIndex];
+    const take = FIRST_BATCH_LENGTH - 1;
     return {
-      tracks: [...(chosen ? [chosen] : []), ...others.slice(0, take)],
+      history: [],
+      batch: [chosen, ...others.slice(0, take)],
       startIndex: 0,
       rest: others.slice(take),
     };
   }
-  let start = Math.max(0, startIndex - QUEUE_HISTORY_LENGTH);
-  const end = Math.min(tracks.length, start + MAX_QUEUE_LENGTH);
-  start = Math.max(0, end - MAX_QUEUE_LENGTH);
   return {
-    tracks: tracks.slice(start, end),
-    startIndex: startIndex - start,
-    rest: tracks.slice(end),
+    history: tracks.slice(
+      Math.max(0, startIndex - QUEUE_HISTORY_LENGTH),
+      startIndex,
+    ),
+    batch: tracks.slice(startIndex, startIndex + FIRST_BATCH_LENGTH),
+    startIndex: 0,
+    rest: tracks.slice(startIndex + FIRST_BATCH_LENGTH),
   };
 }

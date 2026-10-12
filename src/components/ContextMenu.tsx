@@ -55,6 +55,7 @@ import { reportActionError, reportQueueEdit } from "./action-errors.ts";
 import { safeErrorMessage } from "../app/controller-support.ts";
 import type { QueueEditTier } from "../musickit/queue-edit.ts";
 import type { StationTarget } from "../musickit/stations.ts";
+import { nameArtistLinks } from "./artist-links.ts";
 
 type ContextKind = "track" | "album" | "artist" | "playlist" | "folder";
 
@@ -815,7 +816,10 @@ function buildItems({
       });
     }
     // The same artist can be listed twice with one source; one entry each.
-    const artists = trackNavigation.artists.filter(
+    const artists = nameArtistLinks(
+      trackNavigation.artists,
+      track.artistName,
+    ).filter(
       (artist, index, all) =>
         all.findIndex(
           (other) => other.id === artist.id && other.source === artist.source,

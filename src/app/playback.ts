@@ -1,4 +1,4 @@
-import { mapErrorToCode } from "../musickit/errors.ts";
+import { httpStatusOf, mapErrorToCode } from "../musickit/errors.ts";
 import {
   queueOptionsForTracks,
   changeToMediaAtIndex,
@@ -18,18 +18,20 @@ import { isSameTrack, type Station, type Track } from "../domain/music.ts";
 import { normalizeTrack } from "../musickit/normalize.ts";
 import {
   keptStartIndex,
+  NONE_AVAILABLE_MESSAGE,
   skippedMessage,
   withResolvableTracks,
 } from "../musickit/unresolved.ts";
 import { reportActionError } from "../components/action-errors.ts";
 import type { PlayTiming } from "./collection-playback.ts";
 import {
+  FIRST_BATCH_LENGTH,
   MAX_QUEUE_LENGTH,
   nearestTrackIndex,
   QUEUE_REFILL_SIZE,
   QUEUE_REFILL_THRESHOLD,
   shuffledCopy,
-  windowQueue,
+  startWindow,
 } from "./queue-window.ts";
 import {
   editQueue,
@@ -70,6 +72,26 @@ type QueueInsertMethod = "playNext" | "playLater";
 /** Queue and transport commands over the MusicKit instance. */
 /** A Play that is not audible by then is not timed. */
 const PLAY_TIMING_TIMEOUT_MS = 60_000;
+/** Previous restarts the song after this many seconds, as in Apple Music. */
+const RESTART_THRESHOLD_SECONDS = 3;
+/** First batches tried when every song in one is unavailable. */
+const MAX_UNAVAILABLE_BATCHES = 4;
+/** Pause before retrying a queue setup that failed on a song lookup. */
+const SET_QUEUE_RETRY_DELAY_MS = 600;
+
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/** A lookup that returned no usable body, as opposed to a real refusal. */
+function isTransientLookupFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const status = httpStatusOf(error);
+  return (
+    /Unable to read body as JSON/iu.test(message) ||
+    status === 429 ||
+    (status !== undefined && status >= 500)
+  );
+}
 
 export function createPlayback(context: ControllerContext) {
   const { requireMusic, getMusic, log } = context;
@@ -234,6 +256,11 @@ export function createPlayback(context: ControllerContext) {
   // Last song this playlist added. If the queue no longer holds it, the
   // queue was replaced elsewhere and the rest must not be appended.
   let restAnchor: Track | undefined;
+  // Songs before the one a Play started at. MusicKit's queue begins at that
+  // song, so Previous on it steps back through these instead. Valid while
+  // the queue still starts with `historyAnchor`.
+  let startHistory: Track[] = [];
+  let historyAnchor: Track | undefined;
 
   const setRest = (tracks: Track[], anchor?: Track): void => {
     queueRest = tracks;
@@ -282,7 +309,7 @@ export function createPlayback(context: ControllerContext) {
     requestedTracks: readonly Track[],
     requestedStart = 0,
     timing?: PlayTiming,
-  ): Promise<void> => {
+  ): Promise<number | undefined> => {
     const startedAt = timing?.startedAt ?? performance.now();
     const steps = [...(timing?.steps ?? [])];
     let stepStartedAt = performance.now();
@@ -301,55 +328,75 @@ export function createPlayback(context: ControllerContext) {
       throw new Error("The selected song is unavailable.");
     }
     const shuffled = readPlaybackModes(instance).shuffleMode === "songs";
-    const { tracks, startIndex, rest } = windowQueue(
-      requestedTracks,
-      requestedStart,
-      shuffled,
-    );
+    const split = startWindow(requestedTracks, requestedStart, shuffled);
+    let batch = split.batch;
+    let rest = split.rest;
     clearContinuation();
     const generation = restGeneration;
     const request = beginPlayRequest();
     if (rest.length) {
       log(
-        `Queued ${tracks.length} of ${requestedTracks.length} songs; the rest load as the queue plays.`,
-      );
-    }
-    const needsExplicitSelection = startIndex > 0 || shuffled;
-    const providerPlayer = (instance.player ?? instance) as unknown as Record<
-      string,
-      unknown
-    >;
-    const instanceRecord = instance as unknown as Record<string, unknown>;
-    if (
-      needsExplicitSelection &&
-      typeof providerPlayer.changeToMediaAtIndex !== "function" &&
-      typeof instanceRecord.changeToMediaAtIndex !== "function"
-    ) {
-      throw new Error(
-        "Selecting a song in the MusicKit queue is not available in this runtime.",
+        `Queued ${batch.length} of ${requestedTracks.length} songs; the rest load as the queue plays.`,
       );
     }
     clearPlaybackError();
-    setQueue([...tracks], startIndex);
+    let batchStart = split.startIndex;
+    setQueue([...batch], batchStart);
+    // The previous song's position would otherwise show until MusicKit's
+    // first time event, and Previous would read it as past the restart point.
+    setPlaybackPosition(0, (batch[batchStart]?.durationMs ?? 0) / 1000);
     setPlaybackStatus("loading");
     try {
-      // MusicKit rejects the whole queue when any song cannot be resolved,
-      // so unavailable songs are skipped and the rest retried.
-      const { entries, skipped } = await withResolvableTracks(
-        tracks,
-        async (attempt) => {
-          const queue = attempt.map((entry) => entry.track);
-          // `startWith` positions the queue before MusicKit shuffles it, so
-          // the chosen song stays first and the rest are shuffled after it.
-          await instance.setQueue({
-            ...queueOptionsForTracks(queue),
-            startWith: keptStartIndex(attempt, startIndex),
+      // MusicKit's queue starts at the chosen song, so it never prepares a
+      // different item first. A batch with no playable song moves on to the
+      // next one rather than failing a Play that later songs could satisfy.
+      let resolved: Awaited<ReturnType<typeof withResolvableTracks>>;
+      const skippedBefore: Track[] = [];
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          resolved = await withResolvableTracks(batch, async (entries) => {
+            const options = {
+              ...queueOptionsForTracks(entries.map((entry) => entry.track)),
+              startWith: keptStartIndex(entries, batchStart),
+            };
+            try {
+              await instance.setQueue(options);
+            } catch (error) {
+              // One of MusicKit's song lookups can fail with an empty or
+              // HTML body (Apple throttling); try once more.
+              if (!isTransientLookupFailure(error) || !request.current()) {
+                throw error;
+              }
+              log(`Queue setup failed once; retrying: ${errorMessage(error)}`);
+              await delay(SET_QUEUE_RETRY_DELAY_MS);
+              // A newer Play during the pause owns MusicKit's queue now.
+              if (!request.current()) throw error;
+              await instance.setQueue(options);
+            }
           });
-        },
-      );
-      step(`setQueue (${tracks.length} songs)`);
-      const queue = entries.map((entry) => entry.track);
-      const start = keptStartIndex(entries, startIndex);
+          break;
+        } catch (error) {
+          const unavailable =
+            error instanceof Error && error.message === NONE_AVAILABLE_MESSAGE;
+          if (
+            !unavailable ||
+            rest.length === 0 ||
+            attempt >= MAX_UNAVAILABLE_BATCHES ||
+            !request.current()
+          ) {
+            throw error;
+          }
+          skippedBefore.push(...batch);
+          batch = rest.slice(0, FIRST_BATCH_LENGTH);
+          rest = rest.slice(FIRST_BATCH_LENGTH);
+          batchStart = 0;
+          if (request.current()) setQueue([...batch], 0);
+        }
+      }
+      step(`setQueue (${batch.length} songs)`);
+      const queue = resolved.entries.map((entry) => entry.track);
+      const start = keptStartIndex(resolved.entries, batchStart);
+      const skipped = [...skippedBefore, ...resolved.skipped];
       if (skipped.length) {
         log(`Skipped ${skipped.length} unavailable songs.`);
         if (request.current()) {
@@ -358,26 +405,36 @@ export function createPlayback(context: ControllerContext) {
           if (message) reportActionError(new Error(message));
         }
       }
-      if (needsExplicitSelection || skipped.length) {
-        const index = providerStartIndex(instance, queue, start);
-        if (index !== undefined && request.current()) {
-          const selected = await changeToMediaAtIndex(instance, index);
-          if (!selected) {
-            throw new Error(
-              "Selecting a song in the MusicKit queue is not available in this runtime.",
-            );
-          }
-          step("select");
+      if (request.current()) {
+        startHistory = split.history;
+        historyAnchor = queue[start];
+      }
+      // Normally undefined: MusicKit already sits on the chosen song. Kept
+      // as a safety net for a runtime that reorders or drops items, and shows
+      // as a "select" step in the timing log when it is needed.
+      const index = providerStartIndex(instance, queue, start);
+      if (index !== undefined && request.current()) {
+        const selected = await changeToMediaAtIndex(instance, index);
+        if (!selected) {
+          throw new Error(
+            "Selecting a song in the MusicKit queue is not available in this runtime.",
+          );
         }
+        step("select");
       }
       // The rest of the playlist is still recorded below for a paused queue.
       await startAudio(instance, request);
       step("play()");
       if (generation === restGeneration) setRest(rest, queue.at(-1));
       logWhenAudible(request, startedAt, steps);
+      // Identifies this Play's queue for later pages (`appendContinuation`);
+      // undefined once a newer Play replaced it.
+      return request.current() && generation === restGeneration
+        ? generation
+        : undefined;
     } catch (error) {
       // A superseded or signed-out play reports nothing.
-      if (!request.current()) return;
+      if (!request.current()) return undefined;
       reportPlayFailure("Play failed", error);
       throw error;
     }
@@ -531,12 +588,31 @@ export function createPlayback(context: ControllerContext) {
       });
   };
 
+  /**
+   * Appends songs that finished loading after their Play started (the later
+   * pages of a playlist). `token` is `continuationToken()` from right after
+   * that Play; a newer queue makes it stale and the songs are dropped.
+   */
+  const appendContinuation = (
+    token: number,
+    tracks: readonly Track[],
+  ): void => {
+    if (token !== restGeneration || tracks.length === 0) return;
+    const anchor = restAnchor ?? getState().playback.queue.at(-1);
+    if (!anchor) return;
+    setRest([...queueRest, ...tracks], anchor);
+    maybeRefillQueue();
+  };
+
   return {
     applyPlaybackVolume,
     syncPlaybackModes,
     playTracks,
     maybeRefillQueue,
     clearContinuation,
+    appendContinuation,
+    /** Identifies the current queue for `appendContinuation`. */
+    continuationToken: (): number => restGeneration,
 
     async playStation(station: Station): Promise<void> {
       const url = station.url?.trim();
@@ -751,9 +827,25 @@ export function createPlayback(context: ControllerContext) {
     async previous(): Promise<void> {
       try {
         // A restored queue has no MusicKit queue to step back in yet.
-        const { pendingRestore, queue, queueIndex } = getState().playback;
+        const { pendingRestore, queue, queueIndex, positionSeconds } =
+          getState().playback;
         if (pendingRestore && queue.length > 0) {
           await playTracks(queue, Math.max(0, queueIndex - 1));
+          return;
+        }
+        // On the song a Play started at, step back into the songs before
+        // it. Past the first seconds, Previous restarts the song instead.
+        const onStartSong =
+          queueIndex === 0 &&
+          positionSeconds < RESTART_THRESHOLD_SECONDS &&
+          queue[0] !== undefined &&
+          isSameTrack(queue[0], historyAnchor);
+        if (onStartSong && startHistory.length > 0) {
+          const history = startHistory;
+          await playTracks(
+            [...history, ...queue, ...queueRest],
+            history.length - 1,
+          );
           return;
         }
         await skipToPrevious(requireMusic());

@@ -25,6 +25,7 @@ import { IconButton } from "./IconButton.tsx";
 import { SleepTimerButton } from "./SleepTimerButton.tsx";
 import { reportActionError } from "./action-errors.ts";
 import { PlaybackProgress, TransportControls } from "./TransportControls.tsx";
+import { displayArtistLinks } from "./artist-links.ts";
 
 export function playerErrorLabel(code: AppErrorCode): string {
   switch (code) {
@@ -129,6 +130,11 @@ export function PlayerBar(): JSX.Element {
           artists: current?.artistRefs ?? [],
         };
 
+  const artistLinks = displayArtistLinks(
+    navigation.artists,
+    current?.artistName,
+  );
+
   const navigateTo = (
     kind: "album" | "artist",
     ref: NonNullable<TrackNavigation["album"]>,
@@ -195,8 +201,8 @@ export function PlayerBar(): JSX.Element {
             )}
           </strong>
           <div className="player-track-links">
-            {navigation.artists.length ? (
-              navigation.artists.map((artist, index) => (
+            {artistLinks.length ? (
+              artistLinks.map((artist, index) => (
                 <span
                   className="player-track-link-group"
                   key={`${artist.source}:${artist.id}`}
@@ -206,14 +212,11 @@ export function PlayerBar(): JSX.Element {
                     type="button"
                     data-player-navigation="artist"
                     data-player-navigation-id={artist.id}
-                    aria-label={`Go to artist: ${artist.name ?? `Artist ${index + 1}`}`}
+                    aria-label={`Go to artist: ${artist.name ?? current?.artistName ?? "Artist"}`}
                     title={artist.name ?? current?.artistName}
                     onClick={() => navigateTo("artist", artist)}
                   >
-                    {artist.name ??
-                      (navigation.artists.length === 1
-                        ? current?.artistName
-                        : `Artist ${index + 1}`)}
+                    {artist.name ?? current?.artistName ?? "Artist"}
                   </button>
                 </span>
               ))

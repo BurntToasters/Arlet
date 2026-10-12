@@ -65,8 +65,9 @@ async function playRow(page, row, unavailable) {
 
 export async function runUnavailable({ page, check }) {
   try {
-    // One removed song: the playlist plays from the chosen duplicate anyway.
-    await playRow(page, 3, { unresolvedIds: ["song-c"] });
+    // One removed song after the chosen one: the chosen duplicate still
+    // plays, and MusicKit's queue starts at it.
+    await playRow(page, 3, { unresolvedIds: ["song-e"] });
     const skippedOne = await waitFor(
       page,
       `${FIXTURE}.snapshot().transitions.some((item) => item.type === "play")`,
@@ -79,8 +80,8 @@ export async function runUnavailable({ page, check }) {
       skippedOne &&
         snap.transitions.some((item) => item.type === "setQueueUnresolved") &&
         JSON.stringify(queued.at(-1)?.ids) ===
-          JSON.stringify(PLAYLIST_IDS.filter((id) => id !== "song-c")) &&
-        snap.queue.index === 2 &&
+          JSON.stringify(["song-duplicate", "song-f"]) &&
+        snap.queue.index === 0 &&
         (await page.evaluate(`return ${TITLE};`)) === "Duplicate Occurrence" &&
         toastOne.includes("Skipped 1 song"),
       { queued: queued.at(-1), index: snap.queue.index, toastOne },
@@ -95,14 +96,15 @@ export async function runUnavailable({ page, check }) {
     snap = await snapshot(page);
     check(
       "an unavailable chosen song starts the next available song",
-      snap.queue.index === 2 &&
+      snap.queue.index === 0 &&
         snap.queue.activeId === "song-duplicate" &&
         (await page.evaluate(`return ${TITLE};`)) === "Duplicate Occurrence",
       { index: snap.queue.index, activeId: snap.queue.activeId },
     );
 
-    // An unplayable song MusicKit drops silently must not shift the start.
-    await playRow(page, 3, { unplayableIds: ["song-a"] });
+    // An unplayable song MusicKit drops silently must not shift the start
+    // or cause a re-select.
+    await playRow(page, 3, { unplayableIds: ["song-e"] });
     await waitFor(
       page,
       `${FIXTURE}.snapshot().transitions.some((item) => item.type === "play")`,
@@ -110,12 +112,10 @@ export async function runUnavailable({ page, check }) {
     snap = await snapshot(page);
     check(
       "a silently dropped song does not shift the chosen start",
-      snap.queue.items.length === 5 &&
-        snap.queue.index === 2 &&
+      snap.queue.items.length === 2 &&
+        snap.queue.index === 0 &&
         snap.queue.activeId === "song-duplicate" &&
-        snap.transitions.some(
-          (item) => item.type === "selectIndex" && item.index === 2,
-        ),
+        !snap.transitions.some((item) => item.type === "selectIndex"),
       {
         ids: snap.queue.items.map((item) => item.id),
         index: snap.queue.index,
@@ -286,11 +286,33 @@ export async function runUnavailable({ page, check }) {
       15_000,
     );
 
-    await page.evaluate(`
+    // Later pages answer slowly: Play must not wait for them. Earlier steps
+    // already played songs and loaded every page, so compare against counts
+    // and times taken at the click.
+    const atClick = await page.evaluate(`
+      ${FIXTURE}.configure({ delayPaths: ["playlist-big/tracks?offset"], delayMs: 2500 });
+      const plays = ${FIXTURE}.snapshot().transitions.filter((item) => item.type === "play").length;
+      const clickedAt = Date.now();
       [...document.querySelectorAll(".library-detail-actions button")]
         .find((node) => node.textContent.trim() === "Play all")?.click();
-      return true;
+      return { plays, clickedAt };
     `);
+    const playedEarly = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().transitions.filter((item) => item.type === "play").length > ${atClick.plays}`,
+      2_000,
+    );
+    const laterPagesAtPlay = (await snapshot(page)).requests.filter(
+      (request) =>
+        String(request.path).includes("playlist-big/tracks?offset") &&
+        request.startedAt >= atClick.clickedAt &&
+        request.completedAt,
+    ).length;
+    check(
+      "Play on a large playlist starts before its later pages finish loading",
+      playedEarly && laterPagesAtPlay === 0,
+      { playedEarly, laterPagesAtPlay },
+    );
     await waitFor(
       page,
       `${FIXTURE}.snapshot().transitions.some((item) => item.type === "play")`,
@@ -300,8 +322,8 @@ export async function runUnavailable({ page, check }) {
     queued = snap.transitions.filter((item) => item.type === "setQueue");
     const capped = queued.at(-1)?.ids ?? [];
     check(
-      "a huge playlist queues at most 500 songs and skips unstreamable ones",
-      capped.length === 499 &&
+      "a huge playlist starts with one lookup's worth of songs and skips unstreamable ones",
+      capped.length === 15 &&
         capped[0] === "big-0000" &&
         !capped.includes("big-0001") &&
         snap.queue.activeId === "big-0000" &&
@@ -313,23 +335,31 @@ export async function runUnavailable({ page, check }) {
       },
     );
 
-    // Near the end of the capped queue the next songs are appended once.
+    // The first batch has 15 upcoming songs, under the refill threshold, so
+    // the next 100 are appended once audio starts; later pages join the rest.
     await page.evaluate(`
       if (!document.querySelector(".queue-drawer")) {
         document.querySelector('button[aria-label="Toggle Playing Next"]')?.click();
       }
       return true;
     `);
+    const firstRefill = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().transitions.some((item) => item.type === "playLater")`,
+      15_000,
+    );
     const restShown = await waitFor(
       page,
-      `document.querySelector(".queue-rest-note")?.textContent?.includes("700 more songs")`,
+      `document.querySelector(".queue-rest-note")?.textContent?.includes("1,084 more songs")`,
+      20_000,
     );
+    // Near the end of the queue (44 upcoming), the next songs follow once.
     await page.evaluate(
-      "await window.MusicKit.getInstance().changeToMediaAtIndex(450); return true;",
+      "await window.MusicKit.getInstance().changeToMediaAtIndex(70); return true;",
     );
     const refilled = await waitFor(
       page,
-      `${FIXTURE}.snapshot().transitions.some((item) => item.type === "playLater")`,
+      `${FIXTURE}.snapshot().transitions.filter((item) => item.type === "playLater").length >= 2`,
       15_000,
     );
     await sleep(800);
@@ -342,13 +372,15 @@ export async function runUnavailable({ page, check }) {
     );
     check(
       "a capped queue appends the next songs once as it runs low",
-      restShown &&
+      firstRefill &&
+        restShown &&
         refilled &&
-        refills.length === 1 &&
-        refills[0].ids.length === 200 &&
-        refills[0].ids[0] === "big-0500" &&
-        snap.queue.activeId === "big-0451" &&
-        String(restAfter).includes("500 more songs"),
+        refills.length === 2 &&
+        refills[0].ids.length === 100 &&
+        refills[0].ids[0] === "big-0016" &&
+        refills[1].ids[0] === "big-0116" &&
+        snap.queue.activeId === "big-0071" &&
+        String(restAfter).includes("984 more songs"),
       {
         restShown,
         refills: refills.map((item) => ({
@@ -371,6 +403,35 @@ export async function runUnavailable({ page, check }) {
     );
     check("Clear also drops the songs still waiting to be queued", restCleared);
 
+    // Every song in the first batch unavailable: the next batch plays
+    // instead of the whole Play failing.
+    await fixtureCall(page, "reset");
+    await fixtureCall(page, "configure", [
+      {
+        unresolvedIds: Array.from(
+          { length: 16 },
+          (_, index) => `big-${String(index).padStart(4, "0")}`,
+        ),
+      },
+    ]);
+    await dismissToasts(page);
+    await page.evaluate(`
+      [...document.querySelectorAll(".library-detail-actions button")]
+        .find((node) => node.textContent.trim() === "Play all")?.click();
+      return true;
+    `);
+    const nextBatchPlayed = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().transitions.some((item) => item.type === "play")`,
+      20_000,
+    );
+    snap = await snapshot(page);
+    check(
+      "a first batch with no available song falls through to the next batch",
+      nextBatchPlayed && snap.queue.activeId === "big-0016",
+      { activeId: snap.queue.activeId, toast: await toastText(page) },
+    );
+
     await fixtureCall(page, "reset");
     await page.evaluate(`
       [...document.querySelectorAll(".library-detail-actions button")]
@@ -391,11 +452,38 @@ export async function runUnavailable({ page, check }) {
       .filter((index) => index >= 600).length;
     check(
       "shuffle of a huge playlist samples the whole playlist within the cap",
-      shuffledIds.length >= 499 &&
-        shuffledIds.length <= 500 &&
+      shuffledIds.length >= 15 &&
+        shuffledIds.length <= 16 &&
         farIndexes > 0 &&
         snap.modes.shuffle === true,
       { length: shuffledIds.length, farIndexes, shuffle: snap.modes.shuffle },
+    );
+
+    // With shuffle on, clicking a row loads the whole playlist first, so the
+    // shuffle can draw from every song.
+    const rowClick = await page.evaluate(`
+      const plays = ${FIXTURE}.snapshot().transitions.filter((item) => item.type === "play").length;
+      document.querySelectorAll(".library-track-row")[0]?.click();
+      return { plays };
+    `);
+    await waitFor(
+      page,
+      `${FIXTURE}.snapshot().transitions.filter((item) => item.type === "play").length > ${rowClick.plays}`,
+      20_000,
+    );
+    snap = await snapshot(page);
+    // Loaded only up to the clicked row, the sample would hold nothing past
+    // the first page (300 songs).
+    const rowShuffleIds =
+      snap.transitions.filter((item) => item.type === "setQueue").at(-1)?.ids ??
+      [];
+    const beyondFirstPage = rowShuffleIds.filter(
+      (id) => Number(id.slice(4)) >= 300,
+    ).length;
+    check(
+      "with shuffle on, a row click loads every page before playing",
+      beyondFirstPage > 0 && snap.modes.shuffle === true,
+      { beyondFirstPage, ids: rowShuffleIds, shuffle: snap.modes.shuffle },
     );
 
     // A queue replaced outside Arlet drops the previous playlist's rest.

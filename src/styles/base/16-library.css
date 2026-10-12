@@ -273,6 +273,14 @@
   flex: 0 0 auto;
 }
 
+/* A fixed size: `.artwork-hero` is a percentage of its parent, and this
+   parent is sized by its content, so a large source image (Apple's generated
+   playlist covers) widened it and pushed the title off the header. */
+.library-detail-art .artwork-hero {
+  width: 150px;
+  height: 150px;
+}
+
 .library-detail-icon {
   display: flex;
   width: 126px;
@@ -285,6 +293,7 @@
 }
 
 .library-detail-copy {
+  flex: 1 1 auto;
   min-width: 0;
   padding-bottom: 2px;
 }

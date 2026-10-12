@@ -133,6 +133,56 @@ export async function runLayout({ page, check }) {
       { pinned, pinShown, pinBox },
     );
 
+    // The pin saves its name, so the sidebar can show it before the playlist
+    // list loads (it is not in the fixture's list at all).
+    const savedPinName = await (async () => {
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
+        const name = await page.evaluate(`
+          const raw = await window.__TAURI_INTERNALS__.invoke("load_pins");
+          const pins = JSON.parse(raw || "{}").pins ?? [];
+          return pins.find((pin) => pin.id === "${BIG_PLAYLIST}")?.name ?? null;`);
+        if (name) return name;
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+      return null;
+    })();
+    check(
+      "a pinned playlist saves its name with the pin",
+      String(savedPinName).startsWith("Big Playlist"),
+      { savedPinName },
+    );
+
+    // A large cover image must not push the title and buttons out of the
+    // header. The fixture's artwork never loads, so put a large image in.
+    const hero = await page.evaluate(`
+      const art = document.querySelector(".library-detail-art .artwork-hero");
+      if (!art) return null;
+      const svg = "<svg xmlns='http://www.w3.org/2000/svg' width='1200' height='1200'><rect width='1200' height='1200' fill='%23c44'/></svg>";
+      art.replaceChildren(Object.assign(document.createElement("img"), { src: "data:image/svg+xml," + svg.replace(/#/g, "%23"), alt: "" }));
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const box = (selector) => document.querySelector(selector)?.getBoundingClientRect();
+      const heroBox = box(".library-detail-hero");
+      const copy = box(".library-detail-copy");
+      const actions = box(".library-detail-actions");
+      const artBox = box(".library-detail-art");
+      return heroBox && copy && actions && artBox ? {
+        heroRight: Math.round(heroBox.right),
+        copyLeft: Math.round(copy.left),
+        copyRight: Math.round(copy.right),
+        actionsRight: Math.round(actions.right),
+        artWidth: Math.round(artBox.width),
+      } : null;
+    `);
+    check(
+      "a large playlist cover keeps the title and buttons inside the header",
+      Boolean(hero) &&
+        hero.artWidth <= 200 &&
+        hero.copyRight <= hero.heroRight &&
+        hero.actionsRight <= hero.heroRight,
+      hero,
+    );
+
     // The sidebar and the page end above the player bar, not under it.
     const bounds = await page.evaluate(`
       const bar = document.querySelector(".player-bar")?.getBoundingClientRect();

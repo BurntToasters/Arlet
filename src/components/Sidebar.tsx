@@ -193,9 +193,10 @@ function resolvePinDisplay(
     const source = (item as { source?: unknown }).source;
     if (source !== undefined && source !== pin.source) continue;
     const name = displayNameOf(item);
-    if (name) return { name, artworkUrl: artworkUrlOf(item) };
+    if (name) return { name, artworkUrl: artworkUrlOf(item) ?? pin.artworkUrl };
   }
-  return {};
+  // Saved with the pin, so a playlist outside the loaded list keeps its name.
+  return pin.name ? { name: pin.name, artworkUrl: pin.artworkUrl } : {};
 }
 
 function renderPinIcon(artworkUrl?: string): JSX.Element {

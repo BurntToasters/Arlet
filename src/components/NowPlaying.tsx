@@ -11,6 +11,7 @@ import { setUiState } from "../state.ts";
 import { Artwork } from "./Artwork.tsx";
 import { reportActionError } from "./action-errors.ts";
 import { PlaybackProgress, TransportControls } from "./TransportControls.tsx";
+import { displayArtistLinks } from "./artist-links.ts";
 
 const FOCUSABLE =
   "button:not(:disabled), input:not(:disabled), [href], [tabindex]:not([tabindex='-1'])";
@@ -91,7 +92,10 @@ function NowPlayingDialog(): JSX.Element {
   };
 
   const album = current?.albumRef;
-  const artists = current?.artistRefs ?? [];
+  const artists = displayArtistLinks(
+    current?.artistRefs ?? [],
+    current?.artistName,
+  );
 
   return (
     <div
@@ -163,7 +167,7 @@ function NowPlayingDialog(): JSX.Element {
                       ) : null}
                       <button
                         type="button"
-                        aria-label={`Go to artist: ${artist.name ?? `Artist ${index + 1}`}`}
+                        aria-label={`Go to artist: ${artist.name ?? current?.artistName ?? "Artist"}`}
                         onClick={() => navigateTo("artist", artist)}
                       >
                         {artist.name ?? current?.artistName}
