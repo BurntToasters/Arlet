@@ -72,28 +72,30 @@ fn validate_pins_json(json: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn read_valid_pins(path: &std::path::Path) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .filter(|content| validate_pins_json(content).is_ok())
+}
+
+/// A corrupt or truncated file falls back to the last valid backup, matching
+/// settings and session restore.
 fn read_pins_text(path: &std::path::Path) -> Result<String, String> {
     match std::fs::read_to_string(path) {
-        Ok(content) => {
-            if content.len() > MAX_PINS_BYTES {
-                return Err(format!(
-                    "Pins file too large ({} bytes, max {MAX_PINS_BYTES})",
-                    content.len()
-                ));
-            }
-            validate_pins_json(&content)?;
-            Ok(content)
-        }
+        Ok(content) => match validate_pins_json(&content) {
+            Ok(()) => Ok(content),
+            Err(error) => read_valid_pins(&backup_path(path)).ok_or(error),
+        },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok("[]".to_string()),
-        Err(e) => Err(e.to_string()),
+        Err(e) => read_valid_pins(&backup_path(path)).ok_or_else(|| e.to_string()),
     }
 }
 
 fn write_pins_text(path: &std::path::Path, json: &str) -> Result<(), String> {
     validate_pins_json(json)?;
-    let backup = backup_path(path);
-    if path.exists() {
-        let _ = std::fs::copy(path, &backup);
+    // Only a valid current file may replace the backup.
+    if read_valid_pins(path).is_some() {
+        let _ = std::fs::copy(path, backup_path(path));
     }
     crate::settings::atomic_write_text(path, json)
 }
@@ -108,19 +110,19 @@ fn remove_pins_files(path: &std::path::Path) {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn load_pins(app: tauri::AppHandle) -> Result<String, String> {
     let _guard = lock_pins()?;
     read_pins_text(&pins_path(&app)?)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_pins(app: tauri::AppHandle, json: String) -> Result<(), String> {
     let _guard = lock_pins()?;
     write_pins_text(&pins_path(&app)?, &json)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_pins(app: tauri::AppHandle) -> Result<(), String> {
     let _guard = lock_pins()?;
     remove_pins_files(&pins_path(&app)?);

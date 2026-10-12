@@ -211,6 +211,26 @@ export async function runDesktop({ page, check }) {
     // Minutes timer: fires and pauses.
     await startPlayback(page, ["song-a", "song-c"]);
     const beforeFire = await pauseCount(page);
+    // Inline styles need explicit units since Preact 11; a bare number is
+    // dropped and the menu opens away from its button.
+    const placement = await page.evaluate(`
+      document.querySelector('button[aria-label="Sleep timer"]')?.click();
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const button = document.querySelector('button[aria-label="Sleep timer"]')?.getBoundingClientRect();
+      const menu = document.querySelector('.sleep-timer-menu')?.getBoundingClientRect();
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      return button && menu
+        ? { buttonLeft: button.left, buttonTop: button.top, menuLeft: menu.left, menuBottom: menu.bottom }
+        : null;`);
+    check(
+      "sleep timer menu opens just above its button",
+      placement !== null &&
+        Math.abs(placement.menuLeft - placement.buttonLeft) <= 2 &&
+        placement.menuBottom <= placement.buttonTop &&
+        placement.buttonTop - placement.menuBottom <= 16,
+      placement,
+    );
+    await waitFor(page, "!document.querySelector('.sleep-timer-menu')");
     const picked = await chooseSleepOption(page, "15 minutes");
     const armed = await sleepLabelShown(page, "15 min");
     const paused = await waitFor(
@@ -313,13 +333,15 @@ export async function runDesktop({ page, check }) {
       events.emit("windows-media-seek", 999);
       events.emit("windows-media-seek", NaN);
       events.emit("windows-media-seek", -5);
+      // Sentinel: handled after the bad requests, so once it lands any
+      // seek they caused would already be recorded.
+      events.emit("windows-media-seek", 10);
       return true;`);
     const seekApplied = await waitFor(
       page,
-      "window.__ARLET_E2E_MUSIC__.snapshot().transitions.some((t) => t.type === 'seekToTime' && t.seconds === 180)",
+      "window.__ARLET_E2E_MUSIC__.snapshot().transitions.some((t) => t.type === 'seekToTime' && t.seconds === 10)",
       3000,
     );
-    await new Promise((resolve) => setTimeout(resolve, 300));
     const seeks = await page.evaluate(
       "return window.__ARLET_E2E_MUSIC__.snapshot().transitions.filter((t) => t.type === 'seekToTime').map((t) => t.seconds);",
     );
@@ -327,8 +349,9 @@ export async function runDesktop({ page, check }) {
       "system seek clamps to the duration and drops NaN or negative requests",
       emitted &&
         seekApplied &&
-        seeks.length === seeksBefore + 1 &&
-        seeks.at(-1) === 180,
+        seeks.length === seeksBefore + 2 &&
+        seeks.at(-2) === 180 &&
+        seeks.at(-1) === 10,
       {
         emitted,
         seekApplied,
@@ -359,11 +382,17 @@ export async function runDesktop({ page, check }) {
       3000,
     );
     await emitNative(page, "windows-media-repeat", "loop");
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    // Sentinel: the shuffle event is handled after "loop", so once it lands
+    // the unknown repeat value has been processed too.
+    await emitNative(page, "windows-media-shuffle", false);
+    await waitFor(
+      page,
+      "window.__ARLET_E2E_MUSIC__.snapshot().modes.shuffle === false",
+      3000,
+    );
     const unknownRepeatIgnored = await page.evaluate(
       "return window.__ARLET_E2E_MUSIC__.snapshot().modes.repeat === 2;",
     );
-    await emitNative(page, "windows-media-shuffle", false);
     await emitNative(page, "windows-media-repeat", "off");
     check(
       "system shuffle and repeat requests reach MusicKit",

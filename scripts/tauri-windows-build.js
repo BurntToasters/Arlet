@@ -91,11 +91,31 @@ if (!/^[a-z0-9,-]+$/i.test(bundles)) {
   throw new Error(`Invalid --bundles value "${bundles}".`);
 }
 
+// .env secrets the build never uses. Every build.rs and proc-macro in the
+// dependency tree can read the environment, so these stay out of it.
+const SECRETS_NOT_FOR_BUILD = [
+  "GPG_PASSPHRASE",
+  "GPG_KEY_ID",
+  "GPG_RELEASE_FINGERPRINT",
+  "MUSICKIT_TEAM_ID",
+  "MUSICKIT_KEY_ID",
+  "MUSICKIT_P8_PATH",
+  "GH_TOKEN",
+  "GITHUB_TOKEN",
+];
+
+function buildEnv() {
+  const env = { ...process.env };
+  for (const name of SECRETS_NOT_FOR_BUILD) delete env[name];
+  return env;
+}
+
 function run(cmd, cmdArgs, options = {}) {
   console.log(`> ${cmd} ${cmdArgs.join(" ")}`);
   const result = spawnSync(cmd, cmdArgs, {
     cwd: root,
     stdio: "inherit",
+    env: buildEnv(),
     // Node refuses to spawn .cmd shims without a shell (CVE-2024-27980).
     shell: process.platform === "win32" && /\.cmd$/i.test(cmd),
     ...options,

@@ -94,6 +94,11 @@ export function assertUpdaterTargetArtifact(
   return expected;
 }
 
+/** Only Arlet's own releases; any other GitHub repo is not a valid source. */
+const RELEASE_DOWNLOAD_PATH = "/burnttoasters/arlet/releases/download/";
+// Same limit as the CHANGELOG section the notes come from.
+const MAX_NOTES_BYTES = 64 * 1024;
+
 function isSafeReleaseUrl(value) {
   try {
     const url = new URL(value);
@@ -103,7 +108,7 @@ function isSafeReleaseUrl(value) {
       url.username === "" &&
       url.password === "" &&
       url.hash === "" &&
-      url.pathname.includes("/releases/download/")
+      url.pathname.toLowerCase().startsWith(RELEASE_DOWNLOAD_PATH)
     );
   } catch {
     return false;
@@ -123,6 +128,8 @@ export function validateUpdaterManifest(manifest, label = "manifest") {
   }
   if (!isNonEmptyString(manifest.notes)) {
     errors.push(`${label}: notes must be a non-empty string`);
+  } else if (Buffer.byteLength(manifest.notes, "utf8") > MAX_NOTES_BYTES) {
+    errors.push(`${label}: notes exceed the ${MAX_NOTES_BYTES}-byte limit`);
   }
   if (!isNonEmptyString(manifest.pub_date)) {
     errors.push(`${label}: pub_date must be a non-empty date string`);
@@ -172,7 +179,7 @@ export function validateUpdaterManifest(manifest, label = "manifest") {
       errors.push(`${label}: ${key}.url must be an https URL`);
     }
     if (!isSafeReleaseUrl(entry.url)) {
-      errors.push(`${label}: ${key}.url must point to a GitHub release asset`);
+      errors.push(`${label}: ${key}.url must point to an Arlet release asset`);
     }
     if (isNonEmptyString(entry.url)) {
       try {

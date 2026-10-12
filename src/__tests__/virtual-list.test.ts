@@ -71,7 +71,7 @@ describe("VirtualList", () => {
     expect(rendered()[0]).toBe("song-0");
     const [top, bottom] = spacers();
     expect(top).toBe("0px");
-    expect(Number.parseInt(bottom, 10) + rendered().length * ROW).toBe(
+    expect(Number.parseInt(bottom ?? "", 10) + rendered().length * ROW).toBe(
       5000 * ROW,
     );
   });
@@ -89,9 +89,9 @@ describe("VirtualList", () => {
     const first = Number(rows[0]?.replace("song-", ""));
     expect(top).toBe(`${first * ROW}px`);
     expect(
-      Number.parseInt(top, 10) +
+      Number.parseInt(top ?? "", 10) +
         rows.length * ROW +
-        Number.parseInt(bottom, 10),
+        Number.parseInt(bottom ?? "", 10),
     ).toBe(5000 * ROW);
   });
 });

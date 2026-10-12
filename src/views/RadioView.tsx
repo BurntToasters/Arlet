@@ -5,7 +5,7 @@ import {
   Radio as RadioIcon,
   RefreshCw,
 } from "lucide-preact";
-import { useEffect } from "preact/hooks";
+import { useEffect, useRef } from "preact/hooks";
 import type { JSX } from "preact";
 import { useAppController, useAppState } from "../app/context.tsx";
 import { Artwork } from "../components/Artwork.tsx";
@@ -106,11 +106,18 @@ export function RadioView(): JSX.Element {
     radio.live.items.length > 0 ||
     radio.recent.items.length > 0;
 
+  // Also reloads once a sign-in finishes, which resets Radio to idle. The
+  // in-flight state is read from a ref: as an effect trigger it would retry a
+  // failing load forever.
+  const idle = radio.status === "idle";
+  const pending = state.auth.pending;
+  const loadingRef = useRef(loading);
+  loadingRef.current = loading;
   useEffect(() => {
-    if (authorized) {
+    if (authorized && !pending && !loadingRef.current) {
       void Promise.resolve(controller.loadRadio?.()).catch(() => undefined);
     }
-  }, [authorized, controller]);
+  }, [authorized, pending, idle, controller]);
 
   if (!authorized) {
     return (

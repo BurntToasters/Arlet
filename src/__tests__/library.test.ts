@@ -312,7 +312,7 @@ describe("AppleMusicLibraryClient", () => {
       { id: "video-1", type: "music-videos" },
       { id: "library-video-1", type: "library-music-videos" },
     ]);
-    const createOptions = request.mock.calls[0][2] as {
+    const createOptions = request.mock.calls[0]?.[2] as {
       method: string;
       body: string;
     };
@@ -325,7 +325,7 @@ describe("AppleMusicLibraryClient", () => {
         },
       },
     });
-    const folderOptions = request.mock.calls[1][2] as {
+    const folderOptions = request.mock.calls[1]?.[2] as {
       method: string;
       body: string;
     };
@@ -338,7 +338,7 @@ describe("AppleMusicLibraryClient", () => {
         },
       },
     });
-    const appendOptions = request.mock.calls[2][2] as {
+    const appendOptions = request.mock.calls[2]?.[2] as {
       method: string;
       body: string;
     };

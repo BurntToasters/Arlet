@@ -74,7 +74,16 @@ function currentReleaseIdentity(root = defaultRoot) {
   );
   let tauriCli = "unknown";
   try {
-    tauriCli = command("npx", ["tauri", "--version"], root);
+    // `npx` is a .cmd shim on Windows, which execFile cannot start without
+    // a shell; run the CLI's own entry point with this Node instead.
+    tauriCli = command(
+      process.execPath,
+      [
+        path.join(root, "node_modules", "@tauri-apps", "cli", "tauri.js"),
+        "--version",
+      ],
+      root,
+    );
   } catch {
     tauriCli = "unknown";
   }

@@ -172,8 +172,8 @@ export class MemoryLibraryCache implements LibraryCache {
           .map(([, value]) => value.page),
       );
     }
-    if (values.length === 0) return undefined;
-    const last = values[values.length - 1];
+    const last = values.at(-1);
+    if (!last) return undefined;
     return {
       items: values.flatMap((value) => value.items as T[]),
       next: last.next,

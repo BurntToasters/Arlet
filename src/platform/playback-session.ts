@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
+import { createSerialQueue } from "./serial.ts";
 import type { InvokeFunction } from "./settings.ts";
+
+const writeQueue = createSerialQueue();
 
 export type { InvokeFunction };
 
@@ -13,11 +16,11 @@ export async function savePlaybackSessionPayload(
   json: string,
   invokeFn: InvokeFunction = invoke as InvokeFunction,
 ): Promise<void> {
-  await invokeFn("save_playback_session", { json });
+  await writeQueue(() => invokeFn("save_playback_session", { json }));
 }
 
 export async function deletePlaybackSessionPayload(
   invokeFn: InvokeFunction = invoke as InvokeFunction,
 ): Promise<void> {
-  await invokeFn("delete_playback_session");
+  await writeQueue(() => invokeFn("delete_playback_session"));
 }

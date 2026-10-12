@@ -14,7 +14,10 @@ import { spawnSync } from "node:child_process";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { REQUIRED_MANIFEST_NAMES } from "./generate-updater-manifests.js";
+import {
+  REQUIRED_BETA_MANIFEST_NAMES,
+  REQUIRED_MANIFEST_NAMES,
+} from "./generate-updater-manifests.js";
 import {
   isSafeArtifactName,
   verifyChecksums,
@@ -110,7 +113,12 @@ async function downloadToFile(
     descriptor = fs.openSync(destination, "wx");
     created = true;
     await pipeline(
-      Readable.fromWeb(response.body),
+      // fetch's DOM ReadableStream type differs from node:stream/web's.
+      Readable.fromWeb(
+        /** @type {import("node:stream/web").ReadableStream} */ (
+          /** @type {unknown} */ (response.body)
+        ),
+      ),
       fs.createWriteStream(null, { fd: descriptor, autoClose: true }),
     );
     descriptor = undefined;
@@ -339,6 +347,12 @@ export async function verifyPublishedChecksums(manifestBodies) {
       ...[...group.artifacts.keys()].map((name) => `${name}.sig`),
       ...REQUIRED_MANIFEST_NAMES,
     ];
+    // Beta syncs replace a stable release's beta manifests after signing,
+    // so their signed checksums only held at publish time.
+    const releaseTag = releaseKey.split("/").at(-1) ?? "";
+    const mutable = releaseTag.includes("-beta.")
+      ? []
+      : REQUIRED_BETA_MANIFEST_NAMES;
     const temporaryDirectory = fs.mkdtempSync(
       path.join(os.tmpdir(), "arlet-checksum-verify-"),
     );
@@ -358,6 +372,7 @@ export async function verifyPublishedChecksums(manifestBodies) {
         downloaded.set(sidecarName, sidecarPath);
       }
       for (const name of REQUIRED_MANIFEST_NAMES) {
+        if (mutable.includes(name)) continue;
         const manifestPath = path.join(temporaryDirectory, name);
         await downloadToFile(
           releaseAssetUrlFromRecord(group.representative, name),
@@ -382,6 +397,7 @@ export async function verifyPublishedChecksums(manifestBodies) {
         fs.readFileSync(sumsPath, "utf8"),
         downloaded,
         expectedNames,
+        { mutable },
       );
       verifyDetachedGpgSignature(sumsSignaturePath, sumsPath, {
         rootDir: root,

@@ -269,6 +269,12 @@ function sha256File(filePath) {
  * line it would be readable through the process list. Without one, gpg-agent
  * handles the key.
  */
+/**
+ * @param {string} filePath
+ * @param {string} keyId
+ * @param {string} [passphrase]
+ * @returns {{ args: string[], options: import("node:child_process").SpawnSyncOptions }}
+ */
 export function gpgSignInvocation(filePath, keyId, passphrase) {
   const args = [
     "--batch",
@@ -610,6 +616,17 @@ async function uploadAll(release, files) {
   }
 }
 
+/**
+ * @param {*} release
+ * @param {*} files
+ * @param {{
+ *   assertStillHeld?: () => unknown,
+ *   listAssets?: (...args: any[]) => any,
+ *   upload?: (...args: any[]) => any,
+ *   rename?: (...args: any[]) => any,
+ *   remove?: (...args: any[]) => any,
+ * }} [hooks]
+ */
 export async function replaceReleaseAssetsTransactionally(
   release,
   files,

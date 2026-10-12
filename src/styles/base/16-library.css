@@ -129,6 +129,13 @@
   gap: 12px;
 }
 
+/* A large library loads thousands of cards; the browser skips layout and
+   paint for those off screen. The size hint keeps the scrollbar steady. */
+.library-card-grid > .library-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 240px;
+}
+
 .library-card {
   display: grid;
   min-width: 0;

@@ -11,7 +11,7 @@ import {
 } from "../musickit/library.ts";
 import type { RatingValue, Track } from "../domain/music.ts";
 import { httpStatusOf } from "../musickit/errors.ts";
-import { getState, ratingKey, setRating } from "../state.ts";
+import { clearRatings, getState, ratingKey, setRating } from "../state.ts";
 import {
   safeErrorMessage,
   type ControllerContext,
@@ -66,6 +66,8 @@ export interface Ratings {
   addToLibrary(target: RatingTarget): Promise<void>;
   /** Loads the rating once per now-playing track; a no-op otherwise. */
   syncCurrentTrack(): void;
+  /** Invalidates account-specific state and actions at sign-out or reauth. */
+  reset(): void;
 }
 
 export function createRatings(
@@ -83,6 +85,7 @@ export function createRatings(
   // Responses may write state only for the last explicit load and the playing track.
   let loadKey: string | undefined;
   let playingKey: string | undefined;
+  let accountGeneration = 0;
 
   const request = (): MusicRequest =>
     resolveMusicKitMusicRequest(context.requireMusic()) as MusicRequest;
@@ -91,16 +94,19 @@ export function createRatings(
     target: RatingTarget,
     type: RatingResourceType,
     key: string,
+    accountAtStart = accountGeneration,
   ): Promise<void> => {
-    const generation = generations.get(key) ?? 0;
+    const ratingGeneration = generations.get(key) ?? 0;
+    const isCurrent = (): boolean =>
+      accountGeneration === accountAtStart &&
+      (loadKey === key || playingKey === key);
     try {
       const values = await getRatings(request(), type, [target.id]);
-      const isCurrent = loadKey === key || playingKey === key;
       // A newer change, or one still unsettled, owns this key now.
       if (
-        !isCurrent ||
+        !isCurrent() ||
         inFlight.has(key) ||
-        (generations.get(key) ?? 0) !== generation
+        (generations.get(key) ?? 0) !== ratingGeneration
       ) {
         return;
       }
@@ -110,11 +116,10 @@ export function createRatings(
     } catch (error) {
       // Apple answers 404 when the item has no rating.
       if (httpStatusOf(error) === 404) {
-        const isCurrent = loadKey === key || playingKey === key;
         if (
-          isCurrent &&
+          isCurrent() &&
           !inFlight.has(key) &&
-          (generations.get(key) ?? 0) === generation
+          (generations.get(key) ?? 0) === ratingGeneration
         ) {
           settled.set(key, 0);
           setRating(key, 0);
@@ -129,7 +134,7 @@ export function createRatings(
     const type = ratingResourceType(target);
     if (!type) return;
     loadKey = ratingKey(type, target.id);
-    await fetchRating(target, type, loadKey);
+    await fetchRating(target, type, loadKey, accountGeneration);
   };
 
   const syncCurrentTrack = (): void => {
@@ -139,13 +144,16 @@ export function createRatings(
     const key = target && type ? ratingKey(type, target.id) : undefined;
     if (key === playingKey) return;
     playingKey = key;
-    if (target && type && key) void fetchRating(target, type, key);
+    if (target && type && key) {
+      void fetchRating(target, type, key, accountGeneration);
+    }
   };
 
   const rate = async (
     target: RatingTarget,
     value: RatingValue,
   ): Promise<void> => {
+    const accountAtStart = accountGeneration;
     const type = ratingResourceType(target);
     if (!type) {
       reportActionError(new Error("This item cannot be rated."));
@@ -159,30 +167,48 @@ export function createRatings(
     setRating(key, value);
     inFlight.set(key, (inFlight.get(key) ?? 0) + 1);
     const write = (tails.get(key) ?? Promise.resolve()).then(async () => {
+      if (accountGeneration !== accountAtStart) return;
       try {
         if (value === 0) {
           await clearRating(request(), type, target.id);
         } else {
           await putRating(request(), type, target.id, value);
         }
-        settled.set(key, value);
+        if (accountGeneration === accountAtStart) settled.set(key, value);
       } catch (error) {
-        if (generations.get(key) === generation) {
+        if (
+          accountGeneration === accountAtStart &&
+          generations.get(key) === generation
+        ) {
           setRating(key, settled.get(key) ?? 0);
         }
-        context.log(`Rating update failed: ${safeErrorMessage(error)}`);
-        reportActionError(error);
+        if (accountGeneration === accountAtStart) {
+          context.log(`Rating update failed: ${safeErrorMessage(error)}`);
+          reportActionError(error);
+        }
       } finally {
-        const remaining = (inFlight.get(key) ?? 1) - 1;
-        if (remaining > 0) inFlight.set(key, remaining);
-        else inFlight.delete(key);
+        if (accountGeneration === accountAtStart) {
+          const remaining = (inFlight.get(key) ?? 1) - 1;
+          if (remaining > 0) inFlight.set(key, remaining);
+          else {
+            inFlight.delete(key);
+            // The rollback target only matters while a write is in flight.
+            // `generations` stays: it still fences older lookups.
+            settled.delete(key);
+          }
+        }
       }
     });
     tails.set(key, write);
+    // Settled chains are not kept for the rest of the session.
+    void write.then(() => {
+      if (tails.get(key) === write) tails.delete(key);
+    });
     await write;
   };
 
   const addToLibrary = async (target: RatingTarget): Promise<void> => {
+    const accountAtStart = accountGeneration;
     try {
       const kind = ratableKind(target);
       if (!kind) throw new Error("This item cannot be added to your library.");
@@ -196,15 +222,30 @@ export function createRatings(
         const ids: AddToLibraryIds = {};
         ids[kind] = [target.id];
         await addToLibraryRequest(request(), ids);
-        added.add(flight);
+        if (accountGeneration === accountAtStart) added.add(flight);
       } finally {
-        adding.delete(flight);
+        if (accountGeneration === accountAtStart) adding.delete(flight);
       }
     } catch (error) {
-      context.log(`Add to library failed: ${safeErrorMessage(error)}`);
-      reportActionError(error);
+      if (accountGeneration === accountAtStart) {
+        context.log(`Add to library failed: ${safeErrorMessage(error)}`);
+        reportActionError(error);
+      }
     }
   };
 
-  return { rate, loadRating, addToLibrary, syncCurrentTrack };
+  const reset = (): void => {
+    accountGeneration += 1;
+    generations.clear();
+    settled.clear();
+    tails.clear();
+    inFlight.clear();
+    adding.clear();
+    added.clear();
+    loadKey = undefined;
+    playingKey = undefined;
+    clearRatings();
+  };
+
+  return { rate, loadRating, addToLibrary, syncCurrentTrack, reset };
 }

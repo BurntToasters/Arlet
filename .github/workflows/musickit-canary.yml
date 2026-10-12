@@ -1,0 +1,73 @@
+name: Canary
+
+# Scheduled early warnings for things that change without a commit:
+# - Apple updates MusicKit JS in place on its CDN, and Arlet relies on some
+#   undocumented MusicKit APIs. The native E2E probes the live script.
+# - Every installed copy stops playing when the developer token embedded in
+#   the latest release expires (180 days after it was minted at release).
+# A failed run emails the repository owner; nothing here holds secrets.
+
+on:
+  schedule:
+    # Mondays 09:00 UTC.
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "24.16.0"
+  NPM_VERSION: "12.0.2"
+  RUST_VERSION: "1.98.1"
+  # 30 days before a freshly minted 180-day token in the latest release
+  # expires. Ship a release before then.
+  MAX_RELEASE_AGE_DAYS: "150"
+
+jobs:
+  live-musickit:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install npm 12
+        run: npm install --global npm@${{ env.NPM_VERSION }} --ignore-scripts
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - run: npm ci --ignore-scripts
+      - run: npm run licenses
+      # Includes "live MusicKit keeps every API Arlet relies on", which reads
+      # the script Apple serves today. Uses a synthetic token; no secrets.
+      - name: Native app E2E against live MusicKit
+        run: npm run test:e2e:app
+      - name: Upload E2E report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: canary-e2e-report
+          path: e2e-artifacts/
+          if-no-files-found: ignore
+
+  release-age:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Latest stable release is recent enough for its token
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          published=$(gh api "repos/$REPO/releases/latest" --jq .published_at)
+          age_days=$(( ( $(date -u +%s) - $(date -u -d "$published" +%s) ) / 86400 ))
+          echo "Latest stable release published $published ($age_days days ago)."
+          if [ "$age_days" -gt "$MAX_RELEASE_AGE_DAYS" ]; then
+            echo "::error::The latest release is $age_days days old. Its MusicKit developer token expires about 180 days after release, which stops playback for every install. Mint a new token and ship a release."
+            exit 1
+          fi

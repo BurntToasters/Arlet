@@ -207,3 +207,28 @@ accident.
   updater private key in routine CI. CI builds unsigned smoke artifacts only.
 - Release sessions expire after 24h and are bound to the exact
   commit/toolchain/lockfiles; stale sessions must not be resumed.
+
+## Recurring duties
+
+These fail silently if nobody watches them, so they are scheduled or
+written down here.
+
+- **Ship before the token expires.** Each release embeds a developer token
+  minted at release time, which Apple caps at 180 days. When it expires,
+  every installed copy stops playing. The `Canary` workflow
+  (`.github/workflows/musickit-canary.yml`) fails every Monday once the latest
+  stable release is more than 150 days old.
+- **Watch for MusicKit changes.** Apple updates MusicKit JS in place. The same
+  workflow runs the native E2E weekly; its "live MusicKit keeps every API
+  Arlet relies on" check lists anything Apple removed.
+- **Keep the updater key backed up.** If `TAURI_SIGNING_PRIVATE_KEY` is lost,
+  existing installs can never auto-update again. Confirm the offline backup
+  whenever the release VM is rebuilt.
+
+## Changing the release tooling
+
+The scripts under `scripts/` that build, sign, verify, and publish releases
+are feature-complete. Change them only to fix a bug or follow a GitHub or
+Tauri change. When you do touch them, prefer removing a check that another
+step already makes over adding a new one, and keep `npm run test:scripts`
+green.

@@ -38,6 +38,9 @@
   --duration-normal: 200ms;
 }
 
+/* The dark palette appears twice: for an explicit dark theme here, and for
+   the system theme in the media query below. CSS cannot share one rule
+   between them, so change both together. */
 :root[data-theme="dark"] {
   color-scheme: dark;
   --surface-base: #191a1d;

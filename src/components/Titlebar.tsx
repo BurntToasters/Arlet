@@ -15,15 +15,15 @@ import {
   Square,
   X,
 } from "lucide-preact";
-import type { JSX } from "preact";
+import type { JSX, TargetedMouseEvent } from "preact";
 import appIconUrl from "../assets/app-icon.png";
 import {
   useAppController,
   useAppRouter,
-  useAppState,
+  useAppSlices,
 } from "../app/context.tsx";
 import type { AppController } from "../app/controller.ts";
-import { setUiState } from "../state.ts";
+import { setUiState, type RuntimeAppState } from "../state.ts";
 import {
   closeWindow,
   isWindowMaximized,
@@ -59,7 +59,7 @@ interface ExtendedController {
 }
 
 function readAccountSummary(
-  state: ReturnType<typeof useAppState>,
+  state: Pick<RuntimeAppState, "account">,
 ): AccountSummaryLike | undefined {
   const value = (state as unknown as ExtendedState).account;
   if (!value || typeof value !== "object") return undefined;
@@ -83,7 +83,7 @@ function readAccountSummary(
 }
 
 function readLastRefresh(
-  state: ReturnType<typeof useAppState>,
+  state: Pick<RuntimeAppState, "account" | "library">,
 ): number | undefined {
   const account = readAccountSummary(state);
   const accountRefresh = account?.lastRefreshAt;
@@ -123,7 +123,14 @@ function formatLastRefresh(value: number | undefined): string {
 }
 
 export function Titlebar(): JSX.Element {
-  const state = useAppState();
+  const state = useAppSlices(
+    "account",
+    "auth",
+    "initialization",
+    "library",
+    "navigation",
+    "ui",
+  );
   const controller = useAppController();
   const router = useAppRouter();
   const maximizeButton = useRef<HTMLButtonElement>(null);
@@ -138,18 +145,22 @@ export function Titlebar(): JSX.Element {
 
   useEffect(() => {
     let active = true;
-    void isWindowMaximized().then((value) => {
-      if (active && value !== undefined) setMaximized(value);
-    });
+    // A denied or failed IPC call only leaves the maximize icon as it is.
+    const syncMaximized = (): void => {
+      void isWindowMaximized()
+        .then((value) => {
+          if (active && value !== undefined) setMaximized(value);
+        })
+        .catch(() => undefined);
+    };
+    syncMaximized();
     let stopResize: (() => void) | undefined;
-    void listenWindowResize(() => {
-      void isWindowMaximized().then((value) => {
-        if (active && value !== undefined) setMaximized(value);
-      });
-    }).then((cleanup) => {
-      if (active) stopResize = cleanup;
-      else cleanup();
-    });
+    void listenWindowResize(syncMaximized)
+      .then((cleanup) => {
+        if (active) stopResize = cleanup;
+        else cleanup();
+      })
+      .catch(() => undefined);
     return () => {
       active = false;
       stopResize?.();
@@ -221,9 +232,7 @@ export function Titlebar(): JSX.Element {
     });
   };
 
-  const onTitlebarPointer = (
-    event: JSX.TargetedMouseEvent<HTMLElement>,
-  ): void => {
+  const onTitlebarPointer = (event: TargetedMouseEvent<HTMLElement>): void => {
     if (event.button !== 0) return;
     const target = event.target;
     if (!(target instanceof Element)) return;
@@ -232,7 +241,7 @@ export function Titlebar(): JSX.Element {
   };
 
   const onTitlebarDoubleClick = (
-    event: JSX.TargetedMouseEvent<HTMLElement>,
+    event: TargetedMouseEvent<HTMLElement>,
   ): void => {
     const target = event.target;
     if (!(target instanceof Element)) return;

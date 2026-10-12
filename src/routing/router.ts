@@ -48,7 +48,7 @@ function encode(value: string): string {
 
 export function parseRoute(hash: string): Route {
   const normalized = hash.trim().replace(/^#/, "");
-  const [pathPart, queryPart = ""] = normalized.split("?", 2);
+  const [pathPart = "", queryPart = ""] = normalized.split("?", 2);
   const segments = pathPart.split("/").filter(Boolean).map(decode);
   const head = segments[0] ?? "home";
 
@@ -107,14 +107,6 @@ export function serializeRoute(route: Route): string {
     case "settings":
       return "#/settings";
   }
-}
-
-export function routeToHash(route: Route): string {
-  return serializeRoute(route);
-}
-
-export function hashToRoute(hash: string): Route {
-  return parseRoute(hash);
 }
 
 export interface HashRouter {

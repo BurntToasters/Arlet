@@ -44,19 +44,23 @@ The shell uses Preact for component composition and hooks. `state.ts` remains a
 small explicit application store; the controller owns MusicKit and persistence,
 while diagnostics is a separate bounded store containing only sanitized values.
 Views and components call the controller through the Preact context rather than
-invoking native commands directly.
+invoking native commands directly. Components that stay mounted subscribe with
+`useAppSlices(...)`, which re-renders only when a named top-level slice changes
+and types the result as a `Pick` of the state, so a slice that was not
+requested cannot be read. Views use `useAppState()`, which re-renders on every
+change.
 
 ### Module layout
 
 | Path                        | Responsibility                                                         |
 | --------------------------- | ---------------------------------------------------------------------- |
 | `main.tsx`                  | Preact mount, router/store/controller creation, boot                   |
-| `main.ts`                   | Compatibility entry that delegates to `main.tsx`                       |
 | `app/App.tsx`               | Shell composition and development diagnostics wiring                   |
 | `app/context.tsx`           | Preact contexts and application-state subscription                     |
 | `app/controller.ts`         | Composition root: MusicKit lifecycle, auth, settings, pins             |
 | `app/library-loader.ts`     | Library, Home, and detail loading; cache-first, offline read-only mode |
 | `app/discovery.ts`          | Browse charts, radio shelves, catalog/library search                   |
+| `app/playlist-editing.ts`   | Search, create, and add to library playlists                           |
 | `app/playback.ts`           | Queue and transport commands over MusicKit                             |
 | `app/controller-support.ts` | Shared response normalizers and error helpers                          |
 | `library/cache.ts`          | Client for the Rust library-cache commands (memory cache in tests)     |

@@ -112,27 +112,26 @@ function resourceSource(resource: ResourceLike): DetailSource | undefined {
 }
 
 function findResource(
-  state: ReturnType<typeof useAppState>,
-  kind: DetailKind,
+  items: readonly unknown[],
   id: string,
 ): ResourceLike | undefined {
-  const section =
-    kind === "album" ? "albums" : kind === "artist" ? "artists" : "playlists";
-  const collection = readCollection(state, section);
-  return collection.items
-    .map(toResource)
-    .find((resource) => resource?.id === id);
+  // Converts until the match instead of the whole collection.
+  for (const item of items) {
+    const resource = toResource(item);
+    if (resource?.id === id) return resource;
+  }
+  return undefined;
 }
 
 function detailResource(
-  detail: ReturnType<typeof readDetail>,
+  detail: Pick<ReturnType<typeof readDetail>, "resource" | "item">,
   fallback: ResourceLike | undefined,
 ): ResourceLike | undefined {
   return toResource(detail.resource) ?? toResource(detail.item) ?? fallback;
 }
 
 function detailItems(
-  detail: ReturnType<typeof readDetail>,
+  detail: Pick<ReturnType<typeof readDetail>, "tracks" | "albums" | "items">,
   resource: ResourceLike | undefined,
 ): ResourceLike[] {
   const source =
@@ -269,11 +268,29 @@ export function LibraryDetailView({
     sourceDetail && sourceDetail.status !== "idle"
       ? sourceDetail
       : readDetail(state, kind, id);
-  const fallback = findResource(state, kind, id);
-  const resource = detailResource(detail, fallback);
+  // Keyed on the raw state arrays, which keep their identity between
+  // renders; `detail` and `resource` are rebuilt every render.
+  const collectionItems = readCollection(
+    state,
+    kind === "album" ? "albums" : kind === "artist" ? "artists" : "playlists",
+  ).items;
+  const fallback = useMemo(
+    () => findResource(collectionItems, id),
+    [collectionItems, id],
+  );
+  const { resource: rawResource, item: rawItem } = detail;
+  const { tracks: rawTracks, albums: rawAlbums, items: rawItems } = detail;
+  const resource = useMemo(
+    () => detailResource({ resource: rawResource, item: rawItem }, fallback),
+    [rawResource, rawItem, fallback],
+  );
   const resources = useMemo(
-    () => detailItems(detail, resource),
-    [detail, resource],
+    () =>
+      detailItems(
+        { tracks: rawTracks, albums: rawAlbums, items: rawItems },
+        resource,
+      ),
+    [rawTracks, rawAlbums, rawItems, resource],
   );
   const copy = detailCopy(kind);
   const DetailIcon = copy.icon;

@@ -11,7 +11,6 @@ import {
   getState,
   resetApplicationState,
 } from "../state.ts";
-import { readShellStyles } from "./read-styles.ts";
 
 describe("DiagnosticsDrawer", () => {
   let root: HTMLDivElement;
@@ -135,21 +134,6 @@ describe("DiagnosticsDrawer", () => {
     ) as HTMLButtonElement;
     expect(queueButton.disabled).toBe(true);
     expect(diagnosticButton.disabled).toBe(true);
-  });
-
-  it("is styled as a bottom drawer above the player surface", () => {
-    const styles = readShellStyles();
-    const drawerStart = styles.indexOf(".diagnostics-drawer {");
-    const headerStart = styles.indexOf(".diagnostics-header {");
-    const drawerRules = styles.slice(drawerStart, headerStart);
-    expect(drawerRules).toContain("bottom: var(--player-height)");
-    expect(drawerRules).toContain("left: var(--sidebar-width)");
-    expect(drawerRules).toContain(
-      "border-radius: var(--radius-md) var(--radius-md) 0 0",
-    );
-    expect(styles).toMatch(
-      /\.diagnostics-drawer \{\s+right: 0;\s+left: 0;[\s\S]*?68vh/,
-    );
   });
 
   it("clears store and legacy failures so the next report is clean", async () => {

@@ -181,11 +181,19 @@ export class DiagnosticsStore {
     const entries = [...this.snapshot.entries, entry].slice(-this.maxEntries);
     const failures =
       entry.level === "error" || FAILURE_PATTERN.test(entry.message)
-        ? [...this.snapshot.failures, formatPersistedEntry(entry)].slice(
-            -this.maxEntries,
+        ? Object.freeze(
+            [...this.snapshot.failures, formatPersistedEntry(entry)].slice(
+              -this.maxEntries,
+            ),
           )
         : this.snapshot.failures;
-    this.snapshot = immutableSnapshot({ ...this.snapshot, entries, failures });
+    // One copy per line: the other snapshot fields are already frozen and
+    // shared, so immutableSnapshot's extra copies are skipped on this path.
+    this.snapshot = Object.freeze({
+      ...this.snapshot,
+      entries: Object.freeze(entries),
+      failures,
+    });
     this.notify();
 
     // Persistence is deliberately fire-and-forget. A disk/IPC failure must

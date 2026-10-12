@@ -53,19 +53,21 @@ export function VirtualList<T>({
   useLayoutEffect(() => {
     if (!virtual) return undefined;
     const list = listRef.current;
-    const scroller = list ? scrollParent(list, scrollParentSelector) : null;
-    if (!list || !scroller) return undefined;
+    if (!list) return undefined;
+    // Without the expected scroller the window scrolls the list; the range
+    // must still follow it, or the list stops after its first rows.
+    const scroller = scrollParent(list, scrollParentSelector);
+    const scrollTarget: EventTarget = scroller ?? window;
     const update = (): void => {
       const row = list.querySelector<HTMLElement>(
         ":scope > li:not([aria-hidden])",
       );
       if (row && row.offsetHeight > 0) measured.current = row.offsetHeight;
       const height = measured.current;
-      const viewport = scroller.clientHeight || window.innerHeight;
-      const above = Math.max(
-        0,
-        scroller.getBoundingClientRect().top - list.getBoundingClientRect().top,
-      );
+      const viewport =
+        (scroller ? scroller.clientHeight : 0) || window.innerHeight;
+      const viewportTop = scroller ? scroller.getBoundingClientRect().top : 0;
+      const above = Math.max(0, viewportTop - list.getBoundingClientRect().top);
       const start = Math.max(0, Math.floor(above / height) - OVERSCAN_ROWS);
       const end = Math.min(
         items.length,
@@ -78,10 +80,10 @@ export function VirtualList<T>({
       );
     };
     update();
-    scroller.addEventListener("scroll", update, { passive: true });
+    scrollTarget.addEventListener("scroll", update, { passive: true });
     window.addEventListener("resize", update);
     return () => {
-      scroller.removeEventListener("scroll", update);
+      scrollTarget.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
     };
   }, [virtual, items.length, scrollParentSelector]);

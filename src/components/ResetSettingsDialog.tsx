@@ -68,7 +68,7 @@ export function ResetSettingsDialog({
       (!event.shiftKey && (active === last || !dialog.contains(active)))
     ) {
       event.preventDefault();
-      (event.shiftKey ? last : first).focus();
+      (event.shiftKey ? last : first)?.focus();
     }
   };
 

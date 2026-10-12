@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { WindowEffectPreference } from "../state.ts";
+import { createSerialQueue } from "./serial.ts";
+
+const saveQueue = createSerialQueue();
 
 export type InvokeFunction = <T>(
   command: string,
@@ -93,7 +96,7 @@ export async function saveSettingsPayload(
   json: string,
   invokeFn: InvokeFunction = invoke as InvokeFunction,
 ): Promise<void> {
-  await invokeFn("save_settings", { json });
+  await saveQueue(() => invokeFn("save_settings", { json }));
 }
 
 export async function resetSettingsPayload(

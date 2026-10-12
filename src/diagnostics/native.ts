@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { createSerialQueue } from "../platform/serial.ts";
 import type { DiagnosticsPersistenceAdapter } from "./store.ts";
 
 export type DiagnosticsInvoke = <T>(
@@ -13,9 +14,12 @@ export type DiagnosticsInvoke = <T>(
 export function createTauriDiagnosticsAdapter(
   call: DiagnosticsInvoke = invoke,
 ): DiagnosticsPersistenceAdapter {
+  // Log writes run off the UI thread; the queue keeps lines in order.
+  const writes = createSerialQueue();
   return {
-    appendLocalLog: (entry) => call<void>("append_local_log", { entry }),
-    clearLogs: () => call<void>("clear_logs"),
+    appendLocalLog: (entry) =>
+      writes(() => call<void>("append_local_log", { entry })),
+    clearLogs: () => writes(() => call<void>("clear_logs")),
     getLogDir: () => call<string>("get_log_dir"),
   };
 }

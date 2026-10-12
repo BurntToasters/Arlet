@@ -42,6 +42,28 @@ const transitionsOf = async (page) => (await snapshot(page)).transitions;
 const queuesOf = (transitions) =>
   transitions.filter((item) => item.type === "setQueue");
 
+/**
+ * Waits until the fixture has answered (or rejected) a request whose path
+ * contains `pathPart`, so "late response is dropped" checks run after the
+ * late response really arrived instead of after a guessed delay. Only
+ * requests after index `since` count.
+ */
+function waitForRequestSettled(page, pathPart, since = 0, timeoutMs = 8000) {
+  return waitFor(
+    page,
+    `${FIXTURE}.snapshot().requests.slice(${since}).some((item) => item.path.includes(${JSON.stringify(pathPart)}) && (item.completedAt || item.error))`,
+    timeoutMs,
+  );
+}
+
+function waitForRequestStarted(page, pathPart, since = 0, timeoutMs = 8000) {
+  return waitFor(
+    page,
+    `${FIXTURE}.snapshot().requests.slice(${since}).some((item) => item.path.includes(${JSON.stringify(pathPart)}))`,
+    timeoutMs,
+  );
+}
+
 async function openMenuAndClick(page, target, itemId) {
   await fixtureCall(page, "selectContext", [target]);
   const ready = await waitFor(
@@ -152,7 +174,7 @@ export async function runRadioArtist({ page, check }) {
     page,
     `${FIXTURE}.snapshot().transitions.some((item) => item.type === "setQueue" && item.ids?.[0] === "song-e")`,
   );
-  await sleep(1300);
+  await waitForRequestSettled(page, "/v1/catalog/us/songs/nav-delayed");
   transitions = await transitionsOf(page);
   const finalQueue = queuesOf(transitions);
   check(
@@ -307,14 +329,17 @@ export async function runRadioArtist({ page, check }) {
   await fixtureCall(page, "configure", [
     { delayPaths: ["/view/top-songs"], delayMs: 900 },
   ]);
+  const topSongsSince = (await snapshot(page)).requests.length;
   await page.evaluate(
     `location.hash = "#/artist/nav-artist-two?source=catalog"; return true;`,
   );
   await waitFor(page, `location.hash.includes("nav-artist-two")`);
-  await sleep(150);
+  // Leave only once the top-songs request is in flight, so its response
+  // is the late one.
+  await waitForRequestStarted(page, "/view/top-songs", topSongsSince);
   await page.evaluate(`location.hash = "#/artist/nav-empty"; return true;`);
   await waitFor(page, `location.hash === "#/artist/nav-empty"`);
-  await sleep(1400);
+  await waitForRequestSettled(page, "/view/top-songs", topSongsSince);
   check(
     "a late top-songs response for a previous artist is dropped",
     (await topSongTitles(page)).length === 0,
@@ -325,6 +350,7 @@ export async function runRadioArtist({ page, check }) {
   await fixtureCall(page, "configure", [
     { delayPaths: [], rejectPaths: ["/view/top-songs"] },
   ]);
+  const failureSince = (await snapshot(page)).requests.length;
   await page.evaluate(
     `location.hash = "#/artist/nav-artist-two?source=catalog"; return true;`,
   );
@@ -332,7 +358,10 @@ export async function runRadioArtist({ page, check }) {
     page,
     `document.querySelector('.library-detail-hero h1')?.textContent === "Artist Two"`,
   );
-  await sleep(400);
+  await waitFor(
+    page,
+    `${FIXTURE}.snapshot().requests.slice(${failureSince}).some((item) => item.path.includes("/view/top-songs") && item.error)`,
+  );
   check(
     "top songs failure hides the section and keeps the artist page usable",
     (await topSongTitles(page)).length === 0 &&

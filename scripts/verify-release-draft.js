@@ -35,9 +35,19 @@ const {
   githubApi,
   githubApiToFile,
 } = require("./github-cli.cjs");
-const { readChangelogReleaseBody } = require("./changelog.cjs");
-const { selectDraftRelease } = require("./release-draft-metadata.cjs");
+const {
+  readChangelogReleaseBody,
+  readChangelogSection,
+} = require("./changelog.cjs");
+const {
+  assertExistingTagTargetsCommit,
+  selectDraftRelease,
+} = require("./release-draft-metadata.cjs");
 const { publishedInstallerArch } = require("./release-assets.cjs");
+const { expectedReleaseSigner } = require("./release-signer.cjs");
+
+// Re-exported so existing imports keep working; the logic lives in the helper.
+export { expectedReleaseSigner };
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(scriptDir, "..");
@@ -262,7 +272,7 @@ export function assertDraftReleaseShape({
       `Draft ${tag} is missing updater manifests: ${missingManifests.join(", ")}.`,
     );
   }
-  const installers = requiredDraftInstallerNames(assetNames, version);
+  const installers = requiredDraftInstallerNames(assetNames);
   const arches = new Set(
     installers.map((name) => publishedInstallerArch(name)),
   );
@@ -391,7 +401,17 @@ function sha256File(filePath) {
   return hash.digest("hex");
 }
 
-export function verifyChecksums(sumText, downloaded, expectedNames = []) {
+/**
+ * `mutable` names must be listed in SHA256SUMS but are not hash-checked:
+ * a stable release's beta manifests are replaced by later beta syncs.
+ */
+export function verifyChecksums(
+  sumText,
+  downloaded,
+  expectedNames = [],
+  { mutable = [] } = {},
+) {
+  const mutableNames = new Set(mutable);
   if (!(downloaded instanceof Map)) {
     throw new Error("Checksum verification requires a downloaded-file map.");
   }
@@ -433,6 +453,7 @@ export function verifyChecksums(sumText, downloaded, expectedNames = []) {
     if (!expectedSet.has(name)) {
       throw new Error(`SHA256SUMS contains unknown artifact ${name}.`);
     }
+    if (mutableNames.has(name)) continue;
     const file = downloaded.get(name);
     if (!file) {
       throw new Error(`SHA256SUMS entry ${name} was not downloaded.`);
@@ -450,14 +471,39 @@ export function verifyChecksums(sumText, downloaded, expectedNames = []) {
   return true;
 }
 
+/** Fingerprints gpg reports for a good signature (signing and primary key). */
+function validSignatureFingerprints(statusOutput) {
+  const fingerprints = [];
+  for (const line of String(statusOutput ?? "").split(/\r?\n/)) {
+    if (!line.startsWith("[GNUPG:] VALIDSIG ")) continue;
+    for (const token of line.split(/\s+/)) {
+      if (/^[0-9A-F]{40}$/i.test(token)) fingerprints.push(token.toUpperCase());
+    }
+  }
+  return fingerprints;
+}
+
+/**
+ * @param {string} signaturePath
+ * @param {string} dataPath
+ * @param {{ rootDir?: string, runner?: typeof spawnSync, signer?: string }} [options]
+ */
 export function verifyDetachedGpgSignature(
   signaturePath,
   dataPath,
-  { rootDir = root, runner = spawnSync } = {},
+  { rootDir = root, runner = spawnSync, signer } = {},
 ) {
   const result = runner(
     "gpg",
-    ["--batch", "--no-auto-key-retrieve", "--verify", signaturePath, dataPath],
+    [
+      "--batch",
+      "--no-auto-key-retrieve",
+      "--status-fd",
+      "1",
+      "--verify",
+      signaturePath,
+      dataPath,
+    ],
     {
       cwd: rootDir,
       encoding: "utf8",
@@ -474,6 +520,14 @@ export function verifyDetachedGpgSignature(
       .trim();
     throw new Error(
       `SHA256SUMS.asc GPG signature verification failed${detail ? `: ${detail}` : "."}`,
+    );
+  }
+  // A good signature from another key in the local keyring is not enough.
+  const expected = signer ?? expectedReleaseSigner();
+  const signedBy = validSignatureFingerprints(result?.stdout);
+  if (!signedBy.some((fingerprint) => fingerprint.endsWith(expected))) {
+    throw new Error(
+      `SHA256SUMS.asc is not signed by the release key ${expected}${signedBy.length ? ` (signed by ${signedBy.join(", ")})` : ""}.`,
     );
   }
   return true;
@@ -510,6 +564,13 @@ async function verifyDraft({ verifyArtifacts = false } = {}) {
     version: VERSION,
     headCommit,
   });
+  // A pre-existing tag overrides the draft's target_commitish on publish.
+  assertExistingTagTargetsCommit((endpoint) => githubApi("GET", endpoint), {
+    owner: REPO_OWNER,
+    repo: REPO_NAME,
+    tag: TAG_NAME,
+    commit: headCommit,
+  });
   const byName = new Map(assets.map((asset) => [asset.name, asset]));
   const temporaryDirectory = fs.mkdtempSync(
     path.join(os.tmpdir(), "arlet-draft-"),
@@ -527,6 +588,10 @@ async function verifyDraft({ verifyArtifacts = false } = {}) {
       signatures.set(installer, signature);
       downloaded.set(`${installer}.sig`, sidecarPath);
     }
+    const expectedNotes = readChangelogSection(
+      path.join(root, "CHANGELOG.md"),
+      VERSION,
+    );
     for (const manifestName of shape.manifests) {
       const manifestPath = path.join(temporaryDirectory, manifestName);
       downloadAsset(byName.get(manifestName), manifestPath);
@@ -538,6 +603,15 @@ async function verifyDraft({ verifyArtifacts = false } = {}) {
       if (manifest.version !== VERSION) {
         throw new Error(
           `${manifestName} reports ${manifest.version}, expected ${VERSION}.`,
+        );
+      }
+      // CHANGELOG.md edited after the manifests were generated would update
+      // the draft body but leave in-app release notes stale.
+      if (
+        String(manifest.notes).replace(/\r\n?/g, "\n").trim() !== expectedNotes
+      ) {
+        throw new Error(
+          `${manifestName} notes do not match the CHANGELOG.md section for ${TAG_NAME}; re-run npm run release:updater-manifests.`,
         );
       }
       assertManifestAssetReferences(manifest, manifestName, assetNames, {
@@ -573,7 +647,7 @@ async function verifyDraft({ verifyArtifacts = false } = {}) {
         path.join(temporaryDirectory, "SHA256SUMS.asc"),
         path.join(temporaryDirectory, "SHA256SUMS"),
       );
-      const byName = new Map(
+      const installerPaths = new Map(
         shape.installers.map((name) => [
           name,
           path.join(temporaryDirectory, name),
@@ -588,7 +662,7 @@ async function verifyDraft({ verifyArtifacts = false } = {}) {
       verifyUpdaterSignatures({
         root,
         releaseDir: temporaryDirectory,
-        byName,
+        byName: installerPaths,
         signatureByBaseName,
         resolveUpdaterTargets,
       });

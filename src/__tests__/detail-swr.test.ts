@@ -51,7 +51,7 @@ function playlistDetail(id: string): LibraryDetailState {
     string,
     LibraryDetailState
   >;
-  return details[id];
+  return details[id] as LibraryDetailState;
 }
 
 function albumDetail(id: string): LibraryDetailState {
@@ -59,7 +59,7 @@ function albumDetail(id: string): LibraryDetailState {
     string,
     LibraryDetailState
   >;
-  return details[id];
+  return details[id] as LibraryDetailState;
 }
 
 function tick(): Promise<void> {

@@ -1,8 +1,5 @@
 import type { PlaybackKind } from "../musickit/preview.ts";
-import type {
-  GateEnvironment,
-  GateCheckCategory,
-} from "../phase0/gate-session.ts";
+import type { GateEnvironment } from "../phase0/gate-session.ts";
 
 /** The two views intentionally keep the drawer small and predictable. */
 export type DiagnosticsTab = "console" | "feasibility";
@@ -84,10 +81,3 @@ export interface DiagnosticsDrawerProps {
   };
   initialTab?: DiagnosticsTab;
 }
-
-export const CHECKLIST_CATEGORY_TITLES: Record<GateCheckCategory, string> = {
-  authorization: "Authorization",
-  playback: "Playback",
-  lifecycle: "Window Lifecycle",
-  recovery: "Error Recovery",
-};

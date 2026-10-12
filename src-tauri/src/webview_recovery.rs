@@ -27,6 +27,22 @@ pub fn recovery_for_kind(kind: i32) -> Recovery {
     }
 }
 
+/// Browser-process restarts allowed in a row before Arlet gives up.
+pub const MAX_RESTARTS: u32 = 3;
+/// Carries the restart count into the relaunched process.
+pub const RESTART_COUNT_ENV: &str = "ARLET_WEBVIEW_RESTARTS";
+
+/// Next restart count, or `None` once WebView2 keeps dying soon after
+/// launch. A process that ran longer than `CRASH_WINDOW` starts over at 1.
+pub fn next_restart_count(previous: u32, uptime: Duration) -> Option<u32> {
+    let count = if uptime < CRASH_WINDOW {
+        previous + 1
+    } else {
+        1
+    };
+    (count <= MAX_RESTARTS).then_some(count)
+}
+
 /// Stops reloading once a page crashes repeatedly (a crash loop).
 #[derive(Default)]
 pub struct CrashGuard {
@@ -59,6 +75,11 @@ pub fn install(window: &tauri::WebviewWindow) -> Result<(), String> {
     use webview2_com::ProcessFailedEventHandler;
 
     let app = window.app_handle().clone();
+    let started = Instant::now();
+    let previous_restarts = std::env::var(RESTART_COUNT_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0);
     window
         .with_webview(move |webview| {
             let guard = Mutex::new(CrashGuard::default());
@@ -80,7 +101,22 @@ pub fn install(window: &tauri::WebviewWindow) -> Result<(), String> {
                             unsafe { sender.Reload()? };
                         }
                     }
-                    Recovery::Restart => app.request_restart(),
+                    Recovery::Restart => {
+                        match next_restart_count(previous_restarts, started.elapsed()) {
+                            Some(count) => {
+                                // The relaunched process inherits this.
+                                std::env::set_var(RESTART_COUNT_ENV, count.to_string());
+                                app.request_restart();
+                            }
+                            None => {
+                                crate::commands::show_error_dialog(
+                                    "Arlet's web view keeps closing right after it starts. \
+                                     Try reinstalling the Microsoft Edge WebView2 Runtime.",
+                                );
+                                app.exit(1);
+                            }
+                        }
+                    }
                     Recovery::Ignore => {}
                 }
                 Ok(())

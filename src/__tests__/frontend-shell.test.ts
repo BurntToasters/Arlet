@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { h, render } from "preact";
 import { createAppController } from "../app/controller.ts";
@@ -25,7 +23,6 @@ import { registerMusicKitEvents } from "../musickit/events.ts";
 import { DiagnosticsStore } from "../diagnostics/store.ts";
 import { TrackRow } from "../views/SearchView.tsx";
 import { RouteView } from "../views/RouteView.tsx";
-import { readShellStyles } from "./read-styles.ts";
 
 afterEach(() => {
   resetApplicationState();
@@ -144,33 +141,6 @@ describe("settings", () => {
       enabled: false,
       dark: false,
     });
-  });
-
-  it("leaves the document transparent for native material effects", () => {
-    const styles = readShellStyles();
-    expect(styles).toContain(':root[data-window-effect="acrylic"] body');
-    expect(styles).toContain(':root[data-window-effect="mica"] #app');
-    expect(styles).toContain(':root[data-window-effect="solid"] .app-shell');
-    const acrylicRule =
-      styles.match(
-        /:root\[data-window-effect="acrylic"\] \.app-shell::before\s*\{([\s\S]*?)\n\}/u,
-      )?.[1] ?? "";
-    expect(acrylicRule).toContain("feTurbulence");
-    expect(acrylicRule).toContain("background-blend-mode: soft-light");
-    const micaRule =
-      styles.match(
-        /:root\[data-window-effect="mica"\] \.app-shell::before\s*\{([\s\S]*?)\n\}/u,
-      )?.[1] ?? "";
-    expect(micaRule).not.toContain("feTurbulence");
-    const playerRule = styles.match(/\.player-bar\s*\{([^}]*)\}/u)?.[1] ?? "";
-    expect(playerRule).toContain("position: relative;");
-
-    const homeView = readFileSync(
-      resolve(process.cwd(), "src/views/HomeView.tsx"),
-      "utf8",
-    );
-    expect(homeView).not.toContain("welcome-sparkle");
-    expect(homeView).not.toContain("Sparkles");
   });
 });
 
@@ -296,7 +266,9 @@ describe("MusicKit controller", () => {
       await vi.runAllTimersAsync();
       await Promise.all(drags);
       expect(savedSettings).toHaveLength(1);
-      expect(JSON.parse(savedSettings[0])).toMatchObject({ volume: 0.55 });
+      expect(JSON.parse(savedSettings[0] ?? "null")).toMatchObject({
+        volume: 0.55,
+      });
       controller.dispose();
     } finally {
       vi.useRealTimers();

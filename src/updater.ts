@@ -345,7 +345,8 @@ export function createUpdaterService(
           throw error;
         }
         if (disposed || checkGeneration !== generation) return false;
-        const delayMs = UPDATE_DOWNLOAD_RETRY_DELAYS_MS[retryIndex];
+        // The guard above keeps retryIndex inside the delay list.
+        const delayMs = UPDATE_DOWNLOAD_RETRY_DELAYS_MS[retryIndex] ?? 0;
         retryIndex += 1;
         onLog(
           `Beta update download returned 404; retrying in ${delayMs}ms (${retryIndex}/${UPDATE_DOWNLOAD_RETRY_DELAYS_MS.length}).`,
@@ -372,7 +373,9 @@ export function createUpdaterService(
           : undefined,
         message: interactive ? undefined : "Checking for updates…",
         error: undefined,
-        promptOpen: false,
+        // An open prompt for a downloaded update stays open; a periodic
+        // re-check must not close it under the user.
+        promptOpen: pendingUpdate ? state.promptOpen : false,
       });
       const feed = await resolveFeed(checkChannel);
       if (disposed || checkGeneration !== generation) return;
@@ -388,16 +391,21 @@ export function createUpdaterService(
           pendingResolvedChannel !== feed.resolvedChannel)
       ) {
         clearPending();
-        emit({ releaseNotes: undefined });
+        emit({ releaseNotes: undefined, promptOpen: false });
       }
       if (pendingUpdate) {
-        emit({
-          status: "ready",
-          releaseNotes: releaseNotesForUpdate(pendingUpdate),
-          promptOpen: interactive || state.promptOpen,
-          error: undefined,
-          message: "Update downloaded and ready to install.",
-        });
+        // A check that started before Install must not flip "installing"
+        // back to "ready", which would re-enable Install on the same
+        // resource, nor download the update again during the install.
+        if (!installInFlight) {
+          emit({
+            status: "ready",
+            releaseNotes: releaseNotesForUpdate(pendingUpdate),
+            promptOpen: interactive || state.promptOpen,
+            error: undefined,
+            message: "Update downloaded and ready to install.",
+          });
+        }
         return;
       }
 
@@ -573,7 +581,7 @@ export function createUpdaterService(
 
     async installPending(): Promise<void> {
       const update = pendingUpdate;
-      if (!update || state.status === "installing") return;
+      if (!update || installInFlight) return;
       const installGeneration = generation;
       installInFlight = true;
       emit({
@@ -650,15 +658,4 @@ export function createUpdaterService(
       emit({ releaseNotes: undefined });
     },
   };
-}
-
-export function updateChannelLabel(channel: UpdateChannel): string {
-  switch (channel) {
-    case "stable":
-      return "Stable releases";
-    case "beta":
-      return "Beta releases";
-    case "auto":
-      return "Follow installed version";
-  }
 }

@@ -333,9 +333,8 @@ export function DiagnosticsDrawer({
     void runAction(clear, "Local logs cleared");
   };
 
-  const consoleReport = createConsoleReport(storeSnapshot);
-  const feasibilityReport = createFeasibilityReport(reportData);
-  const networkReport = createNetworkReport(reportData);
+  // Reports are built on copy only; the drawer re-renders every second and
+  // on each log line, and each report walks up to 1000 entries.
 
   return (
     <aside className="diagnostics-drawer" aria-labelledby="diagnostics-title">
@@ -399,7 +398,7 @@ export function DiagnosticsDrawer({
                   type="button"
                   onClick={() =>
                     void copyReport(
-                      consoleReport,
+                      createConsoleReport(storeSnapshot),
                       controller?.onCopyConsole,
                       "Console copied",
                     )
@@ -480,7 +479,7 @@ export function DiagnosticsDrawer({
                 type="button"
                 onClick={() =>
                   void copyReport(
-                    feasibilityReport,
+                    createFeasibilityReport(reportData),
                     controller?.onCopyFeasibility,
                     "Feasibility report copied",
                   )
@@ -492,7 +491,7 @@ export function DiagnosticsDrawer({
                 type="button"
                 onClick={() =>
                   void copyReport(
-                    networkReport,
+                    createNetworkReport(reportData),
                     controller?.onCopyNetwork,
                     "Network surface copied",
                   )

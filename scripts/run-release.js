@@ -58,6 +58,13 @@ function runNpm(script, extraArgs = [], envOverrides = {}) {
 
 export function main(argv = process.argv.slice(2), runner = runNpm) {
   const { skipCheck, continueScript } = parseReleaseArgs(argv);
+  if (skipCheck) {
+    // The flag name undersells it: FORCE_UPLOAD also lifts the commit
+    // fences in the draft, verify, and publish steps (betas only).
+    console.warn(
+      "[release] --skip-check sets FORCE_UPLOAD=1: the release commit fences are bypassed for this beta.",
+    );
+  }
   runner("prerelease:prepare");
   runner("workspace:bootstrap");
   // Arlet's quality-gate proof requires E2E, so unlike Zinnia it is not skipped.

@@ -15,23 +15,10 @@ export {
   type WindowEffectResult,
 } from "../platform/settings.ts";
 
-const settingsShape = z.object({
-  schemaVersion: z.literal(1).optional(),
-  theme: z.enum(["system", "light", "dark"]).optional(),
-  windowEffect: z.enum(["acrylic", "mica", "solid"]).optional(),
-  autoCheckUpdates: z.boolean().optional(),
-  updateChannel: z.enum(["auto", "stable", "beta"]).optional(),
-  volume: z.number().finite().min(0).max(1).optional(),
-  autoplay: z.boolean().optional(),
-  restoreSession: z.boolean().optional(),
-  trayIcon: z.boolean().optional(),
-});
 const themeSchema = z.enum(["system", "light", "dark"]);
 const windowEffectSchema = z.enum(["acrylic", "mica", "solid"]);
 const updateChannelSchema = z.enum(["auto", "stable", "beta"]);
 const volumeSchema = z.number().finite().min(0).max(1);
-
-export const appSettingsSchema = settingsShape.passthrough();
 
 function systemMediaQuery(): Pick<MediaQueryList, "matches"> {
   if (

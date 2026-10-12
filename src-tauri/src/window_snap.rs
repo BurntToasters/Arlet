@@ -421,6 +421,11 @@ mod win {
         let _ = TrackMouseEvent(&mut track);
     }
 
+    /// Overlay that received the last button press; a release only toggles
+    /// maximize when the press started on the same overlay, so a drag
+    /// released over the button does nothing.
+    static PRESSED: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(0);
+
     unsafe extern "system" fn overlay_proc(
         hwnd: HWND,
         msg: u32,
@@ -431,8 +436,16 @@ mod win {
             // Windows 11 uses this exact caption hit-test to expose Snap
             // Layouts when the pointer rests over the maximize control.
             WM_NCHITTEST => return LRESULT(HTMAXBUTTON as isize),
-            WM_NCLBUTTONDOWN | WM_LBUTTONDOWN => return LRESULT(0),
+            WM_NCLBUTTONDOWN | WM_LBUTTONDOWN => {
+                PRESSED.store(hwnd.0 as isize, std::sync::atomic::Ordering::SeqCst);
+                return LRESULT(0);
+            }
             WM_NCLBUTTONUP | WM_LBUTTONUP => {
+                let pressed_here =
+                    PRESSED.swap(0, std::sync::atomic::Ordering::SeqCst) == hwnd.0 as isize;
+                if !pressed_here {
+                    return LRESULT(0);
+                }
                 if let Some(window) = window_for(hwnd) {
                     let result = if window.is_maximized().unwrap_or(false) {
                         window.unmaximize()
@@ -456,6 +469,12 @@ mod win {
                 return LRESULT(0);
             }
             WM_NCMOUSELEAVE | WM_MOUSELEAVE => {
+                let _ = PRESSED.compare_exchange(
+                    hwnd.0 as isize,
+                    0,
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                );
                 emit_hover(hwnd, false);
                 return LRESULT(0);
             }

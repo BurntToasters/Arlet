@@ -10,7 +10,7 @@ import {
 } from "lucide-preact";
 import type { JSX } from "preact";
 import { useRef } from "preact/hooks";
-import { useAppController, useAppState } from "../app/context.tsx";
+import { useAppController, useAppSlices } from "../app/context.tsx";
 import type { Track } from "../domain/music.ts";
 import { Artwork } from "./Artwork.tsx";
 import { reportActionError, reportQueueEdit } from "./action-errors.ts";
@@ -20,7 +20,7 @@ import { requestPlaylistDialog } from "./playlist-events.ts";
 import { VirtualList } from "./VirtualList.tsx";
 
 export function QueueDrawer(): JSX.Element | null {
-  const state = useAppState();
+  const state = useAppSlices("playback", "ui");
   const controller = useAppController();
   // Index of the upcoming row being dragged; only same-drawer drags count.
   const dragFrom = useRef<number | undefined>(undefined);
@@ -147,7 +147,7 @@ export function QueueDrawer(): JSX.Element | null {
                   aria-label={`Remove ${track.title} from queue`}
                   title="Remove from queue"
                   onClick={() =>
-                    reportQueueEdit(controller.removeQueueItem(index))
+                    reportQueueEdit(controller.removeQueueItem(index, track.id))
                   }
                 >
                   <X aria-hidden="true" size={15} />

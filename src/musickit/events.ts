@@ -10,6 +10,10 @@ import { redactSensitive } from "../platform/redact.ts";
 import type { PlaybackState } from "../domain/music.ts";
 import { syncMusicKitQueue } from "./player.ts";
 
+function finiteOrZero(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
 function mapPlaybackState(state: number): PlaybackState["status"] {
   const states = MusicKit.PlaybackStates;
   switch (state) {
@@ -39,8 +43,10 @@ export function registerMusicKitEvents(
   onModeChange?: () => void,
 ): () => void {
   const onPlaybackStateChange = (event: Record<string, unknown>): void => {
-    const state = (event.state ?? event.oldState ?? 0) as number;
-    setPlaybackStatus(mapPlaybackState(state));
+    // `oldState` is the state being left; without `state`, ask the player.
+    const state =
+      typeof event.state === "number" ? event.state : instance.playbackState;
+    if (typeof state === "number") setPlaybackStatus(mapPlaybackState(state));
     onStateChange?.();
   };
   const onNowPlayingItemChange = (event: Record<string, unknown>): void => {
@@ -57,8 +63,9 @@ export function registerMusicKitEvents(
   // duration (and so the preview/full classification) changes.
   let lastDuration: number | undefined;
   const onPlaybackTimeChange = (event: Record<string, unknown>): void => {
-    const position = (event.currentPlaybackTime ?? 0) as number;
-    const duration = (event.currentPlaybackDuration ?? 0) as number;
+    // NaN before metadata loads would also defeat the duration check below.
+    const position = finiteOrZero(event.currentPlaybackTime);
+    const duration = finiteOrZero(event.currentPlaybackDuration);
     setPlaybackPosition(position, duration);
     if (duration === lastDuration) return;
     lastDuration = duration;

@@ -1,7 +1,7 @@
 import { LoaderCircle, Plus, Search, X } from "lucide-preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import type { JSX } from "preact";
-import { useAppController, useAppState } from "../app/context.tsx";
+import type { JSX, TargetedEvent } from "preact";
+import { useAppController, useAppSlices } from "../app/context.tsx";
 import type { Track } from "../domain/music.ts";
 import {
   PLAYLIST_DIALOG_REQUEST,
@@ -77,10 +77,8 @@ function toPlaylistOption(value: unknown): PlaylistOption | undefined {
   };
 }
 
-function localPlaylists(
-  state: ReturnType<typeof useAppState>,
-): PlaylistOption[] {
-  return state.library.collections.playlists.items
+function localPlaylists(items: readonly unknown[]): PlaylistOption[] {
+  return items
     .map(toPlaylistOption)
     .filter((item): item is PlaylistOption => Boolean(item))
     .filter((item) => item.canEdit !== false);
@@ -108,7 +106,7 @@ async function createPlaylistWithTracks(
 
 export function PlaylistDialogs(): JSX.Element | null {
   const controller = useAppController() as PlaylistController;
-  const state = useAppState();
+  const state = useAppSlices("library");
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<PlaylistOption[]>([]);
@@ -120,6 +118,14 @@ export function PlaylistDialogs(): JSX.Element | null {
   const [description, setDescription] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
+  // Bumped whenever a dialog opens or closes. Async work for an earlier
+  // dialog must not close or update the one shown now.
+  const dialogGeneration = useRef(0);
+  const isOpenDialog = (generation: number): boolean =>
+    dialogGeneration.current === generation;
+  // The Escape handler is registered per dialog, but must always run the
+  // current closeDialog, which reads the open dialog's focus target.
+  const closeDialogRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     const onRequest = (event: Event): void => {
@@ -131,6 +137,7 @@ export function PlaylistDialogs(): JSX.Element | null {
           detail.mode !== "folder")
       )
         return;
+      const generation = ++dialogGeneration.current;
       setDialog({
         mode: detail.mode,
         tracks: detail.tracks ?? [],
@@ -147,8 +154,12 @@ export function PlaylistDialogs(): JSX.Element | null {
       if (detail.mode === "picker" && controller.loadLibrarySection) {
         void Promise.resolve()
           .then(() => controller.loadLibrarySection?.("playlists"))
-          .catch((reason: unknown) => setError(errorMessage(reason)))
-          .finally(() => setLoadingPlaylists(false));
+          .catch((reason: unknown) => {
+            if (isOpenDialog(generation)) setError(errorMessage(reason));
+          })
+          .finally(() => {
+            if (isOpenDialog(generation)) setLoadingPlaylists(false);
+          });
       } else {
         setLoadingPlaylists(false);
       }
@@ -156,11 +167,12 @@ export function PlaylistDialogs(): JSX.Element | null {
     };
     window.addEventListener(PLAYLIST_DIALOG_REQUEST, onRequest);
     return () => window.removeEventListener(PLAYLIST_DIALOG_REQUEST, onRequest);
-  }, []);
+  }, [controller]);
 
+  const playlistItems = state.library.collections.playlists.items;
   const availablePlaylists = useMemo(
-    () => localPlaylists(state),
-    [state.library.collections.playlists.items],
+    () => localPlaylists(playlistItems),
+    [playlistItems],
   );
 
   useEffect(() => {
@@ -204,7 +216,7 @@ export function PlaylistDialogs(): JSX.Element | null {
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key === "Escape") {
         event.preventDefault();
-        closeDialog();
+        closeDialogRef.current();
         return;
       }
       if (event.key !== "Tab") return;
@@ -231,29 +243,36 @@ export function PlaylistDialogs(): JSX.Element | null {
   }, [dialog]);
 
   const closeDialog = (): void => {
+    dialogGeneration.current += 1;
     const focusTarget = dialog?.restoreFocus;
     setDialog(null);
     if (focusTarget) window.setTimeout(() => focusTarget.focus(), 0);
   };
+  closeDialogRef.current = closeDialog;
 
   const addToPlaylist = (playlist: PlaylistOption): void => {
     if (!dialog?.tracks.length || !controller.addTracksToPlaylist) {
       closeDialog();
       return;
     }
+    const generation = dialogGeneration.current;
     setBusy(true);
     setError(undefined);
     void controller
       .addTracksToPlaylist(playlist.id, dialog.tracks)
-      .then(() => closeDialog())
+      .then(() => {
+        if (isOpenDialog(generation)) closeDialog();
+      })
       .catch((reason: unknown) => {
+        if (!isOpenDialog(generation)) return;
         setBusy(false);
         setError(errorMessage(reason));
       });
   };
 
-  const submitCreate = (event: JSX.TargetedEvent<HTMLFormElement>): void => {
+  const submitCreate = (event: TargetedEvent<HTMLFormElement>): void => {
     event.preventDefault();
+    const generation = dialogGeneration.current;
     const trimmed = name.trim();
     if (dialog?.mode === "folder") {
       if (!trimmed) {
@@ -268,8 +287,11 @@ export function PlaylistDialogs(): JSX.Element | null {
       setError(undefined);
       void controller
         .createPlaylistFolder(trimmed)
-        .then(() => closeDialog())
+        .then(() => {
+          if (isOpenDialog(generation)) closeDialog();
+        })
         .catch((reason: unknown) => {
+          if (!isOpenDialog(generation)) return;
           setBusy(false);
           setError(errorMessage(reason));
         });
@@ -291,8 +313,11 @@ export function PlaylistDialogs(): JSX.Element | null {
       description.trim(),
       dialog?.tracks ?? [],
     )
-      .then(() => closeDialog())
+      .then(() => {
+        if (isOpenDialog(generation)) closeDialog();
+      })
       .catch((reason: unknown) => {
+        if (!isOpenDialog(generation)) return;
         setBusy(false);
         setError(errorMessage(reason));
       });
@@ -355,7 +380,7 @@ export function PlaylistDialogs(): JSX.Element | null {
             </label>
             <div
               className="playlist-dialog-list"
-              role="listbox"
+              role="group"
               aria-label="Editable playlists"
             >
               {searching || (loadingPlaylists && results.length === 0) ? (
@@ -370,7 +395,6 @@ export function PlaylistDialogs(): JSX.Element | null {
                   <button
                     className="playlist-dialog-option"
                     type="button"
-                    role="option"
                     key={playlist.id}
                     disabled={busy}
                     onClick={() => addToPlaylist(playlist)}

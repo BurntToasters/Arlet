@@ -128,6 +128,19 @@ export function findSignedInstallers(
   return results;
 }
 
+/**
+ * @param {*} installers
+ * @param {{
+ *   version?: string,
+ *   tag?: string,
+ *   owner?: string,
+ *   repo?: string,
+ *   notes?: string,
+ *   pubDate?: string,
+ *   pubdate?: string,
+ *   readSig?: (path: string) => string,
+ * }} [options]
+ */
 export function buildManifests(
   installers,
   {
@@ -227,11 +240,6 @@ function main() {
     );
     console.log(
       `[updater-manifests] Wrote ${name} (${Object.keys(manifest.platforms).length} platform(s)).`,
-    );
-  }
-  if (Object.keys(manifests).length < 2) {
-    console.warn(
-      "[updater-manifests] WARNING: fewer than 2 arch manifests; releases must ship x64 + ARM64.",
     );
   }
 }

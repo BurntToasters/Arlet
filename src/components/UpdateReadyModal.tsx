@@ -1,7 +1,7 @@
 import { Download, RefreshCw } from "lucide-preact";
 import { useEffect, useRef } from "preact/hooks";
 import type { JSX } from "preact";
-import { useAppController, useAppState } from "../app/context.tsx";
+import { useAppController, useAppSlices } from "../app/context.tsx";
 import { ReleaseNotes } from "./ReleaseNotes.tsx";
 
 const FOCUSABLE_SELECTOR =
@@ -13,7 +13,7 @@ const FOCUSABLE_SELECTOR =
  * every route without involving native notification or dialog surfaces.
  */
 export function UpdateReadyModal(): JSX.Element | null {
-  const state = useAppState();
+  const state = useAppSlices("updates");
   const controller = useAppController();
   const dialogRef = useRef<HTMLElement>(null);
   const restartButton = useRef<HTMLButtonElement>(null);
@@ -34,6 +34,12 @@ export function UpdateReadyModal(): JSX.Element | null {
       previousFocus?.focus?.();
     };
   }, [controller, open]);
+
+  // Installing disables both buttons, which drops focus to <body> and out of
+  // the dialog's key handling; the dialog itself holds focus instead.
+  useEffect(() => {
+    if (open && installing) dialogRef.current?.focus();
+  }, [open, installing]);
 
   if (!open) return null;
 
@@ -62,7 +68,7 @@ export function UpdateReadyModal(): JSX.Element | null {
       (!event.shiftKey && (active === last || !dialog.contains(active)))
     ) {
       event.preventDefault();
-      (event.shiftKey ? last : first).focus();
+      (event.shiftKey ? last : first)?.focus();
     }
   };
 
@@ -71,6 +77,7 @@ export function UpdateReadyModal(): JSX.Element | null {
       <section
         ref={dialogRef}
         className="update-modal"
+        tabIndex={-1}
         onKeyDown={onDialogKeyDown}
         role="dialog"
         aria-modal="true"

@@ -6,14 +6,15 @@ import {
 export async function waitForMusicKit(timeoutMs = 10000): Promise<void> {
   if (window.MusicKit) return;
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error("MusicKit JS did not load within timeout")),
-      timeoutMs,
-    );
-    document.addEventListener("musickitloaded", () => {
+    const onLoaded = (): void => {
       clearTimeout(timer);
       resolve();
-    });
+    };
+    const timer = setTimeout(() => {
+      document.removeEventListener("musickitloaded", onLoaded);
+      reject(new Error("MusicKit JS did not load within timeout"));
+    }, timeoutMs);
+    document.addEventListener("musickitloaded", onLoaded, { once: true });
   });
 }
 

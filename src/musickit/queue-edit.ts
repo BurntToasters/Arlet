@@ -8,6 +8,7 @@ import {
   setShuffleMode,
   syncMusicKitQueue,
 } from "./player.ts";
+import { keptStartIndex, withResolvableTracks } from "./unresolved.ts";
 
 /**
  * native: the runtime exposes queue mutation methods. rebuild: the queue is
@@ -132,13 +133,18 @@ function sameQueue(
   );
 }
 
-/** Replaces the provider queue, reselects the current song, and resumes. */
+/**
+ * Replaces the provider queue, reselects the current song, and resumes.
+ * Returns the queue MusicKit actually received: songs it cannot resolve are
+ * dropped, which can also move the current song's index.
+ */
 async function rebuildQueue(
   instance: MusicKit.MusicKitInstance,
   next: readonly Track[],
   index: number,
   positionSeconds: number,
-): Promise<void> {
+  onSkipped?: (count: number) => void,
+): Promise<{ queue: Track[]; index: number }> {
   if (!canSelectIndex(instance)) {
     throw new Error(
       "Editing the queue is not available in this MusicKit runtime.",
@@ -151,9 +157,22 @@ async function rebuildQueue(
   if (shuffled && !setShuffleMode(instance, false)) {
     throw new Error("Shuffle must be off to edit the queue in this runtime.");
   }
+  let applied: { queue: Track[]; index: number } = { queue: [...next], index };
   try {
-    await instance.setQueue(queueOptionsForTracks(next));
-    if (!(await changeToMediaAtIndex(instance, index))) {
+    const { entries, skipped } = await withResolvableTracks(
+      next,
+      async (attempt) => {
+        await instance.setQueue(
+          queueOptionsForTracks(attempt.map((entry) => entry.track)),
+        );
+      },
+    );
+    if (skipped.length) onSkipped?.(skipped.length);
+    applied = {
+      queue: entries.map((entry) => entry.track),
+      index: keptStartIndex(entries, index),
+    };
+    if (!(await changeToMediaAtIndex(instance, applied.index))) {
       throw new Error(
         "Selecting a song in the MusicKit queue is not available in this runtime.",
       );
@@ -166,6 +185,7 @@ async function rebuildQueue(
   else if (instance.playbackState === MusicKit.PlaybackStates.playing) {
     instance.pause();
   }
+  return applied;
 }
 
 /**
@@ -177,6 +197,8 @@ async function rebuildQueue(
 export async function editQueue(
   instance: MusicKit.MusicKitInstance,
   plan: (queue: readonly Track[], current: number) => QueueEditPlan | undefined,
+  /** Told how many unplayable songs a rebuild dropped, so it can say so. */
+  onSkipped?: (count: number) => void,
 ): Promise<QueueEditTier> {
   syncMusicKitQueue(instance);
   const playback = getState().playback;
@@ -185,14 +207,18 @@ export async function editQueue(
   if (!edit) return "noop";
   const native = edit.native ? nativeQueueMethods(instance) : undefined;
   const tier: QueueEditTier = native && edit.native ? "native" : "rebuild";
+  // The native path keeps the planned queue; a rebuild may drop unresolvable
+  // songs, so it reports what was actually set.
+  let applied = { queue: edit.next, index: before.index };
   try {
     if (native && edit.native) await edit.native(native);
     else {
-      await rebuildQueue(
+      applied = await rebuildQueue(
         instance,
         edit.next,
         before.index,
         playback.positionSeconds,
+        onSkipped,
       );
     }
   } catch (error) {
@@ -201,11 +227,8 @@ export async function editQueue(
   }
   const now = getState().playback;
   const current = { queue: now.queue, index: now.queueIndex };
-  if (
-    sameQueue(current, before) ||
-    sameQueue(current, { queue: edit.next, index: before.index })
-  ) {
-    setQueueSnapshot(edit.next, before.index);
+  if (sameQueue(current, before) || sameQueue(current, applied)) {
+    setQueueSnapshot(applied.queue, applied.index);
     return tier;
   }
   syncMusicKitQueue(instance);

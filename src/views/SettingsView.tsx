@@ -19,7 +19,7 @@ import {
   Sun,
   UserRound,
 } from "lucide-preact";
-import type { JSX } from "preact";
+import type { JSX, TargetedEvent } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { useAppController, useAppState } from "../app/context.tsx";
 import { SHORTCUT_HELP } from "../app/shortcuts.ts";
@@ -126,18 +126,20 @@ export function SettingsView(): JSX.Element {
       .catch(reportActionError);
   };
 
-  const updateTheme = (event: JSX.TargetedEvent<HTMLSelectElement>): void => {
-    void controller.setTheme(event.currentTarget.value as ThemePreference);
+  const updateTheme = (event: TargetedEvent<HTMLSelectElement>): void => {
+    void controller
+      .setTheme(event.currentTarget.value as ThemePreference)
+      .catch(reportActionError);
   };
-  const updateEffect = (event: JSX.TargetedEvent<HTMLSelectElement>): void => {
-    void controller.setWindowEffect(
-      event.currentTarget.value as WindowEffectPreference,
-    );
+  const updateEffect = (event: TargetedEvent<HTMLSelectElement>): void => {
+    void controller
+      .setWindowEffect(event.currentTarget.value as WindowEffectPreference)
+      .catch(reportActionError);
   };
-  const updateChannel = (event: JSX.TargetedEvent<HTMLSelectElement>): void => {
-    void controller.setUpdateChannel(
-      event.currentTarget.value as UpdateChannel,
-    );
+  const updateChannel = (event: TargetedEvent<HTMLSelectElement>): void => {
+    void controller
+      .setUpdateChannel(event.currentTarget.value as UpdateChannel)
+      .catch(reportActionError);
   };
   const updateBusy = ["checking", "downloading", "installing"].includes(
     state.updates.status,
@@ -236,9 +238,9 @@ export function SettingsView(): JSX.Element {
                 checked={settings.autoCheckUpdates}
                 disabled={updateBusy}
                 onChange={(event) =>
-                  void controller.setAutoCheckUpdates(
-                    event.currentTarget.checked,
-                  )
+                  void controller
+                    .setAutoCheckUpdates(event.currentTarget.checked)
+                    .catch(reportActionError)
                 }
               />
             </label>
@@ -308,7 +310,10 @@ export function SettingsView(): JSX.Element {
                 type="button"
                 disabled={updateBusy || !updaterAvailable}
                 onClick={() => {
-                  if (updaterAvailable) void controller.checkForUpdates();
+                  // The updater reports its own failures in this panel.
+                  if (updaterAvailable) {
+                    void controller.checkForUpdates().catch(() => undefined);
+                  }
                 }}
               >
                 {updateBusy && state.updates.status === "checking"

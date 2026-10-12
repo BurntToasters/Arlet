@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "preact/hooks";
 import type { JSX } from "preact";
+import { AlertCircle } from "lucide-preact";
 import type { Route } from "../routing/router.ts";
 import { serializeRoute } from "../routing/router.ts";
 import { HomeView } from "./HomeView.tsx";
@@ -11,6 +12,9 @@ import { LibraryDetailView } from "./LibraryDetailView.tsx";
 import { BrowseView } from "./BrowseView.tsx";
 import { RadioView } from "./RadioView.tsx";
 import { useOptionalAppController } from "../app/context.tsx";
+import { safeErrorMessage } from "../app/controller-support.ts";
+import { ErrorBoundary } from "../components/ErrorBoundary.tsx";
+import { EmptyState } from "./EmptyState.tsx";
 
 type DetailSource = "library" | "catalog";
 
@@ -21,7 +25,8 @@ function routeSource(route: Route): DetailSource | undefined {
 
 export function RouteView({ route }: { route: Route }): JSX.Element {
   const page = useRef<HTMLElement>(null);
-  const hasAppProvider = Boolean(useOptionalAppController());
+  const controller = useOptionalAppController();
+  const hasAppProvider = Boolean(controller);
   const hasMounted = useRef(false);
   const routeKey = serializeRoute(route);
 
@@ -109,7 +114,35 @@ export function RouteView({ route }: { route: Route }): JSX.Element {
       data-route={route.kind}
       tabIndex={-1}
     >
-      <div className="content-scroll">{view}</div>
+      <div className="content-scroll">
+        {/* Keyed by route: navigating away always clears a failed page. */}
+        <ErrorBoundary
+          key={routeKey}
+          onError={(error) => {
+            const message = `Page failed to render (${route.kind}): ${safeErrorMessage(error)}`;
+            if (controller) controller.log(message);
+            else console.error(message);
+          }}
+          fallback={(retry) => (
+            <EmptyState
+              icon={AlertCircle}
+              title="This page couldn't be shown"
+              description="Something went wrong while showing it. The rest of Arlet still works; try again or go to another page."
+              action={
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={retry}
+                >
+                  Try again
+                </button>
+              }
+            />
+          )}
+        >
+          {view}
+        </ErrorBoundary>
+      </div>
     </main>
   );
 }

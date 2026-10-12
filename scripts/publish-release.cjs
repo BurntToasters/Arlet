@@ -8,7 +8,10 @@
 const path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
 const { assertGitHubCliAuthenticated, githubApi } = require("./github-cli.cjs");
-const { selectDraftRelease } = require("./release-draft-metadata.cjs");
+const {
+  assertExistingTagTargetsCommit,
+  selectDraftRelease,
+} = require("./release-draft-metadata.cjs");
 const { assertStableReleaseOverridesAllowed } = require("./release-policy.cjs");
 
 try {
@@ -54,6 +57,17 @@ function assertReleaseTargetsCommit(release, commit) {
   );
 }
 
+// GitHub ignores target_commitish once the tag exists, so the tag itself must
+// resolve to HEAD. FORCE_UPLOAD does not bypass this: it only covers drafts.
+function assertTagTargetsCommit(commit) {
+  assertExistingTagTargetsCommit((endpoint) => githubApi("GET", endpoint), {
+    owner: REPO_OWNER,
+    repo: REPO_NAME,
+    tag: TAG_NAME,
+    commit,
+  });
+}
+
 function getDraftRelease() {
   try {
     return githubApi(
@@ -92,12 +106,50 @@ function runVerifyDraft() {
   }
 }
 
+/** Identity of the draft's assets; any upload or replacement changes it. */
+function assetSnapshot(release) {
+  return JSON.stringify(
+    (release?.assets ?? [])
+      .map((asset) => [asset.id, asset.name, asset.size, asset.updated_at])
+      .sort((left, right) => String(left[1]).localeCompare(String(right[1]))),
+  );
+}
+
+/**
+ * After a stable publish the beta feed points at the stable version. A
+ * newer published beta must be synced again, or beta users fall back.
+ */
+async function warnIfNewerBetaNeedsSync() {
+  const { compareReleaseVersions } = await import("./gpg-sign.js");
+  const releases = githubApi("GET", `/repos/${REPO}/releases?per_page=100`);
+  const newerBeta = (Array.isArray(releases) ? releases : [])
+    .filter((release) => release?.prerelease && !release.draft)
+    .map((release) => String(release.tag_name ?? "").replace(/^v/, ""))
+    .filter((version) => /^\d+\.\d+\.\d+-beta\.\d+$/.test(version))
+    .filter((version) => compareReleaseVersions(version, VERSION) > 0)
+    .sort(compareReleaseVersions)
+    .at(-1);
+  if (newerBeta) {
+    console.warn(
+      `[release:publish] WARNING: beta v${newerBeta} is newer than this stable release, but the beta feed now points at ${VERSION}. Check out v${newerBeta} and run npm run release:sync-beta-manifests.`,
+    );
+  }
+}
+
 async function main() {
   assertStableReleaseOverridesAllowed(process.env, VERSION);
   assertGitHubCliAuthenticated();
   const commit = currentReleaseCommit();
+  // Taken before verification: the publish below must ship exactly the
+  // assets that were verified.
+  const verifiedAssets = assetSnapshot(getDraftRelease());
   runVerifyDraft();
   const draft = getDraftRelease();
+  if (assetSnapshot(draft) !== verifiedAssets) {
+    throw new Error(
+      `Draft ${TAG_NAME} assets changed during verification; re-run npm run release:publish.`,
+    );
+  }
   if (!draft?.draft) throw new Error(`No draft exists for ${TAG_NAME}.`);
   if (Boolean(draft.prerelease) !== EXPECTED_PRERELEASE) {
     throw new Error(
@@ -105,6 +157,7 @@ async function main() {
     );
   }
   assertReleaseTargetsCommit(draft, commit);
+  assertTagTargetsCommit(commit);
   const published = githubApi("PATCH", `/repos/${REPO}/releases/${draft.id}`, {
     tag_name: TAG_NAME,
     target_commitish: commit,
@@ -136,6 +189,14 @@ async function main() {
     console.log(
       "[release:publish] Beta manifests synchronized after the published prerelease was confirmed.",
     );
+  } else {
+    try {
+      await warnIfNewerBetaNeedsSync();
+    } catch (error) {
+      console.warn(
+        `[release:publish] Could not check for a newer beta: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
   console.log("[release:publish] Run npm run release:verify:published next.");
 }

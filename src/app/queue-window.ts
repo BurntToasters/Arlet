@@ -25,7 +25,8 @@ export function shuffledCopy<T>(items: readonly T[]): T[] {
   const result = [...items];
   for (let i = result.length - 1; i > 0; i -= 1) {
     const j = randomIndex(i + 1);
-    [result[i], result[j]] = [result[j], result[i]];
+    // Both indexes are in range, so the reads are real items.
+    [result[i], result[j]] = [result[j] as T, result[i] as T];
   }
   return result;
 }

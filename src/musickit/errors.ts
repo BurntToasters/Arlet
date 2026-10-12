@@ -17,10 +17,20 @@ export function mapErrorToCode(error: unknown): AppErrorCode {
   ) {
     return "NETWORK";
   }
+  // Checked before sign-in: "authorization token expired" is an expiry.
+  if (
+    text.includes("token") &&
+    (text.includes("expir") ||
+      text.includes("invalid") ||
+      text.includes("revok"))
+  ) {
+    return "TOKEN_EXPIRED";
+  }
+  // Whole words only, so "author" or an id containing "auth" do not match.
   if (
     text.includes("unauthorized") ||
     text.includes("not authorized") ||
-    text.includes("auth") ||
+    /\bauth(?:entication|orization|orize|enticate)?\b/u.test(text) ||
     text.includes("sign in") ||
     text.includes("signin")
   ) {
@@ -33,25 +43,18 @@ export function mapErrorToCode(error: unknown): AppErrorCode {
   ) {
     return "SUBSCRIPTION_REQUIRED";
   }
-  if (
-    text.includes("token") &&
-    (text.includes("expir") ||
-      text.includes("invalid") ||
-      text.includes("revok"))
-  ) {
-    return "TOKEN_EXPIRED";
-  }
+  // Status codes as whole numbers; ids often contain these digits.
   if (
     text.includes("rate limit") ||
     text.includes("too many requests") ||
-    text.includes("429")
+    /\b429\b/u.test(text)
   ) {
     return "RATE_LIMITED";
   }
   if (
     text.includes("unavailable") ||
     text.includes("not found") ||
-    text.includes("404") ||
+    /\b404\b/u.test(text) ||
     text.includes("not playable") ||
     text.includes("region") ||
     text.includes("storefront")

@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { MUSIC_FIXTURE_SEED, musicFixtureSource } from "./e2e-music-fixture.js";
 import { runLibraryActions } from "./e2e-library-actions.js";
 import { runPlaylistPlayback } from "./e2e-playlist-playback.js";
+import { runFlows } from "./e2e-flows.js";
 import { runSongNavigation } from "./e2e-song-navigation.js";
 import { runTransport } from "./e2e-transport.js";
 import { runQueueEdit } from "./e2e-queue-edit.js";
@@ -194,7 +195,25 @@ const DEFAULT_SETTINGS_FOR_E2E = {
   autoCheckUpdates: true,
   updateChannel: "auto",
   volume: 1,
+  autoplay: true,
+  restoreSession: true,
+  trayIcon: true,
 };
+
+/** Polls a condition instead of guessing how long the app needs. */
+async function waitUntil(condition, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (condition()) return true;
+    await sleep(250);
+  }
+  return condition();
+}
+
+/** Waits until no Arlet process is left, so files are no longer locked. */
+function waitForArletExit(timeoutMs = 15_000) {
+  return waitUntil(() => runningArletPid() === undefined, timeoutMs);
+}
 
 function processAlive(pid) {
   const out = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/NH"], {
@@ -457,8 +476,9 @@ async function run() {
     check(`app origin is ${RELEASE_ORIGIN}`, origin === RELEASE_ORIGIN, {
       origin,
     });
+    // Generous: a slow CDN must not read as Apple removing MusicKit.
     musicRuntimeCapabilities = await page.evaluate(`
-      const deadline = Date.now() + 12000;
+      const deadline = Date.now() + 30000;
       while (Date.now() < deadline) {
         try {
           const music = window.MusicKit?.getInstance?.();
@@ -471,6 +491,38 @@ async function run() {
             queueAppend: typeof music.queue?.append === "function",
             queuePrepend: typeof music.queue?.prepend === "function",
             autoplayEnabled: "autoplayEnabled" in music,
+            // Everything Arlet calls without a fallback. MusicKit loads from
+            // Apple's CDN unversioned, so this is the early warning when
+            // Apple changes it; see .github/workflows/musickit-canary.yml.
+            missingRequired: [
+              ...[
+                "setQueue", "play", "pause", "stop", "seekToTime",
+                "skipToNextItem", "skipToPreviousItem", "authorize",
+                "unauthorize", "addEventListener", "removeEventListener",
+                "playNext", "playLater",
+              ].filter((name) => typeof music[name] !== "function"),
+              ...(typeof music.api?.music === "function" ? [] : ["api.music"]),
+              ...["playbackState", "storefrontId", "isAuthorized", "volume"]
+                .filter((name) => !(name in music)),
+              ...[
+                "playbackStateDidChange", "nowPlayingItemDidChange",
+                "playbackTimeDidChange", "queueItemsDidChange",
+                "mediaPlaybackError",
+              ].filter((name) => typeof window.MusicKit?.Events?.[name] !== "string")
+                .map((name) => "Events." + name),
+              ...(window.MusicKit?.PlaybackStates?.playing === undefined
+                ? ["PlaybackStates.playing"]
+                : []),
+            ],
+            // Optional: Arlet detects these and falls back when absent.
+            missingOptional: [
+              ...(typeof music.queue?.splice === "function" ? [] : ["queue.splice"]),
+              ...["queuePositionDidChange", "shuffleModeDidChange", "repeatModeDidChange"]
+                .filter((name) => typeof window.MusicKit?.Events?.[name] !== "string")
+                .map((name) => "Events." + name),
+              ...("shuffleMode" in music ? [] : ["shuffleMode"]),
+              ...("repeatMode" in music ? [] : ["repeatMode"]),
+            ],
           };
         } catch { /* MusicKit can load before its instance is configured. */ }
         await new Promise((resolve) => setTimeout(resolve, 100));
@@ -482,6 +534,20 @@ async function run() {
         "live MusicKit exposes indexed queue selection",
         musicRuntimeCapabilities.playerIndexSelection ||
           musicRuntimeCapabilities.instanceIndexSelection,
+        musicRuntimeCapabilities,
+      );
+      check(
+        "live MusicKit keeps every API Arlet relies on",
+        musicRuntimeCapabilities.missingRequired.length === 0,
+        {
+          missingRequired: musicRuntimeCapabilities.missingRequired,
+          missingOptional: musicRuntimeCapabilities.missingOptional,
+        },
+      );
+    } else {
+      check(
+        "live MusicKit loads from Apple's CDN",
+        false,
         musicRuntimeCapabilities,
       );
     }
@@ -941,6 +1007,7 @@ async function run() {
         ["unavailable", runUnavailable],
         ["layout", runLayout],
         ["desktop", runDesktop],
+        ["flows", runFlows],
         // Last: it signs out at the end.
         ["session-restore", runSessionRestore],
       ]) {
@@ -989,8 +1056,10 @@ async function run() {
     void settle(page, "plugin:window|close", { label: "main" }).catch(
       () => undefined,
     );
-    await sleep(1500);
-    const hiddenInTray = visibleArletWindows(appPid) === 0;
+    const hiddenInTray = await waitUntil(
+      () => visibleArletWindows(appPid) === 0,
+      10_000,
+    );
     const aliveAfterClose = processAlive(appPid);
     const relaunch = spawn(EXE, [], {
       env: { ...process.env, MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN },
@@ -1068,24 +1137,31 @@ async function run() {
       { trayDisabled: trayDisabled.ok, appPid, alive: processAlive(appPid) },
     );
 
-    // Stop the app, then confirm the cache file was migrated in place.
+    // Stop the app, then confirm the roaming cache moved to the local data
+    // dir and migrated to the current schema.
     killArlet();
-    await sleep(1500);
-    const db = new DatabaseSync(path.join(dataDirs()[0], "arlet-library.db"), {
+    await waitForArletExit();
+    const legacyDb = path.join(dataDirs()[0], "arlet-library.db");
+    const db = new DatabaseSync(path.join(dataDirs()[1], "arlet-library.db"), {
       readOnly: true,
     });
     const version = db.prepare("PRAGMA user_version").get().user_version;
     db.close();
-    check("legacy cache database migrated to schema 1", version === 1, {
-      version,
-    });
+    check(
+      "legacy roaming cache moved to local data and migrated to schema 2",
+      version === 2 && !fs.existsSync(legacyDb),
+      {
+        version,
+        legacyLeft: fs.existsSync(legacyDb),
+      },
+    );
   } catch (error) {
     check("native E2E completes", false, String(error?.message ?? error));
   } finally {
     page?.close();
     if (child?.pid) {
       killArlet();
-      await sleep(1500);
+      await waitForArletExit();
     }
     restore(moved);
   }

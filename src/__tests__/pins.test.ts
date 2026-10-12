@@ -287,7 +287,7 @@ describe("pins controller", () => {
     expect(stop).toHaveBeenCalled();
     const unauthorize = vi.mocked(music.unauthorize);
     expect(stop.mock.invocationCallOrder[0]).toBeLessThan(
-      unauthorize.mock.invocationCallOrder[0],
+      unauthorize.mock.invocationCallOrder[0] ?? 0,
     );
     controller.dispose();
   });
@@ -405,7 +405,7 @@ describe("sidebar pinned group", () => {
     const { root } = await renderSidebar();
     const active = root.querySelectorAll(".sidebar-link.is-active");
     expect(active).toHaveLength(1);
-    expect(active[0].textContent).toContain("Same");
+    expect(active[0]?.textContent).toContain("Same");
     render(null, root);
     root.remove();
   });

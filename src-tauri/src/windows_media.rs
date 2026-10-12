@@ -132,6 +132,26 @@ mod platform {
         position_token: i64,
         shuffle_token: i64,
         repeat_token: i64,
+        /// Title, artist, album, and artwork last shown. A pause or a mode
+        /// change leaves them alone, so Windows is not made to clear the
+        /// overlay and fetch the artwork again.
+        display_key: Option<String>,
+    }
+
+    /// True when the display text or artwork differs from what is shown,
+    /// and records the new key.
+    fn display_changed(key: String) -> Result<bool, String> {
+        let mut guard = session()
+            .lock()
+            .map_err(|_| "Windows media session lock poisoned".to_string())?;
+        let Some(existing) = guard.as_mut() else {
+            return Ok(true);
+        };
+        if existing.display_key.as_deref() == Some(key.as_str()) {
+            return Ok(false);
+        }
+        existing.display_key = Some(key);
+        Ok(true)
     }
 
     static SESSION: OnceLock<Mutex<Option<Session>>> = OnceLock::new();
@@ -191,7 +211,11 @@ mod platform {
                     SystemMediaTransportControlsButton::Previous => "previous",
                     _ => return Ok(()),
                 };
-                let _ = button_app.emit("windows-media-control", event);
+                let _ = button_app.emit_to(
+                    crate::auth_popup::MAIN_WINDOW_LABEL,
+                    "windows-media-control",
+                    event,
+                );
                 Ok(())
             },
         );
@@ -209,7 +233,11 @@ mod platform {
                 let args = args.ok()?;
                 let ticks = args.RequestedPlaybackPosition()?.Duration;
                 if let Some(seconds) = super::seek_seconds(ticks, super::known_duration()) {
-                    let _ = position_app.emit("windows-media-seek", seconds);
+                    let _ = position_app.emit_to(
+                        crate::auth_popup::MAIN_WINDOW_LABEL,
+                        "windows-media-seek",
+                        seconds,
+                    );
                 }
                 Ok(())
             },
@@ -227,7 +255,11 @@ mod platform {
                   args: Ref<'_, ShuffleEnabledChangeRequestedEventArgs>| {
                 let args = args.ok()?;
                 let enabled = args.RequestedShuffleEnabled()?;
-                let _ = shuffle_app.emit("windows-media-shuffle", enabled);
+                let _ = shuffle_app.emit_to(
+                    crate::auth_popup::MAIN_WINDOW_LABEL,
+                    "windows-media-shuffle",
+                    enabled,
+                );
                 Ok(())
             },
         );
@@ -248,7 +280,11 @@ mod platform {
                     MediaPlaybackAutoRepeatMode::List => RepeatMode::All,
                     _ => RepeatMode::Off,
                 };
-                let _ = repeat_app.emit("windows-media-repeat", mode.to_wire());
+                let _ = repeat_app.emit_to(
+                    crate::auth_popup::MAIN_WINDOW_LABEL,
+                    "windows-media-repeat",
+                    mode.to_wire(),
+                );
                 Ok(())
             },
         );
@@ -262,6 +298,7 @@ mod platform {
             position_token,
             shuffle_token,
             repeat_token,
+            display_key: None,
         });
         Ok(controls)
     }
@@ -297,6 +334,20 @@ mod platform {
         controls
             .SetPlaybackStatus(status)
             .map_err(|error| error.to_string())?;
+        let artwork_url = payload
+            .artwork_url
+            .filter(|value| super::is_trusted_artwork_url(value));
+        // Unit separators keep field boundaries unambiguous.
+        let key = format!(
+            "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+            payload.title,
+            payload.artist,
+            payload.album.as_deref().unwrap_or(""),
+            artwork_url.as_deref().unwrap_or("")
+        );
+        if !display_changed(key)? {
+            return Ok(());
+        }
         let display = controls
             .DisplayUpdater()
             .map_err(|error| error.to_string())?;
@@ -318,10 +369,7 @@ mod platform {
                 .SetAlbumTitle(&HSTRING::from(album))
                 .map_err(|error| error.to_string())?;
         }
-        if let Some(url) = payload
-            .artwork_url
-            .filter(|value| value.starts_with("https://"))
-        {
+        if let Some(url) = artwork_url {
             if let Ok(uri) = Uri::CreateUri(&HSTRING::from(url)) {
                 if let Ok(reference) = RandomAccessStreamReference::CreateFromUri(&uri) {
                     let _ = display.SetThumbnail(&reference);
@@ -375,9 +423,13 @@ mod platform {
         let controls = match session()
             .lock()
             .map_err(|_| "Windows media session lock poisoned".to_string())?
-            .as_ref()
+            .as_mut()
         {
-            Some(existing) => existing.controls.clone(),
+            Some(existing) => {
+                // The overlay is emptied below; the next update must refill it.
+                existing.display_key = None;
+                existing.controls.clone()
+            }
             None => match controls_for_window(window) {
                 Ok(controls) => controls,
                 Err(_) => return Ok(()),
@@ -469,6 +521,17 @@ pub fn clear_windows_media_session(window: WebviewWindow) -> Result<(), String> 
 pub fn dispose() {
     #[cfg(target_os = "windows")]
     platform::dispose();
+}
+
+/// Windows fetches the thumbnail itself, so only Apple's artwork hosts are
+/// passed on; any other host would learn the user's IP address.
+fn is_trusted_artwork_url(value: &str) -> bool {
+    url::Url::parse(value).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url
+                .host_str()
+                .is_some_and(|host| host.ends_with(".mzstatic.com") || host.ends_with(".apple.com"))
+    })
 }
 
 #[cfg(test)]

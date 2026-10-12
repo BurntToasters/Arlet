@@ -1,7 +1,7 @@
 import { Timer } from "lucide-preact";
 import type { JSX } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { useAppController, useAppState } from "../app/context.tsx";
+import { useAppController, useAppSlices } from "../app/context.tsx";
 import type { SleepTimerOption } from "../app/sleep-timer.ts";
 import type { SleepTimerState } from "../domain/music.ts";
 import { reportActionError } from "./action-errors.ts";
@@ -21,7 +21,7 @@ export function sleepTimerLabel(
 
 /** Sleep timer menu for the player bar; the timer itself lives in the controller. */
 export function SleepTimerButton(): JSX.Element {
-  const state = useAppState();
+  const state = useAppSlices("playback");
   const controller = useAppController();
   const timer = state.playback.sleepTimer;
   const [open, setOpen] = useState(false);
@@ -50,12 +50,37 @@ export function SleepTimerButton(): JSX.Element {
       }
     };
     const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key !== "Escape") return;
-      setOpen(false);
-      buttonRef.current?.focus();
+      if (event.key === "Escape") {
+        setOpen(false);
+        buttonRef.current?.focus();
+        return;
+      }
+      if (event.key === "Tab") {
+        setOpen(false);
+        return;
+      }
+      const items = Array.from(
+        menuRef.current?.querySelectorAll<HTMLButtonElement>(
+          "button[role='menuitem']",
+        ) ?? [],
+      );
+      if (!items.length) return;
+      const index = items.indexOf(document.activeElement as HTMLButtonElement);
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const delta = event.key === "ArrowDown" ? 1 : -1;
+        items[(index + delta + items.length) % items.length]?.focus();
+      } else if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        (event.key === "Home" ? items[0] : items.at(-1))?.focus();
+      }
     };
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
+    // A menu takes focus on open so arrow keys work right away.
+    menuRef.current
+      ?.querySelector<HTMLButtonElement>("button[role='menuitem']")
+      ?.focus();
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
@@ -108,7 +133,13 @@ export function SleepTimerButton(): JSX.Element {
           className="context-menu sleep-timer-menu"
           role="menu"
           aria-label="Sleep timer options"
-          style={anchor}
+          // Preact 11 sets numeric style values as-is, and the browser drops
+          // a length without a unit, so the units are explicit.
+          style={
+            anchor
+              ? { left: `${anchor.left}px`, bottom: `${anchor.bottom}px` }
+              : undefined
+          }
         >
           {MINUTE_OPTIONS.map((minutes) => (
             <button

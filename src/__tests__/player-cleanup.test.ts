@@ -94,9 +94,9 @@ describe("QueueDrawer cleanup", () => {
     const root = await renderQueue();
     const indexes = root.querySelectorAll(".queue-index");
     expect(indexes).toHaveLength(2);
-    expect(indexes[0].querySelector("svg")).not.toBeNull();
-    expect(indexes[0].textContent).not.toContain("♫");
-    expect(indexes[1].textContent).toContain("2");
+    expect(indexes[0]?.querySelector("svg")).not.toBeNull();
+    expect(indexes[0]?.textContent).not.toContain("♫");
+    expect(indexes[1]?.textContent).toContain("2");
     render(null, root);
     root.remove();
   });

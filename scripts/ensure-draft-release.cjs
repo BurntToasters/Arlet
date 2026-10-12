@@ -3,12 +3,12 @@
 // reasserted whenever an existing draft is reused, because a wrong flag makes
 // GitHub's /releases/latest point at the wrong channel.
 
-const fs = require("node:fs");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const { assertGitHubCliAuthenticated, githubApi } = require("./github-cli.cjs");
 const { readChangelogReleaseBody } = require("./changelog.cjs");
 const { assertStableReleaseOverridesAllowed } = require("./release-policy.cjs");
+const { expectedReleaseSigner } = require("./release-signer.cjs");
 
 try {
   require("dotenv").config();
@@ -200,6 +200,8 @@ function ensureDraftRelease() {
 
 if (require.main === module) {
   try {
+    // Fail before the build and upload if the release key is missing.
+    expectedReleaseSigner();
     ensureDraftRelease();
   } catch (error) {
     console.error(

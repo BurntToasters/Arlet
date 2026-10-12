@@ -7,7 +7,7 @@ import {
   UserRound,
 } from "lucide-preact";
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { JSX } from "preact";
+import type { JSX, TargetedEvent } from "preact";
 import {
   useAppController,
   useAppRouter,
@@ -160,7 +160,7 @@ export function SearchView(): JSX.Element {
     void controller.search("");
   }, [controller, state.search.results.length, state.search.status, term]);
 
-  const submit = (event: JSX.TargetedEvent<HTMLFormElement>): void => {
+  const submit = (event: TargetedEvent<HTMLFormElement>): void => {
     event.preventDefault();
     const value = term.trim();
     router.navigate({ kind: "search", query: value });

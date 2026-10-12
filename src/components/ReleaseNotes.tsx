@@ -110,11 +110,17 @@ function inlineChildren(source: string, keyPrefix: string): InlineChild[] {
     }
 
     const marker = source[index];
-    if (marker === "*" || marker === "_") {
+    if (
+      (marker === "*" || marker === "_") &&
+      !(marker === "_" && isWordChar(source[index - 1]))
+    ) {
       const strongMarker = marker.repeat(2);
       if (source.startsWith(strongMarker, index)) {
         const strongEnd = find(strongMarker, index + 2);
-        if (strongEnd > index + 2) {
+        if (
+          strongEnd > index + 2 &&
+          !(marker === "_" && isWordChar(source[strongEnd + 2]))
+        ) {
           const content = source.slice(index + 2, strongEnd);
           if (!/^\s|\s$/u.test(content)) {
             children.push(
@@ -134,6 +140,7 @@ function inlineChildren(source: string, keyPrefix: string): InlineChild[] {
       const emphasisEnd = find(marker, index + 1);
       if (
         emphasisEnd > index + 1 &&
+        !(marker === "_" && isWordChar(source[emphasisEnd + 1])) &&
         !/^\s|\s$/u.test(source.slice(index + 1, emphasisEnd))
       ) {
         children.push(
@@ -149,13 +156,33 @@ function inlineChildren(source: string, keyPrefix: string): InlineChild[] {
       }
     }
 
-    appendText(children, source[index]);
+    appendText(children, source.charAt(index));
     index += 1;
   }
   return children;
 }
 
 const FENCE_PATTERN = /^\s*(`{3,}|~{3,})(.*)$/u;
+
+/**
+ * `_` inside a word (snake_case) is literal text, not emphasis, as in
+ * CommonMark. `*` has no such rule.
+ */
+function isWordChar(char: string | undefined): boolean {
+  return char !== undefined && /[\p{L}\p{N}]/u.test(char);
+}
+
+/**
+ * A closing fence repeats the opening character at least as many times,
+ * with only whitespace after it; ```js inside a block is content.
+ */
+function isClosingFence(line: string, marker: string): boolean {
+  const trimmed = line.trimStart();
+  let count = 0;
+  while (trimmed[count] === marker[0]) count += 1;
+  return count >= marker.length && trimmed.slice(count).trim() === "";
+}
+
 // Linear: closing hashes are stripped by headingText, not by backtracking.
 const HEADING_PATTERN = /^\s{0,3}(#{1,6})[ \t]+(\S.*)$/u;
 const UNORDERED_ITEM_PATTERN = /^\s{0,3}[-+*][ \t]+(.+)$/u;
@@ -169,7 +196,10 @@ function headingText(raw: string): string {
   const text = raw.trimEnd();
   let end = text.length;
   while (end > 0 && text[end - 1] === "#") end -= 1;
-  if (end === text.length || (end > 0 && !/[ \t]/u.test(text[end - 1]))) {
+  if (
+    end === text.length ||
+    (end > 0 && !/[ \t]/u.test(text.charAt(end - 1)))
+  ) {
     return text;
   }
   return text.slice(0, end).trimEnd() || text;
@@ -190,24 +220,25 @@ function renderBlocks(
   keyPrefix: string,
   depth = 0,
 ): JSX.Element[] {
+  const lineAt = (at: number): string => lines[at] ?? "";
   const elements: JSX.Element[] = [];
   let index = 0;
   while (index < lines.length) {
-    if (!lines[index].trim()) {
+    if (!lineAt(index).trim()) {
       index += 1;
       continue;
     }
 
-    const fence = FENCE_PATTERN.exec(lines[index]);
+    const fence = FENCE_PATTERN.exec(lineAt(index));
     if (fence) {
-      const fenceMarker = fence[1];
+      const fenceMarker = fence[1] ?? "```";
       const codeLines: string[] = [];
       index += 1;
       while (
         index < lines.length &&
-        !lines[index].trimStart().startsWith(fenceMarker)
+        !isClosingFence(lineAt(index), fenceMarker)
       ) {
-        codeLines.push(lines[index]);
+        codeLines.push(lineAt(index));
         index += 1;
       }
       if (index < lines.length) index += 1;
@@ -219,11 +250,11 @@ function renderBlocks(
       continue;
     }
 
-    const heading = HEADING_PATTERN.exec(lines[index]);
+    const heading = HEADING_PATTERN.exec(lineAt(index));
     if (heading) {
-      const level = heading[1].length;
+      const level = (heading[1] ?? "#").length;
       const content = inlineChildren(
-        headingText(heading[2]),
+        headingText(heading[2] ?? ""),
         `${keyPrefix}-${elements.length}-heading`,
       );
       const key = `${keyPrefix}-${elements.length}-heading`;
@@ -238,13 +269,13 @@ function renderBlocks(
     }
 
     const quote =
-      depth < MAX_QUOTE_DEPTH ? QUOTE_PATTERN.exec(lines[index]) : null;
+      depth < MAX_QUOTE_DEPTH ? QUOTE_PATTERN.exec(lineAt(index)) : null;
     if (quote) {
       const quoteLines: string[] = [];
       while (index < lines.length) {
-        const nextQuote = QUOTE_PATTERN.exec(lines[index]);
+        const nextQuote = QUOTE_PATTERN.exec(lineAt(index));
         if (!nextQuote) break;
-        quoteLines.push(nextQuote[1]);
+        quoteLines.push(nextQuote[1] ?? "");
         index += 1;
       }
       elements.push(
@@ -259,20 +290,20 @@ function renderBlocks(
       continue;
     }
 
-    const unordered = UNORDERED_ITEM_PATTERN.exec(lines[index]);
-    const ordered = ORDERED_ITEM_PATTERN.exec(lines[index]);
+    const unordered = UNORDERED_ITEM_PATTERN.exec(lineAt(index));
+    const ordered = ORDERED_ITEM_PATTERN.exec(lineAt(index));
     if (unordered || ordered) {
       const listItems: JSX.Element[] = [];
       const listIsOrdered = Boolean(ordered);
       while (index < lines.length) {
         const next = (
           listIsOrdered ? ORDERED_ITEM_PATTERN : UNORDERED_ITEM_PATTERN
-        ).exec(lines[index]);
+        ).exec(lineAt(index));
         if (!next) break;
         listItems.push(
           <li key={`${keyPrefix}-${elements.length}-item-${listItems.length}`}>
             {inlineChildren(
-              next[1],
+              next[1] ?? "",
               `${keyPrefix}-${elements.length}-item-${listItems.length}`,
             )}
           </li>,
@@ -290,14 +321,14 @@ function renderBlocks(
       continue;
     }
 
-    const paragraphLines: string[] = [lines[index]];
+    const paragraphLines: string[] = [lineAt(index)];
     index += 1;
     while (
       index < lines.length &&
-      lines[index].trim() &&
-      !isBlockStart(lines[index])
+      lineAt(index).trim() &&
+      !isBlockStart(lineAt(index))
     ) {
-      paragraphLines.push(lines[index]);
+      paragraphLines.push(lineAt(index));
       index += 1;
     }
     elements.push(

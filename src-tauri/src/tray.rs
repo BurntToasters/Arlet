@@ -109,13 +109,25 @@ fn handle_menu(app: &AppHandle, id: &str) {
     match menu_action(id) {
         Some(TrayAction::PlayPause) => {
             let control = play_pause_control(windows_media::is_playing());
-            let _ = app.emit("windows-media-control", control);
+            let _ = app.emit_to(
+                auth_popup::MAIN_WINDOW_LABEL,
+                "windows-media-control",
+                control,
+            );
         }
         Some(TrayAction::Next) => {
-            let _ = app.emit("windows-media-control", "next");
+            let _ = app.emit_to(
+                auth_popup::MAIN_WINDOW_LABEL,
+                "windows-media-control",
+                "next",
+            );
         }
         Some(TrayAction::Previous) => {
-            let _ = app.emit("windows-media-control", "previous");
+            let _ = app.emit_to(
+                auth_popup::MAIN_WINDOW_LABEL,
+                "windows-media-control",
+                "previous",
+            );
         }
         Some(TrayAction::Show) => show_main_window(app),
         Some(TrayAction::Quit) => quit(app),

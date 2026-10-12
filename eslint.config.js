@@ -1,5 +1,6 @@
 import tsPlugin from "@typescript-eslint/eslint-plugin";
 import tsParser from "@typescript-eslint/parser";
+import reactHooks from "eslint-plugin-react-hooks";
 
 export default [
   {
@@ -13,8 +14,12 @@ export default [
     },
     plugins: {
       "@typescript-eslint": tsPlugin,
+      // Preact's hooks share React's names and rules.
+      "react-hooks": reactHooks,
     },
     rules: {
+      "react-hooks/rules-of-hooks": "error",
+      "react-hooks/exhaustive-deps": "error",
       "@typescript-eslint/no-floating-promises": "error",
       "@typescript-eslint/consistent-type-assertions": [
         "warn",
@@ -34,7 +39,9 @@ export default [
     },
   },
   {
-    files: ["scripts/**/*.{js,ts}", "e2e/**/*.js"],
+    // .cjs/.mjs carry most of the release tooling; without them listed
+    // here those files were linted with no rules at all.
+    files: ["scripts/**/*.{js,cjs,mjs,ts}"],
     languageOptions: {
       parser: tsParser,
     },
