@@ -80,6 +80,10 @@ fn main() {
         .manage(library_cache::LibraryCacheState::default())
         .manage(window_state::WindowStateCache::default())
         .setup(|app| {
+            // Read before the webview exists: its first log lines must
+            // already follow Debug Mode.
+            let appearance = settings::load_startup_appearance(app.handle());
+            settings::set_debug_mode(appearance.debug_mode);
             let window = create_main_window_or_exit(app);
             // The config is declaratively frameless; repeat the setting while
             // hidden for runtimes that cache an older generated config. A
@@ -89,7 +93,6 @@ fn main() {
                 eprintln!("Unable to confirm frameless window: {error}");
             }
 
-            let appearance = settings::load_startup_appearance(app.handle());
             let dark = appearance.theme.resolve_dark(&window);
             if let Err(error) = window_fx::apply_preference(&window, appearance.window_effect, dark)
             {

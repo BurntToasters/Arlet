@@ -265,6 +265,8 @@ export interface AppController {
   /** Rejects when the runtime has no writable autoplay; saves only on success. */
   setAutoplay?(enabled: boolean): Promise<void>;
   setTrayIcon?(enabled: boolean): Promise<void>;
+  /** Saving it switches the native log file on or off at once. */
+  setDebugMode?(enabled: boolean): Promise<void>;
   /** Turning this off deletes the saved queue. */
   setRestoreSession(enabled: boolean): Promise<void>;
   setUpdateChannel(channel: UpdateChannel): Promise<void>;
@@ -1049,6 +1051,11 @@ export function createAppController(
 
     async setTrayIcon(enabled: boolean): Promise<void> {
       await persistSettings({ ...getState().settings, trayIcon: enabled });
+    },
+
+    async setDebugMode(enabled: boolean): Promise<void> {
+      await persistSettings({ ...getState().settings, debugMode: enabled });
+      log(enabled ? "Debug Mode turned on." : "Debug Mode turned off.");
     },
 
     startSleepTimer(option: SleepTimerOption): void {

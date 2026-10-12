@@ -100,8 +100,9 @@ fn redact_sensitive(text: &str) -> String {
 const APP_IDENTIFIER: &str = "run.rosie.arlet";
 
 /// Appends a `[native]` line to `arlet.log` without an `AppHandle`, for
-/// failures before or outside Tauri (startup, panics). Best effort: it never
-/// fails or panics, because its callers are already failing.
+/// failures before or outside Tauri (startup, panics). Written even with
+/// Debug Mode off: these are the only record of a crash. Best effort: it
+/// never fails or panics, because its callers are already failing.
 pub fn write_native_log(message: &str) {
     let Some(local) = std::env::var_os("LOCALAPPDATA") else {
         return;
@@ -180,6 +181,11 @@ fn iso_timestamp_now() -> String {
 
 #[tauri::command(async)]
 pub fn append_local_log(app: tauri::AppHandle, entry: String) -> Result<(), String> {
+    // The log file is opt-in (Settings > Debug Mode). The in-memory recent
+    // log that support reports copy is kept either way.
+    if !crate::settings::debug_mode() {
+        return Ok(());
+    }
     let state = app.state::<LogFileLock>();
     let _guard = state
         .0

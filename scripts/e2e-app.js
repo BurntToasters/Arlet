@@ -210,6 +210,7 @@ const DEFAULT_SETTINGS_FOR_E2E = {
   autoplay: true,
   restoreSession: true,
   trayIcon: true,
+  debugMode: false,
 };
 
 /** Polls a condition instead of guessing how long the app needs. */
@@ -628,6 +629,94 @@ async function run() {
       appearance,
     );
 
+    // Debug Mode: off by default, so startup wrote no log file. Turning it
+    // on in Settings saves it and starts the log at once; the rest of the
+    // run relies on the log.
+    const logOffBytes = readTestLog().length;
+    check(
+      "with Debug Mode off nothing is written to arlet.log",
+      logOffBytes === 0,
+      { logOffBytes },
+    );
+    await page.evaluate('location.hash = "#/settings"; return true;');
+    const debugToggled = await page.evaluate(`
+      const deadline = Date.now() + 8000;
+      let input;
+      while (!input && Date.now() < deadline) {
+        input = [...document.querySelectorAll("label.settings-toggle-field")]
+          .find((label) => label.textContent.includes("Debug Mode"))
+          ?.querySelector('input[type="checkbox"]');
+        if (!input) await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      if (!input || input.checked) return false;
+      input.click();
+      return true;`);
+    const settingsFile = path.join(dataDirs()[0], "settings.json");
+    let savedDebugMode = false;
+    let debugLog = "";
+    const debugDeadline = Date.now() + 8000;
+    while (Date.now() < debugDeadline) {
+      try {
+        savedDebugMode =
+          JSON.parse(fs.readFileSync(settingsFile, "utf8")).debugMode === true;
+      } catch {
+        savedDebugMode = false;
+      }
+      debugLog = readTestLog();
+      if (savedDebugMode && debugLog.includes("Debug Mode turned on.")) break;
+      await sleep(200);
+    }
+    check(
+      "turning Debug Mode on saves it and starts arlet.log without a restart",
+      debugToggled &&
+        savedDebugMode &&
+        debugLog.includes("Debug Mode turned on."),
+      { debugToggled, savedDebugMode, logBytes: debugLog.length },
+    );
+
+    // Off again stops writing at once; then back on for the rest of the run.
+    const clickDebugToggle = () =>
+      page.evaluate(`
+        const input = [...document.querySelectorAll("label.settings-toggle-field")]
+          .find((label) => label.textContent.includes("Debug Mode"))
+          ?.querySelector('input[type="checkbox"]');
+        input?.click();
+        return input?.checked ?? null;`);
+    const waitForSavedDebugMode = async (expected) => {
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
+        try {
+          if (
+            JSON.parse(fs.readFileSync(settingsFile, "utf8")).debugMode ===
+            expected
+          ) {
+            return true;
+          }
+        } catch {
+          // Mid-write; read again.
+        }
+        await sleep(200);
+      }
+      return false;
+    };
+    await clickDebugToggle();
+    const savedOff = await waitForSavedDebugMode(false);
+    await settle(page, "append_local_log", { entry: "e2e-debug-off-marker" });
+    await sleep(500);
+    const offLog = readTestLog();
+    await clickDebugToggle();
+    const savedOnAgain = await waitForSavedDebugMode(true);
+    check(
+      "turning Debug Mode off stops writing arlet.log at once",
+      savedOff && savedOnAgain && !offLog.includes("e2e-debug-off-marker"),
+      {
+        savedOff,
+        savedOnAgain,
+        markerWritten: offLog.includes("e2e-debug-off-marker"),
+      },
+    );
+    await page.evaluate('location.hash = "#/home"; return true;');
+
     // 1. Release serves the embedded token, never the runtime env.
     const served = await settle(page, "get_developer_token");
     check(
@@ -881,7 +970,6 @@ async function run() {
     // Failure modes: Cancel resets anyway; the .bak or a pending save brings
     // old settings back; sign-in (WebView2 storage) or pins are wiped; the
     // app never restarts; saves stay blocked in the restarted process.
-    const settingsFile = path.join(dataDirs()[0], "settings.json");
     const pinsPayload = JSON.stringify({
       schemaVersion: 1,
       pins: [{ id: "p.e2eResetPin", source: "library" }],
@@ -993,6 +1081,27 @@ async function run() {
       path.join(artifactDir, "screenshot-after-reset.png"),
       Buffer.from(resetShot.data, "base64"),
     );
+
+    // Reset turned Debug Mode off with the other defaults. The scenarios
+    // below read arlet.log, so turn it back on the way a user would.
+    await page.evaluate('location.hash = "#/settings"; return true;');
+    await waitFor(
+      page,
+      `[...document.querySelectorAll("label.settings-toggle-field")].some((label) => label.textContent.includes("Debug Mode"))`,
+      10_000,
+    );
+    const debugOffAfterReset = await page.evaluate(`
+      return [...document.querySelectorAll("label.settings-toggle-field")]
+        .find((label) => label.textContent.includes("Debug Mode"))
+        ?.querySelector('input[type="checkbox"]')?.checked === false;`);
+    await clickDebugToggle();
+    const debugOnAfterReset = await waitForSavedDebugMode(true);
+    check(
+      "reset turns Debug Mode off, and it can be turned on again",
+      debugOffAfterReset && debugOnAfterReset,
+      { debugOffAfterReset, debugOnAfterReset },
+    );
+    await page.evaluate('location.hash = "#/home"; return true;');
 
     // Reset deleted the saved geometry, and the closing window (reset
     // pending) must not have written it back.

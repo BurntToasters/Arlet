@@ -44,6 +44,8 @@ export interface AppSettings {
   restoreSession: boolean;
   /** Show the tray icon; closing the window then hides to it instead of quitting. */
   trayIcon: boolean;
+  /** Write the app log to disk (`arlet.log`). Off by default. */
+  debugMode: boolean;
   /** Reserved for forward-compatible settings owned by other versions. */
   [key: string]: unknown;
 }
@@ -58,6 +60,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoplay: true,
   restoreSession: true,
   trayIcon: true,
+  debugMode: false,
 };
 
 export type AuthState =

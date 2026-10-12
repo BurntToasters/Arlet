@@ -271,6 +271,21 @@ closing the window quits.
 The update-ready dialog is not driven here: it needs a signed installer from
 a live feed, so it is checked by hand on each release (see below).
 
+## Debug Mode
+
+`scripts/e2e-app.js` starts with Debug Mode off (the default), checks it,
+then turns it on through Settings for the rest of the run.
+
+- With Debug Mode off, startup or app activity still writes `arlet.log`.
+  The run starts from a settings file with no `debugMode` key.
+- Turning Debug Mode on in Settings is not saved, or logging only starts
+  after a restart.
+- Turning it off keeps writing until restart.
+
+A native crash or a failed window start is written to `arlet.log` even with
+Debug Mode off, because nothing else records it. That path is not driven
+here.
+
 ## Release-only evidence
 
 The following checks require a Windows release environment and are kept out of
