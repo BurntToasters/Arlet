@@ -2,7 +2,7 @@
 
 | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                            | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
 | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.5/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.5/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.6/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.2.6/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -21,13 +21,13 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 
 ## Changes in `v0.2.6:`
 
-- **Fix - Faster playlist starts:** Playing a large playlist now starts as soon as the songs around the one you picked have loaded, instead of waiting for every page. The rest loads while it plays. Arlet also queues 100 songs to start instead of 500, so the first song plays sooner.
+- **Fix - Faster playlist starts:** Clicking a song now starts it directly. Arlet no longer queues the songs before it first and then switches to it, which took over a second. A playlist starts once the song you picked has loaded instead of waiting for every page, and only that song and the next 15 are queued before it plays; the rest is added while it plays. `Playing Next` now begins at the song you clicked, and `Previous` still goes back through the playlist.
 - **Fix - Playlists failing to play:** Large playlists no longer fail with `Unable to read body as JSON`. That came from asking Apple for 500 songs at once; Arlet now asks for fewer and retries once if Apple's reply is unreadable.
 - **Fix - Pinned playlists:** Pinned playlists keep their names in the sidebar instead of showing `Playlist` until you open them.
 - **Fix - Playlist header:** Playlists with a large cover image no longer push their title, `Play all`, and `Shuffle` out of the header.
-- **Fix - Artists:** When Apple doesn't name a song's artists, the player shows the song's artist text instead of `Artist 1, Artist 2`.
+- **Fix - Artists:** When Apple doesn't name a song's artists, the player shows the song's artist text instead of `Artist 1, Artist 2`, and the right-click menu names each artist instead of listing several identical `Go to artist` items.
 - **Fix - Ratings and song details:** Songs from library playlists no longer fail to load their rating, album, and artists.
-- **Testing:** End-to-end tests now check that a large playlist starts before its later pages load, that pins keep their names, that a large cover stays inside the header, that unnamed artists show the song's artist text, and that library playlist songs load their rating and details.
+- **Testing:** End-to-end tests now check that a clicked song starts MusicKit's queue with no re-select, that `Previous` steps back through the playlist (but not into a queue replaced elsewhere), that a first batch with no playable song moves on to the next, that a large playlist starts before its later pages load, that pins keep their names, that a large cover stays inside the header, that unnamed artists show the song's artist text, and that library playlist songs load their rating and details.
 
 ## Changes in `v0.2.5:`
 

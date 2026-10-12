@@ -239,9 +239,12 @@ export async function runSessionRestore({ page, check, dataDir }) {
   check(
     "Play sets the saved queue starting at the saved song, then seeks to the position chosen before Play",
     resumed &&
-      JSON.stringify(setQueue?.ids) === JSON.stringify(SAVED_IDS) &&
-      setQueue?.options?.startWith === SAVED_INDEX &&
-      played?.index === SAVED_INDEX &&
+      // MusicKit's queue starts at the saved song; earlier songs stay with
+      // Arlet for Previous.
+      JSON.stringify(setQueue?.ids) ===
+        JSON.stringify(SAVED_IDS.slice(SAVED_INDEX)) &&
+      setQueue?.options?.startWith === 0 &&
+      played?.index === 0 &&
       Math.abs((seek?.seconds ?? -1) - (SAVED_POSITION + SEEK_STEP)) < 0.001 &&
       indexOf("setQueue") < indexOf("play") &&
       indexOf("play") < indexOf("seekToTime"),
@@ -279,9 +282,10 @@ export async function runSessionRestore({ page, check, dataDir }) {
     restoredAgain &&
       skipped &&
       skipTitle &&
-      JSON.stringify(skipQueue?.ids) === JSON.stringify(SAVED_IDS) &&
-      skipQueue?.options?.startWith === NEXT_INDEX &&
-      skipPlay?.index === NEXT_INDEX &&
+      JSON.stringify(skipQueue?.ids) ===
+        JSON.stringify(SAVED_IDS.slice(NEXT_INDEX)) &&
+      skipQueue?.options?.startWith === 0 &&
+      skipPlay?.index === 0 &&
       !skipTransitions.some((item) => item.type === "seekToTime"),
     {
       restoredAgain,
@@ -312,9 +316,11 @@ export async function runSessionRestore({ page, check, dataDir }) {
   check(
     "turning Resume back on saves the queue after the next pause",
     savedAgain &&
+      // The saved queue is the current one: it starts at the song Next
+      // played.
       JSON.stringify(saved?.items?.map((item) => item.id)) ===
-        JSON.stringify(SAVED_IDS) &&
-      saved?.index === NEXT_INDEX,
+        JSON.stringify(SAVED_IDS.slice(NEXT_INDEX)) &&
+      saved?.index === 0,
     {
       savedAgain,
       index: saved?.index,

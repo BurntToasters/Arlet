@@ -368,7 +368,7 @@ export function createAppController(
     startIndex = 0,
   ): Promise<void> => {
     collections.invalidate();
-    return playback.playTracks(tracks, startIndex);
+    return playback.playTracks(tracks, startIndex).then(() => undefined);
   };
   const playCollection = collections.play;
   let stationResolver:
@@ -513,6 +513,8 @@ export function createAppController(
   };
 
   let resolvingPins = false;
+  // A request that arrives mid-run (a new pin) runs once more afterwards.
+  let resolvePinsAgain = false;
   /**
    * Saves each pin's name and artwork, so the sidebar can show a pinned
    * playlist that is not in the loaded playlist list. Uses the loaded list
@@ -520,7 +522,10 @@ export function createAppController(
    * rest. Runs once at a time; needs a signed-in library.
    */
   const resolvePinDetails = async (): Promise<void> => {
-    if (resolvingPins) return;
+    if (resolvingPins) {
+      resolvePinsAgain = true;
+      return;
+    }
     const client = library.client();
     if (!client || getState().auth.status !== "authorized") return;
     resolvingPins = true;
@@ -567,6 +572,10 @@ export function createAppController(
       await persistPins(next);
     } finally {
       resolvingPins = false;
+      if (resolvePinsAgain) {
+        resolvePinsAgain = false;
+        void resolvePinDetails();
+      }
     }
   };
 

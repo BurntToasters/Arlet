@@ -1,6 +1,9 @@
 import type { Track } from "../domain/music.ts";
 
 const UNRESOLVED_MESSAGE = "One or more items could not be resolved";
+/** Thrown when no song in a list can be queued. */
+export const NONE_AVAILABLE_MESSAGE =
+  "None of these songs are available on Apple Music.";
 const LIBRARY_ID = /^[ailp]\.[A-Za-z0-9]+$/u;
 /** One retry per round of newly unresolved IDs; each round only shrinks the list. */
 const MAX_ATTEMPTS = 4;
@@ -65,7 +68,7 @@ export async function withResolvableTracks(
     else entries.push({ track, index });
   });
   if (entries.length === 0) {
-    throw new Error("None of these songs are available on Apple Music.");
+    throw new Error(NONE_AVAILABLE_MESSAGE);
   }
   for (let attempt = 1; ; attempt += 1) {
     try {
@@ -93,7 +96,7 @@ export async function withResolvableTracks(
       // IDs that match nothing we sent would only repeat the same failure.
       if (!changed) throw error;
       if (next.length === 0) {
-        throw new Error("None of these songs are available on Apple Music.");
+        throw new Error(NONE_AVAILABLE_MESSAGE);
       }
       entries = next;
     }

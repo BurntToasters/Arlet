@@ -170,6 +170,25 @@ are not playable. Failure scenarios:
   the background and are dropped if the queue is replaced.
 - A song lookup that fails once with an unreadable body fails the whole Play
   instead of being retried.
+- A mid-playlist click queues songs before the clicked one and then
+  re-selects it, so MusicKit prepares one song and switches to another (about
+  1.3 seconds in a real log). MusicKit's queue must start at the clicked song.
+- The first `setQueue` holds more than one lookup's worth (16) of songs.
+- The wrong duplicate occurrence plays when a playlist lists a song twice.
+- Previous on the first queued song restarts it instead of going to the song
+  before it in the playlist, or steps back into a queue that was replaced.
+- The rest of the playlist is not appended once the first song starts, or is
+  appended twice.
+- A first batch whose songs are all unavailable fails the Play although later
+  songs can play.
+- A new Play keeps showing the previous song's position until MusicKit's
+  first time event, so Previous pressed right away restarts the new song
+  instead of stepping back.
+- With shuffle already on, clicking a row in a large playlist starts after its
+  first pages, so the shuffle only draws from the start of the playlist.
+- A collection Play that a newer Play replaced while it was starting still
+  appends its later pages to the newer queue. (Code-reviewed: the later pages
+  carry the token their own Play returned; the race is not driven here.)
 
 ## Layout
 

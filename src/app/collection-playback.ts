@@ -2,21 +2,18 @@ import type { MusicSource, Track } from "../domain/music.ts";
 import { getState, setUiState } from "../state.ts";
 import { readPlaybackModes } from "../musickit/player.ts";
 import type { LibraryLoader } from "./library-loader.ts";
-import {
-  INITIAL_QUEUE_LENGTH,
-  nearestTrackIndex,
-  QUEUE_HISTORY_LENGTH,
-} from "./queue-window.ts";
+import { FIRST_BATCH_LENGTH, nearestTrackIndex } from "./queue-window.ts";
 
 export interface CollectionPlaybackDeps {
   requireMusic(): MusicKit.MusicKitInstance;
   getMusic(): MusicKit.MusicKitInstance | null | undefined;
   requireLibrary: LibraryLoader["requireLibrary"];
+  /** Resolves to the new queue's continuation token, or undefined. */
   playTracks(
     tracks: readonly Track[],
     startIndex?: number,
     timing?: PlayTiming,
-  ): Promise<void>;
+  ): Promise<number | undefined>;
   setShuffleMode(mode: "off" | "songs"): Promise<void>;
   /** Identifies the queue a Play just set, for `appendContinuation`. */
   continuationToken(): number;
@@ -229,18 +226,22 @@ export function createCollectionPlayback(deps: CollectionPlaybackDeps) {
         }
         return true;
       };
-      // Enough to fill the first queue window around the chosen song, so a
-      // short collection still queues whole.
+      // Enough for the chosen song and MusicKit's first batch after it; the
+      // songs before it are already in, since pages arrive in order.
+      // With shuffle on, MusicKit or Arlet shuffles the whole collection,
+      // so every page is needed first.
+      const shuffleOn =
+        options.shuffle === true ||
+        readPlaybackModes(instance).shuffleMode === "songs";
       const loadedChosen = (): boolean => {
-        if (options.shuffle) return false;
+        if (shuffleOn) return false;
         const chosen = options.trackId
           ? nearestTrackIndex(tracks, startIndex, options.trackId)
           : startIndex < tracks.length
             ? startIndex
             : -1;
         if (chosen < 0) return false;
-        const windowStart = Math.max(0, chosen - QUEUE_HISTORY_LENGTH);
-        return tracks.length >= windowStart + INITIAL_QUEUE_LENGTH;
+        return tracks.length >= chosen + FIRST_BATCH_LENGTH;
       };
       if (!(await loadUntil(loadedChosen))) return;
       const timing: PlayTiming = {
@@ -266,9 +267,11 @@ export function createCollectionPlayback(deps: CollectionPlaybackDeps) {
       if (!Number.isInteger(index) || index < 0 || index >= queue.length) {
         throw new Error(`The selected ${kind} song is unavailable.`);
       }
-      await deps.playTracks(queue, index, timing);
-      if (!pager.done) {
-        void loadRest(pager, deps.continuationToken(), instance);
+      // The token comes from this Play: a newer Play that started meanwhile
+      // must not receive this collection's later pages.
+      const token = await deps.playTracks(queue, index, timing);
+      if (token !== undefined && !pager.done) {
+        void loadRest(pager, token, instance);
       }
     } catch (error) {
       // A request the user already replaced must not surface its failure.
