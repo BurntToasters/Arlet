@@ -34,6 +34,30 @@ export interface MusicResourceRef {
 }
 
 /** A routable album or artist relationship carried by a song. */
+/**
+ * Library IDs carry an `i.`, `l.` or `p.` prefix; catalog song IDs are all
+ * digits. MusicKit can report a library type on a catalog ID (library
+ * playlist songs), so an unambiguous ID decides library or catalog; any other
+ * ID keeps its type.
+ */
+export function idSource(id: string): MusicSource | undefined {
+  const trimmed = id.trim();
+  if (/^[ilp]\./u.test(trimmed)) return "library";
+  if (/^\d+$/u.test(trimmed)) return "catalog";
+  return undefined;
+}
+
+/** Library or catalog type for a song, keeping its kind (songs, music-videos). */
+export function resourceTypeForId(
+  id: string,
+  type: string | undefined,
+): string {
+  const kind = (type ?? "songs").replace(/^library-/u, "") || "songs";
+  const source =
+    idSource(id) ?? (type?.startsWith("library-") ? "library" : "catalog");
+  return source === "library" ? `library-${kind}` : kind;
+}
+
 export interface MusicEntityRef {
   id: MusicId;
   name?: string;
@@ -116,6 +140,10 @@ export interface PlaylistFolder {
 export interface PinnedPlaylist {
   id: MusicId;
   source: MusicSource;
+  /** Saved with the pin so the sidebar can name it before the list loads. */
+  name?: string;
+  /** Artwork URL template saved with the pin, for the same reason. */
+  artworkUrl?: string;
 }
 
 export interface Station {

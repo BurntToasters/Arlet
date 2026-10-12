@@ -73,8 +73,26 @@ function installMusicKitFixture() {
     return resource;
   };
   const navResources = {
-    "nav-multi": navTrack("nav-multi", "Navigation Multi Artist Song", {
-      albums: { data: [{ id: "nav-album", type: "albums" }] },
+    // Two unnamed artist links whose names the artist text supplies.
+    "nav-multi": (() => {
+      const item = navTrack("nav-multi", "Navigation Multi Artist Song", {
+        albums: { data: [{ id: "nav-album", type: "albums" }] },
+        artists: {
+          data: [
+            { id: "nav-artist-one", type: "library-artists" },
+            { id: "nav-artist-two", type: "artists" },
+          ],
+        },
+      });
+      item.attributes.artistName = "Artist One & Artist Two";
+      return item;
+    })(),
+    "nav-missing": navTrack("nav-missing", "Navigation Without Relationships"),
+    "nav-delayed": navTrack("nav-delayed", "Navigation Delayed Song"),
+    "nav-race": navTrack("nav-race", "Navigation Race Song"),
+    "nav-error": navTrack("nav-error", "Navigation Error Song"),
+    // Artist links without names, as Apple sometimes returns them.
+    "nav-unnamed": navTrack("nav-unnamed", "Navigation Unnamed Artists", {
       artists: {
         data: [
           { id: "nav-artist-one", type: "library-artists" },
@@ -82,10 +100,6 @@ function installMusicKitFixture() {
         ],
       },
     }),
-    "nav-missing": navTrack("nav-missing", "Navigation Without Relationships"),
-    "nav-delayed": navTrack("nav-delayed", "Navigation Delayed Song"),
-    "nav-race": navTrack("nav-race", "Navigation Race Song"),
-    "nav-error": navTrack("nav-error", "Navigation Error Song"),
   };
 
   // A library-only song: no catalog ID in playParams or relationships.

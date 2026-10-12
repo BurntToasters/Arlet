@@ -356,6 +356,9 @@ export function createAppController(
     requireLibrary,
     playTracks: playback.playTracks,
     setShuffleMode: playback.setShuffleMode,
+    continuationToken: playback.continuationToken,
+    appendContinuation: playback.appendContinuation,
+    log,
   });
   // A pause, including toggling a playing queue to pause, stops any playlist
   // or station still loading so it cannot start after the pause.
@@ -506,6 +509,65 @@ export function createAppController(
 
   const reloadPins = async (): Promise<void> => {
     setPins(await loadPersistedPins(invokeFn));
+    void resolvePinDetails();
+  };
+
+  let resolvingPins = false;
+  /**
+   * Saves each pin's name and artwork, so the sidebar can show a pinned
+   * playlist that is not in the loaded playlist list. Uses the loaded list
+   * when it has the playlist (also picking up renames) and asks Apple for the
+   * rest. Runs once at a time; needs a signed-in library.
+   */
+  const resolvePinDetails = async (): Promise<void> => {
+    if (resolvingPins) return;
+    const client = library.client();
+    if (!client || getState().auth.status !== "authorized") return;
+    resolvingPins = true;
+    try {
+      const listed = getState().library.collections.playlists.items;
+      const updates = new Map<
+        string,
+        Pick<PinnedPlaylist, "name" | "artworkUrl">
+      >();
+      for (const pin of getState().pins) {
+        const known = listed.find((item) => item.id === pin.id) as
+          { name?: unknown; artwork?: { url?: unknown } } | undefined;
+        let name = typeof known?.name === "string" ? known.name : undefined;
+        let artworkUrl =
+          typeof known?.artwork?.url === "string"
+            ? known.artwork.url
+            : undefined;
+        if (!name && !pin.name) {
+          try {
+            const playlist = await client.getPlaylist(pin.id, pin.source);
+            name = playlist?.name;
+            artworkUrl = playlist?.artwork?.url;
+          } catch (error) {
+            log(`Pinned playlist lookup failed: ${safeErrorMessage(error)}`);
+          }
+        }
+        if (
+          (name && name !== pin.name) ||
+          (artworkUrl && artworkUrl !== pin.artworkUrl)
+        ) {
+          updates.set(pin.id, {
+            name: name ?? pin.name,
+            artworkUrl: artworkUrl ?? pin.artworkUrl,
+          });
+        }
+      }
+      if (updates.size === 0) return;
+      // Pins may have changed during the lookups; apply to the latest list.
+      const next = getState().pins.map((pin) => {
+        const update = updates.get(pin.id);
+        return update ? { ...pin, ...update } : pin;
+      });
+      setPins(next);
+      await persistPins(next);
+    } finally {
+      resolvingPins = false;
+    }
   };
 
   const syncPlaybackDiagnostics = (): void => {
@@ -591,6 +653,7 @@ export function createAppController(
         await cachePromise;
         if (storefront) setAccountSummary({ storefront });
         log("Already authorized from previous session.");
+        void resolvePinDetails();
       }
       // Not awaited: a restored queue must never hold up the update check.
       playbackSession.tryRestore();
@@ -779,6 +842,7 @@ export function createAppController(
         : [...current, { id: trimmed, source }].slice(0, MAX_PINS);
       setPins(next);
       await persistPins(next);
+      void resolvePinDetails();
     },
 
     async unpin(id: string): Promise<void> {

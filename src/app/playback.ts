@@ -1,4 +1,4 @@
-import { mapErrorToCode } from "../musickit/errors.ts";
+import { httpStatusOf, mapErrorToCode } from "../musickit/errors.ts";
 import {
   queueOptionsForTracks,
   changeToMediaAtIndex,
@@ -70,6 +70,22 @@ type QueueInsertMethod = "playNext" | "playLater";
 /** Queue and transport commands over the MusicKit instance. */
 /** A Play that is not audible by then is not timed. */
 const PLAY_TIMING_TIMEOUT_MS = 60_000;
+/** Pause before retrying a queue setup that failed on a song lookup. */
+const SET_QUEUE_RETRY_DELAY_MS = 600;
+
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/** A lookup that returned no usable body, as opposed to a real refusal. */
+function isTransientLookupFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const status = httpStatusOf(error);
+  return (
+    /Unable to read body as JSON/iu.test(message) ||
+    status === 429 ||
+    (status !== undefined && status >= 500)
+  );
+}
 
 export function createPlayback(context: ControllerContext) {
   const { requireMusic, getMusic, log } = context;
@@ -341,10 +357,22 @@ export function createPlayback(context: ControllerContext) {
           const queue = attempt.map((entry) => entry.track);
           // `startWith` positions the queue before MusicKit shuffles it, so
           // the chosen song stays first and the rest are shuffled after it.
-          await instance.setQueue({
+          const options = {
             ...queueOptionsForTracks(queue),
             startWith: keptStartIndex(attempt, startIndex),
-          });
+          };
+          try {
+            await instance.setQueue(options);
+          } catch (error) {
+            // One of MusicKit's song lookups can fail with an empty or HTML
+            // body (Apple throttling); the queue is fine, so try once more.
+            if (!isTransientLookupFailure(error) || !request.current()) {
+              throw error;
+            }
+            log(`Queue setup failed once; retrying: ${errorMessage(error)}`);
+            await delay(SET_QUEUE_RETRY_DELAY_MS);
+            await instance.setQueue(options);
+          }
         },
       );
       step(`setQueue (${tracks.length} songs)`);
@@ -531,12 +559,31 @@ export function createPlayback(context: ControllerContext) {
       });
   };
 
+  /**
+   * Appends songs that finished loading after their Play started (the later
+   * pages of a playlist). `token` is `continuationToken()` from right after
+   * that Play; a newer queue makes it stale and the songs are dropped.
+   */
+  const appendContinuation = (
+    token: number,
+    tracks: readonly Track[],
+  ): void => {
+    if (token !== restGeneration || tracks.length === 0) return;
+    const anchor = restAnchor ?? getState().playback.queue.at(-1);
+    if (!anchor) return;
+    setRest([...queueRest, ...tracks], anchor);
+    maybeRefillQueue();
+  };
+
   return {
     applyPlaybackVolume,
     syncPlaybackModes,
     playTracks,
     maybeRefillQueue,
     clearContinuation,
+    appendContinuation,
+    /** Identifies the current queue for `appendContinuation`. */
+    continuationToken: (): number => restGeneration,
 
     async playStation(station: Station): Promise<void> {
       const url = station.url?.trim();

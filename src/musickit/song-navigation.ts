@@ -1,4 +1,9 @@
-import type { MusicEntityRef, MusicSource, Track } from "../domain/music.ts";
+import {
+  idSource,
+  type MusicEntityRef,
+  type MusicSource,
+  type Track,
+} from "../domain/music.ts";
 import { resolveMusicKitMusicRequest, resolveStorefront } from "./catalog.ts";
 import { normalizeTrackNavigation } from "./normalize.ts";
 
@@ -10,6 +15,10 @@ export interface TrackNavigation {
 type NavigationRefs = Pick<Track, "albumRef" | "artistRefs">;
 
 function sourceForTrack(track: Track): MusicSource {
+  // The ID decides: a library type with a catalog ID would ask the library
+  // endpoint for a catalog song (404).
+  const fromId = track.id ? idSource(track.id) : undefined;
+  if (fromId) return fromId;
   if (track.resourceType)
     return track.resourceType.startsWith("library-") ? "library" : "catalog";
   if (track.albumRef?.source) return track.albumRef.source;

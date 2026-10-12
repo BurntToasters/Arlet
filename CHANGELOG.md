@@ -19,6 +19,16 @@
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
 
+## Changes in `v0.2.6:`
+
+- **Fix - Faster playlist starts:** Playing a large playlist now starts as soon as the songs around the one you picked have loaded, instead of waiting for every page. The rest loads while it plays. Arlet also queues 100 songs to start instead of 500, so the first song plays sooner.
+- **Fix - Playlists failing to play:** Large playlists no longer fail with `Unable to read body as JSON`. That came from asking Apple for 500 songs at once; Arlet now asks for fewer and retries once if Apple's reply is unreadable.
+- **Fix - Pinned playlists:** Pinned playlists keep their names in the sidebar instead of showing `Playlist` until you open them.
+- **Fix - Playlist header:** Playlists with a large cover image no longer push their title, `Play all`, and `Shuffle` out of the header.
+- **Fix - Artists:** When Apple doesn't name a song's artists, the player shows the song's artist text instead of `Artist 1, Artist 2`.
+- **Fix - Ratings and song details:** Songs from library playlists no longer fail to load their rating, album, and artists.
+- **Testing:** End-to-end tests now check that a large playlist starts before its later pages load, that pins keep their names, that a large cover stays inside the header, that unnamed artists show the song's artist text, and that library playlist songs load their rating and details.
+
 ## Changes in `v0.2.5:`
 
 - **NEW - Debug Mode:** A `Debug Mode` switch at the bottom of Settings, off by default. Arlet only saves its log file (`arlet.log`) while it's on, and turning it on or off takes effect right away. `Copy diagnostics report` works either way. If Arlet crashes or can't open its window, a short note about it is still saved so the problem can be found.

@@ -159,15 +159,28 @@ are not playable. Failure scenarios:
   and jumps the scroll, or a cache write is rejected for exceeding the native
   10,000-entry page limit.
 - Background queue refills show "skipped" toasts the user did not ask for.
-- A capped queue ends after 500 songs instead of loading the rest of the
-  playlist as it plays; a refill fires twice, refills after a new play or
+- A capped queue ends after its first window instead of loading the rest of
+  the playlist as it plays; a refill fires twice, refills after a new play or
   `Clear`, or interrupts the current song.
+- Play on a large playlist waits for every page and queues hundreds of songs
+  before any audio (a 1124-song playlist took over 10 seconds, and the
+  ~32 parallel lookups for a 500-song queue sometimes failed with "Unable to
+  read body as JSON"). Play must start after the chosen song's page with a
+  first window of at most 100 songs; later pages join the continuation in
+  the background and are dropped if the queue is replaced.
+- A song lookup that fails once with an unreadable body fails the whole Play
+  instead of being retried.
 
 ## Layout
 
 - A horizontal scrollbar appears in the player or content area.
 - Long pinned playlist names wrap into tall blocks in the sidebar and push
   the account row under the player bar instead of ending in an ellipsis.
+- A pinned playlist that is not in the loaded playlist list shows as a
+  generic "Playlist" until it is opened. Its name is now saved with the pin.
+- A playlist with a large cover image pushes its title, Play all, and
+  Shuffle out of the header to the far right (the art's wrapper took the
+  image's natural width).
 
 ## Keyboard and transport
 
@@ -190,6 +203,13 @@ are not playable. Failure scenarios:
 ## Ratings and library
 
 - A ratings request uses the wrong ID kind (library vs catalog path).
+- A queued song whose type says library but whose ID is a catalog ID (as
+  MusicKit reports library playlist songs) is looked up on the library path:
+  Apple answers 400 for its rating and 404 for its album and artists.
+- When Apple names none of a song's artists, the player shows "Artist 1,
+  Artist 2" instead of the song's artist text.
+- Add to Library gives no confirmation and the item does not appear in
+  Library until a manual refresh.
 - An optimistic Love stays set after the request fails.
 - Fast repeated clicks race and leave the wrong final rating.
 - A late rating response is shown for a newer track.

@@ -286,11 +286,33 @@ export async function runUnavailable({ page, check }) {
       15_000,
     );
 
-    await page.evaluate(`
+    // Later pages answer slowly: Play must not wait for them. Earlier steps
+    // already played songs and loaded every page, so compare against counts
+    // and times taken at the click.
+    const atClick = await page.evaluate(`
+      ${FIXTURE}.configure({ delayPaths: ["playlist-big/tracks?offset"], delayMs: 2500 });
+      const plays = ${FIXTURE}.snapshot().transitions.filter((item) => item.type === "play").length;
+      const clickedAt = Date.now();
       [...document.querySelectorAll(".library-detail-actions button")]
         .find((node) => node.textContent.trim() === "Play all")?.click();
-      return true;
+      return { plays, clickedAt };
     `);
+    const playedEarly = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().transitions.filter((item) => item.type === "play").length > ${atClick.plays}`,
+      2_000,
+    );
+    const laterPagesAtPlay = (await snapshot(page)).requests.filter(
+      (request) =>
+        String(request.path).includes("playlist-big/tracks?offset") &&
+        request.startedAt >= atClick.clickedAt &&
+        request.completedAt,
+    ).length;
+    check(
+      "Play on a large playlist starts before its later pages finish loading",
+      playedEarly && laterPagesAtPlay === 0,
+      { playedEarly, laterPagesAtPlay },
+    );
     await waitFor(
       page,
       `${FIXTURE}.snapshot().transitions.some((item) => item.type === "play")`,
@@ -300,8 +322,8 @@ export async function runUnavailable({ page, check }) {
     queued = snap.transitions.filter((item) => item.type === "setQueue");
     const capped = queued.at(-1)?.ids ?? [];
     check(
-      "a huge playlist queues at most 500 songs and skips unstreamable ones",
-      capped.length === 499 &&
+      "a huge playlist starts with at most 100 songs and skips unstreamable ones",
+      capped.length === 99 &&
         capped[0] === "big-0000" &&
         !capped.includes("big-0001") &&
         snap.queue.activeId === "big-0000" &&
@@ -322,10 +344,13 @@ export async function runUnavailable({ page, check }) {
     `);
     const restShown = await waitFor(
       page,
-      `document.querySelector(".queue-rest-note")?.textContent?.includes("700 more songs")`,
+      // 1200 songs, 100 in the first window; the later pages load while
+      // the first song plays and join the rest.
+      `document.querySelector(".queue-rest-note")?.textContent?.includes("1,100 more songs")`,
+      20_000,
     );
     await page.evaluate(
-      "await window.MusicKit.getInstance().changeToMediaAtIndex(450); return true;",
+      "await window.MusicKit.getInstance().changeToMediaAtIndex(60); return true;",
     );
     const refilled = await waitFor(
       page,
@@ -345,10 +370,10 @@ export async function runUnavailable({ page, check }) {
       restShown &&
         refilled &&
         refills.length === 1 &&
-        refills[0].ids.length === 200 &&
-        refills[0].ids[0] === "big-0500" &&
-        snap.queue.activeId === "big-0451" &&
-        String(restAfter).includes("500 more songs"),
+        refills[0].ids.length === 100 &&
+        refills[0].ids[0] === "big-0100" &&
+        snap.queue.activeId === "big-0061" &&
+        String(restAfter).includes("1,000 more songs"),
       {
         restShown,
         refills: refills.map((item) => ({
@@ -391,8 +416,8 @@ export async function runUnavailable({ page, check }) {
       .filter((index) => index >= 600).length;
     check(
       "shuffle of a huge playlist samples the whole playlist within the cap",
-      shuffledIds.length >= 499 &&
-        shuffledIds.length <= 500 &&
+      shuffledIds.length >= 99 &&
+        shuffledIds.length <= 100 &&
         farIndexes > 0 &&
         snap.modes.shuffle === true,
       { length: shuffledIds.length, farIndexes, shuffle: snap.modes.shuffle },

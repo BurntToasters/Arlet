@@ -27,6 +27,8 @@ function mutationsAt(requests, path) {
   );
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function heartIs(label, pressed) {
   return `(${HEART})?.getAttribute('aria-label') === '${label}' && (${HEART})?.getAttribute('aria-pressed') === '${pressed}'`;
 }
@@ -232,6 +234,63 @@ export async function runLibraryActions({ page, check }) {
     { sent: heartSent.map((r) => ({ method: r.method, error: r.error })) },
   );
 
+  await page.evaluate(`
+    window.__ARLET_E2E_MUSIC__.configure({ rejectPaths: [] });
+    return true;
+  `);
+
+  // MusicKit reports library playlist songs with a library type but a
+  // catalog ID. Lookups must follow the ID, not the type.
+  const MIXED_ID = "1456789835";
+  await page.evaluate(`
+    const fixture = window.__ARLET_E2E_MUSIC__;
+    fixture.reset();
+    fixture.setCurrentTrack("${MIXED_ID}");
+    return true;
+  `);
+  const mixedRated = await waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().requests.some((r) => r.method === "GET" && r.path.startsWith("/v1/me/ratings/"))`,
+  );
+  await sleep(600);
+  const mixed = await snapshot(page);
+  const ratingPaths = mixed.requests
+    .filter((r) => r.path.startsWith("/v1/me/ratings/"))
+    .map((r) => r.path);
+  check(
+    "a song with a library type and a catalog ID is looked up as a catalog song",
+    mixedRated &&
+      ratingPaths.every((path) => path === "/v1/me/ratings/songs") &&
+      !mixed.requests.some((r) =>
+        r.path.startsWith(`/v1/me/library/songs/${MIXED_ID}`),
+      ),
+    { requests: mixed.requests.map((r) => r.path) },
+  );
+
+  // Apple names neither artist and the lookup fails: show the song's own
+  // artist text, never "Artist 1, Artist 2".
+  await page.evaluate(`
+    const fixture = window.__ARLET_E2E_MUSIC__;
+    fixture.reset();
+    fixture.configure({ rejectPaths: ["/songs/nav-unnamed"] });
+    fixture.setCurrentTrack("nav-unnamed");
+    return true;
+  `);
+  const unnamedShown = await waitFor(
+    page,
+    `document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Navigation Unnamed Artists"`,
+  );
+  await sleep(800);
+  const artistText = await page.evaluate(
+    `return document.querySelector(".player-bar .player-track-links")?.textContent ?? null;`,
+  );
+  check(
+    "artists Apple did not name show as the song's artist text",
+    unnamedShown &&
+      artistText === "Fixture Artist" &&
+      !/Artist \d/u.test(String(artistText)),
+    { artistText },
+  );
   await page.evaluate(`
     window.__ARLET_E2E_MUSIC__.configure({ rejectPaths: [] });
     return true;

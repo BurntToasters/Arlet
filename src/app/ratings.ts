@@ -12,7 +12,11 @@ import {
   type MusicRequest,
   type RatingResourceType,
 } from "../musickit/library.ts";
-import type { RatingValue, Track } from "../domain/music.ts";
+import {
+  resourceTypeForId,
+  type RatingValue,
+  type Track,
+} from "../domain/music.ts";
 import { httpStatusOf } from "../musickit/errors.ts";
 import { clearRatings, getState, ratingKey, setRating } from "../state.ts";
 import {
@@ -60,7 +64,12 @@ export function ratingKeyOf(target: RatingTarget): string | undefined {
 }
 
 export function trackRatingTarget(track: Track): RatingTarget {
-  return { type: track.resourceType ?? "songs", id: track.id };
+  // A library type with a catalog ID asks Apple for a library rating of a
+  // catalog song, which it rejects (400).
+  return {
+    type: resourceTypeForId(track.id, track.resourceType),
+    id: track.id,
+  };
 }
 
 export interface Ratings {

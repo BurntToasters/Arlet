@@ -332,7 +332,12 @@ function mergeQueueTrack(normalized: Track, existing: Track): Track {
   }
   // Queue items can report a singular type ("song"), which add-to-playlist
   // and navigation do not recognise; the type it was queued with is exact.
-  if (existing.resourceType && !merged.resourceType?.endsWith("s")) {
+  // Only for the same ID: a library type on a catalog ID breaks lookups.
+  if (
+    existing.resourceType &&
+    existing.id === merged.id &&
+    !merged.resourceType?.endsWith("s")
+  ) {
     merged.resourceType = existing.resourceType;
   }
   return merged;
