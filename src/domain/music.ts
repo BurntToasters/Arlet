@@ -95,6 +95,8 @@ export interface Album {
   id: MusicId;
   title: string;
   artistName: string;
+  /** `YYYY-MM-DD` (or `YYYY`) from Apple, when known. */
+  releaseDate?: string;
   artwork?: Artwork;
   trackCount?: number;
   resourceType?: MusicResourceType;

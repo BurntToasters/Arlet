@@ -47,6 +47,8 @@ export interface ResourceLike {
   explicit?: boolean;
   catalogUrl?: string;
   catalogId?: string;
+  /** Albums: `YYYY-MM-DD` (or `YYYY`) from Apple. */
+  releaseDate?: string;
   playable?: boolean;
   addable?: boolean;
   parentId?: string;
@@ -243,6 +245,7 @@ export function toResource(value: unknown): ResourceLike | undefined {
     // `href` is an API path (/v1/...), not a page link.
     catalogUrl: stringValue(raw.catalogUrl, attributes.url),
     catalogId: stringValue(raw.catalogId, attributes.catalogId),
+    releaseDate: stringValue(raw.releaseDate, attributes.releaseDate),
     playable: typeof raw.playable === "boolean" ? raw.playable : undefined,
     addable: typeof raw.addable === "boolean" ? raw.addable : undefined,
     parentId: stringValue(

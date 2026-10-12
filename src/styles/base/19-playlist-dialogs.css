@@ -240,6 +240,12 @@
     height: 96px;
   }
 
+  .artist-hero .library-detail-art .artwork-hero,
+  .artist-hero .library-detail-icon {
+    width: 112px;
+    height: 112px;
+  }
+
   .library-detail-copy h1 {
     white-space: normal;
   }

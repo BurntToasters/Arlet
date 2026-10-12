@@ -43,9 +43,78 @@
   margin-bottom: 20px;
 }
 
-.artist-top-songs h2 {
+.artist-top-songs h2,
+.artist-albums h2 {
   margin: 0 0 10px;
   font-size: 1.05rem;
+}
+
+.artist-albums {
+  margin-bottom: 24px;
+}
+
+/* Wide windows: Top Songs in two columns, like Apple Music's artist page. */
+@media (min-width: 1180px) {
+  .artist-top-songs-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 1px;
+  }
+}
+
+/* Artist pages: a banner over the artist's photo, blurred, with a round
+   portrait, so they read differently from album and playlist headers. */
+.library-detail-hero.artist-hero {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  min-height: 240px;
+  align-items: center;
+  padding: 28px 30px;
+  border-color: var(--border);
+  background: var(--surface-raised);
+}
+
+.artist-hero-backdrop {
+  position: absolute;
+  z-index: -2;
+  inset: -48px;
+  width: calc(100% + 96px);
+  height: calc(100% + 96px);
+  object-fit: cover;
+  filter: blur(42px) saturate(1.25);
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* Keeps the name and buttons readable over any photo, in either theme. */
+.library-detail-hero.artist-hero::after {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    color-mix(in srgb, var(--surface-base) 82%, transparent) 20%,
+    color-mix(in srgb, var(--surface-base) 45%, transparent)
+  );
+  content: "";
+}
+
+.artist-hero .library-detail-art .artwork-hero {
+  width: 176px;
+  height: 176px;
+  border-radius: 50%;
+  box-shadow: var(--shadow-popover);
+}
+
+.artist-hero .library-detail-icon {
+  width: 176px;
+  height: 176px;
+  border-radius: 50%;
+}
+
+.artist-hero .library-detail-copy h1 {
+  font-size: clamp(34px, 5.5vw, 60px);
 }
 
 .library-track-list {

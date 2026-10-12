@@ -1,5 +1,6 @@
 import { httpStatusOf, mapErrorToCode } from "../musickit/errors.ts";
 import {
+  queueDescriptorsForTracks,
   queueOptionsForTracks,
   changeToMediaAtIndex,
   readMusicKitQueue,
@@ -20,6 +21,7 @@ import {
   keptStartIndex,
   NONE_AVAILABLE_MESSAGE,
   skippedMessage,
+  unresolvedIds,
   withResolvableTracks,
 } from "../musickit/unresolved.ts";
 import { reportActionError } from "../components/action-errors.ts";
@@ -351,14 +353,30 @@ export function createPlayback(context: ControllerContext) {
       // different item first. A batch with no playable song moves on to the
       // next one rather than failing a Play that later songs could satisfy.
       let resolved: Awaited<ReturnType<typeof withResolvableTracks>>;
+      let usedDetails = false;
       const skippedBefore: Track[] = [];
       for (let attempt = 1; ; attempt += 1) {
         try {
           resolved = await withResolvableTracks(batch, async (entries) => {
-            const options = {
-              ...queueOptionsForTracks(entries.map((entry) => entry.track)),
-              startWith: keptStartIndex(entries, batchStart),
-            };
+            const queued = entries.map((entry) => entry.track);
+            const startWith = keptStartIndex(entries, batchStart);
+            const options = { ...queueOptionsForTracks(queued), startWith };
+            // Song details skip MusicKit's lookup; IDs are the fallback.
+            const detailed = queueDescriptorsForTracks(queued);
+            if (detailed) {
+              try {
+                await instance.setQueue({ ...detailed, startWith });
+                usedDetails = true;
+                return;
+              } catch (error) {
+                // Named unavailable songs go to the skip logic as with IDs.
+                if (!request.current() || unresolvedIds(error)) throw error;
+                log(
+                  `Queue setup with song details failed; using IDs: ${errorMessage(error)}`,
+                );
+              }
+            }
+            usedDetails = false;
             try {
               await instance.setQueue(options);
             } catch (error) {
@@ -393,7 +411,7 @@ export function createPlayback(context: ControllerContext) {
           if (request.current()) setQueue([...batch], 0);
         }
       }
-      step(`setQueue (${batch.length} songs)`);
+      step(`setQueue (${batch.length} songs${usedDetails ? ", details" : ""})`);
       const queue = resolved.entries.map((entry) => entry.track);
       const start = keptStartIndex(resolved.entries, batchStart);
       const skipped = [...skippedBefore, ...resolved.skipped];
@@ -425,7 +443,12 @@ export function createPlayback(context: ControllerContext) {
       // The rest of the playlist is still recorded below for a paused queue.
       await startAudio(instance, request);
       step("play()");
-      if (generation === restGeneration) setRest(rest, queue.at(-1));
+      if (generation === restGeneration) {
+        setRest(rest, queue.at(-1));
+        // The first batch is under the refill threshold; append the next
+        // songs now rather than on MusicKit's next event.
+        maybeRefillQueue();
+      }
       logWhenAudible(request, startedAt, steps);
       // Identifies this Play's queue for later pages (`appendContinuation`);
       // undefined once a newer Play replaced it.

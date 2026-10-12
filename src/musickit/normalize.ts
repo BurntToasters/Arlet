@@ -507,6 +507,10 @@ export function normalizeAlbumResource(
     positiveNumber(attributes.trackCount) ??
     relationshipTotal(resource, "tracks");
   if (trackCount !== undefined) album.trackCount = trackCount;
+  const releaseDate = stringValue(attributes.releaseDate);
+  if (releaseDate && /^\d{4}/u.test(releaseDate)) {
+    album.releaseDate = releaseDate;
+  }
   const playable =
     typeof attributes.playable === "boolean"
       ? attributes.playable

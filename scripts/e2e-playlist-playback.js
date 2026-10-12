@@ -29,6 +29,22 @@ async function waitFor(page, expression, timeoutMs = 10_000) {
   return false;
 }
 
+/** Play from the playlist's right-click menu, which fetches its pages. */
+async function playFromPlaylistMenu(page) {
+  await page.evaluate(`
+    await window.__ARLET_E2E_MUSIC__.selectContext({ id: "${PLAYLIST_ID}", kind: "playlist", source: "library" });
+    return true;
+  `);
+  await waitFor(
+    page,
+    `document.querySelector('.context-menu [data-menu-item="play-now"]:not(:disabled)')`,
+  );
+  await page.evaluate(`
+    document.querySelector('.context-menu [data-menu-item="play-now"]')?.click();
+    return true;
+  `);
+}
+
 function ids(snapshot) {
   return snapshot.queue?.items?.map((item) => item.id) ?? [];
 }
@@ -334,11 +350,13 @@ export async function runPlaylistPlayback({ page, check }) {
   const workingQueue = await page.evaluate(
     "return window.__ARLET_E2E_MUSIC__.snapshot();",
   );
+  // A fully loaded page plays from its own list; the playlist's menu Play
+  // fetches the pages, which is the path these two checks cover.
   await page.evaluate(`
     window.__ARLET_E2E_MUSIC__.configure({ repeatPlaylistCursor: true });
-    document.querySelectorAll(".library-track-row")[0]?.click();
     return true;
   `);
+  await playFromPlaylistMenu(page);
   await waitForPlaylistLoadSettled(page, workingQueue.requests.length);
   const afterRepeatedCursor = await page.evaluate(
     "return window.__ARLET_E2E_MUSIC__.snapshot();",
@@ -367,9 +385,9 @@ export async function runPlaylistPlayback({ page, check }) {
       repeatPlaylistCursor: false,
       rejectPaths: [${JSON.stringify(SECOND_PLAYLIST_PAGE)}],
     });
-    document.querySelectorAll(".library-track-row")[1]?.click();
     return true;
   `);
+  await playFromPlaylistMenu(page);
   await waitForPlaylistLoadSettled(page, requestsBeforeFailure);
   const afterPageFailure = await page.evaluate(
     "return window.__ARLET_E2E_MUSIC__.snapshot();",
@@ -711,9 +729,10 @@ export async function runPlaylistPlayback({ page, check }) {
   const directMark = (
     await page.evaluate("return window.__ARLET_E2E_MUSIC__.snapshot();")
   ).transitions.length;
-  await page.evaluate(`
+  const directClickedAt = await page.evaluate(`
+    const clickedAt = Date.now();
     document.querySelectorAll(".library-track-row")[3]?.click();
-    return true;
+    return clickedAt;
   `);
   const directStarted = await waitFor(
     page,
@@ -725,6 +744,17 @@ export async function runPlaylistPlayback({ page, check }) {
   const directSet = direct.transitions
     .slice(directMark)
     .find((item) => item.type === "setQueue");
+  // The page already shows every song, so Play fetches no pages first.
+  const refetched = direct.requests.filter(
+    (request) =>
+      request.startedAt >= directClickedAt &&
+      String(request.path).includes("/playlists/playlist-1/tracks"),
+  ).length;
+  check(
+    "Play on a playlist page starts from the songs on screen without fetching pages",
+    directStarted && refetched === 0,
+    { refetched },
+  );
   check(
     "a mid-playlist click starts MusicKit's queue at that song with no re-select",
     directStarted &&
@@ -732,6 +762,10 @@ export async function runPlaylistPlayback({ page, check }) {
         JSON.stringify(["song-duplicate", "song-e", "song-f"]) &&
       directSet?.options?.startWith === 0 &&
       directSet.ids.length <= 16 &&
+      // Song details, not IDs: MusicKit skips its per-song lookup.
+      directSet.shape?.includes("items") &&
+      directSet.options?.items?.[0]?.attributes?.playParams?.id ===
+        "song-duplicate" &&
       !direct.transitions
         .slice(directMark)
         .some((item) => item.type === "selectIndex"),

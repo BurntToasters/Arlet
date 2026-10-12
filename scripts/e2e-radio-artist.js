@@ -371,6 +371,57 @@ export async function runRadioArtist({ page, check }) {
   );
   await fixtureCall(page, "configure", [{ rejectPaths: [] }]);
 
+  // A catalog artist lists every album (two pages, through MusicKit's
+  // response envelope), newest first with years, under a banner header.
+  await page.evaluate(`location.hash = "#/home"; return true;`);
+  await page.evaluate(
+    `location.hash = "#/artist/nav-artist-two?source=catalog"; return true;`,
+  );
+  const albumsListed = await waitFor(
+    page,
+    `document.querySelectorAll('.artist-albums .library-card').length === 30`,
+    15_000,
+  );
+  const artistPage = await page.evaluate(`
+    const cards = [...document.querySelectorAll('.artist-albums .library-card')];
+    const hero = document.querySelector('.artist-hero');
+    const box = (node) => node?.getBoundingClientRect();
+    const heroBox = box(hero);
+    const inside = (node) => {
+      const rect = box(node);
+      return Boolean(rect && heroBox && rect.left >= heroBox.left && rect.right <= heroBox.right && rect.top >= heroBox.top && rect.bottom <= heroBox.bottom);
+    };
+    const portrait = hero?.querySelector('.library-detail-art .artwork-hero, .library-detail-icon');
+    const scroller = document.querySelector('.content-scroll');
+    return {
+      count: cards.length,
+      first: cards[0]?.querySelector('strong')?.textContent ?? null,
+      firstYear: cards[0]?.querySelector('small')?.textContent ?? null,
+      hasHero: Boolean(hero),
+      roundPortrait: portrait ? getComputedStyle(portrait).borderRadius === "50%" : false,
+      titleInside: inside(hero?.querySelector('h1')),
+      actionsInside: inside(hero?.querySelector('.library-detail-actions')),
+      sideways: scroller ? scroller.scrollWidth > scroller.clientWidth + 1 : true,
+    };
+  `);
+  check(
+    "a catalog artist page lists every album, newest first, with years",
+    albumsListed &&
+      artistPage.count === 30 &&
+      artistPage.first === "Artist Two Album 30" &&
+      artistPage.firstYear === "2024",
+    artistPage,
+  );
+  check(
+    "an artist page has its own banner with a round portrait and nothing outside it",
+    artistPage.hasHero &&
+      artistPage.roundPortrait &&
+      artistPage.titleInside &&
+      artistPage.actionsInside &&
+      !artistPage.sideways,
+    artistPage,
+  );
+
   // Settings lists every shortcut.
   await page.evaluate(`location.hash = "#/settings"; return true;`);
   await waitFor(page, `document.querySelector('.shortcut-list')`);

@@ -79,6 +79,7 @@ export interface AppleMusicLibraryClient {
   getArtistAlbums(
     id: string,
     cursor?: string | LibraryPageOptions,
+    source?: MusicSource,
   ): Promise<Page<Album>>;
   getPlaylist(id: string, source?: MusicSource): Promise<Playlist | undefined>;
   getPlaylistTracks(
@@ -722,13 +723,13 @@ export function createAppleMusicLibraryClient(
     async getArtistAlbums(
       id: string,
       cursor?: string | LibraryPageOptions,
+      source: MusicSource = "library",
     ): Promise<Page<Album>> {
-      return getPage(
-        `/v1/me/library/artists/${encodePathPart(id)}/albums`,
-        cursor,
-        undefined,
-        normalizeAlbumResource,
-      );
+      const path =
+        source === "catalog"
+          ? `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/artists/${encodePathPart(id)}/albums`
+          : `/v1/me/library/artists/${encodePathPart(id)}/albums`;
+      return getPage(path, cursor, undefined, normalizeAlbumResource);
     },
     async getPlaylist(
       id: string,
