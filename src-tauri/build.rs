@@ -86,6 +86,7 @@ fn main() {
         "update_windows_media_session",
         "update_windows_media_timeline",
         "clear_windows_media_session",
+        "quit_ready",
     ];
     tauri_build::try_build(
         tauri_build::Attributes::new()

@@ -259,6 +259,8 @@ export interface PlaybackSession {
   isResuming(): boolean;
   /** Deletes the saved file and cancels any save already scheduled. */
   clear(): Promise<void>;
+  /** Saves now and resolves once the write finished (before quitting). */
+  saveNow(): Promise<void>;
 }
 
 /**
@@ -518,6 +520,12 @@ export function createPlaybackSession(
         resuming = undefined;
       });
       return resuming.then(() => true);
+    },
+
+    async saveNow(): Promise<void> {
+      cancelSaveTimer();
+      persist();
+      await chain;
     },
 
     async clear(): Promise<void> {

@@ -600,13 +600,18 @@ export async function runPlaylistPlayback({ page, check }) {
     .filter((item) => item.type === "setQueue")
     .at(-1);
   check(
-    "a library-only song queues its i. ID under songs, which MusicKit loads from the library",
+    "a library-only song is queued as a library song with its i. ID",
     libraryRowReady &&
       libraryOnlyStarted &&
-      // The rest of the Songs list is queued with it; this song is the start.
-      libraryOnlySet?.options?.songs?.[libraryOnlySet?.options?.startWith] ===
-        "i.library-only" &&
-      !libraryOnlySet?.shape?.includes("items"),
+      (() => {
+        const item =
+          libraryOnlySet?.options?.items?.[libraryOnlySet?.options?.startWith];
+        return (
+          item?.id === "i.library-only" &&
+          item?.type === "library-songs" &&
+          item?.attributes?.playParams?.isLibrary === true
+        );
+      })(),
     { setQueue: libraryOnlySet, queue: libraryOnlySnapshot.queue },
   );
 
@@ -830,6 +835,55 @@ export async function runPlaylistPlayback({ page, check }) {
         `return document.querySelector(".player-bar .player-track-copy strong")?.textContent;`,
       )) === "Album Track A",
     { transitions: replaced.transitions.slice(replacedMark) },
+  );
+
+  // MusicKit takes the song details but cannot start them: Arlet queues the
+  // same songs by ID once and plays, with no error shown.
+  await page.evaluate(`
+    window.__ARLET_E2E_MUSIC__.reset();
+    location.hash = "#/home";
+    return true;
+  `);
+  await page.evaluate(
+    `location.hash = "#/playlist/${PLAYLIST_ID}"; return true;`,
+  );
+  await waitFor(
+    page,
+    `document.querySelector(".library-track-row")?.textContent.includes("Track A") && document.querySelectorAll(".library-track-row").length >= 6`,
+  );
+  await page.evaluate(`
+    window.__ARLET_E2E_MUSIC__.configure({ rejectPlayTimes: 1 });
+    document.querySelectorAll(".library-track-row")[2]?.click();
+    return true;
+  `);
+  const retried = await waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().transitions.some((item) => item.type === "play")`,
+  );
+  const retry = await page.evaluate(
+    "return window.__ARLET_E2E_MUSIC__.snapshot();",
+  );
+  const retryOrder = retry.transitions
+    .filter((item) => ["setQueue", "playRejected", "play"].includes(item.type))
+    .map((item) =>
+      item.type === "setQueue"
+        ? `setQueue:${item.shape?.includes("items") ? "details" : "ids"}`
+        : item.type,
+    );
+  check(
+    "a song MusicKit queued from details but could not start plays after one retry by ID",
+    retried &&
+      JSON.stringify(retryOrder.slice(0, 4)) ===
+        JSON.stringify([
+          "setQueue:details",
+          "playRejected",
+          "setQueue:ids",
+          "play",
+        ]) &&
+      !(await page.evaluate(
+        `return Boolean(document.querySelector(".player-error"));`,
+      )),
+    { retryOrder },
   );
   await page.evaluate(`location.hash = "#/home"; return true;`);
 }

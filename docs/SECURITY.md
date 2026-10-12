@@ -97,9 +97,9 @@ The log file (`arlet.log` in the local app data folder) is opt-in: it is
 written only while Settings › Debug Mode is on, which is off by default. The
 in-memory recent log that `Copy diagnostics report` uses works either way and
 never leaves the machine unless the user pastes it. One exception is written
-regardless of Debug Mode: a native crash, or the main window failing to open,
-appends a single redacted `[native]` line, because nothing else would record
-it.
+regardless of Debug Mode: a native crash, the main window failing to open,
+or a WebView2 process dying appends a single redacted `[native]` line,
+because nothing else would record it.
 
 ## Third-party script
 

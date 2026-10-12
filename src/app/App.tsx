@@ -41,6 +41,7 @@ import {
   updateWindowsMediaSession,
   updateWindowsMediaTimeline,
 } from "../platform/windows-media.ts";
+import { listenBeforeQuit } from "../platform/quit.ts";
 
 export interface AppProps {
   controller: AppController;
@@ -153,6 +154,24 @@ function AppLayout({
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [controller, router]);
+
+  // Quitting waits for the queue position to be saved (see tray.rs).
+  useEffect(() => {
+    let active = true;
+    let stop: (() => void) | undefined;
+    void listenBeforeQuit(
+      () => controller.prepareToQuit?.() ?? Promise.resolve(),
+    )
+      .then((unlisten) => {
+        if (active) stop = unlisten;
+        else unlisten();
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      stop?.();
+    };
+  }, [controller]);
 
   useEffect(() => {
     let active = true;

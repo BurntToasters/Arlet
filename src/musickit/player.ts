@@ -422,24 +422,29 @@ export function queueOptionsForTracks(
  * Queue options carrying each song's details instead of its ID. MusicKit then
  * skips its per-song lookup (one Apple request per 16 songs), measured on
  * live MusicKit: one lookup by IDs, none with details. Undefined when any
- * song lacks a catalog ID or details (library-only songs, music videos), so
- * the caller queues by ID.
+ * song lacks an ID Arlet can describe, or is a music video, so the caller
+ * queues by ID.
  */
 export function queueDescriptorsForTracks(
   tracks: readonly Track[],
 ): MusicKit.QueueOptions | undefined {
   const items: Record<string, unknown>[] = [];
   for (const track of tracks) {
-    const id =
+    // A library-only song (an upload, or one Apple no longer sells) has no
+    // catalog ID; it is described as a library song, as MusicKit does.
+    const catalogId =
       track.catalogId ??
       (idSource(track.id) === "catalog" ? track.id : undefined);
+    const libraryId =
+      !catalogId && idSource(track.id) === "library" ? track.id : undefined;
+    const id = catalogId ?? libraryId;
     const video =
       track.resourceType === "music-videos" ||
       track.resourceType === "library-music-videos";
     if (!id || video || !track.title.trim()) return undefined;
     items.push({
       id,
-      type: "songs",
+      type: libraryId ? "library-songs" : "songs",
       attributes: {
         name: track.title,
         artistName: track.artistName,
@@ -457,7 +462,9 @@ export function queueDescriptorsForTracks(
               },
             }
           : {}),
-        playParams: { id, kind: "song" },
+        playParams: libraryId
+          ? { id, kind: "song", isLibrary: true }
+          : { id, kind: "song" },
       },
     });
   }

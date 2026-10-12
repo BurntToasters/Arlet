@@ -202,7 +202,12 @@ export interface AppController {
   playQueueItem(index: number): Promise<void>;
   /** `trackId` guards against the queue shifting before the remove runs. */
   removeQueueItem(index: number, trackId?: string): Promise<QueueEditTier>;
-  moveQueueItem(from: number, to: number): Promise<QueueEditTier>;
+  /** `trackId` guards against the queue shifting before the move runs. */
+  moveQueueItem(
+    from: number,
+    to: number,
+    trackId?: string,
+  ): Promise<QueueEditTier>;
   clearUpNext(): Promise<QueueEditTier>;
   refreshCurrentData(): Promise<void>;
   search(term: string): Promise<Track[]>;
@@ -247,6 +252,8 @@ export interface AppController {
   ): Promise<void>;
   resolveTrackNavigation?(track: Track): Promise<TrackNavigation>;
   playConsecutive(): Promise<void>;
+  /** Saves the queue position and pending settings before Arlet quits. */
+  prepareToQuit?(): Promise<void>;
   togglePlayback(): Promise<void>;
   play?(): Promise<void>;
   pause?(): Promise<void>;
@@ -916,9 +923,13 @@ export function createAppController(
       return playback.removeQueueItem(index, trackId);
     },
 
-    moveQueueItem(from: number, to: number): Promise<QueueEditTier> {
+    moveQueueItem(
+      from: number,
+      to: number,
+      trackId?: string,
+    ): Promise<QueueEditTier> {
       collections.invalidate();
-      return playback.moveQueueItem(from, to);
+      return playback.moveQueueItem(from, to, trackId);
     },
 
     clearUpNext(): Promise<QueueEditTier> {
@@ -1027,6 +1038,15 @@ export function createAppController(
     playAlbum: (id, source = "library", startIndex = 0, trackId) =>
       playCollection("album", id, source, startIndex, { trackId }),
     resolveTrackNavigation: trackNavigation.resolve,
+
+    async prepareToQuit(): Promise<void> {
+      // A volume change still waiting on its debounce is saved too.
+      if (volumeSaveTimer !== undefined) {
+        clearTimeout(volumeSaveTimer);
+        flushVolumeSave();
+      }
+      await Promise.allSettled([playbackSession.saveNow(), volumeSaveQueue]);
+    },
 
     async playConsecutive(): Promise<void> {
       const lastTracks = discovery.lastSearchTracks();

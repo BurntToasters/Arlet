@@ -441,8 +441,25 @@ export function createPlayback(context: ControllerContext) {
         step("select");
       }
       // The rest of the playlist is still recorded below for a paused queue.
-      await startAudio(instance, request);
-      step("play()");
+      let retriedById = false;
+      try {
+        await startAudio(instance, request);
+      } catch (error) {
+        // MusicKit took the song details but could not start them: queue the
+        // same songs by ID once, which makes it look them up first.
+        if (!usedDetails || !request.current()) throw error;
+        log(
+          `Playback from song details failed; retrying by ID: ${errorMessage(error)}`,
+        );
+        usedDetails = false;
+        retriedById = true;
+        await instance.setQueue({
+          ...queueOptionsForTracks(queue),
+          startWith: start,
+        });
+        await startAudio(instance, request);
+      }
+      step(retriedById ? "play() after ID retry" : "play()");
       if (generation === restGeneration) {
         setRest(rest, queue.at(-1));
         // The first batch is under the refill threshold; append the next
@@ -750,11 +767,33 @@ export function createPlayback(context: ControllerContext) {
       );
     },
 
-    async moveQueueItem(from: number, to: number): Promise<QueueEditTier> {
+    /**
+     * `trackId` is the song being moved. If the queue shifted since the user
+     * picked it (a background top-up, a sync), the move follows the song and
+     * keeps the same offset; a song that is gone moves nothing.
+     */
+    async moveQueueItem(
+      from: number,
+      to: number,
+      trackId?: string,
+    ): Promise<QueueEditTier> {
       return editQueueLogged(
         "Queue move failed",
         requireMusic(),
-        (queue, current) => planMove(queue, current, from, to),
+        (queue, current) => {
+          if (trackId === undefined) {
+            return planMove(queue, current, from, to);
+          }
+          const actual = nearestTrackIndex(queue, from, trackId);
+          if (actual < 0) return undefined;
+          const target = Math.max(
+            0,
+            Math.min(queue.length - 1, to + (actual - from)),
+          );
+          return actual === target
+            ? undefined
+            : planMove(queue, current, actual, target);
+        },
       );
     },
 

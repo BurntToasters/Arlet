@@ -19,6 +19,14 @@
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
 
+## Changes in `v0.3.0-beta.2:`
+
+- **Fix - Quitting:** Quitting Arlet while a song plays, from the tray or by closing the window with the tray off, now saves where you were. Before, up to the last 30 seconds could be lost.
+- **Fix - Playing Next:** Moving a song up or down moves the song you picked, even if the queue changed a moment before.
+- **Improvement - Faster starts:** Songs that are only in your library (such as uploads) now start as quickly as other songs. If Apple Music can't start a song from the details Arlet sends, Arlet retries the usual way once instead of showing an error.
+- **Improvement - Crash records:** If Windows' web view crashes, a short note is now saved in the log even with `Debug Mode` off, so the problem can be found.
+- **Testing:** End-to-end tests now check that quitting saves the latest position, that library-only songs are queued as library songs, that a song Apple Music can't start from its details plays after one retry, and that a web view crash is logged.
+
 ## Changes in `v0.3.0-beta.1:`
 
 - **NEW - Artist pages:** Artists get their own look: a banner over a soft, blurred photo of the artist, a round portrait, and a larger name. `Top Songs` shows the top ten, in two columns on wide windows, and `Albums` lists every album newest first, with its year.

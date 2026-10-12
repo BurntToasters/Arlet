@@ -1052,6 +1052,18 @@ async function run() {
       30_000,
     );
     check("renderer crash reloads the window", recovered);
+    // The crash is recorded whatever Debug Mode says: nothing else would.
+    const crashLogged = await (async () => {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (readTestLog().includes("[native] WebView2 process failed (kind")) {
+          return true;
+        }
+        await sleep(200);
+      }
+      return false;
+    })();
+    check("a WebView2 crash is written to arlet.log", crashLogged);
 
     // 13. Reset settings: Cancel changes nothing; confirming restores
     // defaults and restarts, keeping sign-in storage and pins.
@@ -1330,6 +1342,50 @@ async function run() {
       json: JSON.stringify({ ...DEFAULT_SETTINGS_FOR_E2E, trayIcon: false }),
     });
 
+    // Quitting saves the queue position first. Sign back in (the session
+    // scenario signed out), play, then report 100s and at once 123s: the
+    // second report is inside the 30-second save throttle, so only the save
+    // on quit can write it.
+    await page.evaluate('location.hash = "#/settings"; return true;');
+    await waitFor(
+      page,
+      '[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign in")',
+      10_000,
+    );
+    await page.evaluate(`
+      [...document.querySelectorAll("button")]
+        .find((node) => node.textContent.trim() === "Sign in")
+        ?.click();
+      return true;`);
+    await waitFor(
+      page,
+      '[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign out")',
+      10_000,
+    );
+    await page.evaluate(
+      'location.hash = "#/playlist/playlist-1"; return true;',
+    );
+    await waitFor(
+      page,
+      'document.querySelector(".library-track-row")?.textContent.includes("Track A")',
+      10_000,
+    );
+    await page.evaluate(
+      'document.querySelectorAll(".library-track-row")[0]?.click(); return true;',
+    );
+    const playingBeforeQuit = await waitFor(
+      page,
+      'document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Track A"',
+      10_000,
+    );
+    await sleep(2500);
+    await page.evaluate(`
+      window.__ARLET_E2E_MUSIC__.emitPlaybackTime(100);
+      window.__ARLET_E2E_MUSIC__.emitPlaybackTime(123);
+      return true;`);
+    await sleep(300);
+    const sessionFile = path.join(dataDirs()[0], "playback-session.json");
+
     // Resize, then close normally: the new geometry is saved for next launch.
     const resized = await settle(page, "plugin:window|set_size", {
       label: "main",
@@ -1372,6 +1428,22 @@ async function run() {
       "with the tray off, closing the window quits Arlet",
       trayDisabled.ok && appPid !== undefined && !processAlive(appPid),
       { trayDisabled: trayDisabled.ok, appPid, alive: processAlive(appPid) },
+    );
+    let quitSession = null;
+    try {
+      quitSession = JSON.parse(fs.readFileSync(sessionFile, "utf8"));
+    } catch {
+      // Left null so the check fails with the detail below.
+    }
+    check(
+      "quitting saves the queue's latest position before Arlet exits",
+      playingBeforeQuit &&
+        Math.abs(Number(quitSession?.positionSeconds) - 123) < 1,
+      {
+        playingBeforeQuit,
+        positionSeconds: quitSession?.positionSeconds ?? null,
+        firstId: quitSession?.items?.[0]?.id ?? null,
+      },
     );
 
     // Stop the app, then confirm the roaming cache moved to the local data

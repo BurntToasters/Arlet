@@ -36,7 +36,7 @@ export function QueueDrawer(): JSX.Element | null {
   };
 
   const moveTo = (from: number, to: number): void => {
-    reportQueueEdit(controller.moveQueueItem(from, to));
+    reportQueueEdit(controller.moveQueueItem(from, to, queue[from]?.id));
   };
 
   const renderRow = (track: Track, index: number): JSX.Element => {

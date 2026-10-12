@@ -176,6 +176,7 @@ function installMusicKitFixture() {
     delayMs: 800,
     repeatPlaylistCursor: false,
     rejectPlay: false,
+    rejectPlayTimes: 0,
     // Catalog IDs the item loader cannot resolve, and IDs that resolve but
     // are not playable (MusicKit drops those silently).
     unresolvedIds: [],
@@ -771,6 +772,13 @@ function installMusicKitFixture() {
     },
     changeToMediaAtIndex: (index) => selectIndex(index),
     async play() {
+      // `rejectPlayTimes` rejects only the next N plays, as a song MusicKit
+      // queued but could not start.
+      if (state.rejectPlayTimes > 0) {
+        state.rejectPlayTimes -= 1;
+        state.transitions.push({ type: "playRejected" });
+        throw new Error("Fixture play rejected once");
+      }
       if (state.rejectPlay) {
         state.transitions.push({ type: "playRejected" });
         throw new Error("Fixture play rejected");
@@ -872,6 +880,12 @@ function installMusicKitFixture() {
       if (Object.prototype.hasOwnProperty.call(options, "playlistPrepended")) {
         state.playlistPrepended = options.playlistPrepended === true;
       }
+      if (Object.prototype.hasOwnProperty.call(options, "rejectPlayTimes")) {
+        state.rejectPlayTimes = Math.max(
+          0,
+          Number(options.rejectPlayTimes) || 0,
+        );
+      }
       if (Object.prototype.hasOwnProperty.call(options, "rejectPlay")) {
         state.rejectPlay = options.rejectPlay === true;
       }
@@ -895,6 +909,7 @@ function installMusicKitFixture() {
       state.delayMs = 800;
       state.repeatPlaylistCursor = false;
       state.rejectPlay = false;
+      state.rejectPlayTimes = 0;
       state.playlistPrepended = false;
       state.unresolvedIds = [];
       state.unplayableIds = [];

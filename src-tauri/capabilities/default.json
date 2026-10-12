@@ -47,6 +47,7 @@
     "allow-set-snap-overlay-bounds",
     "allow-update-windows-media-session",
     "allow-update-windows-media-timeline",
-    "allow-clear-windows-media-session"
+    "allow-clear-windows-media-session",
+    "allow-quit-ready"
   ]
 }

@@ -90,7 +90,9 @@ pub fn install(window: &tauri::WebviewWindow) -> Result<(), String> {
                 let action = recovery_for_kind(kind.0);
                 let message = format!("WebView2 process failed (kind {}): {action:?}", kind.0);
                 eprintln!("{message}");
-                let _ = crate::logging::append_local_log(app.clone(), message);
+                // Written even with Debug Mode off: like a native crash,
+                // nothing else would record that WebView2 died.
+                crate::logging::write_native_log(&message);
                 match action {
                     Recovery::Reload => {
                         let allowed = guard

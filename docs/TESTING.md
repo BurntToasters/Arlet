@@ -43,7 +43,8 @@ Failure modes it covers:
    fail, or the generic SQL plugin is still reachable.
 10. The open-source licenses dialog is empty.
 11. With Apple's CDN unreachable, the cached library is not shown.
-12. A renderer crash leaves a blank window.
+12. A renderer crash leaves a blank window, or leaves no line in `arlet.log`
+    (WebView2 failures are written even with Debug Mode off).
 
 The harness itself must not lose the real data folders:
 
@@ -218,6 +219,10 @@ are not playable. Failure scenarios:
 - A provider queue event during an edit is overwritten by a stale snapshot.
 - `Clear` stops the current song; history rows become editable.
 - A 600-song queue freezes the drawer.
+- Moving a song in Playing Next moves a different song when the queue
+  shifted after the user picked it (a sync or top-up); the move must follow
+  the song's ID. (Code-reviewed; the existing move checks cover the normal
+  path, and the shift itself is not driven here.)
 
 ## Ratings and library
 
@@ -284,6 +289,9 @@ closing the window quits.
 - A saved position beyond the song duration, or library IDs that no longer
   exist, break playback.
 - Saving on every position tick thrashes the disk.
+- Quitting (tray Quit, or closing with the tray off) while playing loses up
+  to 30 seconds of position: the page's unload save does not finish before
+  the process exits. Arlet now waits up to 1.5 seconds for the page to save.
 - Next, Previous, or a seek shortcut on a restored queue does nothing, or
   calls the provider before Play: there is no provider queue yet.
 - A seek before Play is lost, and Play resumes at the old saved position.
@@ -309,8 +317,9 @@ closing the window quits.
 - Queuing songs by ID makes MusicKit look each one up first (one Apple
   request per 16 songs). Arlet queues song details instead; the real-token
   run (`test:e2e:app:real`) records the probe: one lookup by ID, none with
-  details. Library-only songs and music videos still queue by ID, and a
-  rejected details queue falls back to IDs. With details MusicKit does not
+  details. Library-only songs are described as library songs; music videos
+  still queue by ID. A rejected details queue, or details MusicKit queued but
+  could not start, falls back to IDs once. With details MusicKit does not
   look songs up, so a song since removed from Apple Music fails when it
   starts and is skipped by auto-skip (covered above).
 
