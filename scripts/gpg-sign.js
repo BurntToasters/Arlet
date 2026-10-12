@@ -4,10 +4,12 @@
 //
 // Normal mode stages/signs the two Windows installers, their Tauri updater
 // sidecars, the stable+beta manifests, and checksums, then uploads them to
-// the exact-version draft. A beta draft is not copied to the live stable feed:
-// release:publish performs that sync only after GitHub confirms the beta is a
-// published prerelease. `--sync-beta-manifests` is the recovery path when
-// publication succeeds but that post-publish sync loses connectivity.
+// the exact-version draft. For a beta it then syncs the four beta manifests
+// onto the latest stable release (/releases/latest), where beta clients poll,
+// as Zinnia does: every release:win run publishes the beta feed as soon as it
+// signs. Until the draft is published, its installer URLs return 404; the
+// app's beta updater retries that window. release:publish syncs again after
+// publication, and `--sync-beta-manifests` remains the recovery path.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -1137,6 +1139,11 @@ async function main() {
     staged.push(`${filePath}.asc`);
   }
   await uploadAll(release, staged);
+  // Beta clients poll /releases/latest for latest-windows-beta-*.json; sync
+  // them now so the beta feed updates without a separate step.
+  if (IS_PRERELEASE) {
+    await syncBetaManifestsToLatestStable(staged, release.id);
+  }
   console.log(`[gpg-sign] Done: ${TAG_NAME} uploaded as draft.`);
 }
 
