@@ -18,6 +18,15 @@ Stable releases have shipped (see `CHANGELOG.md`); `next-0.2.4` is in progress.
       fingerprint, or a long `GPG_KEY_ID`). `release:draft` checks it before
       the build and stops the release if it is missing or too short.
 
+- [ ] **0.2.5: update dialog readability.** With a window material on,
+      the "Update downloaded" dialog lets too much of the blurred app show
+      through, and the release notes are hard to read (reported on the
+      0.2.3 → 0.2.4 update). Keep the glassy look, but make the dialog and
+      its notes panel close to opaque, and darken the scrim behind it
+      (`src/styles/base/09-update-modal.css`: `.update-modal-scrim`,
+      `.update-modal`, `.update-modal-notes`). Check light and dark themes
+      and every window material.
+
 The Preact shell, library, search, browse, radio, playlists, queue, SMTC, and
 window materials are implemented; the 2026-09-11 notes below are history.
 

@@ -252,6 +252,8 @@ closing the window quits.
 
 - A submitted search shows no results, or results from the wrong source.
 - Playing a search result queues the wrong song or nothing at all.
+- A Play leaves no timing line in `arlet.log`, so a slow start reported by
+  a user cannot be broken down into page loads, queue setup, and play.
 - Add to playlist sends the song to the wrong playlist, or the dialog stays
   open after a successful add.
 - New playlist drops the typed name or the selected song, or a late reply

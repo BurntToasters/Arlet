@@ -22,6 +22,7 @@ import {
   withResolvableTracks,
 } from "../musickit/unresolved.ts";
 import { reportActionError } from "../components/action-errors.ts";
+import type { PlayTiming } from "./collection-playback.ts";
 import {
   MAX_QUEUE_LENGTH,
   QUEUE_REFILL_SIZE,
@@ -52,6 +53,7 @@ import {
   setQueueRest,
   setQueueSnapshot,
   setVolume,
+  subscribe,
 } from "../state.ts";
 import {
   errorMessage,
@@ -81,6 +83,9 @@ function nearestTrackIndex(
   });
   return nearest;
 }
+
+/** A Play that is not audible by then is not timed. */
+const PLAY_TIMING_TIMEOUT_MS = 60_000;
 
 export function createPlayback(context: ControllerContext) {
   const { requireMusic, getMusic, log } = context;
@@ -258,10 +263,50 @@ export function createPlayback(context: ControllerContext) {
     setRest([]);
   };
 
+  /**
+   * Logs how long a Play took from the request to audible playback, step by
+   * step, so slow starts can be diagnosed from a support report. Gives up
+   * quietly if the play is replaced or nothing plays within the timeout.
+   */
+  const logWhenAudible = (
+    request: ReturnType<typeof beginPlayRequest>,
+    startedAt: number,
+    steps: readonly string[],
+  ): void => {
+    let stop = (): void => undefined;
+    const check = (): void => {
+      if (!request.current()) {
+        stop();
+        return;
+      }
+      if (getState().playback.status !== "playing") return;
+      stop();
+      log(
+        `Play timing: audible after ${Math.round(performance.now() - startedAt)}ms (${steps.join(", ")}).`,
+      );
+    };
+    const unsubscribe = subscribe(check);
+    const timer = setTimeout(() => stop(), PLAY_TIMING_TIMEOUT_MS);
+    stop = () => {
+      unsubscribe();
+      clearTimeout(timer);
+    };
+    check();
+  };
+
   const playTracks = async (
     requestedTracks: readonly Track[],
     requestedStart = 0,
+    timing?: PlayTiming,
   ): Promise<void> => {
+    const startedAt = timing?.startedAt ?? performance.now();
+    const steps = [...(timing?.steps ?? [])];
+    let stepStartedAt = performance.now();
+    const step = (name: string): void => {
+      const now = performance.now();
+      steps.push(`${name} ${Math.round(now - stepStartedAt)}ms`);
+      stepStartedAt = now;
+    };
     const instance = requireMusic();
     if (requestedTracks.length === 0) throw new Error("Queue is empty");
     if (
@@ -318,6 +363,7 @@ export function createPlayback(context: ControllerContext) {
           });
         },
       );
+      step(`setQueue (${tracks.length} songs)`);
       const queue = entries.map((entry) => entry.track);
       const start = keptStartIndex(entries, startIndex);
       if (skipped.length) {
@@ -337,11 +383,14 @@ export function createPlayback(context: ControllerContext) {
               "Selecting a song in the MusicKit queue is not available in this runtime.",
             );
           }
+          step("select");
         }
       }
       // The rest of the playlist is still recorded below for a paused queue.
       await startAudio(instance, request);
+      step("play()");
       if (generation === restGeneration) setRest(rest, queue.at(-1));
+      logWhenAudible(request, startedAt, steps);
     } catch (error) {
       // A superseded or signed-out play reports nothing.
       if (!request.current()) return;
