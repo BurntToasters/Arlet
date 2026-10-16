@@ -105,9 +105,9 @@
     "gitprune:force": "git fetch --prune origin"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.12.1",
-    "@tauri-apps/plugin-clipboard-manager": "^2.4.1",
-    "@tauri-apps/plugin-updater": "^2.13.1",
+    "@tauri-apps/api": "^2.12.3",
+    "@tauri-apps/plugin-clipboard-manager": "^2.4.2",
+    "@tauri-apps/plugin-updater": "^2.13.3",
     "lucide-preact": "^1.52.0",
     "preact": "^11.0.0",
     "zod": "^4.6.5"
