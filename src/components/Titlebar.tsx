@@ -214,7 +214,11 @@ export function Titlebar(): JSX.Element {
 
   useEffect(() => {
     if (!statusOpen) return;
-    statusMenu.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    statusMenu.current
+      ?.querySelector<HTMLButtonElement>(
+        'button[role="menuitem"]:not(:disabled)',
+      )
+      ?.focus();
   }, [statusOpen]);
 
   useEffect(() => {
@@ -357,13 +361,8 @@ export function Titlebar(): JSX.Element {
           <ChevronDown aria-hidden="true" size={14} strokeWidth={1.8} />
         </button>
         {statusOpen ? (
-          <div
-            ref={statusMenu}
-            className="connection-popover"
-            role="menu"
-            aria-label="Apple Music connection details"
-            data-no-drag
-          >
+          // Only the action buttons are a menu; the status text stays plain.
+          <div ref={statusMenu} className="connection-popover" data-no-drag>
             <div className="connection-popover-heading">
               <span className="eyebrow">Apple Music</span>
               <strong>
@@ -397,7 +396,11 @@ export function Titlebar(): JSX.Element {
                 {formatLastRefresh(lastRefresh)}
               </span>
             </div>
-            <div className="connection-popover-actions">
+            <div
+              className="connection-popover-actions"
+              role="menu"
+              aria-label="Connection actions"
+            >
               <button
                 type="button"
                 role="menuitem"

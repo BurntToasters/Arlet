@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub const MINIMUM_WINDOWS_BUILD: u32 = 19045;
 
@@ -177,6 +177,49 @@ pub const SUPPORT_URL: &str = "https://rosie.run/support";
 #[tauri::command]
 pub fn open_support_page() -> Result<(), String> {
     open_in_default_browser(SUPPORT_URL)
+}
+
+/// Links the Settings › About section can open. The webview sends only one of
+/// these names, so every URL is built here from fixed text and the version.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AboutLink {
+    Project,
+    ReleaseNotes,
+    License,
+}
+
+const PROJECT_URL: &str = "https://github.com/BurntToasters/Arlet";
+
+/// Compile-time version from `Cargo.toml`, which `sync-version.js` keeps equal
+/// to `tauri.conf.json` (the version the updater and installer report).
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Semver text only: digits, letters, dots, hyphens, and plus signs, starting
+/// with a digit. Anything else would change the path or query of the URL.
+fn is_plain_version(version: &str) -> bool {
+    version.starts_with(|c: char| c.is_ascii_digit())
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'))
+}
+
+pub fn about_link_url(link: AboutLink, version: &str) -> Result<String, String> {
+    match link {
+        AboutLink::Project => Ok(PROJECT_URL.to_string()),
+        AboutLink::ReleaseNotes => {
+            if !is_plain_version(version) {
+                return Err(format!("Unexpected app version {version:?}."));
+            }
+            Ok(format!("{PROJECT_URL}/releases/tag/v{version}"))
+        }
+        AboutLink::License => Ok(format!("{PROJECT_URL}/blob/main/LICENSE")),
+    }
+}
+
+#[tauri::command]
+pub fn open_about_link(link: AboutLink) -> Result<(), String> {
+    open_in_default_browser(&about_link_url(link, APP_VERSION)?)
 }
 
 #[cfg(windows)]
@@ -411,6 +454,53 @@ mod tests {
     #[test]
     fn support_url_is_the_https_support_page() {
         assert_eq!(super::SUPPORT_URL, "https://rosie.run/support");
+    }
+
+    // Failure modes: a link resolves to a different repository or to a
+    // non-HTTPS URL; an unknown or URL-shaped value deserializes into a link;
+    // a version with path or query characters is spliced into the release
+    // tag URL; an empty or missing version still produces a release URL.
+    #[test]
+    fn about_link_urls_are_fixed_project_urls() {
+        use super::AboutLink;
+        assert_eq!(
+            super::about_link_url(AboutLink::Project, "0.3.0").unwrap(),
+            "https://github.com/BurntToasters/Arlet"
+        );
+        assert_eq!(
+            super::about_link_url(AboutLink::License, "0.3.0").unwrap(),
+            "https://github.com/BurntToasters/Arlet/blob/main/LICENSE"
+        );
+        assert_eq!(
+            super::about_link_url(AboutLink::ReleaseNotes, "0.3.0-beta.2").unwrap(),
+            "https://github.com/BurntToasters/Arlet/releases/tag/v0.3.0-beta.2"
+        );
+    }
+
+    #[test]
+    fn about_link_release_notes_reject_non_version_text() {
+        use super::AboutLink;
+        for version in ["", "0.3.0/../../evil", "0.3.0?x=1", "0.3.0#frag", "v0.3.0"] {
+            assert!(
+                super::about_link_url(AboutLink::ReleaseNotes, version).is_err(),
+                "accepted {version:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn about_link_deserializes_only_known_names() {
+        use super::AboutLink;
+        assert_eq!(
+            serde_json::from_str::<AboutLink>("\"release_notes\"").unwrap(),
+            AboutLink::ReleaseNotes
+        );
+        assert_eq!(
+            serde_json::from_str::<AboutLink>("\"project\"").unwrap(),
+            AboutLink::Project
+        );
+        assert!(serde_json::from_str::<AboutLink>("\"https://evil.example\"").is_err());
+        assert!(serde_json::from_str::<AboutLink>("\"settings\"").is_err());
     }
 
     #[test]

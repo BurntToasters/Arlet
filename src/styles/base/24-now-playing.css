@@ -30,6 +30,63 @@
   overflow: hidden;
   background: var(--surface-solid);
   color: var(--text);
+  animation: now-playing-enter var(--duration-normal) var(--ease-standard)
+    backwards;
+}
+/* Leaving: focus has already moved back to the page, so the overlay must not
+   take clicks while it fades out. It unmounts when the transition ends. */
+.now-playing.is-closing {
+  animation-name: now-playing-exit;
+  animation-fill-mode: forwards;
+  pointer-events: none;
+}
+/* The artwork's bgColor is mixed into the surface, never painted raw. At 22%
+   the worst case (white on dark, black on light) keeps --text above 4.5:1.
+   Muted text is pulled toward --text so it clears 4.5:1 as well. Registering
+   the property lets the tint transition between songs. */
+@property --now-playing-tint {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+.now-playing.has-artwork-tint {
+  --text-muted: color-mix(in srgb, var(--text) 85%, var(--surface-solid));
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--now-playing-tint) 22%, var(--surface-solid)) 0%,
+      var(--surface-solid) 70%
+    ),
+    var(--surface-solid);
+  transition: --now-playing-tint 320ms var(--ease-standard);
+}
+@keyframes now-playing-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes now-playing-exit {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+}
+@keyframes now-playing-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 .now-playing-header {
   display: flex;
@@ -110,6 +167,23 @@
 .now-playing-controls .player-progress {
   width: 100%;
 }
+.now-playing-actions {
+  display: flex;
+  width: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.now-playing-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.now-playing-actions .volume-control {
+  flex: 0 1 200px;
+  min-width: 140px;
+  margin-left: auto;
+}
 
 .now-playing-side {
   display: flex;
@@ -189,6 +263,25 @@
   font-size: 10px;
 }
 
+/* Reduced motion keeps the fade but drops the movement. The dialog unmounts
+   without an exit transition in this mode (see useDialogPresence). */
+@media (prefers-reduced-motion: reduce) {
+  .now-playing {
+    animation-name: now-playing-fade;
+  }
+  .now-playing.has-artwork-tint {
+    transition: none;
+  }
+}
+
+/* Forced colors take over the palette, so the artwork tint is ignored. */
+@media (forced-colors: active) {
+  .now-playing.has-artwork-tint {
+    --text-muted: unset;
+    background: var(--surface-solid);
+  }
+}
+
 @media (max-width: 760px) {
   .now-playing-header {
     padding-left: 16px;
@@ -204,5 +297,18 @@
   }
   .artwork-xl {
     width: min(100%, 220px);
+  }
+}
+
+@media (max-width: 720px) {
+  .now-playing-header-actions {
+    gap: 6px;
+  }
+  .now-playing-controls {
+    width: 100%;
+  }
+  .now-playing-actions .volume-control {
+    flex: 1 1 100%;
+    margin-left: 0;
   }
 }

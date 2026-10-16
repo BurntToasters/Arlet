@@ -1,6 +1,16 @@
 /** Seed used by the native E2E report to make runs repeatable. */
 export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
 
+/**
+ * UI polish ids (scripts/e2e-polish.js; docs/TESTING.md "UI polish"). Served
+ * only at their own catalog paths, and the search term "polish" finds them.
+ * album-polish: 2 discs, 4 tracks (703 s), editorial notes with HTML and a
+ * script that sets window.__ARLET_POLISH_XSS__, label, copyright, genres.
+ * Its tracks carry artwork with bgColor, so Now Playing tints when they play.
+ * album-polish-sparse: no release date, genres, label, notes or durations.
+ * pl.polish-fixture: 2 songs and a description with HTML-looking text.
+ */
+
 function installMusicKitFixture() {
   if (window.__ARLET_E2E_MUSIC__) return;
 
@@ -140,6 +150,9 @@ function installMusicKitFixture() {
     bigItems.find((item) => item.id === id) ??
     catalogPlaylistItems.find((item) => item.id === id) ??
     albumItems.find((item) => item.id === id) ??
+    [...polishAlbumTracks, ...polishSparseTracks, ...polishPlaylistTracks].find(
+      (item) => item.id === id,
+    ) ??
     navResources[id] ??
     (id === catalogSong.id ? catalogSong : undefined) ??
     track(id, id);
@@ -383,12 +396,152 @@ function installMusicKitFixture() {
         : {}),
     };
   };
+  // UI polish data (ids in the header comment). Shaped as Apple returns
+  // catalog resources: notes and descriptions are `{ standard, short }` text.
+  const polishTrack = (id, name, { disc, number, ms, url, album }) => ({
+    id,
+    type: "songs",
+    attributes: {
+      name,
+      artistName: "Fixture Artist",
+      albumName: album,
+      ...(ms === undefined ? {} : { durationInMillis: ms }),
+      ...(disc === undefined ? {} : { discNumber: disc }),
+      trackNumber: number,
+      ...(url ? { url } : {}),
+      // Queue items get this at top level (where the app reads it) once
+      // configure({ artworkTemplate }) is set; see mediaItem.
+      artwork: polishArtwork(id),
+      playParams: { id, kind: "song", catalogId: id },
+    },
+  });
+  const polishArtwork = (id) => ({
+    url: `https://is1-ssl.mzstatic.com/image/thumb/Music/e2e/${id}/{w}x{h}bb.jpg`,
+    width: 1200,
+    height: 1200,
+    bgColor: "1c2b3a",
+    textColor1: "f2f2f7",
+    textColor2: "d1d1d6",
+    textColor3: "aeaeb2",
+    textColor4: "8e8e93",
+  });
+  const POLISH_ALBUM_SLUG = "polish-fixture-album";
+  const polishAlbumTracks = [
+    polishTrack("polish-d1-t1", "Polish Disc One Track One", {
+      disc: 1,
+      number: 1,
+      ms: 215_000,
+      album: "Polish Fixture Album",
+      url: `https://music.apple.com/us/album/${POLISH_ALBUM_SLUG}/album-polish?i=polish-d1-t1`,
+    }),
+    polishTrack("polish-d1-t2", "Polish Disc One Track Two", {
+      disc: 1,
+      number: 2,
+      ms: 187_000,
+      album: "Polish Fixture Album",
+      url: `https://music.apple.com/us/album/${POLISH_ALBUM_SLUG}/album-polish?i=polish-d1-t2`,
+    }),
+    polishTrack("polish-d2-t1", "Polish Disc Two Track One", {
+      disc: 2,
+      number: 1,
+      ms: 240_000,
+      album: "Polish Fixture Album",
+      url: `https://music.apple.com/us/album/${POLISH_ALBUM_SLUG}/album-polish?i=polish-d2-t1`,
+    }),
+    polishTrack("polish-d2-t2", "Polish Disc Two Track Two", {
+      disc: 2,
+      number: 2,
+      ms: 61_000,
+      album: "Polish Fixture Album",
+      url: `https://music.apple.com/us/album/${POLISH_ALBUM_SLUG}/album-polish?i=polish-d2-t2`,
+    }),
+  ];
+  const polishAlbum = {
+    id: "album-polish",
+    type: "albums",
+    attributes: {
+      name: "Polish Fixture Album",
+      artistName: "Fixture Artist",
+      releaseDate: "2019-05-17",
+      trackCount: polishAlbumTracks.length,
+      genreNames: ["Alternative", "Rock"],
+      recordLabel: "Fixture Records",
+      copyright: "℗ 2019 Fixture Records",
+      url: `https://music.apple.com/us/album/${POLISH_ALBUM_SLUG}/album-polish`,
+      editorialNotes: {
+        standard:
+          "<i>Bold</i> & notes<br>line 2 <script>window.__ARLET_POLISH_XSS__ = true</script>",
+        short: "Short <b>notes</b> & more",
+      },
+      artwork: polishArtwork("album-polish"),
+      playParams: { id: "album-polish", kind: "album" },
+    },
+  };
+  // No release date, genres, label, notes or durations: nothing may be invented.
+  const polishSparseAlbum = {
+    id: "album-polish-sparse",
+    type: "albums",
+    attributes: {
+      name: "Polish Sparse Album",
+      artistName: "Fixture Artist",
+      trackCount: 1,
+      playParams: { id: "album-polish-sparse", kind: "album" },
+    },
+  };
+  const polishSparseTracks = [
+    polishTrack("polish-sparse-t1", "Polish Sparse Track", {
+      number: 1,
+      album: "Polish Sparse Album",
+    }),
+  ];
+  const polishAlbums = {
+    "album-polish": { album: polishAlbum, tracks: polishAlbumTracks },
+    "album-polish-sparse": {
+      album: polishSparseAlbum,
+      tracks: polishSparseTracks,
+    },
+  };
+  const polishPlaylistTracks = [
+    polishTrack("polish-pl-01", "Polish Playlist Track One", {
+      number: 1,
+      ms: 200_000,
+      album: "Polish Playlist Album",
+      url: "https://music.apple.com/us/album/polish-playlist-album/polish-pl-01",
+    }),
+    polishTrack("polish-pl-02", "Polish Playlist Track Two", {
+      number: 1,
+      ms: 185_000,
+      album: "Polish Playlist Album",
+      url: "https://music.apple.com/us/album/polish-playlist-album/polish-pl-02",
+    }),
+  ];
+  const polishPlaylist = {
+    id: "pl.polish-fixture",
+    type: "playlists",
+    attributes: {
+      name: "Polish Fixture Playlist",
+      curatorName: "Apple Music",
+      trackCount: polishPlaylistTracks.length,
+      description: {
+        standard:
+          'Plain <em>text</em> & a <img src="x" onerror="window.__ARLET_POLISH_XSS__ = true">',
+        short: "Short note",
+      },
+      url: "https://music.apple.com/us/playlist/polish-fixture-playlist/pl.polish-fixture",
+      artwork: polishArtwork("pl.polish-fixture"),
+      playParams: { id: "pl.polish-fixture", kind: "playlist" },
+    },
+  };
+
   // Detail paths whose `include=tracks` form carries the first track page.
   const TRACK_DETAIL_PATHS = new Set([
     "/v1/me/library/albums/album-1",
     "/v1/me/library/playlists/playlist-1",
     "/v1/me/library/playlists/playlist-big",
     "/v1/catalog/us/playlists/pl.catalog-fixture",
+    "/v1/catalog/us/albums/album-polish",
+    "/v1/catalog/us/albums/album-polish-sparse",
+    "/v1/catalog/us/playlists/pl.polish-fixture",
   ]);
   // Batched `?ids=` lookups; the library and catalog roots are separate.
   const BATCH_PLAYLIST_PATHS = new Set([
@@ -500,7 +653,7 @@ function installMusicKitFixture() {
     }
     if (BATCH_PLAYLIST_PATHS.has(pathname) && call.query?.ids !== undefined) {
       const playlists = pathname.startsWith("/v1/catalog/")
-        ? [catalogPlaylist]
+        ? [catalogPlaylist, polishPlaylist]
         : [playlist, bigPlaylist];
       const ids = String(call.query.ids).split(",").filter(Boolean);
       // Ids come back in the order asked for; unknown ids are skipped.
@@ -525,6 +678,23 @@ function installMusicKitFixture() {
     }
     if (pathname === "/v1/catalog/us/playlists/pl.catalog-fixture/tracks") {
       return catalogTrackPage(path);
+    }
+    // Catalog album detail, with or without `/tracks`; the tracks endpoint
+    // returns every track in one page (no `next`).
+    const polishAlbumRoute = pathname.match(
+      /^\/v1\/catalog\/us\/albums\/(album-polish(?:-sparse)?)(\/tracks)?$/u,
+    );
+    if (polishAlbumRoute) {
+      const entry = polishAlbums[polishAlbumRoute[1]];
+      return polishAlbumRoute[2]
+        ? { data: entry.tracks.map(clone) }
+        : itemResponse(entry.album);
+    }
+    if (pathname === "/v1/catalog/us/playlists/pl.polish-fixture") {
+      return itemResponse(polishPlaylist);
+    }
+    if (pathname === "/v1/catalog/us/playlists/pl.polish-fixture/tracks") {
+      return { data: polishPlaylistTracks.map(clone) };
     }
     if (String(path).includes(secondPlaylistPage)) {
       return {
@@ -692,6 +862,16 @@ function installMusicKitFixture() {
       return { data: Object.values(navResources).map(clone) };
     }
     if (pathname === "/v1/catalog/us/search") {
+      // Only a term containing "polish" reaches the polish ids.
+      if (/polish/iu.test(String(call.query?.term ?? ""))) {
+        return {
+          results: {
+            albums: { data: [clone(polishAlbum), clone(polishSparseAlbum)] },
+            playlists: { data: [clone(polishPlaylist)] },
+            songs: { data: polishAlbumTracks.map(clone) },
+          },
+        };
+      }
       return { results: { songs: { data: topSongItems.map(clone) } } };
     }
     return { data: [] };

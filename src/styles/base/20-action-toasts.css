@@ -29,6 +29,12 @@
   margin-top: 1px;
   color: var(--danger);
 }
+.action-toast-success {
+  border-color: color-mix(in srgb, var(--success) 45%, var(--border-strong));
+}
+.action-toast-success > svg {
+  color: var(--success);
+}
 .action-toast-message {
   flex: 1;
   min-width: 0;

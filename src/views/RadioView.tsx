@@ -9,6 +9,8 @@ import { useEffect, useRef } from "preact/hooks";
 import type { JSX } from "preact";
 import { useAppController, useAppSlices } from "../app/context.tsx";
 import { Artwork } from "../components/Artwork.tsx";
+import { CardActions, CardShell } from "../components/CardActions.tsx";
+import { SkeletonCardGrid, SkeletonStatus } from "../components/Skeleton.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import type { Track } from "../domain/music.ts";
 import type { RadioSectionState } from "../state.ts";
@@ -56,30 +58,37 @@ function StationCard({
               artwork: station.artwork,
             };
             return (
-              <button
-                className="home-discovery-card"
-                key={station.id}
-                type="button"
-                disabled={!station.url}
-                onClick={() => onPlay(station.id)}
-              >
-                <Artwork
-                  track={track}
-                  size="lg"
-                  alt={`${station.name} artwork`}
-                  className="home-discovery-art"
+              <CardShell key={station.id}>
+                <button
+                  className="home-discovery-card"
+                  type="button"
+                  disabled={!station.url}
+                  onClick={() => onPlay(station.id)}
+                >
+                  <Artwork
+                    track={track}
+                    size="lg"
+                    alt={`${station.name} artwork`}
+                    className="home-discovery-art"
+                  />
+                  <span className="home-discovery-copy">
+                    <strong>{station.name}</strong>
+                    <small>
+                      {station.description ??
+                        (station.isLive ? "Live radio" : "Personal station")}
+                    </small>
+                  </span>
+                  <span className="home-discovery-source">
+                    <Play size={14} fill="currentColor" /> Play
+                  </span>
+                </button>
+                {/* Stations have no context-menu target, so no "..." button. */}
+                <CardActions
+                  title={station.name}
+                  menu={false}
+                  onPlay={station.url ? () => onPlay(station.id) : undefined}
                 />
-                <span className="home-discovery-copy">
-                  <strong>{station.name}</strong>
-                  <small>
-                    {station.description ??
-                      (station.isLive ? "Live radio" : "Personal station")}
-                  </small>
-                </span>
-                <span className="home-discovery-source">
-                  <Play size={14} fill="currentColor" /> Play
-                </span>
-              </button>
+              </CardShell>
             );
           })}
         </div>
@@ -206,9 +215,9 @@ export function RadioView(): JSX.Element {
         </p>
       ) : null}
       {loading && !hasStations ? (
-        <div className="search-feedback" role="status">
-          <LoaderCircle className="spin" size={22} /> Loading Radio…
-        </div>
+        <SkeletonStatus label="Loading Radio…">
+          <SkeletonCardGrid count={4} />
+        </SkeletonStatus>
       ) : (
         <>
           <StationCard

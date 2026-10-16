@@ -80,11 +80,14 @@ export function Artwork({
   const pixelSize = cssSize === 0 ? undefined : cssSize;
   const image =
     imageUrl && !imageFailed && cssSize !== undefined ? imageUrl : undefined;
+  // The img carries the name when shown; the labelled role="img" is only for
+  // the initials placeholder.
+  const placeholderLabel = alt ?? `${track?.title ?? "No artwork"} artwork`;
   return (
     <div
       ref={ref}
       className={`artwork artwork-${size} ${className}`.trim()}
-      aria-label={alt ?? `${track?.title ?? "No artwork"} artwork`}
+      aria-label={image ? undefined : placeholderLabel}
       role={image ? undefined : "img"}
     >
       {image ? (

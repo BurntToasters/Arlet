@@ -89,6 +89,30 @@
   color: var(--text);
   font-size: 12px;
 }
+.settings-section[aria-labelledby="about-heading"] .settings-field strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.settings-section[aria-labelledby="about-heading"] .about-link {
+  width: 100%;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.settings-section[aria-labelledby="about-heading"] .about-link > svg {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+.settings-section[aria-labelledby="about-heading"]
+  .about-link:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+.settings-section[aria-labelledby="about-heading"] .about-link:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
 .effect-status {
   display: flex;
   flex-wrap: wrap;

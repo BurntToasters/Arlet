@@ -14,6 +14,12 @@ import {
   useAppSlices,
 } from "../app/context.tsx";
 import { Artwork } from "../components/Artwork.tsx";
+import { CardActions, CardShell } from "../components/CardActions.tsx";
+import {
+  SkeletonCardGrid,
+  SkeletonRows,
+  SkeletonStatus,
+} from "../components/Skeleton.tsx";
 import { SongRow } from "../components/SongRow.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import type { Album, Playlist, Track } from "../domain/music.ts";
@@ -37,26 +43,51 @@ function Card({
   kind: "album" | "playlist";
 }): JSX.Element {
   const router = useAppRouter();
+  const controller = useAppController();
   const track = cardTrack(item);
   const title = track.title;
   return (
-    <button
-      className="home-discovery-card"
-      type="button"
-      onClick={() => router.navigate({ kind, id: item.id, source: "catalog" })}
+    <CardShell
+      contextData={{
+        "data-context-kind": kind,
+        "data-context-id": item.id,
+        "data-context-title": title,
+        "data-context-route-kind": kind,
+        "data-context-source": "catalog",
+      }}
+      catalogUrl={item.catalogUrl}
     >
-      <Artwork
-        track={track}
-        size="lg"
-        alt={`${title} artwork`}
-        className="home-discovery-art"
+      <button
+        className="home-discovery-card"
+        type="button"
+        onClick={() =>
+          router.navigate({ kind, id: item.id, source: "catalog" })
+        }
+      >
+        <Artwork
+          track={track}
+          size="lg"
+          alt={`${title} artwork`}
+          className="home-discovery-art"
+        />
+        <span className="home-discovery-copy">
+          <strong title={title}>{title}</strong>
+          <small>{track.artistName}</small>
+        </span>
+        <span className="home-discovery-source">Apple Music</span>
+      </button>
+      <CardActions
+        title={title}
+        onPlay={
+          "playable" in item && item.playable === false
+            ? undefined
+            : () =>
+                void Promise.resolve(
+                  controller.playCollection?.(kind, item.id, "catalog", 0),
+                ).catch(reportActionError)
+        }
       />
-      <span className="home-discovery-copy">
-        <strong title={title}>{title}</strong>
-        <small>{track.artistName}</small>
-      </span>
-      <span className="home-discovery-source">Apple Music</span>
-    </button>
+    </CardShell>
   );
 }
 
@@ -70,6 +101,7 @@ export function BrowseView(): JSX.Element {
     browse.songs.length > 0 ||
     browse.albums.length > 0 ||
     browse.playlists.length > 0;
+  const initialLoad = loading && !hasData;
   // Also reloads once a sign-in finishes, which resets Browse to idle. The
   // in-flight state is read from a ref: as an effect trigger it would retry a
   // failing load forever.
@@ -153,11 +185,6 @@ export function BrowseView(): JSX.Element {
           Some charts could not be refreshed: {browse.error}
         </p>
       ) : null}
-      {loading && !hasData ? (
-        <div className="search-feedback" role="status">
-          <LoaderCircle className="spin" size={22} /> Loading Browse…
-        </div>
-      ) : null}
       <section
         className="home-feed-section"
         aria-labelledby="browse-songs-heading"
@@ -200,6 +227,10 @@ export function BrowseView(): JSX.Element {
               />
             ))}
           </ol>
+        ) : initialLoad ? (
+          <SkeletonStatus label="Loading Browse…">
+            <SkeletonRows count={6} />
+          </SkeletonStatus>
         ) : loading ? null : (
           <EmptyState
             icon={ListMusic}
@@ -225,6 +256,8 @@ export function BrowseView(): JSX.Element {
               <Card key={item.id} item={item} kind="album" />
             ))}
           </div>
+        ) : initialLoad ? (
+          <SkeletonCardGrid count={6} />
         ) : loading ? null : (
           <EmptyState
             icon={Disc3}
@@ -250,6 +283,8 @@ export function BrowseView(): JSX.Element {
               <Card key={item.id} item={item} kind="playlist" />
             ))}
           </div>
+        ) : initialLoad ? (
+          <SkeletonCardGrid count={6} />
         ) : loading ? null : (
           <EmptyState
             icon={ListMusic}

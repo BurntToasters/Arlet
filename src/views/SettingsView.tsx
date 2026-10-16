@@ -30,6 +30,10 @@ import {
 import { SHORTCUT_HELP } from "../app/shortcuts.ts";
 import { LicensesDialog } from "../components/LicensesDialog.tsx";
 import { ResetSettingsDialog } from "../components/ResetSettingsDialog.tsx";
+import {
+  createTauriEnvironmentAdapter,
+  type NativeDiagnosticsInfo,
+} from "../diagnostics/native.ts";
 import type {
   RuntimeAppState,
   ThemePreference,
@@ -38,6 +42,14 @@ import type {
   WindowEffectPreference,
 } from "../state.ts";
 import { reportActionError } from "../components/action-errors.ts";
+import { openAboutLink } from "../platform/support.ts";
+
+const PROJECT_URL = "https://github.com/BurntToasters/Arlet";
+const LICENSE_URL = `${PROJECT_URL}/blob/main/LICENSE`;
+
+function releaseNotesUrl(version: string): string {
+  return `${PROJECT_URL}/releases/tag/v${version}`;
+}
 
 function updateStatusCopy(updates: UpdateState): string {
   switch (updates.status) {
@@ -129,6 +141,28 @@ export function SettingsView(): JSX.Element {
   const account = readAccountSummary(state);
   const [licensesOpen, setLicensesOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
+  // undefined while loading, null when app info is unavailable (browser dev).
+  const [appInfo, setAppInfo] = useState<NativeDiagnosticsInfo | null>();
+  useEffect(() => {
+    let current = true;
+    void createTauriEnvironmentAdapter()()
+      .then((info) => {
+        if (current) setAppInfo(info);
+      })
+      .catch(() => {
+        if (current) setAppInfo(null);
+      });
+    return () => {
+      current = false;
+    };
+  }, []);
+  const appVersion =
+    appInfo?.version && appInfo.version !== "unknown"
+      ? appInfo.version
+      : undefined;
+  const versionCopy =
+    appVersion ?? (appInfo === undefined ? "Loading…" : "Unknown");
+  const channelInUse = `${state.updates.resolvedChannel === "beta" ? "Beta" : "Stable"}${settings.updateChannel === "auto" ? " (auto)" : ""}`;
   const [reportCopied, setReportCopied] = useState(false);
   useEffect(() => {
     if (!reportCopied) return undefined;
@@ -530,6 +564,74 @@ export function SettingsView(): JSX.Element {
               </div>
             ))}
           </dl>
+        </section>
+
+        <section className="settings-section" aria-labelledby="about-heading">
+          <div className="settings-section-heading">
+            <span className="settings-icon">
+              <Info aria-hidden="true" size={19} strokeWidth={1.8} />
+            </span>
+            <div>
+              <h2 id="about-heading">About</h2>
+              <p>Installed version, update channel, and project links.</p>
+            </div>
+          </div>
+          <div className="settings-fields">
+            <div className="settings-field">
+              <span>Arlet version</span>
+              <strong>{versionCopy}</strong>
+            </div>
+            <div className="settings-field">
+              <span>Update channel in use</span>
+              <strong>{channelInUse}</strong>
+            </div>
+            {appInfo?.webview_version ? (
+              <div className="settings-field">
+                <span>WebView2 runtime</span>
+                <strong>{appInfo.webview_version}</strong>
+              </div>
+            ) : null}
+            <button
+              className="settings-field about-link"
+              type="button"
+              onClick={() =>
+                void openAboutLink("project").catch(reportActionError)
+              }
+            >
+              <span>Project page</span>
+              <strong>{PROJECT_URL}</strong>
+              <ExternalLink aria-hidden="true" size={14} strokeWidth={1.8} />
+            </button>
+            <button
+              className="settings-field about-link"
+              type="button"
+              disabled={!appVersion}
+              onClick={() =>
+                void openAboutLink("release_notes").catch(reportActionError)
+              }
+            >
+              <span>Release notes</span>
+              <strong>
+                {appVersion
+                  ? releaseNotesUrl(appVersion)
+                  : appInfo === undefined
+                    ? "Loading…"
+                    : "Unavailable"}
+              </strong>
+              <ExternalLink aria-hidden="true" size={14} strokeWidth={1.8} />
+            </button>
+            <button
+              className="settings-field about-link"
+              type="button"
+              onClick={() =>
+                void openAboutLink("license").catch(reportActionError)
+              }
+            >
+              <span>License</span>
+              <strong>{LICENSE_URL}</strong>
+              <ExternalLink aria-hidden="true" size={14} strokeWidth={1.8} />
+            </button>
+          </div>
         </section>
 
         <section className="settings-section" aria-labelledby="support-heading">

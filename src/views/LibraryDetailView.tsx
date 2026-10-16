@@ -1,8 +1,14 @@
 import {
   AlertCircle,
+  ChevronDown,
   Disc3,
+  Heart,
+  LibraryBig,
   ListMusic,
   LoaderCircle,
+  MoreHorizontal,
+  Pin,
+  PinOff,
   Play,
   Radio,
   RefreshCw,
@@ -15,11 +21,19 @@ import type { JSX } from "preact";
 import {
   useAppController,
   useAppRouter,
+  useAppSelector,
   useAppSlices,
 } from "../app/context.tsx";
 import type { AppController } from "../app/controller.ts";
 import type { CollectionPlayOptions } from "../app/collection-playback.ts";
+import {
+  isLibraryTarget,
+  ratingKeyOf,
+  type RatingTarget,
+} from "../app/ratings.ts";
+import { getState } from "../state.ts";
 import { Artwork } from "../components/Artwork.tsx";
+import { requestContextMenu } from "../components/context-menu-events.ts";
 import { EmptyState } from "./EmptyState.tsx";
 import {
   LibraryTrackRow,
@@ -36,8 +50,16 @@ import {
 } from "../musickit/normalize.ts";
 import { reportActionError } from "../components/action-errors.ts";
 import { SongRow } from "../components/SongRow.tsx";
+import { CardActions, CardShell } from "../components/CardActions.tsx";
 import { OfflineBanner } from "../components/OfflineBanner.tsx";
 import { VirtualList } from "../components/VirtualList.tsx";
+import {
+  detailNotes,
+  detailSummary,
+  discNumberOf,
+  groupByDisc,
+  type DiscGroup,
+} from "./detail-meta.ts";
 
 /** Top Songs rows an artist page shows; Play still uses every top song. */
 const ARTIST_TOP_SONGS_SHOWN = 10;
@@ -182,6 +204,10 @@ function detailContext(
     ...(resourceSource(resource)
       ? { "data-context-source": resourceSource(resource) as string }
       : {}),
+    // The menu's "Copy Apple Music link" reads this; it validates the URL.
+    ...(resource.catalogUrl
+      ? { "data-context-catalog-url": resource.catalogUrl }
+      : {}),
   };
 }
 
@@ -200,29 +226,235 @@ function TrackList({
   parentId: string;
   parentSource: DetailSource;
 }): JSX.Element {
+  // Each disc is its own list, so headings sit outside the virtualized rows
+  // and the row-height spacers stay exact. Rows keep their album-wide index,
+  // which is what Play starts from.
+  const groups = useMemo(
+    () =>
+      groupByDisc(resources, parentKind === "album" ? discNumberOf : () => 1),
+    [resources, parentKind],
+  );
+  // Several discs show each track's position on its disc; play still uses the
+  // album-wide index.
+  const multiDisc = groups.length > 1;
+  const renderRows = (rows: DiscGroup<ResourceLike>["items"]): JSX.Element => (
+    <VirtualList
+      className="library-track-list"
+      items={rows}
+      getKey={({ item, index }) =>
+        `${item.type ?? "track"}:${item.id}:${index}`
+      }
+      renderRow={({ item, index }) => (
+        <LibraryTrackRow
+          resource={item}
+          index={index}
+          onPlay={onPlay}
+          disabled={!canPlay}
+          discTrackNumbers={multiDisc}
+          contextData={{
+            "data-context-parent-kind": parentKind,
+            "data-context-parent-id": parentId,
+            "data-context-parent-source": parentSource,
+            "data-context-parent-index": String(index),
+          }}
+        />
+      )}
+    />
+  );
+  if (groups.length < 2) {
+    return (
+      <section className="library-list-panel" aria-label="Tracks">
+        {renderRows(groups[0]?.items ?? [])}
+      </section>
+    );
+  }
   return (
-    <section className="library-list-panel" aria-label="Tracks">
-      <VirtualList
-        className="library-track-list"
-        items={resources}
-        getKey={(resource, index) =>
-          `${resource.type ?? "track"}:${resource.id}:${index}`
-        }
-        renderRow={(resource, index) => (
-          <LibraryTrackRow
-            resource={resource}
-            index={index}
-            onPlay={onPlay}
-            disabled={!canPlay}
-            contextData={{
-              "data-context-parent-kind": parentKind,
-              "data-context-parent-id": parentId,
-              "data-context-parent-source": parentSource,
-              "data-context-parent-index": String(index),
-            }}
-          />
-        )}
-      />
+    <div className="library-disc-groups">
+      {groups.map((group) => (
+        <section
+          key={group.disc}
+          className="library-disc"
+          aria-labelledby={`library-disc-${group.disc}`}
+        >
+          <h2
+            id={`library-disc-${group.disc}`}
+            className="library-disc-heading"
+          >
+            Disc {group.disc}
+          </h2>
+          <div className="library-list-panel">{renderRows(group.items)}</div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+/** The rating target the context menu builds for a page of this kind. */
+function ratingTargetFor(kind: "album" | "playlist", id: string): RatingTarget {
+  return { type: kind === "album" ? "albums" : "playlists", id };
+}
+
+/** Love, Add to Library, Pin and "…" for an album or playlist header. */
+function DetailHeroActions({
+  kind,
+  id,
+  title,
+  resource,
+  controller,
+  online,
+}: {
+  kind: "album" | "playlist";
+  id: string;
+  title: string;
+  resource: ResourceLike;
+  controller: AppController;
+  /** Writes to Apple Music need an authorized session that is not offline. */
+  online: boolean;
+}): JSX.Element {
+  const ratingTarget = ratingTargetFor(kind, id);
+  const key = ratingKeyOf(ratingTarget);
+  const loved = useAppSelector(
+    (state) => key !== undefined && state.ratings[key] === 1,
+  );
+  const pinned = useAppSelector((state) =>
+    state.pins.some((pin) => pin.id === id),
+  );
+  const canAddToLibrary =
+    !isLibraryTarget(ratingTarget) && resourceSource(resource) !== "library";
+  useEffect(() => {
+    if (online) run(() => controller.loadRating(ratingTargetFor(kind, id)));
+  }, [online, controller, kind, id]);
+  const toggleLove = (): void => {
+    if (key === undefined) return;
+    // Toggle against the value at click time, as the context menu does.
+    const current = getState().ratings[key];
+    run(() => controller.rate(ratingTarget, current === 1 ? 0 : 1));
+  };
+  const togglePin = (): void =>
+    act(() =>
+      pinned
+        ? controller.unpin(id)
+        : controller.togglePin(id, resourceSource(resource) ?? "library"),
+    );
+  return (
+    <>
+      <button
+        className="secondary-button"
+        type="button"
+        aria-pressed={loved}
+        disabled={!online}
+        onClick={toggleLove}
+      >
+        <Heart
+          aria-hidden="true"
+          size={16}
+          fill={loved ? "currentColor" : "none"}
+        />{" "}
+        Love
+      </button>
+      {canAddToLibrary ? (
+        <button
+          className="secondary-button"
+          type="button"
+          disabled={!online}
+          onClick={() => run(() => controller.addToLibrary(ratingTarget))}
+        >
+          <LibraryBig aria-hidden="true" size={16} /> Add to Library
+        </button>
+      ) : null}
+      {kind === "playlist" ? (
+        <button className="secondary-button" type="button" onClick={togglePin}>
+          {pinned ? (
+            <PinOff aria-hidden="true" size={16} />
+          ) : (
+            <Pin aria-hidden="true" size={16} />
+          )}{" "}
+          {pinned ? "Unpin" : "Pin"}
+        </button>
+      ) : null}
+      <button
+        className="icon-button"
+        type="button"
+        aria-label={`More actions for ${title}`}
+        title="More actions"
+        aria-haspopup="menu"
+        onClick={(event) => {
+          const target = event.currentTarget.closest<HTMLElement>(
+            "[data-context-kind]",
+          );
+          if (target) requestContextMenu(target, event.currentTarget);
+        }}
+      >
+        <MoreHorizontal aria-hidden="true" size={16} />
+      </button>
+    </>
+  );
+}
+
+/** The metadata line under an album or playlist title. */
+function DetailSummary({
+  kind,
+  resource,
+  tracks,
+  complete,
+}: {
+  kind: "album" | "playlist";
+  resource: ResourceLike;
+  tracks: ResourceLike[];
+  complete: boolean;
+}): JSX.Element | null {
+  const parts = detailSummary(kind, resource, tracks, complete);
+  if (parts.length === 0) return null;
+  return <p className="library-detail-meta">{parts.join(" · ")}</p>;
+}
+
+/** Collapsed notes, label and copyright; renders nothing when there are none. */
+function DetailMore({
+  kind,
+  resource,
+}: {
+  kind: "album" | "playlist";
+  resource: ResourceLike;
+}): JSX.Element | null {
+  const [open, setOpen] = useState(false);
+  const details = detailNotes(kind, resource);
+  if (!details) return null;
+  return (
+    <section className="library-detail-more">
+      <button
+        className="library-detail-more-toggle"
+        type="button"
+        aria-expanded={open}
+        aria-controls="library-detail-more-panel"
+        onClick={() => setOpen((value) => !value)}
+      >
+        More <ChevronDown aria-hidden="true" size={14} />
+      </button>
+      <div
+        id="library-detail-more-panel"
+        className="library-detail-more-body"
+        hidden={!open}
+      >
+        {details.notes ? (
+          <p className="library-detail-notes">{details.notes}</p>
+        ) : null}
+        {details.recordLabel || details.copyright ? (
+          <dl className="library-detail-facts">
+            {details.recordLabel ? (
+              <>
+                <dt>Label</dt>
+                <dd>{details.recordLabel}</dd>
+              </>
+            ) : null}
+            {details.copyright ? (
+              <>
+                <dt>Copyright</dt>
+                <dd>{details.copyright}</dd>
+              </>
+            ) : null}
+          </dl>
+        ) : null}
+      </div>
     </section>
   );
 }
@@ -497,6 +729,8 @@ export function LibraryDetailView({
   const artist = resource?.artistName;
   const artworkTrack = resource ? toTrack(resource) : undefined;
   const isArtist = kind === "artist";
+  // Totals only count songs that are all loaded; a partial list would under-state them.
+  const complete = !detail.next && detail.status !== "loading";
   const artistBackdrop = isArtist ? artworkTrack?.artwork?.url : undefined;
   return (
     <>
@@ -533,6 +767,14 @@ export function LibraryDetailView({
           <span className="eyebrow">{copy.eyebrow}</span>
           <h1 tabIndex={-1}>{title}</h1>
           {artist ? <p>{artist}</p> : null}
+          {kind !== "artist" && resource ? (
+            <DetailSummary
+              kind={kind}
+              resource={resource}
+              tracks={resources}
+              complete={complete}
+            />
+          ) : null}
           <div className="library-detail-actions">
             {!isArtist && resources.length ? (
               <button
@@ -593,6 +835,16 @@ export function LibraryDetailView({
                 </button>
               </>
             ) : null}
+            {kind !== "artist" && resource ? (
+              <DetailHeroActions
+                kind={kind}
+                id={id}
+                title={title}
+                resource={resource}
+                controller={controller}
+                online={authorized && !offline}
+              />
+            ) : null}
             <button
               className="icon-button"
               type="button"
@@ -612,6 +864,9 @@ export function LibraryDetailView({
           </div>
         </div>
       </section>
+      {kind !== "artist" && resource ? (
+        <DetailMore kind={kind} resource={resource} />
+      ) : null}
       {detail.source === "cache" || detail.stale || detail.isStale ? (
         <p className="library-stale-note" role="status">
           Showing saved data while Apple Music refreshes.
@@ -679,34 +934,54 @@ export function LibraryDetailView({
             <h2 id="artist-albums-heading">Albums</h2>
             <div className="library-card-grid" aria-label="Artist albums">
               {artistAlbums.map((album) => (
-                <button
+                <CardShell
                   key={album.id}
-                  className="library-card"
-                  type="button"
-                  {...detailContext(album, "album")}
-                  onClick={() =>
-                    router.navigate({
-                      kind: "album",
-                      id: album.id,
-                      source: resourceSource(album) ?? source,
-                    } as Parameters<typeof router.navigate>[0])
-                  }
+                  contextData={detailContext(album, "album")}
+                  catalogUrl={album.catalogUrl}
                 >
-                  <Artwork
-                    track={toTrack(album)}
-                    size="lg"
-                    alt={`${album.title} artwork`}
-                    className="library-card-art"
+                  <button
+                    className="library-card"
+                    type="button"
+                    onClick={() =>
+                      router.navigate({
+                        kind: "album",
+                        id: album.id,
+                        source: resourceSource(album) ?? source,
+                      } as Parameters<typeof router.navigate>[0])
+                    }
+                  >
+                    <Artwork
+                      track={toTrack(album)}
+                      size="lg"
+                      alt={`${album.title} artwork`}
+                      className="library-card-art"
+                    />
+                    <span className="library-card-copy">
+                      <strong>{album.title}</strong>
+                      <small>
+                        {/^\d{4}/u.test(String(album.releaseDate ?? ""))
+                          ? String(album.releaseDate).slice(0, 4)
+                          : (album.artistName ?? "Album")}
+                      </small>
+                    </span>
+                  </button>
+                  <CardActions
+                    title={album.title}
+                    onPlay={
+                      album.playable === false
+                        ? undefined
+                        : () =>
+                            act(() =>
+                              extendedController.playCollection?.(
+                                "album",
+                                album.id,
+                                resourceSource(album) ?? playbackSource,
+                                0,
+                              ),
+                            )
+                    }
                   />
-                  <span className="library-card-copy">
-                    <strong>{album.title}</strong>
-                    <small>
-                      {/^\d{4}/u.test(String(album.releaseDate ?? ""))
-                        ? String(album.releaseDate).slice(0, 4)
-                        : (album.artistName ?? "Album")}
-                    </small>
-                  </span>
-                </button>
+                </CardShell>
               ))}
             </div>
           </section>

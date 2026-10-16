@@ -16,6 +16,8 @@ import {
   useAppSlices,
 } from "../app/context.tsx";
 import { Artwork } from "../components/Artwork.tsx";
+import { CardActions, CardShell } from "../components/CardActions.tsx";
+import { SkeletonCardGrid, SkeletonStatus } from "../components/Skeleton.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import { toResource, toTrack, type ResourceLike } from "./LibraryView.tsx";
 import { reportActionError } from "../components/action-errors.ts";
@@ -170,63 +172,84 @@ function DiscoveryCardView({
   card: DiscoveryCard;
   onOpen: () => void;
 }): JSX.Element {
+  const controller = useAppController();
   const track = toTrack(card.resource);
   const Icon = card.kind === "playlist" ? ListMusic : Disc3;
   return (
-    <button
-      className="home-discovery-card"
-      type="button"
-      data-context-kind={card.kind}
-      data-context-id={card.id}
-      data-context-title={card.resource.title}
-      data-context-route-kind={card.kind}
-      data-context-source={card.source}
-      onClick={onOpen}
+    <CardShell
+      contextData={{
+        "data-context-kind": card.kind,
+        "data-context-id": card.id,
+        "data-context-title": card.resource.title,
+        "data-context-route-kind": card.kind,
+        "data-context-source": card.source,
+      }}
+      catalogUrl={card.resource.catalogUrl}
     >
-      {track ? (
-        <Artwork
-          track={track}
-          size="lg"
-          alt={`${card.resource.title} artwork`}
-          className="home-discovery-art"
-        />
-      ) : (
-        <span className="home-discovery-art home-discovery-art-icon">
-          <Icon aria-hidden="true" size={27} strokeWidth={1.5} />
+      <button className="home-discovery-card" type="button" onClick={onOpen}>
+        {track ? (
+          <Artwork
+            track={track}
+            size="lg"
+            alt={`${card.resource.title} artwork`}
+            className="home-discovery-art"
+          />
+        ) : (
+          <span className="home-discovery-art home-discovery-art-icon">
+            <Icon aria-hidden="true" size={27} strokeWidth={1.5} />
+          </span>
+        )}
+        <span className="home-discovery-copy">
+          <strong title={card.resource.title}>{card.resource.title}</strong>
+          <small title={card.resource.artistName}>
+            {card.resource.artistName ??
+              (card.kind === "playlist" ? "Playlist" : "Album")}
+          </small>
         </span>
-      )}
-      <span className="home-discovery-copy">
-        <strong title={card.resource.title}>{card.resource.title}</strong>
-        <small title={card.resource.artistName}>
-          {card.resource.artistName ??
-            (card.kind === "playlist" ? "Playlist" : "Album")}
-        </small>
-      </span>
-      <span className="home-discovery-source">
-        {card.source === "library" ? "Library" : "Apple Music"}
-      </span>
-    </button>
+        <span className="home-discovery-source">
+          {card.source === "library" ? "Library" : "Apple Music"}
+        </span>
+      </button>
+      <CardActions
+        title={card.resource.title}
+        onPlay={
+          card.resource.playable === false
+            ? undefined
+            : () =>
+                void Promise.resolve(
+                  controller.playCollection?.(
+                    card.kind,
+                    card.id,
+                    card.source,
+                    0,
+                  ),
+                ).catch(reportActionError)
+        }
+      />
+    </CardShell>
   );
 }
 
 function SectionMessage({
   status,
   error,
+  loadingLabel,
   emptyTitle,
   emptyDescription,
   onRetry,
 }: {
   status: HomeStatus;
   error?: string;
+  loadingLabel: string;
   emptyTitle: string;
   emptyDescription: string;
   onRetry: () => void;
 }): JSX.Element | null {
   if ((status === "loading" || status === "refreshing") && !error) {
     return (
-      <div className="home-section-feedback" role="status">
-        <LoaderCircle className="spin" aria-hidden="true" size={18} /> Loading…
-      </div>
+      <SkeletonStatus label={loadingLabel}>
+        <SkeletonCardGrid count={6} />
+      </SkeletonStatus>
     );
   }
   if (error) {
@@ -306,6 +329,7 @@ function DiscoverySection({
         <SectionMessage
           status={section.status}
           error={section.error}
+          loadingLabel={`Loading ${title}…`}
           emptyTitle={emptyTitle}
           emptyDescription={emptyDescription}
           onRetry={onRetry}
@@ -362,6 +386,7 @@ function RecommendationSection({
         <SectionMessage
           status={group.status}
           error={group.error}
+          loadingLabel={`Loading ${group.title}…`}
           emptyTitle="No recommendations yet"
           emptyDescription="Apple Music will show recommendations after you listen to more music."
           onRetry={onRetry}
@@ -550,6 +575,7 @@ export function HomeView(): JSX.Element {
             ) : home.status === "loading" || home.status === "refreshing" ? (
               <SectionMessage
                 status={home.status}
+                loadingLabel="Loading recommendations…"
                 emptyTitle="No recommendations yet"
                 emptyDescription="Apple Music will show recommendations after you listen to more music."
                 onRetry={refresh}
@@ -558,6 +584,7 @@ export function HomeView(): JSX.Element {
               <SectionMessage
                 status={home.error ? "error" : "success"}
                 error={home.error}
+                loadingLabel="Loading recommendations…"
                 emptyTitle="No recommendations yet"
                 emptyDescription="Apple Music will show recommendations after you listen to more music."
                 onRetry={refresh}

@@ -9,9 +9,10 @@ import {
   X,
 } from "lucide-preact";
 import type { JSX } from "preact";
-import { useRef } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { useAppController, useAppSlices } from "../app/context.tsx";
 import type { Track } from "../domain/music.ts";
+import { getState, setUiState } from "../state.ts";
 import { Artwork } from "./Artwork.tsx";
 import { reportActionError, reportQueueEdit } from "./action-errors.ts";
 import { serializeContextRefs } from "./context-refs.ts";
@@ -20,12 +21,105 @@ import { IconButton } from "./IconButton.tsx";
 import { requestPlaylistDialog } from "./playlist-events.ts";
 import { VirtualList } from "./VirtualList.tsx";
 
+// Matches the slide in 07-queue.css.
+const SLIDE_MS = 180;
+
+type DrawerPhase = "closed" | "open" | "closing";
+
+function prefersReducedMotion(): boolean {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+/**
+ * Whether Escape closes the drawer: focus is inside it, or nothing else is
+ * open above it. Text fields keep Escape for themselves.
+ */
+function escapeClosesQueue(drawer: HTMLElement | null): boolean {
+  const active = document.activeElement;
+  if (drawer?.contains(active)) return true;
+  if (
+    active instanceof HTMLInputElement ||
+    active instanceof HTMLTextAreaElement ||
+    active instanceof HTMLSelectElement ||
+    (active instanceof HTMLElement && active.isContentEditable)
+  ) {
+    return false;
+  }
+  const ui = getState().ui;
+  if (ui.nowPlayingOpen || ui.diagnosticsOpen || ui.sidebarOpen) return false;
+  return !document.querySelector(
+    '[role="dialog"], [role="menu"], dialog[open]',
+  );
+}
+
 export function QueueDrawer(): JSX.Element | null {
   const state = useAppSlices("playback", "ui");
   const controller = useAppController();
+  const queueOpen = state.ui.queueOpen;
   // Index of the upcoming row being dragged; only same-drawer drags count.
   const dragFrom = useRef<number | undefined>(undefined);
-  if (!state.ui.queueOpen) return null;
+  // The drawer stays mounted while it slides out.
+  const [phase, setPhase] = useState<DrawerPhase>(
+    queueOpen ? "open" : "closed",
+  );
+  const drawerRef = useRef<HTMLElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  // The control that had focus when the drawer opened; focus returns to it.
+  const openerRef = useRef<HTMLElement | null>(null);
+  const wasOpen = useRef(queueOpen);
+
+  useEffect(() => {
+    if (queueOpen === wasOpen.current) return;
+    wasOpen.current = queueOpen;
+    if (queueOpen) {
+      const active = document.activeElement;
+      openerRef.current = active instanceof HTMLElement ? active : null;
+      setPhase("open");
+      headingRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    const opener = openerRef.current;
+    const active = document.activeElement;
+    // Focus left where the user put it unless it was in the drawer or lost.
+    if (
+      opener?.isConnected &&
+      (!active ||
+        active === document.body ||
+        drawerRef.current?.contains(active))
+    ) {
+      opener.focus({ preventScroll: true });
+    }
+    setPhase("closing");
+  }, [queueOpen]);
+
+  useEffect(() => {
+    if (phase !== "closing") return undefined;
+    const timer = window.setTimeout(
+      () => setPhase("closed"),
+      prefersReducedMotion() ? 0 : SLIDE_MS,
+    );
+    return () => window.clearTimeout(timer);
+  }, [phase]);
+
+  useEffect(() => {
+    if (!queueOpen) return undefined;
+    // Capture phase, so this runs before Now Playing's own Escape shortcut
+    // could close Now Playing and leave the drawer looking topmost.
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+        return;
+      }
+      if (!escapeClosesQueue(drawerRef.current)) return;
+      event.preventDefault();
+      setUiState({ queueOpen: false });
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [queueOpen]);
+
+  if (!queueOpen && phase === "closed") return null;
+  const closing = !queueOpen;
   const queue = state.playback.queue;
   const current = state.playback.queueIndex;
   const upcomingCount = Math.max(0, queue.length - current - 1);
@@ -87,6 +181,9 @@ export function QueueDrawer(): JSX.Element | null {
             : {})}
           {...(track.catalogId
             ? { "data-context-catalog-id": track.catalogId }
+            : {})}
+          {...(track.catalogUrl
+            ? { "data-context-catalog-url": track.catalogUrl }
             : {})}
           draggable={upcoming}
           onDragStart={(event) => {
@@ -179,11 +276,19 @@ export function QueueDrawer(): JSX.Element | null {
   };
 
   return (
-    <aside className="queue-drawer" aria-label="Playing Next">
+    <aside
+      ref={drawerRef}
+      className="queue-drawer"
+      aria-label="Playing Next"
+      aria-hidden={closing || undefined}
+      data-state={closing ? "closing" : "open"}
+    >
       <div className="queue-header">
         <div>
           <span className="eyebrow">Up next</span>
-          <h2>Playing Next</h2>
+          <h2 ref={headingRef} tabIndex={-1}>
+            Playing Next
+          </h2>
         </div>
         <IconButton
           icon={X}

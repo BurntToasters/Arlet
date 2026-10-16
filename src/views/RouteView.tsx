@@ -44,8 +44,13 @@ export function RouteView({ route }: { route: Route }): JSX.Element {
     ) {
       return;
     }
-    const heading = page.current?.querySelector<HTMLElement>("h1");
-    heading?.focus();
+    // Signed-out, loading and error states have no h1, so they fall back to
+    // the EmptyState heading and then to the page itself.
+    const target =
+      page.current?.querySelector<HTMLElement>("h1") ??
+      page.current?.querySelector<HTMLElement>(".empty-state h2") ??
+      page.current;
+    target?.focus();
   }, [routeKey]);
 
   const view = (() => {

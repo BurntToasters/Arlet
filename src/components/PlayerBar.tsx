@@ -1,12 +1,4 @@
-import {
-  CircleAlert,
-  Heart,
-  ListMusic,
-  Repeat,
-  Shuffle,
-  Volume2,
-  VolumeX,
-} from "lucide-preact";
+import { CircleAlert, Heart, ListMusic, Repeat, Shuffle } from "lucide-preact";
 import type { JSX } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import {
@@ -23,6 +15,7 @@ import { setUiState } from "../state.ts";
 import { Artwork } from "./Artwork.tsx";
 import { IconButton } from "./IconButton.tsx";
 import { SleepTimerButton } from "./SleepTimerButton.tsx";
+import { VolumeControl } from "./VolumeControl.tsx";
 import { reportActionError } from "./action-errors.ts";
 import { useSerializedContextRefs } from "./context-refs.ts";
 import { PlaybackProgress, TransportControls } from "./TransportControls.tsx";
@@ -61,8 +54,6 @@ export function PlayerBar(): JSX.Element {
   const current = playback.current;
   const playing = playback.status === "playing";
   const loading = playback.status === "loading";
-  const muted = playback.muted === true;
-  const shownVolume = muted ? 0 : playback.volume;
   const canControl =
     state.initialization.status === "ready" && Boolean(current);
   const loveTarget = current ? trackRatingTarget(current) : undefined;
@@ -163,6 +154,7 @@ export function PlayerBar(): JSX.Element {
         data-context-album={current?.albumTitle}
         data-context-resource-type={current?.resourceType}
         data-context-catalog-id={current?.catalogId}
+        data-context-catalog-url={current?.catalogUrl}
         data-context-album-ref={refs.album}
         data-context-artist-refs={refs.artists}
       >
@@ -234,7 +226,11 @@ export function PlayerBar(): JSX.Element {
             }
           />
         ) : null}
-        {current?.explicit ? <span className="explicit-badge">E</span> : null}
+        {current?.explicit ? (
+          <span className="explicit-badge" role="img" aria-label="Explicit">
+            E
+          </span>
+        ) : null}
       </div>
 
       <div className="player-center">
@@ -288,33 +284,7 @@ export function PlayerBar(): JSX.Element {
             <span>{playerErrorLabel(playback.error.code)}</span>
           </span>
         ) : null}
-        <div className="volume-control">
-          <button
-            className="volume-mute-button"
-            type="button"
-            aria-label={muted ? "Unmute" : "Mute"}
-            aria-pressed={muted}
-            onClick={controller.toggleMute}
-          >
-            {muted || playback.volume === 0 ? (
-              <VolumeX aria-hidden="true" size={16} strokeWidth={1.8} />
-            ) : (
-              <Volume2 aria-hidden="true" size={16} strokeWidth={1.8} />
-            )}
-          </button>
-          <input
-            aria-label="Volume"
-            type="range"
-            min="0"
-            max="1"
-            step="0.01"
-            value={shownVolume}
-            style={{ "--range-progress": `${shownVolume * 100}%` }}
-            onInput={(event) => {
-              void controller.setVolume(Number(event.currentTarget.value));
-            }}
-          />
-        </div>
+        <VolumeControl />
         <IconButton
           icon={ListMusic}
           label="Toggle Playing Next"

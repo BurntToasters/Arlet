@@ -7,7 +7,6 @@ import {
   Folder,
   History as HistoryIcon,
   ListMusic,
-  LoaderCircle,
   Music2,
   RefreshCw,
   UserRound,
@@ -24,6 +23,7 @@ import type { RuntimeAppState } from "../state.ts";
 import type { AppController } from "../app/controller.ts";
 import { Artwork } from "../components/Artwork.tsx";
 import { SongRow } from "../components/SongRow.tsx";
+import { CardActions, CardShell } from "../components/CardActions.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import type { Track } from "../domain/music.ts";
 import { normalizeTrackNavigation } from "../musickit/normalize.ts";
@@ -32,6 +32,11 @@ import { reportActionError } from "../components/action-errors.ts";
 import { OfflineBanner } from "../components/OfflineBanner.tsx";
 import { VirtualGrid } from "../components/VirtualGrid.tsx";
 import { VirtualList } from "../components/VirtualList.tsx";
+import {
+  SkeletonCardGrid,
+  SkeletonRows,
+  SkeletonStatus,
+} from "../components/Skeleton.tsx";
 
 export interface ResourceLike {
   id: string;
@@ -48,6 +53,8 @@ export interface ResourceLike {
   durationMs?: number;
   explicit?: boolean;
   catalogUrl?: string;
+  /** Track's position on its disc, from Apple. */
+  trackNumber?: number;
   catalogId?: string;
   /** Albums: `YYYY-MM-DD` (or `YYYY`) from Apple. */
   releaseDate?: string;
@@ -160,6 +167,14 @@ function numberValue(...values: unknown[]): number | undefined {
   );
 }
 
+/** A 1-based track position from Apple; anything else is unknown. */
+function positionValue(...values: unknown[]): number | undefined {
+  return values.find(
+    (value): value is number =>
+      typeof value === "number" && Number.isInteger(value) && value > 0,
+  );
+}
+
 function artworkValue(value: unknown): Track["artwork"] | undefined {
   const artwork = objectValue(value);
   if (!artwork) return undefined;
@@ -263,6 +278,7 @@ function convertResource(value: unknown): ResourceLike | undefined {
           : undefined,
     // `href` is an API path (/v1/...), not a page link.
     catalogUrl: stringValue(raw.catalogUrl, attributes.url),
+    trackNumber: positionValue(raw.trackNumber, attributes.trackNumber),
     catalogId: stringValue(raw.catalogId, attributes.catalogId),
     releaseDate: stringValue(raw.releaseDate, attributes.releaseDate),
     playable: typeof raw.playable === "boolean" ? raw.playable : undefined,
@@ -306,6 +322,7 @@ function trackFromResource(
     durationMs: resource.durationMs,
     explicit: resource.explicit,
     catalogUrl: resource.catalogUrl,
+    trackNumber: resource.trackNumber,
     resourceType: resource.type,
     catalogId: resource.catalogId,
     playable: resource.playable,
@@ -444,6 +461,7 @@ export function LibraryTrackRow({
   onPlayNext,
   disabled,
   contextData: collectionContext,
+  discTrackNumbers,
 }: {
   resource: ResourceLike;
   index: number;
@@ -451,6 +469,8 @@ export function LibraryTrackRow({
   onPlayNext?: (track: Track) => void;
   disabled: boolean;
   contextData?: Record<string, string>;
+  /** Shows the track's position on its disc; see SongRow. */
+  discTrackNumbers?: boolean;
 }): JSX.Element {
   const appController = useAppController();
   const track = toTrack(resource);
@@ -472,6 +492,7 @@ export function LibraryTrackRow({
       copyClassName="library-row-copy"
       durationClassName="library-row-duration"
       contextData={{ ...contextData(resource, "track"), ...collectionContext }}
+      discTrackNumbers={discTrackNumbers}
     />
   );
 }
@@ -485,36 +506,57 @@ function ResourceCard({
   kind: "album" | "artist" | "playlist";
   onOpen: () => void;
 }): JSX.Element {
+  const appController = useAppController();
   const Icon =
     kind === "album" ? AlbumIcon : kind === "artist" ? UserRound : ListMusic;
   const trackLike = toTrack(resource);
+  // Artists have no collection playback, so only albums and playlists get Play.
+  const collectionKind = kind === "artist" ? undefined : kind;
   return (
-    <button
-      className="library-card"
-      type="button"
-      {...contextData(resource, kind)}
-      onClick={onOpen}
+    <CardShell
+      contextData={contextData(resource, kind)}
+      catalogUrl={resource.catalogUrl}
     >
-      {kind === "artist" && !resource.artwork ? (
-        <span
-          className="library-card-art library-card-art-icon"
-          aria-hidden="true"
-        >
-          <Icon size={27} strokeWidth={1.5} />
+      <button className="library-card" type="button" onClick={onOpen}>
+        {kind === "artist" && !resource.artwork ? (
+          <span
+            className="library-card-art library-card-art-icon"
+            aria-hidden="true"
+          >
+            <Icon size={27} strokeWidth={1.5} />
+          </span>
+        ) : (
+          <Artwork
+            track={trackLike}
+            size="lg"
+            alt={`${resource.title} artwork`}
+            className="library-card-art"
+          />
+        )}
+        <span className="library-card-copy">
+          <strong title={resource.title}>{resource.title}</strong>
+          <small title={resource.artistName}>
+            {resource.artistName ?? kind}
+          </small>
         </span>
-      ) : (
-        <Artwork
-          track={trackLike}
-          size="lg"
-          alt={`${resource.title} artwork`}
-          className="library-card-art"
-        />
-      )}
-      <span className="library-card-copy">
-        <strong title={resource.title}>{resource.title}</strong>
-        <small title={resource.artistName}>{resource.artistName ?? kind}</small>
-      </span>
-    </button>
+      </button>
+      <CardActions
+        title={resource.title}
+        onPlay={
+          collectionKind && resource.playable !== false
+            ? () =>
+                act(() =>
+                  appController.playCollection?.(
+                    collectionKind,
+                    resource.id,
+                    "library",
+                    0,
+                  ),
+                )
+            : undefined
+        }
+      />
+    </CardShell>
   );
 }
 
@@ -610,11 +652,30 @@ function CollectionFeedback({
   onRetry: () => void;
 }): JSX.Element | null {
   if (collection.status === "loading" && collection.items.length === 0) {
+    const label = `Loading ${SECTION_COPY[section].title}…`;
+    if (section === "recent") {
+      return (
+        <SkeletonStatus label={label}>
+          <SkeletonRows count={5} />
+          <SkeletonCardGrid count={4} />
+        </SkeletonStatus>
+      );
+    }
+    if (
+      section === "artists" ||
+      section === "albums" ||
+      section === "playlists"
+    ) {
+      return (
+        <SkeletonStatus label={label}>
+          <SkeletonCardGrid count={8} />
+        </SkeletonStatus>
+      );
+    }
     return (
-      <div className="library-feedback" role="status">
-        <LoaderCircle className="spin" aria-hidden="true" size={22} /> Loading
-        your library…
-      </div>
+      <SkeletonStatus label={label}>
+        <SkeletonRows count={8} />
+      </SkeletonStatus>
     );
   }
   if (collection.error && collection.items.length === 0) {

@@ -291,6 +291,12 @@
           "markdownDescription": "Enables the load_settings command without any pre-configured scope."
         },
         {
+          "description": "Enables the open_about_link command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-about-link",
+          "markdownDescription": "Enables the open_about_link command without any pre-configured scope."
+        },
+        {
           "description": "Enables the open_music_diagnostic command without any pre-configured scope.",
           "type": "string",
           "const": "allow-open-music-diagnostic",
@@ -475,6 +481,12 @@
           "type": "string",
           "const": "deny-load-settings",
           "markdownDescription": "Denies the load_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the open_about_link command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-about-link",
+          "markdownDescription": "Denies the open_about_link command without any pre-configured scope."
         },
         {
           "description": "Denies the open_music_diagnostic command without any pre-configured scope.",

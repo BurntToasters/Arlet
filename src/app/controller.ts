@@ -299,12 +299,40 @@ export interface AppController {
   setDiagnosticsEnvironment(environment: GateEnvironment): void;
   /** Copies a redacted support report for bug reports (release builds). */
   copyDiagnosticsReport?(): Promise<void>;
+  /** Copies plain text through the same writer and timeout as the report. */
+  copyText?(text: string): Promise<void>;
   log(message: string): void;
   dispose(): void;
   readonly consecutiveTrackTarget: number;
 }
 
 export type { CreatePlaylistRequest } from "./playlist-editing.ts";
+
+/**
+ * Writes to the clipboard. Another app holding the clipboard can leave the
+ * write pending with no error, so a write still pending after the timeout
+ * fails with `busyMessage` instead of never settling.
+ */
+async function writeClipboardWithTimeout(
+  write: (text: string) => Promise<void>,
+  text: string,
+  busyMessage: string,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      write(text),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(busyMessage)),
+          CLIPBOARD_WRITE_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * Composition root for the app: owns MusicKit initialization, auth,
@@ -1312,29 +1340,20 @@ export function createAppController(
       if (!diagnosticsStore) {
         throw new Error("Diagnostics are unavailable in this session.");
       }
-      const write = dependencies.writeClipboardText ?? writeText;
-      // Another app holding the clipboard can leave the write pending with no
-      // error; the button would then never confirm or fail.
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          write(createSupportReport(diagnosticsStore.getSnapshot())),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(
-              () =>
-                reject(
-                  new Error(
-                    "Couldn't copy the report: the clipboard is busy. Try again.",
-                  ),
-                ),
-              CLIPBOARD_WRITE_TIMEOUT_MS,
-            );
-          }),
-        ]);
-      } finally {
-        clearTimeout(timer);
-      }
+      await writeClipboardWithTimeout(
+        dependencies.writeClipboardText ?? writeText,
+        createSupportReport(diagnosticsStore.getSnapshot()),
+        "Couldn't copy the report: the clipboard is busy. Try again.",
+      );
       log("Diagnostics report copied to the clipboard.");
+    },
+
+    async copyText(text: string): Promise<void> {
+      await writeClipboardWithTimeout(
+        dependencies.writeClipboardText ?? writeText,
+        text,
+        "Couldn't copy: the clipboard is busy. Try again.",
+      );
     },
 
     log,

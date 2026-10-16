@@ -1,0 +1,124 @@
+/* Skeleton placeholders for first-load states. The fill uses the surface
+   tokens, so it reads the same in light, dark and Mica/Acrylic. */
+.skeleton-status {
+  min-width: 0;
+}
+
+.skeleton-shape {
+  display: block;
+  border-radius: var(--radius-xs);
+  background: linear-gradient(
+    90deg,
+    var(--surface-subtle) 0%,
+    var(--surface-hover) 50%,
+    var(--surface-subtle) 100%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.6s linear infinite;
+}
+
+@keyframes skeleton-shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: -100% 0;
+  }
+}
+
+.skeleton-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(184px, 1fr));
+  gap: 12px;
+}
+
+.skeleton-card {
+  display: grid;
+  min-width: 0;
+  max-width: 320px;
+  gap: 9px;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-raised) 72%, transparent);
+}
+
+.skeleton-card-art {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: var(--radius-sm);
+}
+
+.skeleton-card-copy {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.skeleton-line {
+  width: 100%;
+}
+
+.skeleton-line-title {
+  width: 78%;
+  height: 11px;
+}
+
+.skeleton-line-meta {
+  width: 46%;
+  height: 8px;
+}
+
+.skeleton-rows {
+  display: grid;
+}
+
+.skeleton-row {
+  display: grid;
+  min-height: 62px;
+  grid-template-columns: 27px 42px minmax(0, 1fr) 16px 55px;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px 6px 15px;
+  border-bottom: 1px solid var(--border);
+}
+
+.skeleton-rows .skeleton-row:last-child {
+  border-bottom: 0;
+}
+
+.skeleton-row-art {
+  width: 42px;
+  height: 42px;
+}
+
+.skeleton-row-copy {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.skeleton-row .skeleton-row-number {
+  justify-self: center;
+  width: 12px;
+}
+
+.skeleton-row .skeleton-row-duration {
+  justify-self: end;
+  width: 28px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-shape {
+    animation: none;
+  }
+}
+
+/* Forced colors drop background gradients, so each shape gets an outline. */
+@media (forced-colors: active) {
+  .skeleton-shape {
+    border: 1px solid GrayText;
+    background: none;
+    animation: none;
+  }
+}

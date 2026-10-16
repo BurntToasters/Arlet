@@ -29,6 +29,11 @@ const artworkSchema = z.object({
   url: z.string().check(z.startsWith("https://"), z.maxLength(2048)),
   width: z.number().check(z.nonnegative()),
   height: z.number().check(z.nonnegative()),
+  // Files saved before the tint existed have no bgColor; a bad one is dropped.
+  bgColor: z.catch(
+    z.optional(z.string().check(z.regex(/^[0-9a-f]{6}$/iu))),
+    undefined,
+  ),
 });
 
 /**
@@ -161,6 +166,7 @@ export function serializePlaybackSession(snapshot: {
             url: track.artwork.url,
             width: track.artwork.width,
             height: track.artwork.height,
+            bgColor: track.artwork.bgColor,
           }
         : undefined,
       durationMs: track.durationMs,

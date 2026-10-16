@@ -477,6 +477,170 @@ Failure modes this pass must not have:
   old data on the next start.
 - With Debug Mode off, logging still crosses IPC for every line.
 
+## UI polish and accessibility
+
+`scripts/e2e-polish.js` runs inside the native suite (before Session restore)
+against the `polish` fixture ids in `scripts/e2e-music-fixture.js`. It drives
+the real UI over CDP and reads the fixture's snapshot for requests, queue and
+volume. Each check is written to `report.json` with its observed values in
+`detail`. The runner also writes `screenshot-polish.png` (the state at the end
+of the scenario) and `polish-trace.json`; the per-check screenshots are not
+written.
+
+A check that fails names the gap in its `detail`. The album header menu has no
+copy-link item (the hero carries no catalog URL), which is the one known gap at
+this writing. A check failing means the source is behind the target below, not
+that the test is wrong.
+
+Toasts: a success toast carries `action-toast-success`. An error toast has no
+class of its own, so the checks match it as an `.action-toast` that is not a
+success.
+
+F11 works while focus is in a text field or a dialog, by design: it has no
+text-editing meaning, so it is a window action everywhere (`src/app/shortcuts.ts`).
+
+Failure modes this pass must not have:
+
+Album and playlist headers:
+
+- A header button (Add to Library, Love, Pin/Unpin, "…") acts on the wrong
+  item, such as the first track or the previously opened album.
+- A header button does not reflect state: Love's `aria-pressed`, the Pin or
+  Unpin label, or Add to Library's done state is stale after the library or
+  ratings change.
+- Love sends two requests for one click, or none.
+- "…" opens the context menu for another item, or without the album's
+  reference, so "Go to album" is missing.
+- Editorial notes render HTML or run script. The fixture's notes contain
+  `<i>`, `<br>` and a `<script>` that sets `window.__ARLET_POLISH_XSS__`; that
+  flag must stay undefined, and the markup must appear as text.
+- The "More" toggle's `aria-expanded` disagrees with the visible notes.
+- Metadata invents values: a missing release date gives a year, missing genres
+  give a genre, or a missing duration shows "0 min" or "NaN".
+- Total length is wrong for the fixture (703 s, shown as "12 min" because
+  `formatRuntime` rounds to whole minutes), or shows "NaN" or "0 min" when
+  durations are missing.
+- Record label or copyright appears for an item that has neither, or shows
+  another item's value.
+- Disc N grouping breaks click-to-play: starting track 1 of Disc 2 must play
+  that track, and the queue follows the album order (Disc 1, then Disc 2).
+- Disc headings break virtualization, so rows go missing at a disc boundary
+  or a heading counts as a track in index-based playback.
+- A single-disc album shows a "Disc 1" heading.
+
+Now Playing:
+
+- Love or Dislike writes a rating for another song, the wrong value, or drops
+  a fast second click.
+- Shuffle and repeat buttons disagree with the fixture's modes in the
+  snapshot (`modes.shuffle`, `modes.repeat`).
+- The volume control writes settings on every input event instead of after
+  the debounce, or does not reach `player.volume`.
+- The open or close animation leaves the dialog mounted after close, or traps
+  focus after close (focus does not return to the artwork button).
+- Fullscreen sticks after Esc, or the Now Playing button's label and the window
+  disagree. F11 working in a text field or dialog is intended, not a failure.
+- The slider's `aria-valuetext` shows a raw number or "NaN" instead of a
+  formatted time or percentage.
+- With `prefers-reduced-motion: reduce`, open, close or transition animations
+  still run.
+
+Context menu:
+
+- Separators are doubled, leading or trailing, or reachable by arrow keys.
+- "Copy Apple Music link" (`data-menu-item="copy-link"`) copies a URL that is
+  not `https://music.apple.com`, or the URL of a different item than the menu
+  opened for. It is shown for an item with no Apple URL.
+- After the menu is split into files, an item keeps no handler or a stale one.
+
+Loading skeletons:
+
+- A skeleton stays on screen after data arrives, or its hidden label stays
+  visible.
+- A refresh with data already shown replaces that data with the skeleton, so
+  the layout jumps and the scroll position is lost.
+- A first load that fails shows the skeleton forever instead of the error.
+- Skeletons lack `role="status"` or the hidden label, so a screen reader hears
+  nothing, or a spinner still shows on first load.
+
+Toasts and About:
+
+- A success is styled as an error (danger colour or `role="alert"`), or an
+  error as a success.
+- An About link navigates the app window away from `tauri.localhost` instead
+  of opening the system browser, or a link is not on the allowlist.
+- The About version is stale or a placeholder rather than the app's version.
+
+Keyboard and later items:
+
+- A keyboard-only user cannot reach a card's "…" (not focusable, or hidden
+  until hover).
+- A loved heart on a song row shows for an unloved song, or for the wrong row.
+- QueueDrawer leaves focus on removed or hidden content after Esc.
+- Search tabs ignore Arrow keys, or move focus without moving `aria-selected`.
+- The explicit badge has no accessible name, or its name is only "explicit".
+- A page state (loading, empty, error) renders without an `h1`.
+
+Checks in `scripts/e2e-polish.js`, by the failure mode each one guards (the
+check name is the `report.json` name):
+
+| Check                                                                                                                               | Guards                                                                      |
+| ----------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| polish fixture data reachable                                                                                                       | fixture route renders (kept from the first pass)                            |
+| album metadata: year, song count, runtime from 703 s, genre                                                                         | invented values; total length                                               |
+| sparse album shows only its song count                                                                                              | invented values; "NaN" or "0 min"; More shown with no content               |
+| More toggle expands and collapses, with aria-expanded matching the panel                                                            | More toggle state                                                           |
+| editorial notes are plain text: no markup element, no script ran                                                                    | notes render HTML or run script                                             |
+| record label and copyright appear under More                                                                                        | label or copyright for the wrong item                                       |
+| playlist description renders as plain text                                                                                          | description HTML or script                                                  |
+| Disc 1 and Disc 2 headings group the four tracks in album order                                                                     | disc grouping                                                               |
+| rows show per-disc track numbers                                                                                                    | disc numbering (not a listed failure mode; the spec for this pass)          |
+| clicking the first row of Disc 2 starts MusicKit's queue at that song: [d2 t1, d2 t2] at index 0                                    | disc grouping breaks click-to-play                                          |
+| the Disc 2 Play was given the whole album from the page: no track pages fetched                                                     | album re-fetched before Play                                                |
+| Previous from Disc 2 track 1 plays Disc 1 track 2 (the album's earlier songs are kept)                                              | earlier songs dropped from Previous history                                 |
+| a single-disc album shows no Disc heading                                                                                           | single-disc "Disc 1" heading                                                |
+| header Love toggles once per click, sending one PUT then one DELETE                                                                 | Love sends two requests or none; aria-pressed                               |
+| More actions opens the album menu and its target is the album                                                                       | "..." acts on the wrong item                                                |
+| context menu has no leading, trailing or double separators                                                                          | separators doubled, leading or trailing                                     |
+| ArrowDown visits each menu item once, wraps, and never lands on a separator                                                         | separators reachable by arrow keys                                          |
+| album header menu offers Copy Apple Music link                                                                                      | copy-link missing (expected to fail; see above)                             |
+| Escape closes the album menu and returns focus to its More button                                                                   | menu focus                                                                  |
+| Pin and Unpin flip the playlist header label both ways                                                                              | Pin or Unpin label stale                                                    |
+| album card carries its Apple Music link on the card shell                                                                           | copy-link URL                                                               |
+| keyboard Tab from the card reaches its Play button, then its More actions button                                                    | card "..." not focusable                                                    |
+| card menu offers Copy Apple Music link and has clean separators                                                                     | copy-link on a card                                                         |
+| copy-link shows the success toast, not the error style                                                                              | success styled as error                                                     |
+| copy-link copies the album's exact Apple Music URL                                                                                  | copy-link URL (read back only when the clipboard allows)                    |
+| card Play starts the album from its first track                                                                                     | card Play starts the wrong collection                                       |
+| Arrow, Home and End keys move selection, focus and the tabpanel label together                                                      | search tabs ignore Arrow keys                                               |
+| open animation moves the dialog when motion is allowed (baseline)                                                                   | baseline for the reduced-motion check                                       |
+| Now Playing controls carry their state labels                                                                                       | controls missing or stale labels                                            |
+| volume slider reads a percentage and reaches the player                                                                             | volume writes or reads wrong                                                |
+| seek slider reads m:ss of m:ss, not a raw number                                                                                    | slider aria-valuetext "NaN" or raw number                                   |
+| artwork bgColor tints Now Playing through --now-playing-tint                                                                        | tint missing                                                                |
+| a track without bgColor keeps the plain surface                                                                                     | tint on a track without bgColor                                             |
+| closing Now Playing returns focus to the artwork button and unmounts it                                                             | focus after close; dialog left mounted                                      |
+| reduced motion: opening Now Playing runs no transform animation                                                                     | animation with reduced motion                                               |
+| reduced motion: closing Now Playing unmounts within 400 ms                                                                          | exit transition with reduced motion                                         |
+| opening Playing Next moves focus to its heading                                                                                     | queue drawer focus                                                          |
+| Escape closes Playing Next and returns focus to its toggle                                                                          | queue drawer focus after Esc                                                |
+| a rejected rating shows the error style and rolls Love back                                                                         | error styled as success; rollback                                           |
+| radio first load shows a labelled role=status skeleton, removed once data renders                                                   | skeleton stuck or unlabelled                                                |
+| a failed first load ends the skeleton instead of keeping it                                                                         | skeleton on a failed load                                                   |
+| Ctrl+R refresh keeps album cards on screen and shows no skeleton                                                                    | refresh replaces data with a skeleton                                       |
+| About links are enabled type=button elements labelled Project page, Release notes and License, with no href or target (not clicked) | About link navigates the window, is missing, or is disabled                 |
+| a route change moves focus to the page h1                                                                                           | route focus                                                                 |
+| viewport override switches the shell to the compact layout (720 px)                                                                 | environment: the webview ignores the override (a failing check, not a skip) |
+| opening the compact drawer moves focus into it                                                                                      | compact drawer focus                                                        |
+| Escape closes the compact drawer and focuses the menu button                                                                        | compact drawer Esc                                                          |
+| Tab on the last drawer control wraps to the first one                                                                               | compact drawer focus trap                                                   |
+| F11 enters window fullscreen; the Now Playing button then reads Exit full screen                                                    | fullscreen state disagrees with the window                                  |
+| Escape in Now Playing closes it and leaves fullscreen                                                                               | fullscreen sticks after Esc                                                 |
+
+Fullscreen is read from the window size against the screen, because the app
+uses window fullscreen and not DOM fullscreen (`document.fullscreenElement`
+stays null).
+
 ## Release-only evidence
 
 The following checks require a Windows release environment and are kept out of

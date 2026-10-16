@@ -43,8 +43,8 @@ export function TransportControls({
       <button
         className="play-button"
         type="button"
+        // The label carries the state, so the button is not also a toggle.
         aria-label={playing ? "Pause" : "Play"}
-        aria-pressed={playing}
         disabled={!canControl || loading}
         onClick={onTogglePlayback}
       >
@@ -104,6 +104,7 @@ export function PlaybackProgress({
         max={String(Math.max(0, durationSeconds))}
         step="1"
         value={Math.min(durationSeconds, Math.max(0, positionSeconds))}
+        aria-valuetext={`${formatTime(positionSeconds)} of ${formatTime(durationSeconds)}`}
         style={{ "--range-progress": `${progress}%` }}
         disabled={!hasTrack || durationSeconds <= 0}
         onChange={(event) => onSeek(Number(event.currentTarget.value))}

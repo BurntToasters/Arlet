@@ -294,6 +294,13 @@ button.search-row {
   font-weight: 700;
 }
 
+/* Loved heart beside the title; the row's label carries the spoken state. */
+.song-row-loved {
+  margin-left: 5px;
+  vertical-align: -1px;
+  color: var(--accent);
+}
+
 /* Now playing: shared by every SongRow list (search, library, detail). */
 /* Songs Apple cannot stream stay listed, dimmed like Apple Music. */
 .song-row-shell.is-unavailable > button:disabled {

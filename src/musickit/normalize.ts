@@ -339,6 +339,9 @@ function isAppleArtworkHost(value: string): boolean {
   }
 }
 
+/** Apple's `bgColor` is exactly six hex digits with no leading '#'. */
+const ARTWORK_BG_COLOR = /^[0-9a-f]{6}$/iu;
+
 export function artworkFromUnknown(
   value: unknown,
   size = 300,
@@ -348,10 +351,15 @@ export function artworkFromUnknown(
   if (!rawUrl) return undefined;
   const url = normalizeArtworkUrl(rawUrl, size);
   if (!validArtworkUrl(url)) return undefined;
+  const bgColor = stringValue(artwork?.bgColor);
   return {
     url,
     width: Number.isFinite(size) && size > 0 ? Math.round(size) : 300,
     height: Number.isFinite(size) && size > 0 ? Math.round(size) : 300,
+    // Anything but six hex digits is dropped, so the tint falls back to none.
+    ...(bgColor && ARTWORK_BG_COLOR.test(bgColor)
+      ? { bgColor: bgColor.toLowerCase() }
+      : {}),
   };
 }
 
@@ -459,6 +467,11 @@ export function normalizeCatalogSong(resource: CatalogSongResource): Track {
   };
 }
 
+/** Apple's `attributes.url` page link. `href` is an API path (/v1/...), not one. */
+function catalogUrlOf(attributes: UnknownRecord): string | undefined {
+  return stringValue(attributes.url);
+}
+
 function normalizeResourceTrack(
   resource: AppleMusicResource,
   type: MusicResourceType,
@@ -490,12 +503,15 @@ function normalizeResourceTrack(
   };
   const explicit = stringValue(attributes.contentRating);
   if (explicit) track.explicit = explicit.toLowerCase() === "explicit";
+  const discNumber = positiveInteger(attributes.discNumber);
+  if (discNumber) track.discNumber = discNumber;
+  const trackNumber = positiveInteger(attributes.trackNumber);
+  if (trackNumber) track.trackNumber = trackNumber;
   const catalogId =
     stringValue(playParams?.catalogId) ??
     firstResourceId(relationshipData(resource, "catalog"));
   if (catalogId) track.catalogId = catalogId;
-  // `href` is an API path (/v1/...), not a page link.
-  const catalogUrl = stringValue(attributes.url);
+  const catalogUrl = catalogUrlOf(attributes);
   if (catalogUrl) track.catalogUrl = catalogUrl;
   return track;
 }
@@ -521,6 +537,8 @@ export function normalizeArtistResource(
   if (albumCount !== undefined) artist.albumCount = albumCount;
   const catalogId = firstResourceId(relationshipData(resource, "catalog"));
   if (catalogId) artist.catalogId = catalogId;
+  const catalogUrl = catalogUrlOf(attributes);
+  if (catalogUrl) artist.catalogUrl = catalogUrl;
   return artist;
 }
 
@@ -553,13 +571,93 @@ export function normalizeAlbumResource(
   if (playable) album.playable = true;
   const catalogId = firstResourceId(relationshipData(resource, "catalog"));
   if (catalogId) album.catalogId = catalogId;
+  const catalogUrl = catalogUrlOf(attributes);
+  if (catalogUrl) album.catalogUrl = catalogUrl;
+  const editorialNotes = editorialText(attributes.editorialNotes);
+  if (editorialNotes) album.editorialNotes = editorialNotes;
+  const recordLabel = stringValue(attributes.recordLabel);
+  if (recordLabel) album.recordLabel = recordLabel;
+  const copyright = stringValue(attributes.copyright);
+  if (copyright) album.copyright = copyright;
+  const genreNames = stringList(attributes.genreNames);
+  if (genreNames.length) album.genreNames = genreNames;
+  if (typeof attributes.isSingle === "boolean")
+    album.isSingle = attributes.isSingle;
+  if (typeof attributes.isCompilation === "boolean")
+    album.isCompilation = attributes.isCompilation;
   return album;
 }
 
-function descriptionValue(value: unknown): string | undefined {
-  if (typeof value === "string") return value.trim() || undefined;
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&",
+  apos: "'",
+  gt: ">",
+  hellip: "…",
+  ldquo: "“",
+  lsquo: "‘",
+  lt: "<",
+  mdash: "—",
+  nbsp: " ",
+  ndash: "–",
+  quot: '"',
+  rdquo: "”",
+  rsquo: "’",
+};
+
+/**
+ * Plain text from Apple's limited HTML (`<br>`, `<i>`, `<b>`, ...): line breaks
+ * are kept, tags are dropped, and common entities are decoded. The result is
+ * only ever rendered as text, never as HTML.
+ */
+export function plainTextFromHtml(value: string): string {
+  const withBreaks = value
+    .replace(/<br\s*\/?>/giu, "\n")
+    .replace(/<\/(?:p|div|li|h[1-6])\s*>/giu, "\n");
+  const stripped = withBreaks.replace(/<\/?[a-z][^>]*>/giu, "");
+  // One pass, so an entity that decodes to "&" is not decoded again.
+  const decoded = stripped.replace(
+    /&(#x[0-9a-f]+|#\d+|[a-z]+);/giu,
+    (match: string, entity: string) => {
+      if (entity.startsWith("#")) {
+        const hex = /^#x/iu.test(entity);
+        const code = Number.parseInt(entity.slice(hex ? 2 : 1), hex ? 16 : 10);
+        return Number.isFinite(code) && code > 0 && code <= 0x10ffff
+          ? String.fromCodePoint(code)
+          : match;
+      }
+      return NAMED_ENTITIES[entity.toLowerCase()] ?? match;
+    },
+  );
+  return decoded
+    .split("\n")
+    .map((line) => line.trim())
+    .join("\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+}
+
+/** Apple's `{ short, standard }` notes, or a plain string, as plain text. */
+function editorialText(value: unknown): string | undefined {
   const record = asRecord(value);
-  return stringValue(record?.standard) ?? stringValue(record?.short);
+  const raw =
+    typeof value === "string"
+      ? stringValue(value)
+      : (stringValue(record?.standard) ?? stringValue(record?.short));
+  if (!raw) return undefined;
+  return plainTextFromHtml(raw) || undefined;
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => stringValue(item))
+    .filter((item): item is string => Boolean(item));
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? value
+    : undefined;
 }
 
 export function normalizePlaylistResource(
@@ -575,8 +673,10 @@ export function normalizePlaylistResource(
     resourceType: resourceType(resource) ?? "playlists",
     source: resourceSource(resourceType(resource) ?? "playlists"),
   };
-  const description = descriptionValue(attributes.description);
+  const description = editorialText(attributes.description);
   if (description) playlist.description = description;
+  const curatorName = stringValue(attributes.curatorName);
+  if (curatorName) playlist.curatorName = curatorName;
   const trackCount =
     positiveNumber(attributes.trackCount) ??
     relationshipTotal(resource, "tracks");
@@ -588,6 +688,8 @@ export function normalizePlaylistResource(
   }
   if (typeof attributes.isPublic === "boolean")
     playlist.isPublic = attributes.isPublic;
+  const catalogUrl = catalogUrlOf(attributes);
+  if (catalogUrl) playlist.catalogUrl = catalogUrl;
   return playlist;
 }
 

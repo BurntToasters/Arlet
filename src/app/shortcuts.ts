@@ -6,7 +6,8 @@ export type ShortcutAction =
   | { type: "seekBy"; seconds: number }
   | { type: "adjustVolume"; delta: number }
   | { type: "toggleMute" }
-  | { type: "closeNowPlaying" };
+  | { type: "closeNowPlaying" }
+  | { type: "toggleFullscreen" };
 
 /** Listed in Settings; keep in step with `shortcutFor` and the App.tsx keys. */
 export const SHORTCUT_HELP: readonly { keys: string; action: string }[] = [
@@ -19,6 +20,7 @@ export const SHORTCUT_HELP: readonly { keys: string; action: string }[] = [
   { keys: "Shift+←", action: "Skip back 10 seconds" },
   { keys: "M", action: "Mute or unmute" },
   { keys: "Esc", action: "Close Now Playing" },
+  { keys: "F11", action: "Toggle full screen" },
   { keys: "Ctrl+K", action: "Search Apple Music" },
   { keys: "Ctrl+R", action: "Refresh current data" },
   { keys: "Alt+←", action: "Back" },
@@ -59,6 +61,10 @@ function isInsideDialog(target: EventTarget | null): boolean {
  */
 export function shortcutFor(event: KeyboardEvent): ShortcutAction | undefined {
   if (event.altKey) return undefined;
+  // Fullscreen is a window action, so it works while typing or in any dialog.
+  if (event.key === "F11" && !event.ctrlKey && !event.metaKey) {
+    return event.shiftKey ? undefined : { type: "toggleFullscreen" };
+  }
   if (isEditableTarget(event.target) || isInsideDialog(event.target)) {
     return undefined;
   }

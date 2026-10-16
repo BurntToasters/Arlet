@@ -63,6 +63,24 @@ export function ratingKeyOf(target: RatingTarget): string | undefined {
   return type ? ratingKey(type, target.id) : undefined;
 }
 
+// Apple's ratings endpoint takes up to 100 ids in one request.
+const RATING_BATCH_IDS = 100;
+// Set by createRatings, the one ratings owner the app builds.
+let batchLoader:
+  ((targets: readonly RatingTarget[]) => Promise<void>) | undefined;
+
+/**
+ * Loads ratings for songs on screen, in requests of up to 100 ids per endpoint.
+ * Values already in the store and lookups already in flight are skipped. Does
+ * nothing before the app has created its ratings. Callers check sign-in and
+ * connectivity first.
+ */
+export function requestRatings(
+  targets: readonly RatingTarget[],
+): Promise<void> {
+  return batchLoader?.(targets) ?? Promise.resolve();
+}
+
 export function trackRatingTarget(track: Track): RatingTarget {
   // A library type with a catalog ID asks Apple for a library rating of a
   // catalog song, which it rejects (400).
@@ -279,6 +297,93 @@ export function createRatings(
       return undefined;
     }
   };
+
+  // One request per batch of ids for one endpoint. Only ids with no stored
+  // value and no lookup in flight are requested.
+  const fetchBatch = async (
+    type: RatingResourceType,
+    batch: readonly RatingTarget[],
+    accountAtStart: number,
+  ): Promise<void> => {
+    const starts = new Map(
+      batch.map((target) => {
+        const key = ratingKey(type, target.id);
+        return [key, generations.get(key) ?? 0] as const;
+      }),
+    );
+    let values: Map<string, RatingValue>;
+    try {
+      values = await getRatings(
+        request(),
+        type,
+        batch.map((target) => target.id),
+      );
+    } catch (error) {
+      if (httpStatusOf(error) !== 404) {
+        context.log(`Rating lookup failed: ${safeErrorMessage(error)}`);
+        return;
+      }
+      // Apple answers 404 when the items have no rating.
+      values = new Map();
+    }
+    for (const target of batch) {
+      const key = ratingKey(type, target.id);
+      // Same guards as a single lookup: no newer change and no unsettled write.
+      if (
+        accountGeneration !== accountAtStart ||
+        inFlight.has(key) ||
+        (generations.get(key) ?? 0) !== starts.get(key)
+      ) {
+        continue;
+      }
+      const value = values.get(target.id) ?? 0;
+      settled.set(key, value);
+      setRating(key, value);
+    }
+  };
+
+  const loadRatings = async (
+    targets: readonly RatingTarget[],
+  ): Promise<void> => {
+    const accountAtStart = accountGeneration;
+    const byType = new Map<RatingResourceType, RatingTarget[]>();
+    const queued = new Set<string>();
+    for (const target of targets) {
+      const type = ratingResourceType(target);
+      if (!type) continue;
+      const key = ratingKey(type, target.id);
+      if (
+        queued.has(key) ||
+        getState().ratings[key] !== undefined ||
+        lookups.has(key)
+      ) {
+        continue;
+      }
+      queued.add(key);
+      const list = byType.get(type) ?? [];
+      list.push(target);
+      byType.set(type, list);
+    }
+    const pending: Promise<void>[] = [];
+    for (const [type, list] of byType) {
+      for (let start = 0; start < list.length; start += RATING_BATCH_IDS) {
+        const batch = list.slice(start, start + RATING_BATCH_IDS);
+        const keys = batch.map((target) => ratingKey(type, target.id));
+        const lookup = fetchBatch(type, batch, accountAtStart);
+        // Single lookups for these ids now share this request.
+        for (const key of keys) lookups.set(key, lookup);
+        pending.push(
+          lookup.finally(() => {
+            for (const key of keys) {
+              if (lookups.get(key) === lookup) lookups.delete(key);
+            }
+          }),
+        );
+      }
+    }
+    await Promise.all(pending);
+  };
+  batchLoader = loadRatings;
 
   const reset = (): void => {
     accountGeneration += 1;

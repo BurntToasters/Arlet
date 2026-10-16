@@ -7,10 +7,15 @@ granted per window label in `src-tauri/capabilities/`; the default set covers
 only version, window management, updater, clipboard text, the
 library cache (fixed Rust commands, no SQL), settings, pins, the saved
 playback session (fixed load/save/delete commands, size- and item-capped),
-logging, window effects, the Windows media session, and opening the diagnostic
-window. There is no `shell`, `dialog`, `notification`, `process`, or
-`global-shortcut` plugin, no arbitrary command execution, and remote Apple
-origins get no filesystem/shell/updater access.
+logging, window effects, the Windows media session, opening the diagnostic
+window, and full-screen toggling for Now Playing (`core:window:allow-set-fullscreen`
+and `core:window:allow-is-fullscreen`). Browser opening is limited to two fixed
+commands: `open_support_page` (no arguments, `https://rosie.run/support`) and
+`open_about_link`, which accepts only `project`, `release_notes`, or `license`
+and builds its GitHub URL in Rust, so web content cannot choose a URL. Both go
+through `open_in_default_browser`. There is no `shell`, `dialog`,
+`notification`, `process`, or `global-shortcut` plugin, no arbitrary command
+execution, and remote Apple origins get no filesystem/shell/updater access.
 
 The tray icon is Tauri's core `tray-icon` feature, built in Rust. Its menu
 emits the same `windows-media-control` event as the Windows media buttons and
@@ -111,7 +116,8 @@ keep the grant small: the webview has no generic SQL, filesystem, shell,
 dialog, notification, or process access, and the library cache is reachable
 only through fixed, size-bounded commands (`src-tauri/src/library_cache.rs`).
 Clipboard read remains for paste in the context menu. Window permissions are
-the ones the custom title bar uses, plus `set-size` for the native E2E.
+the ones the custom title bar uses, the full-screen pair Now Playing uses
+(`set-fullscreen`, `is-fullscreen`), and `set-size` for the native E2E.
 Tauri's isolation pattern is the next step if the grant ever needs to grow.
 
 Now-playing artwork is fetched by Windows itself for the media overlay, so

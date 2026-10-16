@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState } from "preact/hooks";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "preact/hooks";
 import {
   Album,
   Clock3,
@@ -215,6 +221,36 @@ function renderPinIcon(artworkUrl?: string): JSX.Element {
   return <ListMusic aria-hidden="true" size={18} strokeWidth={1.8} />;
 }
 
+// Matches the breakpoint in 13-responsive.css, where the sidebar is a drawer.
+const compactQuery = "(max-width: 720px)";
+
+/** Read live at each use, so focus and keys follow the rendered layout. */
+function isCompactShell(): boolean {
+  return window.matchMedia(compactQuery).matches;
+}
+
+/** Re-renders when the breakpoint changes; the value itself is not cached. */
+function useCompactShell(): boolean {
+  const [compact, setCompact] = useState(
+    () => window.matchMedia(compactQuery).matches,
+  );
+  useEffect(() => {
+    const query = window.matchMedia(compactQuery);
+    const sync = (): void => setCompact(query.matches);
+    query.addEventListener("change", sync);
+    sync();
+    return () => query.removeEventListener("change", sync);
+  }, []);
+  return compact;
+}
+
+/** Enabled buttons and inputs in the drawer, in tab order. */
+function drawerControls(drawer: HTMLElement | null): HTMLElement[] {
+  return Array.from(
+    drawer?.querySelectorAll<HTMLElement>("button, input") ?? [],
+  ).filter((node) => !node.matches(":disabled, [aria-disabled='true']"));
+}
+
 export function Sidebar(): JSX.Element {
   const state = useAppSlices(
     "account",
@@ -230,10 +266,78 @@ export function Sidebar(): JSX.Element {
   const [query, setQuery] = useState(
     state.navigation.kind === "search" ? state.navigation.query : "",
   );
+  const drawerRef = useRef<HTMLElement>(null);
+  // Only a re-render trigger; the checks below read the live breakpoint.
+  const compactShell = useCompactShell();
+  const drawerOpen = state.ui.sidebarOpen;
+  const drawerWasOpen = useRef(drawerOpen);
 
   useEffect(() => {
     if (state.navigation.kind === "search") setQuery(state.navigation.query);
   }, [state.navigation]);
+
+  // Layout effects run in the same commit as the open class, so the drawer is
+  // already focusable (not inert) when focus and key handling are set up.
+  // A closed compact drawer is inert: off-screen, but kept out of Tab order.
+  useLayoutEffect(() => {
+    if (drawerRef.current) {
+      drawerRef.current.inert = isCompactShell() && !drawerOpen;
+    }
+  }, [compactShell, drawerOpen]);
+
+  // Opening the drawer moves focus into it. Closing it returns focus to the
+  // menu button, unless focus already went somewhere else (such as the page
+  // heading after a route change).
+  useLayoutEffect(() => {
+    const wasOpen = drawerWasOpen.current;
+    drawerWasOpen.current = drawerOpen;
+    if (!isCompactShell() || wasOpen === drawerOpen) return;
+    if (drawerOpen) {
+      drawerRef.current?.querySelector<HTMLElement>(".sidebar-link")?.focus();
+      return;
+    }
+    const active = document.activeElement;
+    if (
+      !active ||
+      active === document.body ||
+      drawerRef.current?.contains(active)
+    ) {
+      document.querySelector<HTMLElement>(".mobile-menu-button")?.focus();
+    }
+  }, [compactShell, drawerOpen]);
+
+  // While the drawer is open it is modal: Esc closes it and Tab cycles inside.
+  useLayoutEffect(() => {
+    if (!drawerOpen) return undefined;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const drawer = drawerRef.current;
+      if (event.defaultPrevented || !drawer || !isCompactShell()) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setUiState({ sidebarOpen: false });
+        document.querySelector<HTMLElement>(".mobile-menu-button")?.focus();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const controls = drawerControls(drawer);
+      const first = controls[0];
+      const last = controls.at(-1);
+      if (!first || !last) return;
+      const active = document.activeElement;
+      const inside = active instanceof Node && drawer.contains(active);
+      if (event.shiftKey) {
+        if (!inside || active === first) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else if (!inside || active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [compactShell, drawerOpen]);
 
   const navigate = (route: Route): void => {
     router.navigate(route);
@@ -353,6 +457,7 @@ export function Sidebar(): JSX.Element {
 
   return (
     <aside
+      ref={drawerRef}
       className={`sidebar ${state.ui.sidebarOpen ? "is-open" : ""}`.trim()}
       aria-label="Main navigation"
     >
@@ -373,7 +478,11 @@ export function Sidebar(): JSX.Element {
         {pins.length > 0 ? (
           <>
             <div className="sidebar-heading">Pinned</div>
-            <div className="sidebar-group" aria-label="Pinned playlists">
+            <div
+              className="sidebar-group"
+              role="group"
+              aria-label="Pinned playlists"
+            >
               {pins.map(renderPin)}
             </div>
           </>

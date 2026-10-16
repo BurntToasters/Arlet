@@ -6,6 +6,10 @@ import type { AppController } from "./controller.ts";
 import { shortcutFor, type ShortcutAction } from "./shortcuts.ts";
 import { reportActionError } from "../components/action-errors.ts";
 import {
+  closeNowPlayingLeavingFullscreen,
+  toggleWindowFullscreen,
+} from "../components/window-fullscreen.ts";
+import {
   AppProvider,
   useAppController,
   useAppRouter,
@@ -75,7 +79,10 @@ function runShortcut(
       return true;
     case "closeNowPlaying":
       if (!ui.nowPlayingOpen) return false;
-      setUiState({ nowPlayingOpen: false });
+      void closeNowPlayingLeavingFullscreen();
+      return true;
+    case "toggleFullscreen":
+      void toggleWindowFullscreen().catch(reportActionError);
       return true;
   }
 }

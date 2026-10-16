@@ -1,57 +1,154 @@
-import { Radio, X } from "lucide-preact";
+import {
+  Heart,
+  Maximize,
+  Minimize,
+  Radio,
+  Repeat,
+  Shuffle,
+  ThumbsDown,
+  X,
+} from "lucide-preact";
 import type { JSX } from "preact";
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import {
   useAppController,
   useAppRouter,
   useAppSlices,
 } from "../app/context.tsx";
+import { ratingKeyOf, trackRatingTarget } from "../app/ratings.ts";
 import type { MusicEntityRef, Track } from "../domain/music.ts";
 import { setUiState } from "../state.ts";
 import { Artwork } from "./Artwork.tsx";
+import { IconButton } from "./IconButton.tsx";
 import { VirtualList } from "./VirtualList.tsx";
 import { reportActionError } from "./action-errors.ts";
 import { PlaybackProgress, TransportControls } from "./TransportControls.tsx";
+import { VolumeControl } from "./VolumeControl.tsx";
 import { displayArtistLinks } from "./artist-links.ts";
+import {
+  closeNowPlayingLeavingFullscreen,
+  isWindowFullscreen,
+  toggleWindowFullscreen,
+} from "./window-fullscreen.ts";
 
 const FOCUSABLE =
   "button:not(:disabled), input:not(:disabled), [href], [tabindex]:not([tabindex='-1'])";
+/** Matches the `.now-playing` exit transition in 24-now-playing.css. */
+const CLOSE_TRANSITION_MS = 200;
 
 function closeNowPlaying(): void {
   setUiState({ nowPlayingOpen: false });
 }
 
-/** Full-window Now Playing view. Mounted only while `ui.nowPlayingOpen`. */
+function prefersReducedMotion(): boolean {
+  return (
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false
+  );
+}
+
+/**
+ * Keeps the dialog mounted through its exit transition after `open` turns
+ * false. Reduced motion unmounts at once, so no transition is waited for.
+ */
+function useDialogPresence(open: boolean): {
+  rendered: boolean;
+  closing: boolean;
+} {
+  const [exiting, setExiting] = useState(false);
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (open) {
+      wasOpen.current = true;
+      setExiting(false);
+      return undefined;
+    }
+    if (!wasOpen.current) return undefined;
+    wasOpen.current = false;
+    if (prefersReducedMotion()) return undefined;
+    setExiting(true);
+    const id = window.setTimeout(() => setExiting(false), CLOSE_TRANSITION_MS);
+    return () => window.clearTimeout(id);
+  }, [open]);
+  return { rendered: open || exiting, closing: !open && exiting };
+}
+
+/** Full-window Now Playing view. Mounted while open and through its exit. */
 export function NowPlaying(): JSX.Element | null {
   // Only `ui` decides mounting; playback ticks re-render the dialog alone.
   const { ui } = useAppSlices("ui");
-  if (!ui.nowPlayingOpen) return null;
-  return <NowPlayingDialog />;
+  const { rendered, closing } = useDialogPresence(ui.nowPlayingOpen);
+  if (!rendered) return null;
+  return <NowPlayingDialog closing={closing} />;
 }
 
-function NowPlayingDialog(): JSX.Element {
-  const state = useAppSlices("initialization", "playback", "ui");
+function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
+  const state = useAppSlices("initialization", "playback", "ratings", "ui");
   const controller = useAppController();
   const router = useAppRouter();
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+  const [fullscreen, setFullscreenState] = useState(false);
   const playback = state.playback;
   const current = playback.current;
   const playing = playback.status === "playing";
   const loading = playback.status === "loading";
   const canControl =
     state.initialization.status === "ready" && Boolean(current);
+  const loveTarget = current ? trackRatingTarget(current) : undefined;
+  const loveKey = loveTarget ? ratingKeyOf(loveTarget) : undefined;
+  const rating = loveKey !== undefined ? state.ratings[loveKey] : undefined;
+  const loved = rating === 1;
+  const disliked = rating === -1;
+  const shuffling = playback.shuffleMode === "songs";
+  const repeating = playback.repeatMode !== "off";
 
   useEffect(() => {
     // Unmounting happens on every close path, including the global Esc
     // shortcut, so focus always goes back to whatever opened the overlay.
-    const opener =
+    openerRef.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
-    closeRef.current?.focus();
+    const opener = openerRef.current;
     return () => {
+      // Closing already returned focus; only reclaim it if it is still lost
+      // inside this dialog (or on the body) when the dialog unmounts.
+      const active = document.activeElement;
+      if (
+        opener?.isConnected &&
+        (!active || active === document.body || active.closest(".now-playing"))
+      ) {
+        opener.focus();
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    // The exit transition hands focus back at once, so keys and clicks reach
+    // the page behind while the overlay fades out.
+    if (closing) {
+      const opener = openerRef.current;
       if (opener?.isConnected) opener.focus();
+    } else {
+      closeRef.current?.focus();
+    }
+  }, [closing]);
+
+  useEffect(() => {
+    // Fullscreen can change outside this view (F11), so the button re-reads
+    // the window state on every resize.
+    let active = true;
+    const refresh = (): void => {
+      void isWindowFullscreen().then((value) => {
+        if (active) setFullscreenState(value);
+      });
+    };
+    refresh();
+    window.addEventListener("resize", refresh);
+    return () => {
+      active = false;
+      window.removeEventListener("resize", refresh);
     };
   }, []);
 
@@ -59,11 +156,17 @@ function NowPlayingDialog(): JSX.Element {
     void action().catch(reportActionError);
   };
 
+  const onToggleFullscreen = (): void => {
+    void toggleWindowFullscreen()
+      .then(setFullscreenState)
+      .catch(reportActionError);
+  };
+
   const onKeyDown = (event: KeyboardEvent): void => {
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
-      closeNowPlaying();
+      void closeNowPlayingLeavingFullscreen();
       return;
     }
     const dialog = dialogRef.current;
@@ -97,10 +200,19 @@ function NowPlayingDialog(): JSX.Element {
     current?.artistRefs ?? [],
     current?.artistName,
   );
+  // Without Apple's bgColor the class and property are absent: the plain surface.
+  const tint = current?.artwork?.bgColor;
 
   return (
     <div
-      className="now-playing"
+      className={[
+        "now-playing",
+        tint ? "has-artwork-tint" : "",
+        closing ? "is-closing" : "",
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      style={tint ? { "--now-playing-tint": `#${tint}` } : undefined}
       role="dialog"
       aria-modal="true"
       aria-label="Now Playing"
@@ -128,6 +240,11 @@ function NowPlayingDialog(): JSX.Element {
           >
             <Radio aria-hidden="true" size={16} /> Start Station
           </button>
+          <IconButton
+            icon={fullscreen ? Minimize : Maximize}
+            label={fullscreen ? "Exit full screen" : "Enter full screen"}
+            onClick={onToggleFullscreen}
+          />
           <button
             ref={closeRef}
             className="icon-button"
@@ -192,6 +309,67 @@ function NowPlayingDialog(): JSX.Element {
               hasTrack={Boolean(current)}
               onSeek={(seconds) => run(() => controller.seek(seconds))}
             />
+            <div className="now-playing-actions">
+              <div className="now-playing-group">
+                {loveKey && loveTarget ? (
+                  <>
+                    <IconButton
+                      icon={Heart}
+                      label={loved ? "Unlove" : "Love"}
+                      pressed={loved}
+                      disabled={!canControl}
+                      onClick={() =>
+                        run(() => controller.rate(loveTarget, loved ? 0 : 1))
+                      }
+                    />
+                    <IconButton
+                      icon={ThumbsDown}
+                      label={disliked ? "Remove dislike" : "Dislike"}
+                      pressed={disliked}
+                      disabled={!canControl}
+                      onClick={() =>
+                        run(() =>
+                          controller.rate(loveTarget, disliked ? 0 : -1),
+                        )
+                      }
+                    />
+                  </>
+                ) : null}
+              </div>
+              <div className="now-playing-group">
+                {playback.modeCapabilities?.shuffle ? (
+                  <IconButton
+                    icon={Shuffle}
+                    label="Toggle shuffle"
+                    pressed={shuffling}
+                    className={shuffling ? "is-active" : ""}
+                    onClick={() =>
+                      run(
+                        () =>
+                          controller.setShuffleMode?.(
+                            shuffling ? "off" : "songs",
+                          ) ?? Promise.resolve(),
+                      )
+                    }
+                  />
+                ) : null}
+                {playback.modeCapabilities?.repeat ? (
+                  <IconButton
+                    icon={Repeat}
+                    label={`Repeat ${playback.repeatMode ?? "off"}`}
+                    pressed={repeating}
+                    className={repeating ? "is-active" : ""}
+                    onClick={() =>
+                      run(
+                        () =>
+                          controller.cycleRepeatMode?.() ?? Promise.resolve(),
+                      )
+                    }
+                  />
+                ) : null}
+              </div>
+              <VolumeControl />
+            </div>
           </div>
         </section>
         <section className="now-playing-side">

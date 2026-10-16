@@ -6,20 +6,22 @@ const FIXTURE = "window.__ARLET_E2E_MUSIC__";
 const SONG_STATION_URL =
   "https://music.apple.com/us/station/navigation-song-station/ra.song-one";
 const TOP_IDS = ["top-1", "top-2", "top-3"];
+// Key and label pairs, in the order Settings shows them (shortcuts.ts).
 const EXPECTED_SHORTCUTS = [
-  "Space",
-  "Ctrl+→",
-  "Ctrl+←",
-  "Ctrl+↑",
-  "Ctrl+↓",
-  "Shift+→",
-  "Shift+←",
-  "M",
-  "Esc",
-  "Ctrl+K",
-  "Ctrl+R",
-  "Alt+←",
-  "Alt+→",
+  ["Space", "Play or pause"],
+  ["Ctrl+→", "Next song"],
+  ["Ctrl+←", "Previous song"],
+  ["Ctrl+↑", "Volume up"],
+  ["Ctrl+↓", "Volume down"],
+  ["Shift+→", "Skip forward 10 seconds"],
+  ["Shift+←", "Skip back 10 seconds"],
+  ["M", "Mute or unmute"],
+  ["Esc", "Close Now Playing"],
+  ["F11", "Toggle full screen"],
+  ["Ctrl+K", "Search Apple Music"],
+  ["Ctrl+R", "Refresh current data"],
+  ["Alt+←", "Back"],
+  ["Alt+→", "Forward"],
 ];
 
 const snapshot = (page) => fixtureCall(page, "snapshot");
@@ -410,11 +412,15 @@ export async function runRadioArtist({ page, check }) {
   // Settings lists every shortcut.
   await page.evaluate(`location.hash = "#/settings"; return true;`);
   await waitFor(page, `document.querySelector('.shortcut-list')`);
+  // Each row is a key (kbd in dt) with its label (dd); both are compared.
   const keys = await page.evaluate(`
-    return [...document.querySelectorAll('.shortcut-row dt kbd')].map((node) => node.textContent.trim());
+    return [...document.querySelectorAll('.shortcut-row')].map((row) => [
+      row.querySelector('dt kbd')?.textContent.trim() ?? null,
+      row.querySelector('dd')?.textContent.trim() ?? null,
+    ]);
   `);
   check(
-    "Settings lists every keyboard shortcut",
+    "Settings lists every keyboard shortcut with its label, including F11",
     JSON.stringify(keys) === JSON.stringify(EXPECTED_SHORTCUTS),
     { keys },
   );
