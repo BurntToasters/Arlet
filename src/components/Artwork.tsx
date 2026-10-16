@@ -1,12 +1,44 @@
 import type { JSX } from "preact";
-import { useEffect, useState } from "preact/hooks";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "preact/hooks";
 import type { Track } from "../domain/music.ts";
+import {
+  artworkBucketFor,
+  normalizeArtworkUrl,
+} from "../musickit/normalize.ts";
 
 export interface ArtworkProps {
   track?: Pick<Track, "title" | "artistName" | "artwork"> | null;
   size?: "sm" | "md" | "lg" | "xl" | "hero";
   alt?: string;
   className?: string;
+  /** Above-the-fold art: load eagerly with high fetch priority. */
+  priority?: boolean;
+}
+
+type SizeListener = (cssPixels: number) => void;
+
+// One observer serves every artwork tile instead of one per element.
+const sizeListeners = new Map<Element, SizeListener>();
+let sharedObserver: ResizeObserver | undefined;
+
+function observeCssSize(element: Element, listener: SizeListener): () => void {
+  sharedObserver ??= new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      sizeListeners.get(entry.target)?.(Math.round(entry.contentRect.width));
+    }
+  });
+  sizeListeners.set(element, listener);
+  sharedObserver.observe(element);
+  return () => {
+    sharedObserver?.unobserve(element);
+    sizeListeners.delete(element);
+  };
 }
 
 function initials(track?: Pick<Track, "title" | "artistName"> | null): string {
@@ -23,15 +55,34 @@ export function Artwork({
   size = "md",
   alt,
   className = "",
+  priority = false,
 }: ArtworkProps): JSX.Element {
-  const imageUrl = track?.artwork?.url;
   const [imageFailed, setImageFailed] = useState(false);
+  // Measured once on mount and again on resize; undefined until the first
+  // measure, so the image is never requested at a guessed size.
+  const [cssSize, setCssSize] = useState<number>();
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return undefined;
+    setCssSize(element.clientWidth);
+    return observeCssSize(element, setCssSize);
+  }, []);
+  const rawUrl = track?.artwork?.url;
+  const bucket = artworkBucketFor(cssSize ?? 0, window.devicePixelRatio);
+  const imageUrl = useMemo(
+    () => (rawUrl ? normalizeArtworkUrl(rawUrl, bucket) : undefined),
+    [rawUrl, bucket],
+  );
   useEffect(() => {
     setImageFailed(false);
   }, [imageUrl]);
-  const image = imageUrl && !imageFailed ? imageUrl : undefined;
+  const pixelSize = cssSize === 0 ? undefined : cssSize;
+  const image =
+    imageUrl && !imageFailed && cssSize !== undefined ? imageUrl : undefined;
   return (
     <div
+      ref={ref}
       className={`artwork artwork-${size} ${className}`.trim()}
       aria-label={alt ?? `${track?.title ?? "No artwork"} artwork`}
       role={image ? undefined : "img"}
@@ -40,7 +91,11 @@ export function Artwork({
         <img
           src={image}
           alt={alt ?? `${track?.title ?? ""} by ${track?.artistName ?? ""}`}
-          loading="lazy"
+          width={pixelSize}
+          height={pixelSize}
+          loading={priority ? "eager" : "lazy"}
+          decoding="async"
+          fetchpriority={priority ? "high" : undefined}
           onError={() => setImageFailed(true)}
         />
       ) : (

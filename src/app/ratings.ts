@@ -90,6 +90,10 @@ export function createRatings(
   const generations = new Map<string, number>();
   // Last server-confirmed value per key, the rollback target.
   const settled = new Map<string, RatingValue>();
+  // Lookups in flight per key, so repeated opens share one GET. Ratings are
+  // never reused from earlier lookups: another device may have changed them.
+  // Cleared by reset(), which runs on sign-in and sign-out.
+  const lookups = new Map<string, Promise<void>>();
   // Writes for one key run in click order, so the last click wins on the server.
   const tails = new Map<string, Promise<void>>();
   const inFlight = new Map<string, number>();
@@ -103,40 +107,57 @@ export function createRatings(
   const request = (): MusicRequest =>
     resolveMusicKitMusicRequest(context.requireMusic()) as MusicRequest;
 
-  const fetchRating = async (
+  const fetchRating = (
     target: RatingTarget,
     type: RatingResourceType,
     key: string,
     accountAtStart = accountGeneration,
   ): Promise<void> => {
+    const pending = lookups.get(key);
+    if (pending) return pending;
+    const lookup: Promise<void> = fetchRatingNow(
+      target,
+      type,
+      key,
+      accountAtStart,
+    ).finally(() => {
+      if (lookups.get(key) === lookup) lookups.delete(key);
+    });
+    lookups.set(key, lookup);
+    return lookup;
+  };
+
+  const fetchRatingNow = async (
+    target: RatingTarget,
+    type: RatingResourceType,
+    key: string,
+    accountAtStart: number,
+  ): Promise<void> => {
     const ratingGeneration = generations.get(key) ?? 0;
     const isCurrent = (): boolean =>
       accountGeneration === accountAtStart &&
       (loadKey === key || playingKey === key);
-    try {
-      const values = await getRatings(request(), type, [target.id]);
-      // A newer change, or one still unsettled, owns this key now.
+    // Shows a value only if no newer change, and no unsettled write, owns the
+    // key. Returns whether it was shown.
+    const apply = (value: RatingValue): boolean => {
       if (
         !isCurrent() ||
         inFlight.has(key) ||
         (generations.get(key) ?? 0) !== ratingGeneration
       ) {
-        return;
+        return false;
       }
-      const value = values.get(target.id) ?? 0;
       settled.set(key, value);
       setRating(key, value);
+      return true;
+    };
+    try {
+      const values = await getRatings(request(), type, [target.id]);
+      apply(values.get(target.id) ?? 0);
     } catch (error) {
       // Apple answers 404 when the item has no rating.
       if (httpStatusOf(error) === 404) {
-        if (
-          isCurrent() &&
-          !inFlight.has(key) &&
-          (generations.get(key) ?? 0) === ratingGeneration
-        ) {
-          settled.set(key, 0);
-          setRating(key, 0);
-        }
+        apply(0);
         return;
       }
       context.log(`Rating lookup failed: ${safeErrorMessage(error)}`);
@@ -187,7 +208,9 @@ export function createRatings(
         } else {
           await putRating(request(), type, target.id, value);
         }
-        if (accountGeneration === accountAtStart) settled.set(key, value);
+        if (accountGeneration === accountAtStart) {
+          settled.set(key, value);
+        }
       } catch (error) {
         if (
           accountGeneration === accountAtStart &&
@@ -261,6 +284,7 @@ export function createRatings(
     accountGeneration += 1;
     generations.clear();
     settled.clear();
+    lookups.clear();
     tails.clear();
     inFlight.clear();
     adding.clear();

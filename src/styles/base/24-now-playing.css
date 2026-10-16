@@ -144,8 +144,13 @@
   margin: 0;
   padding: 0;
   overflow-y: auto;
-  gap: 2px;
+  /* No grid gap: the virtual list spacers assume rows stack exactly. Rows
+     carry the 2px separation as padding instead. */
+  gap: 0;
   list-style: none;
+}
+.now-playing-queue > li:not([aria-hidden]) {
+  padding: 1px 0;
 }
 .now-playing-queue button {
   display: grid;

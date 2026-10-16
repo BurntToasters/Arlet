@@ -9,6 +9,7 @@ import {
 import type { MusicEntityRef, Track } from "../domain/music.ts";
 import { setUiState } from "../state.ts";
 import { Artwork } from "./Artwork.tsx";
+import { VirtualList } from "./VirtualList.tsx";
 import { reportActionError } from "./action-errors.ts";
 import { PlaybackProgress, TransportControls } from "./TransportControls.tsx";
 import { displayArtistLinks } from "./artist-links.ts";
@@ -144,6 +145,7 @@ function NowPlayingDialog(): JSX.Element {
             track={current}
             size="xl"
             alt={current ? `${current.title} artwork` : "No song playing"}
+            priority
           />
           <div className="now-playing-meta">
             <h2 title={current?.title}>
@@ -222,10 +224,15 @@ function UpNext({
   if (upcoming.length === 0) {
     return <p className="now-playing-empty">Nothing else is queued.</p>;
   }
+  // The list is its own scroller, so the selector matches the list itself.
   return (
-    <ol className="now-playing-queue" aria-label="Up Next">
-      {upcoming.map(({ track, index }) => (
-        <li key={`${track.id}-${index}`}>
+    <VirtualList
+      className="now-playing-queue"
+      aria-label="Up Next"
+      items={upcoming}
+      getKey={({ track, index }) => `${track.id}-${index}`}
+      renderRow={({ track, index }) => (
+        <li>
           <button type="button" onClick={() => onPlay(index)}>
             <Artwork track={track} size="sm" alt="" />
             <span className="now-playing-queue-copy">
@@ -234,7 +241,8 @@ function UpNext({
             </span>
           </button>
         </li>
-      ))}
-    </ol>
+      )}
+      scrollParentSelector=".now-playing-queue"
+    />
   );
 }

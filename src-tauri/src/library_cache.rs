@@ -3,6 +3,7 @@
 
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use serde_json::value::RawValue;
 use serde_json::Value;
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -12,6 +13,19 @@ pub struct CachedPage {
     pub cursor: Option<String>,
     pub items: Vec<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
+    pub updated_at: i64,
+}
+
+/// What reads return: stored payloads go to the webview as they were written,
+/// so a read does not parse and re-serialize every item.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedPageView {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    pub items: Vec<Box<RawValue>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub next: Option<String>,
     pub updated_at: i64,
 }
@@ -125,6 +139,7 @@ fn open_and_migrate(path: &std::path::Path) -> Result<Connection, OpenError> {
     let mut conn = Connection::open(path).map_err(sqlite)?;
     conn.busy_timeout(std::time::Duration::from_secs(5))
         .map_err(sqlite)?;
+    tune_journal(&conn);
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .map_err(sqlite)?;
@@ -140,13 +155,35 @@ fn open_and_migrate(path: &std::path::Path) -> Result<Connection, OpenError> {
         disposable: message.contains("malformed") || message.contains("not a database"),
         message,
     })?;
-    compact_if_sparse(&conn);
     Ok(conn)
 }
 
+/// WAL keeps readers from waiting on the writer, and NORMAL sync cannot corrupt
+/// a WAL database (a power loss may drop the last commits). If WAL cannot be
+/// enabled the rollback journal still works, so this logs and continues.
+/// Synchronous is per connection, so it is set on every open.
+fn tune_journal(conn: &Connection) {
+    match conn.query_row("PRAGMA journal_mode = WAL", [], |row| {
+        row.get::<_, String>(0)
+    }) {
+        Ok(mode) if mode.eq_ignore_ascii_case("wal") => {}
+        Ok(mode) => eprintln!("Library cache WAL unavailable, journal mode is {mode}"),
+        Err(error) => eprintln!("Library cache WAL unavailable: {error}"),
+    }
+    if let Err(error) = conn.pragma_update(None, "synchronous", "NORMAL") {
+        eprintln!("Library cache synchronous setting failed: {error}");
+    }
+}
+
 /// Deleted rows leave free pages behind; reclaim them once they make up a
-/// large share of the file.
-fn compact_if_sparse(conn: &Connection) {
+/// large share of the file. Runs on its own connection after the first
+/// command, so the shared connection is not held while it works. VACUUM is
+/// transactional, so an exit mid-run leaves the file intact.
+fn compact_if_sparse(path: &std::path::Path) {
+    let Ok(conn) = Connection::open(path) else {
+        return;
+    };
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
     let pragma =
         |name: &str| conn.query_row(&format!("PRAGMA {name}"), [], |row| row.get::<_, i64>(0));
     if let (Ok(pages), Ok(free)) = (pragma("page_count"), pragma("freelist_count")) {
@@ -175,7 +212,9 @@ pub fn open_at(path: &std::path::Path) -> Result<Connection, String> {
     match open_and_migrate(path) {
         Ok(conn) => Ok(conn),
         Err(first) if first.disposable => {
-            for file in database_files(path) {
+            // Side files go first: a leftover WAL would be replayed onto the
+            // fresh database and bring the deleted rows back.
+            for file in database_files(path).into_iter().rev() {
                 let _ = std::fs::remove_file(file);
             }
             open_and_migrate(path)
@@ -189,6 +228,12 @@ pub fn open_at(path: &std::path::Path) -> Result<Connection, String> {
 /// kept it) to the local data dir, so a large disposable file does not roam
 /// with domain profiles. A failed move just starts a fresh cache.
 fn move_legacy_cache(legacy: &std::path::Path, target: &std::path::Path) {
+    // Side files without their database would be replayed onto the next one.
+    if !target.exists() {
+        for file in database_files(target).into_iter().skip(1) {
+            let _ = std::fs::remove_file(file);
+        }
+    }
     if !legacy.exists() {
         return;
     }
@@ -247,7 +292,7 @@ fn page_rows(
     };
     let rows = match cursor {
         Some(cursor) => conn
-            .prepare(
+            .prepare_cached(
                 "SELECT cursor, next_cursor, updated_at FROM music_pages
                  WHERE scope = ?1 AND section = ?2 AND cursor = ?3",
             )
@@ -257,7 +302,7 @@ fn page_rows(
                     .collect::<rusqlite::Result<Vec<_>>>()
             }),
         None => conn
-            .prepare(
+            .prepare_cached(
                 "SELECT cursor, next_cursor, updated_at FROM music_pages
                  WHERE scope = ?1 AND section = ?2 ORDER BY updated_at ASC",
             )
@@ -276,7 +321,7 @@ fn read_items(
     scope: &str,
     section: &str,
     pages: &[PageRow],
-) -> Result<Vec<Value>, String> {
+) -> Result<Vec<Box<RawValue>>, String> {
     if pages.is_empty() {
         return Ok(Vec::new());
     }
@@ -286,14 +331,14 @@ fn read_items(
            AND r.resource_type = i.resource_type AND r.resource_id = i.resource_id
          WHERE i.scope = ?1 AND i.section = ?2";
     let rows = if pages.len() == 1 {
-        conn.prepare(&format!("{base} AND i.cursor = ?3 ORDER BY i.position"))
+        conn.prepare_cached(&format!("{base} AND i.cursor = ?3 ORDER BY i.position"))
             .and_then(|mut statement| {
                 statement
                     .query_map([scope, section, pages[0].cursor.as_str()], map)?
                     .collect::<rusqlite::Result<Vec<_>>>()
             })
     } else {
-        conn.prepare(&format!("{base} ORDER BY i.cursor, i.position"))
+        conn.prepare_cached(&format!("{base} ORDER BY i.cursor, i.position"))
             .and_then(|mut statement| {
                 statement
                     .query_map([scope, section], map)?
@@ -301,9 +346,11 @@ fn read_items(
             })
     }
     .map_err(sql_error)?;
-    let mut by_cursor: std::collections::HashMap<String, Vec<Value>> = Default::default();
+    let mut by_cursor: std::collections::HashMap<String, Vec<Box<RawValue>>> = Default::default();
     for (cursor, payload) in rows {
-        if let Ok(value) = serde_json::from_str::<Value>(&payload) {
+        // Validates the stored JSON without building a Value tree; bad rows
+        // are skipped as before.
+        if let Ok(value) = RawValue::from_string(payload) {
             by_cursor.entry(cursor).or_default().push(value);
         }
     }
@@ -318,7 +365,7 @@ pub fn read_page(
     scope: &str,
     section: &str,
     cursor: Option<&str>,
-) -> Result<Option<CachedPage>, String> {
+) -> Result<Option<CachedPageView>, String> {
     check_key("scope", scope)?;
     check_key("section", section)?;
     let key = cursor.unwrap_or("");
@@ -326,7 +373,7 @@ pub fn read_page(
     let Some(page) = pages.first() else {
         return Ok(None);
     };
-    Ok(Some(CachedPage {
+    Ok(Some(CachedPageView {
         cursor: (!key.is_empty()).then(|| key.to_string()),
         items: read_items(conn, scope, section, &pages)?,
         next: page.next.clone(),
@@ -340,7 +387,7 @@ pub fn read_section(
     conn: &Connection,
     scope: &str,
     section: &str,
-) -> Result<Option<CachedPage>, String> {
+) -> Result<Option<CachedPageView>, String> {
     check_key("scope", scope)?;
     check_key("section", section)?;
     let pages = page_rows(conn, scope, section, None)?;
@@ -370,7 +417,7 @@ pub fn read_section(
         pages
     };
     let newest = ordered.last().cloned().expect("non-empty pages");
-    Ok(Some(CachedPage {
+    Ok(Some(CachedPageView {
         cursor: None,
         items: read_items(conn, scope, section, &ordered)?,
         next: newest.next,
@@ -395,13 +442,20 @@ pub fn write_page(
         ));
     }
     let tx = conn.transaction().map_err(sql_error)?;
-    tx.execute(
+    tx.prepare_cached(
         "INSERT INTO music_pages(scope, section, cursor, next_cursor, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(scope, section, cursor) DO UPDATE SET
            next_cursor = excluded.next_cursor, updated_at = excluded.updated_at",
-        rusqlite::params![scope, section, cursor, page.next, page.updated_at],
     )
+    .map_err(sql_error)?
+    .execute(rusqlite::params![
+        scope,
+        section,
+        cursor,
+        page.next,
+        page.updated_at
+    ])
     .map_err(sql_error)?;
     let previous = linked_resources(
         &tx,
@@ -409,14 +463,15 @@ pub fn write_page(
          WHERE scope = ?1 AND section = ?2 AND cursor = ?3",
         &[scope, section, cursor],
     )?;
-    tx.execute(
+    tx.prepare_cached(
         "DELETE FROM music_page_items WHERE scope = ?1 AND section = ?2 AND cursor = ?3",
-        [scope, section, cursor],
     )
+    .map_err(sql_error)?
+    .execute([scope, section, cursor])
     .map_err(sql_error)?;
     {
         let mut upsert = tx
-            .prepare(
+            .prepare_cached(
                 "INSERT INTO music_resources(scope, resource_type, resource_id, payload, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(scope, resource_type, resource_id) DO UPDATE SET
@@ -424,7 +479,7 @@ pub fn write_page(
             )
             .map_err(sql_error)?;
         let mut link = tx
-            .prepare(
+            .prepare_cached(
                 "INSERT INTO music_page_items(scope, section, cursor, position, resource_type, resource_id)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )
@@ -463,7 +518,7 @@ fn linked_resources(
     query: &str,
     params: &[&str],
 ) -> Result<Vec<(String, String)>, String> {
-    conn.prepare(query)
+    conn.prepare_cached(query)
         .and_then(|mut statement| {
             statement
                 .query_map(rusqlite::params_from_iter(params), |row| {
@@ -481,7 +536,7 @@ fn delete_orphans(
     scope: &str,
     candidates: &[(String, String)],
 ) -> Result<(), String> {
-    let mut statement = conn.prepare(DELETE_IF_ORPHAN).map_err(sql_error)?;
+    let mut statement = conn.prepare_cached(DELETE_IF_ORPHAN).map_err(sql_error)?;
     for (kind, id) in candidates {
         statement
             .execute(rusqlite::params![scope, kind, id])
@@ -501,10 +556,11 @@ pub fn clear_section(conn: &mut Connection, scope: &str, section: &str) -> Resul
         &[scope, section],
     )?;
     for table in ["music_page_items", "music_pages"] {
-        tx.execute(
-            &format!("DELETE FROM {table} WHERE scope = ?1 AND section = ?2"),
-            [scope, section],
-        )
+        tx.prepare_cached(&format!(
+            "DELETE FROM {table} WHERE scope = ?1 AND section = ?2"
+        ))
+        .map_err(sql_error)?
+        .execute([scope, section])
         .map_err(sql_error)?;
     }
     delete_orphans(&tx, scope, &previous)?;
@@ -513,34 +569,42 @@ pub fn clear_section(conn: &mut Connection, scope: &str, section: &str) -> Resul
 
 pub fn set_meta(conn: &Connection, meta: &CacheMeta) -> Result<(), String> {
     check_key("scope", &meta.scope)?;
-    conn.execute(
+    conn.prepare_cached(
         "INSERT INTO cache_meta(scope, storefront, last_refresh_at) VALUES (?1, ?2, ?3)
          ON CONFLICT(scope) DO UPDATE SET
            storefront = excluded.storefront, last_refresh_at = excluded.last_refresh_at",
-        rusqlite::params![meta.scope, meta.storefront, meta.last_refresh_at],
     )
+    .and_then(|mut statement| {
+        statement.execute(rusqlite::params![
+            meta.scope,
+            meta.storefront,
+            meta.last_refresh_at
+        ])
+    })
     .map(|_| ())
     .map_err(sql_error)
 }
 
 pub fn get_meta(conn: &Connection, scope: &str) -> Result<Option<CacheMeta>, String> {
     check_key("scope", scope)?;
-    conn.prepare("SELECT scope, storefront, last_refresh_at FROM cache_meta WHERE scope = ?1")
-        .and_then(|mut statement| {
-            statement
-                .query_map([scope], |row| {
-                    Ok(CacheMeta {
-                        scope: row.get(0)?,
-                        storefront: row
-                            .get::<_, Option<String>>(1)?
-                            .filter(|value| !value.is_empty()),
-                        last_refresh_at: row.get(2)?,
-                    })
-                })?
-                .next()
-                .transpose()
-        })
-        .map_err(sql_error)
+    conn.prepare_cached(
+        "SELECT scope, storefront, last_refresh_at FROM cache_meta WHERE scope = ?1",
+    )
+    .and_then(|mut statement| {
+        statement
+            .query_map([scope], |row| {
+                Ok(CacheMeta {
+                    scope: row.get(0)?,
+                    storefront: row
+                        .get::<_, Option<String>>(1)?
+                        .filter(|value| !value.is_empty()),
+                    last_refresh_at: row.get(2)?,
+                })
+            })?
+            .next()
+            .transpose()
+    })
+    .map_err(sql_error)
 }
 
 pub fn clear(conn: &mut Connection, scope: &str) -> Result<(), String> {
@@ -552,7 +616,9 @@ pub fn clear(conn: &mut Connection, scope: &str) -> Result<(), String> {
         "music_resources",
         "cache_meta",
     ] {
-        tx.execute(&format!("DELETE FROM {table} WHERE scope = ?1"), [scope])
+        tx.prepare_cached(&format!("DELETE FROM {table} WHERE scope = ?1"))
+            .map_err(sql_error)?
+            .execute([scope])
             .map_err(sql_error)?;
     }
     tx.commit().map_err(sql_error)
@@ -561,7 +627,17 @@ pub fn clear(conn: &mut Connection, scope: &str) -> Result<(), String> {
 /// Lazily opened connection in the local app data dir; a cache in the former
 /// roaming location is moved there on first open.
 #[derive(Default)]
-pub struct LibraryCacheState(std::sync::Mutex<Option<Connection>>);
+pub struct LibraryCacheState {
+    connection: std::sync::Mutex<Option<Connection>>,
+    /// Set once the deferred VACUUM check is queued, so it runs once per launch.
+    compaction_queued: std::sync::atomic::AtomicBool,
+}
+
+fn database_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    use tauri::Manager;
+    let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    Ok(dir.join(DATABASE_FILE))
+}
 
 fn with_conn<T>(
     app: &tauri::AppHandle,
@@ -570,7 +646,7 @@ fn with_conn<T>(
     use tauri::Manager;
     let state = app.state::<LibraryCacheState>();
     let mut guard = state
-        .0
+        .connection
         .lock()
         .map_err(|_| "Library cache lock poisoned".to_string())?;
     if guard.is_none() {
@@ -582,7 +658,17 @@ fn with_conn<T>(
         }
         *guard = Some(open_at(&path)?);
     }
-    run(guard.as_mut().expect("connection opened above"))
+    let result = run(guard.as_mut().expect("connection opened above"));
+    if result.is_ok()
+        && !state
+            .compaction_queued
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+    {
+        if let Ok(path) = database_path(app) {
+            std::thread::spawn(move || compact_if_sparse(&path));
+        }
+    }
+    result
 }
 
 #[tauri::command(async)]
@@ -591,7 +677,7 @@ pub fn library_cache_read_page(
     scope: String,
     section: String,
     cursor: Option<String>,
-) -> Result<Option<CachedPage>, String> {
+) -> Result<Option<CachedPageView>, String> {
     with_conn(&app, |conn| {
         read_page(conn, &scope, &section, cursor.as_deref())
     })
@@ -602,7 +688,7 @@ pub fn library_cache_read_section(
     app: tauri::AppHandle,
     scope: String,
     section: String,
-) -> Result<Option<CachedPage>, String> {
+) -> Result<Option<CachedPageView>, String> {
     with_conn(&app, |conn| read_section(conn, &scope, &section))
 }
 
@@ -676,6 +762,17 @@ mod tests {
             .collect()
     }
 
+    fn parsed(item: &RawValue) -> Value {
+        serde_json::from_str(item.get()).unwrap()
+    }
+
+    fn read_ids(items: &[Box<RawValue>]) -> Vec<String> {
+        items
+            .iter()
+            .map(|item| parsed(item)["id"].as_str().unwrap_or("").to_string())
+            .collect()
+    }
+
     fn scoped_dir(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("arlet-cache-{name}-{}", std::process::id()))
     }
@@ -702,7 +799,7 @@ mod tests {
         )
         .unwrap();
         let section = read_section(&conn, "s", "songs").unwrap().unwrap();
-        let all = ids(&section);
+        let all = read_ids(&section.items);
         assert_eq!(all.len(), 600);
         assert_eq!(all[0], "a-0");
         assert_eq!(all[299], "a-299");
@@ -711,7 +808,10 @@ mod tests {
         assert_eq!(section.updated_at, 2);
         let second = read_page(&conn, "s", "songs", Some("p2")).unwrap().unwrap();
         assert_eq!(second.cursor.as_deref(), Some("p2"));
-        assert_eq!(ids(&second), ids(&page(None, songs("b", 300), None, 0)));
+        assert_eq!(
+            read_ids(&second.items),
+            ids(&page(None, songs("b", 300), None, 0))
+        );
         assert!(read_page(&conn, "s", "songs", Some("missing"))
             .unwrap()
             .is_none());
@@ -729,10 +829,10 @@ mod tests {
         ];
         write_page(&mut conn, "s", "mixed", &page(None, items, None, 1)).unwrap();
         let read = read_page(&conn, "s", "mixed", None).unwrap().unwrap();
-        let titles: Vec<&str> = read
+        let titles: Vec<String> = read
             .items
             .iter()
-            .map(|i| i["title"].as_str().unwrap())
+            .map(|item| parsed(item)["title"].as_str().unwrap().to_string())
             .collect();
         assert_eq!(titles, ["No id one", "Second", "No id two", "Second"]);
     }
@@ -749,7 +849,7 @@ mod tests {
         .unwrap();
         let read = read_page(&conn, "s", "songs", None).unwrap().unwrap();
         assert_eq!(read.items.len(), 7000);
-        assert_eq!(read.items[6999]["id"], "big-6999");
+        assert_eq!(read_ids(&read.items)[6999], "big-6999");
     }
 
     #[test]
@@ -777,14 +877,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            ids(&read_page(&conn, "a", "songs", None).unwrap().unwrap()),
+            read_ids(&read_page(&conn, "a", "songs", None).unwrap().unwrap().items),
             ["new-0", "new-1"]
         );
         clear_section(&mut conn, "b", "albums").unwrap();
         clear(&mut conn, "a").unwrap();
         assert!(read_section(&conn, "a", "songs").unwrap().is_none());
         assert_eq!(
-            ids(&read_section(&conn, "b", "songs").unwrap().unwrap()),
+            read_ids(&read_section(&conn, "b", "songs").unwrap().unwrap().items),
             ["other-0", "other-1"]
         );
     }
@@ -839,7 +939,7 @@ mod tests {
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
         assert_eq!(
-            ids(&read_section(&conn, "s", "songs").unwrap().unwrap()),
+            read_ids(&read_section(&conn, "s", "songs").unwrap().unwrap().items),
             ["x"]
         );
         drop(conn);

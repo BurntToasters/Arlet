@@ -5,29 +5,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { fixtureCall, sleep, waitFor } from "./e2e-helpers.js";
 
 const FIXTURE = "window.__ARLET_E2E_MUSIC__";
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const VERSION = JSON.parse(
   fs.readFileSync(path.join(root, "package.json"), "utf8"),
 ).version;
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function fixtureCall(page, method, args = []) {
-  return page.evaluate(`
-    return await ${FIXTURE}[${JSON.stringify(method)}](...${JSON.stringify(args)});
-  `);
-}
-
-async function waitFor(page, expression, timeoutMs = 8000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await page.evaluate(`return Boolean(${expression});`)) return true;
-    await sleep(50);
-  }
-  return false;
-}
-
 async function clickMenuItem(page, target, itemId) {
   await fixtureCall(page, "selectContext", [target]);
   const ready = await waitFor(
@@ -283,13 +267,32 @@ async function errorRecovery({ page, check }) {
   await waitFor(page, `document.querySelector(".library-track-row")`);
   await page.evaluate(`location.hash = "#/settings"; return true;`);
   await waitFor(page, `document.querySelector(".settings-section")`);
-  // A real render failure in one view: the Library view formats its
-  // "Updated" time while rendering; nothing in the shell does.
+  // A real render failure in one view. The Library view formats its "Updated"
+  // time with a formatter made once at import, so the `format` getter throws
+  // only for formatters that predate this injection. Formatters made since
+  // (the Titlebar and Home views make theirs per render) still work, so only
+  // the Library view fails to render. Both are restored exactly in `finally`.
   await page.evaluate(`
-    window.__ARLET_E2E_INTL__ = Intl.DateTimeFormat;
-    Intl.DateTimeFormat = function () {
-      throw new Error("e2e-render-marker");
+    const proto = Intl.DateTimeFormat.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, "format");
+    const Original = Intl.DateTimeFormat;
+    const created = new WeakSet();
+    const Tracked = function DateTimeFormat(locales, options) {
+      const formatter = new Original(locales, options);
+      created.add(formatter);
+      return formatter;
     };
+    Tracked.prototype = Original.prototype;
+    Tracked.supportedLocalesOf = Original.supportedLocalesOf;
+    window.__ARLET_E2E_INTL__ = { descriptor, Original };
+    Object.defineProperty(proto, "format", {
+      configurable: true,
+      get() {
+        if (!created.has(this)) throw new Error("e2e-render-marker");
+        return descriptor.get.call(this);
+      },
+    });
+    Intl.DateTimeFormat = Tracked;
     location.hash = "#/library/songs";
     return true;`);
   let contained = false;
@@ -305,7 +308,12 @@ async function errorRecovery({ page, check }) {
     );
   } finally {
     await page.evaluate(`
-      if (window.__ARLET_E2E_INTL__) Intl.DateTimeFormat = window.__ARLET_E2E_INTL__;
+      const saved = window.__ARLET_E2E_INTL__;
+      if (saved) {
+        Object.defineProperty(Intl.DateTimeFormat.prototype, "format", saved.descriptor);
+        Intl.DateTimeFormat = saved.Original;
+        delete window.__ARLET_E2E_INTL__;
+      }
       return true;`);
   }
   await page.evaluate(`

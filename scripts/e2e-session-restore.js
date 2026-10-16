@@ -8,6 +8,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { sleep, waitFor as pollFor } from "./e2e-helpers.js";
 
 const SESSION_FILE = "playback-session.json";
 const BACKUP_FILE = "playback-session.json.bak";
@@ -48,18 +49,8 @@ const SAVED_ITEMS = [
   },
 ];
 
-async function sleep(ms) {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitFor(page, expression, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await page.evaluate(`return Boolean(${expression});`)) return true;
-    await sleep(100);
-  }
-  return false;
-}
+const waitFor = (page, expression, timeoutMs = 10_000) =>
+  pollFor(page, expression, timeoutMs, 100);
 
 async function waitForFile(file, present, timeoutMs = 6_000) {
   const deadline = Date.now() + timeoutMs;

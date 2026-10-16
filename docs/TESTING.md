@@ -417,6 +417,66 @@ A native crash or a failed window start is written to `arlet.log` even with
 Debug Mode off, because nothing else records it. That path is not driven
 here.
 
+## Rendering performance
+
+`scripts/e2e-performance.js` runs inside the native suite against the MusicKit
+fixture. It measures CDP `Performance` metric deltas (ScriptDuration,
+LayoutCount, RecalcStyleCount, Nodes, JSHeapUsedSize) for steady playback, a
+volume drag, a large library, Up Next, and artwork sizes. Every number is
+written to the check `detail` and lands in `report.json`.
+
+The metrics are relative. A report records numbers from one machine and one
+run. Two ceilings are set; a check fails when its count is above one:
+
+- `LIBRARY_CARD_MAX` (600): `.library-card` elements mounted in one library
+  grid. The grid is virtualized, so this measures the viewport window, not the
+  library size. The album and artist checks also require the scroll loop to
+  reach the end (no `.library-load-more`) and the fixture to have answered all
+  5000 items, counted by distinct id. Each step scrolls `.content-scroll` to
+  its bottom and samples the mounted card count.
+- `UP_NEXT_ROW_MAX` (120): `.now-playing-queue > li` rows that are not
+  `aria-hidden`. The virtual spacer rows are not counted.
+
+The volume drag is checked on disk, not by counting IPC calls. Tauri defines
+`__TAURI_INTERNALS__.invoke` as non-writable, so the save is observed through
+`settings.json` in the scenario's data directory. Before the drag the file's
+volume and mtime are recorded; 40 input events move the slider 0.4 away from
+the start. Read straight after the drag, the file must be unchanged, which
+shows there is no write per event and the 300 ms debounce has not fired. After
+1.5 s the persisted volume must equal the slider's final value (within 0.001)
+and the mtime must have moved. Before, during and after volumes and mtimes are
+in the detail.
+
+Artwork is an exact check, not a ceiling. The fixture serves an mzstatic-shaped
+template (`configure({ artworkTemplate })`, with `{id}` per resource) so the
+app's size rewrite runs. For a 42 px Up Next queue thumbnail and the Now Playing
+hero, the check reads `devicePixelRatio` and each rendered CSS width, then
+computes the expected size with the rule in `artworkBucketFor`: the smallest of
+96, 300 or 640 px that covers CSS width times DPR, else 640. Every logged
+segment (such as `96x96`) must equal that expected segment.
+
+A ceiling set to `null` only records its number.
+
+Failure modes this pass must not have:
+
+- Playback ticks or unrelated store updates re-render the whole shell, so
+  every view and the player bar rebuild several times a second.
+- A volume drag re-renders every view and writes settings on every input
+  event, instead of once when the drag ends.
+- Queue events with an unchanged queue rebuild the queue and save the session
+  on each event.
+- Library album and artist grids with thousands of items mount every card,
+  so scrolling costs grow with the library instead of the viewport.
+- Now Playing's Up Next mounts hundreds of rows, not the visible ones.
+- A 42 px thumbnail downloads a 300 px (or larger) image, and hero art is
+  upscaled from a smaller source.
+- A library page refresh waits on disk writes before it shows anything.
+- The cached library and the saved queue wait for MusicKit's network
+  configure before they appear.
+- The cache's write-ahead log files survive a library clear and resurrect
+  old data on the next start.
+- With Debug Mode off, logging still crosses IPC for every line.
+
 ## Release-only evidence
 
 The following checks require a Windows release environment and are kept out of

@@ -11,7 +11,7 @@ import type { JSX } from "preact";
 import {
   useAppController,
   useAppRouter,
-  useAppState,
+  useAppSlices,
 } from "../app/context.tsx";
 import { Artwork } from "../components/Artwork.tsx";
 import { SongRow } from "../components/SongRow.tsx";
@@ -61,7 +61,7 @@ function Card({
 }
 
 export function BrowseView(): JSX.Element {
-  const state = useAppState();
+  const state = useAppSlices("auth", "browse", "initialization");
   const controller = useAppController();
   const browse = state.browse;
   const authorized = state.auth.status === "authorized";

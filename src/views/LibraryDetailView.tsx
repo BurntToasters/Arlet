@@ -15,7 +15,7 @@ import type { JSX } from "preact";
 import {
   useAppController,
   useAppRouter,
-  useAppState,
+  useAppSlices,
 } from "../app/context.tsx";
 import type { AppController } from "../app/controller.ts";
 import type { CollectionPlayOptions } from "../app/collection-playback.ts";
@@ -30,6 +30,10 @@ import {
   type ResourceLike,
 } from "./LibraryView.tsx";
 import type { Track } from "../domain/music.ts";
+import {
+  ARTWORK_BACKDROP_BUCKET,
+  normalizeArtworkUrl,
+} from "../musickit/normalize.ts";
 import { reportActionError } from "../components/action-errors.ts";
 import { SongRow } from "../components/SongRow.tsx";
 import { OfflineBanner } from "../components/OfflineBanner.tsx";
@@ -263,7 +267,7 @@ export function LibraryDetailView({
   id: string;
   source?: DetailSource;
 }): JSX.Element {
-  const state = useAppState();
+  const state = useAppSlices("auth", "initialization", "library", "ui");
   const controller = useAppController();
   const router = useAppRouter();
   const extendedController = controller as AppController & DetailController;
@@ -296,6 +300,18 @@ export function LibraryDetailView({
         resource,
       ),
     [rawTracks, rawAlbums, rawItems, resource],
+  );
+  // Albums newest first, so an artist's latest work leads the shelf.
+  const artistAlbums = useMemo(
+    () =>
+      kind === "artist"
+        ? [...resources].sort((left, right) =>
+            String(right.releaseDate ?? "").localeCompare(
+              String(left.releaseDate ?? ""),
+            ),
+          )
+        : [],
+    [kind, resources],
   );
   const copy = detailCopy(kind);
   const DetailIcon = copy.icon;
@@ -482,14 +498,6 @@ export function LibraryDetailView({
   const artworkTrack = resource ? toTrack(resource) : undefined;
   const isArtist = kind === "artist";
   const artistBackdrop = isArtist ? artworkTrack?.artwork?.url : undefined;
-  // Albums newest first, so an artist's latest work leads the shelf.
-  const artistAlbums = isArtist
-    ? [...resources].sort((left, right) =>
-        String(right.releaseDate ?? "").localeCompare(
-          String(left.releaseDate ?? ""),
-        ),
-      )
-    : [];
   return (
     <>
       {offline ? <OfflineBanner /> : null}
@@ -501,9 +509,10 @@ export function LibraryDetailView({
         {artistBackdrop ? (
           <img
             className="artist-hero-backdrop"
-            src={artistBackdrop}
+            src={normalizeArtworkUrl(artistBackdrop, ARTWORK_BACKDROP_BUCKET)}
             alt=""
             aria-hidden="true"
+            decoding="async"
           />
         ) : null}
         <div className="library-detail-art">
@@ -512,6 +521,7 @@ export function LibraryDetailView({
               track={artworkTrack}
               size="hero"
               alt={`${title} artwork`}
+              priority
             />
           ) : (
             <span className="library-detail-icon">

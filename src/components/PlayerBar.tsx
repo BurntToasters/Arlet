@@ -24,6 +24,7 @@ import { Artwork } from "./Artwork.tsx";
 import { IconButton } from "./IconButton.tsx";
 import { SleepTimerButton } from "./SleepTimerButton.tsx";
 import { reportActionError } from "./action-errors.ts";
+import { useSerializedContextRefs } from "./context-refs.ts";
 import { PlaybackProgress, TransportControls } from "./TransportControls.tsx";
 import { displayArtistLinks } from "./artist-links.ts";
 
@@ -129,6 +130,7 @@ export function PlayerBar(): JSX.Element {
           album: current?.albumRef,
           artists: current?.artistRefs ?? [],
         };
+  const refs = useSerializedContextRefs(navigation.album, navigation.artists);
 
   const artistLinks = displayArtistLinks(
     navigation.artists,
@@ -161,14 +163,8 @@ export function PlayerBar(): JSX.Element {
         data-context-album={current?.albumTitle}
         data-context-resource-type={current?.resourceType}
         data-context-catalog-id={current?.catalogId}
-        data-context-album-ref={
-          navigation.album ? JSON.stringify(navigation.album) : undefined
-        }
-        data-context-artist-refs={
-          navigation.artists.length
-            ? JSON.stringify(navigation.artists)
-            : undefined
-        }
+        data-context-album-ref={refs.album}
+        data-context-artist-refs={refs.artists}
       >
         <button
           className="player-artwork-button"

@@ -13,13 +13,14 @@ import type { JSX } from "preact";
 import {
   useAppController,
   useAppRouter,
-  useAppState,
+  useAppSlices,
 } from "../app/context.tsx";
 import { Artwork } from "../components/Artwork.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import { toResource, toTrack, type ResourceLike } from "./LibraryView.tsx";
 import { reportActionError } from "../components/action-errors.ts";
 import { OfflineBanner } from "../components/OfflineBanner.tsx";
+import type { RuntimeAppState } from "../state.ts";
 
 type DiscoverySource = "library" | "catalog";
 type HomeStatus = "idle" | "loading" | "refreshing" | "success" | "error";
@@ -69,7 +70,7 @@ function sourceValue(value: unknown): DiscoverySource | undefined {
   return value === "library" || value === "catalog" ? value : undefined;
 }
 
-function readHome(state: ReturnType<typeof useAppState>): HomeModelLike {
+function readHome(state: Pick<RuntimeAppState, "home">): HomeModelLike {
   const home = state.home;
   const section = (
     items: unknown[],
@@ -371,7 +372,7 @@ function RecommendationSection({
 }
 
 export function HomeView(): JSX.Element {
-  const state = useAppState();
+  const state = useAppSlices("auth", "home", "initialization", "library");
   const controller = useAppController();
   const router = useAppRouter();
   const authorized = state.auth.status === "authorized";

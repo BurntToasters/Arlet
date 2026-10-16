@@ -17,9 +17,10 @@ import type { JSX } from "preact";
 import {
   useAppController,
   useAppRouter,
-  useAppState,
+  useAppSlices,
 } from "../app/context.tsx";
 import { nearestTrackIndex } from "../app/queue-window.ts";
+import type { RuntimeAppState } from "../state.ts";
 import type { AppController } from "../app/controller.ts";
 import { Artwork } from "../components/Artwork.tsx";
 import { SongRow } from "../components/SongRow.tsx";
@@ -29,6 +30,7 @@ import { normalizeTrackNavigation } from "../musickit/normalize.ts";
 import type { LibrarySection } from "../routing/router.ts";
 import { reportActionError } from "../components/action-errors.ts";
 import { OfflineBanner } from "../components/OfflineBanner.tsx";
+import { VirtualGrid } from "../components/VirtualGrid.tsx";
 import { VirtualList } from "../components/VirtualList.tsx";
 
 export interface ResourceLike {
@@ -174,7 +176,24 @@ function artworkValue(value: unknown): Track["artwork"] | undefined {
   };
 }
 
+/**
+ * Converted items, keyed on the stored object. The store keeps earlier items
+ * by identity, so a page append converts only its own items. `null` marks an
+ * item that does not convert.
+ */
+const resourceCache = new WeakMap<object, ResourceLike | null>();
+const trackCache = new WeakMap<object, Track | null>();
+
 export function toResource(value: unknown): ResourceLike | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const cached = resourceCache.get(value);
+  if (cached !== undefined) return cached ?? undefined;
+  const resource = convertResource(value);
+  resourceCache.set(value, resource ?? null);
+  return resource;
+}
+
+function convertResource(value: unknown): ResourceLike | undefined {
   const raw = objectValue(value);
   if (!raw) return undefined;
   const attributes = objectValue(raw.attributes) ?? raw;
@@ -262,8 +281,19 @@ export function toResource(value: unknown): ResourceLike | undefined {
   };
 }
 
+/** One Track per item, so rows that memoize on it keep their identity. */
 export function toTrack(value: unknown): Track | undefined {
-  const resource = toResource(value);
+  if (!value || typeof value !== "object") return undefined;
+  const cached = trackCache.get(value);
+  if (cached !== undefined) return cached ?? undefined;
+  const track = trackFromResource(toResource(value));
+  trackCache.set(value, track ?? null);
+  return track;
+}
+
+function trackFromResource(
+  resource: ResourceLike | undefined,
+): Track | undefined {
   if (!resource) return undefined;
   return {
     id: resource.id,
@@ -283,13 +313,15 @@ export function toTrack(value: unknown): Track | undefined {
   };
 }
 
-function readLibrary(state: ReturnType<typeof useAppState>): LibraryModelLike {
+function readLibrary(
+  state: Pick<RuntimeAppState, "library">,
+): LibraryModelLike {
   const value = (state as unknown as { library?: unknown }).library;
   return objectValue(value) ?? {};
 }
 
 export function readCollection(
-  state: ReturnType<typeof useAppState>,
+  state: Pick<RuntimeAppState, "library">,
   section: LibrarySection,
 ): CollectionLike {
   const library = readLibrary(state);
@@ -314,7 +346,7 @@ export function readCollection(
 }
 
 export function readDetail(
-  state: ReturnType<typeof useAppState>,
+  state: Pick<RuntimeAppState, "library">,
   kind: "album" | "artist" | "playlist",
   id: string,
 ): DetailLike {
@@ -348,7 +380,7 @@ export function readDetail(
 const NO_ITEMS: readonly unknown[] = [];
 
 function readPlaylistFolderItems(
-  state: ReturnType<typeof useAppState>,
+  state: Pick<RuntimeAppState, "library">,
 ): readonly unknown[] {
   const library = readLibrary(state);
   const details = objectValue(library.details);
@@ -356,11 +388,16 @@ function readPlaylistFolderItems(
   return Array.isArray(folder?.items) ? folder.items : NO_ITEMS;
 }
 
+const updatedFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short",
+});
+
 function formatUpdated(value: number | string | undefined): string {
   if (value === undefined) return "";
   const parsed = typeof value === "number" ? value : Date.parse(value);
   if (!Number.isFinite(parsed)) return "";
-  return `Updated ${new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(parsed))}`;
+  return `Updated ${updatedFormatter.format(new Date(parsed))}`;
 }
 
 function contextData(
@@ -626,7 +663,7 @@ export function LibraryView({
 }: {
   section: LibrarySection;
 }): JSX.Element {
-  const state = useAppState();
+  const state = useAppSlices("auth", "initialization", "library");
   const controller = useAppController();
   const router = useAppRouter();
   const loadMoreTrigger = useRef<HTMLButtonElement>(null);
@@ -640,6 +677,8 @@ export function LibraryView({
   const canView = authorized || offline;
   const folderItems =
     section === "playlists" ? readPlaylistFolderItems(state) : NO_ITEMS;
+  // Rebuilt only when the stored items change; converted items are cached,
+  // so an appended page converts just its own rows.
   const resources = useMemo(() => {
     const items = [...folderItems, ...collection.items]
       .map(toResource)
@@ -651,18 +690,21 @@ export function LibraryView({
       return true;
     });
   }, [collection.items, folderItems]);
-  const recentCards =
-    section === "recent"
-      ? resources.filter((resource) =>
-          ["album", "artist", "playlist"].some((kind) =>
-            resource.type?.includes(kind),
-          ),
-        )
-      : [];
-  const trackResources =
-    section === "recent"
-      ? resources.filter((resource) => !recentCards.includes(resource))
-      : resources;
+  const { recentCards, trackResources } = useMemo(() => {
+    if (section !== "recent") {
+      return { recentCards: [] as ResourceLike[], trackResources: resources };
+    }
+    const cards = resources.filter((resource) =>
+      ["album", "artist", "playlist"].some((kind) =>
+        resource.type?.includes(kind),
+      ),
+    );
+    const cardSet = new Set(cards);
+    return {
+      recentCards: cards,
+      trackResources: resources.filter((resource) => !cardSet.has(resource)),
+    };
+  }, [resources, section]);
 
   useEffect(() => {
     if (!canView || !extendedController.loadLibrarySection) return;
@@ -738,6 +780,7 @@ export function LibraryView({
         : controller.playTracks([track]),
     );
   };
+  const updatedLabel = formatUpdated(collection.lastUpdatedAt);
   return (
     <>
       <div className="page-heading library-heading">
@@ -754,10 +797,8 @@ export function LibraryView({
               {offline ? "Cached" : "Cached · updating"}
             </span>
           ) : null}
-          {formatUpdated(collection.lastUpdatedAt) ? (
-            <span className="library-updated">
-              {formatUpdated(collection.lastUpdatedAt)}
-            </span>
+          {updatedLabel ? (
+            <span className="library-updated">{updatedLabel}</span>
           ) : null}
           <button
             className="icon-button"
@@ -846,31 +887,39 @@ export function LibraryView({
             </section>
           ) : null}
           {resources.length && section === "albums" ? (
-            <section className="library-card-grid" aria-label="Albums">
-              {resources.map((resource) => (
-                <ResourceCard
-                  key={resource.id}
-                  resource={resource}
-                  kind="album"
-                  onOpen={() =>
-                    router.navigate({ kind: "album", id: resource.id })
-                  }
-                />
-              ))}
+            <section aria-label="Albums">
+              <VirtualGrid
+                className="library-card-grid"
+                items={resources}
+                getKey={(resource) => resource.id}
+                renderItem={(resource) => (
+                  <ResourceCard
+                    resource={resource}
+                    kind="album"
+                    onOpen={() =>
+                      router.navigate({ kind: "album", id: resource.id })
+                    }
+                  />
+                )}
+              />
             </section>
           ) : null}
           {resources.length && section === "artists" ? (
-            <section className="library-card-grid" aria-label="Artists">
-              {resources.map((resource) => (
-                <ResourceCard
-                  key={resource.id}
-                  resource={resource}
-                  kind="artist"
-                  onOpen={() =>
-                    router.navigate({ kind: "artist", id: resource.id })
-                  }
-                />
-              ))}
+            <section aria-label="Artists">
+              <VirtualGrid
+                className="library-card-grid"
+                items={resources}
+                getKey={(resource) => resource.id}
+                renderItem={(resource) => (
+                  <ResourceCard
+                    resource={resource}
+                    kind="artist"
+                    onOpen={() =>
+                      router.navigate({ kind: "artist", id: resource.id })
+                    }
+                  />
+                )}
+              />
             </section>
           ) : null}
           {resources.length && section === "playlists" ? (

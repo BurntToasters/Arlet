@@ -35,6 +35,25 @@ export interface LibraryPageOptions {
   limit?: number;
 }
 
+/**
+ * Largest page Apple accepts for library and catalog song, album, artist,
+ * playlist and track lists. Recent-history endpoints cap lower, so they
+ * keep Apple's default.
+ */
+export const LIBRARY_PAGE_LIMIT = 100;
+
+/** Most ids Apple takes in one library multi-get or ratings request. */
+const MAX_BATCH_IDS = 100;
+
+/** Most ids Apple takes in one catalog multi-get request. */
+const MAX_CATALOG_BATCH_IDS = 25;
+
+/** A record plus its first track page, when the response carried a full one. */
+export interface DetailWithTracks<T> {
+  item?: T;
+  firstTracks?: Page<Track>;
+}
+
 export interface CreatePlaylistInput {
   name: string;
   description?: string;
@@ -70,6 +89,11 @@ export interface AppleMusicLibraryClient {
   getHeavyRotation(limit?: number): Promise<Page<DiscoveryResource>>;
   getRecommendations(limit?: number): Promise<RecommendationSection[]>;
   getAlbum(id: string, source?: MusicSource): Promise<Album | undefined>;
+  /** One request for the album and, when complete, its first track page. */
+  getAlbumDetail(
+    id: string,
+    source?: MusicSource,
+  ): Promise<DetailWithTracks<Album>>;
   getAlbumTracks(
     id: string,
     source?: MusicSource,
@@ -82,6 +106,16 @@ export interface AppleMusicLibraryClient {
     source?: MusicSource,
   ): Promise<Page<Album>>;
   getPlaylist(id: string, source?: MusicSource): Promise<Playlist | undefined>;
+  /** One request for the playlist and, when complete, its first track page. */
+  getPlaylistDetail(
+    id: string,
+    source?: MusicSource,
+  ): Promise<DetailWithTracks<Playlist>>;
+  /** Batched lookup: 25 ids per catalog request, 100 per library request. */
+  getPlaylistsByIds(
+    ids: readonly string[],
+    source?: MusicSource,
+  ): Promise<Playlist[]>;
   getPlaylistTracks(
     id: string,
     cursor?: string | LibraryPageOptions,
@@ -549,6 +583,66 @@ export function createAppleMusicLibraryClient(
     return resource ? normalize(resource) : undefined;
   }
 
+  /**
+   * Reads one album or playlist with its `tracks` relationship included. The
+   * first track page is returned only when it is provably whole: no `next`,
+   * every entry resolvable, and not fewer than the declared track count.
+   * Otherwise the caller pages the track endpoint as before.
+   */
+  async function getWithFirstTracks<T>(
+    path: string,
+    normalize: (resource: AppleMusicResource) => T | undefined,
+  ): Promise<DetailWithTracks<T>> {
+    const raw = await request(path, { include: "tracks" });
+    const resource = firstResource(raw);
+    const item = resource ? normalize(resource) : undefined;
+    const declared = asRecord(resource?.attributes)?.trackCount;
+    const relationship = asRecord(asRecord(resource?.relationships)?.tracks);
+    const data = Array.isArray(relationship?.data)
+      ? relationship.data
+      : undefined;
+    if (!data || data.length === 0 || nonEmptyString(relationship?.next)) {
+      return { item };
+    }
+    if (typeof declared === "number" && data.length < declared) return { item };
+    const includedByKey = new Map<string, unknown>();
+    const included = asRecord(raw)?.included;
+    for (const value of Array.isArray(included) ? included : []) {
+      const key = resourceKey(value);
+      if (key) includedByKey.set(key, value);
+    }
+    const items: Track[] = [];
+    for (const entry of data) {
+      const record = asRecord(entry);
+      // Apple sends full objects here, or only identifiers with the bodies in `included`.
+      const full =
+        record?.attributes !== undefined
+          ? record
+          : includedByKey.get(resourceKey(record) ?? "");
+      const track = full
+        ? normalizeTrackResource(full as AppleMusicResource)
+        : undefined;
+      if (!track) return { item };
+      items.push(track);
+    }
+    return { item, firstTracks: { items } };
+  }
+
+  async function albumPath(id: string, source: MusicSource): Promise<string> {
+    return source === "catalog"
+      ? `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/albums/${encodePathPart(id)}`
+      : `/v1/me/library/albums/${encodePathPart(id)}`;
+  }
+
+  async function playlistPath(
+    id: string,
+    source: MusicSource,
+  ): Promise<string> {
+    return source === "catalog"
+      ? `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/playlists/${encodePathPart(id)}`
+      : `/v1/me/library/playlists/${encodePathPart(id)}`;
+  }
+
   // Sibling folders load in parallel; this caps the requests in flight.
   // Only network calls take a slot, so a parent waiting on its children
   // never holds one.
@@ -693,11 +787,16 @@ export function createAppleMusicLibraryClient(
       id: string,
       source: MusicSource = "library",
     ): Promise<Album | undefined> {
-      const path =
-        source === "catalog"
-          ? `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/albums/${encodePathPart(id)}`
-          : `/v1/me/library/albums/${encodePathPart(id)}`;
-      return getOne(path, normalizeAlbumResource);
+      return getOne(await albumPath(id, source), normalizeAlbumResource);
+    },
+    async getAlbumDetail(
+      id: string,
+      source: MusicSource = "library",
+    ): Promise<DetailWithTracks<Album>> {
+      return getWithFirstTracks(
+        await albumPath(id, source),
+        normalizeAlbumResource,
+      );
     },
     async getAlbumTracks(
       id: string,
@@ -735,11 +834,47 @@ export function createAppleMusicLibraryClient(
       id: string,
       source: MusicSource = "library",
     ): Promise<Playlist | undefined> {
+      return getOne(await playlistPath(id, source), normalizePlaylistResource);
+    },
+    async getPlaylistDetail(
+      id: string,
+      source: MusicSource = "library",
+    ): Promise<DetailWithTracks<Playlist>> {
+      return getWithFirstTracks(
+        await playlistPath(id, source),
+        normalizePlaylistResource,
+      );
+    },
+    async getPlaylistsByIds(
+      ids: readonly string[],
+      source: MusicSource = "library",
+    ): Promise<Playlist[]> {
+      const list = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
+      // Apple documents a per-type multi-fetch for each root, with its own cap.
       const path =
         source === "catalog"
-          ? `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/playlists/${encodePathPart(id)}`
-          : `/v1/me/library/playlists/${encodePathPart(id)}`;
-      return getOne(path, normalizePlaylistResource);
+          ? `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/playlists`
+          : "/v1/me/library/playlists";
+      const maxIds =
+        source === "catalog" ? MAX_CATALOG_BATCH_IDS : MAX_BATCH_IDS;
+      const chunks: string[][] = [];
+      for (let start = 0; start < list.length; start += maxIds) {
+        chunks.push(list.slice(start, start + maxIds));
+      }
+      const responses = await Promise.all(
+        chunks.map((chunk) => request(path, { ids: chunk.join(",") })),
+      );
+      const playlists: Playlist[] = [];
+      for (const raw of responses) {
+        for (const value of resourceArray(raw) ?? []) {
+          const resource = asRecord(value) as AppleMusicResource | undefined;
+          const item = resource
+            ? normalizePlaylistResource(resource)
+            : undefined;
+          if (item) playlists.push(item);
+        }
+      }
+      return playlists;
     },
     async getPlaylistTracks(
       id: string,
@@ -884,8 +1019,6 @@ function ratingPath(type: RatingResourceType, id: string): string {
   return `/v1/me/ratings/${type}/${encodePathPart(trimmed)}`;
 }
 
-const MAX_RATING_IDS = 100;
-
 /** Loads ratings for the given ids; unrated ids are absent from the map. */
 export async function getRatings(
   request: MusicRequest,
@@ -894,12 +1027,17 @@ export async function getRatings(
 ): Promise<Map<string, RatingValue>> {
   const values = new Map<string, RatingValue>();
   const list = ids.map((id) => id.trim()).filter(Boolean);
-  // Apple caps the ids in one ratings request.
-  for (let start = 0; start < list.length; start += MAX_RATING_IDS) {
-    const chunk = list.slice(start, start + MAX_RATING_IDS);
-    const raw = await request(`/v1/me/ratings/${type}`, {
-      ids: chunk.join(","),
-    });
+  // Apple caps the ids in one ratings request; the chunks run in parallel.
+  const chunks: string[][] = [];
+  for (let start = 0; start < list.length; start += MAX_BATCH_IDS) {
+    chunks.push(list.slice(start, start + MAX_BATCH_IDS));
+  }
+  const responses = await Promise.all(
+    chunks.map((chunk) =>
+      request(`/v1/me/ratings/${type}`, { ids: chunk.join(",") }),
+    ),
+  );
+  for (const raw of responses) {
     for (const value of resourceArray(raw) ?? []) {
       const resource = asRecord(value);
       const id = nonEmptyString(resource?.id);

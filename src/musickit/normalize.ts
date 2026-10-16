@@ -292,16 +292,51 @@ function validArtworkUrl(value: string): boolean {
   }
 }
 
+/** Fixed sizes for Apple artwork requests so the WebView HTTP cache hits. */
+export const ARTWORK_BUCKETS = [96, 300, 640] as const;
+/** Blurred backdrops never show detail, so they take the smallest request. */
+export const ARTWORK_BACKDROP_BUCKET = 64;
+
+/** Smallest bucket that covers the rendered CSS size at the given DPR. */
+export function artworkBucketFor(
+  cssPixels: number,
+  devicePixelRatio = 1,
+): number {
+  const needed = cssPixels * devicePixelRatio;
+  if (!Number.isFinite(needed) || needed <= 0) return 300;
+  return ARTWORK_BUCKETS.find((bucket) => bucket >= needed) ?? 640;
+}
+
+// Baked Apple URLs end in "NNNxNNN" plus an optional crop and quality suffix,
+// e.g. "/300x300bb.jpg" or "/600x600bb-60.jpg".
+const BAKED_ARTWORK_DIMENSION =
+  /\/\d+x\d+(?=(?:bb|cc|sr)?(?:-\d+)?\.[a-z0-9]+$)/iu;
+
 export function normalizeArtworkUrl(url: string, size: number): string {
   const dimension = Number.isFinite(size) && size > 0 ? Math.round(size) : 300;
   const source = typeof url === "string" ? url : "";
   // Editorial and playlist art also template the crop ({c}) and format
   // ({f}); "bb" keeps the whole image inside the box.
-  return source
+  const filled = source
     .replace(/\{w\}/gu, String(dimension))
     .replace(/\{h\}/gu, String(dimension))
     .replace(/\{c\}/gu, "bb")
     .replace(/\{f\}/gu, "jpg");
+  // Persisted rows hold URLs baked at an older size, so rewrite Apple's
+  // dimension in place. Only the path is touched; query and hash pass through.
+  const queryAt = filled.search(/[?#]/u);
+  const base = queryAt < 0 ? filled : filled.slice(0, queryAt);
+  const rest = queryAt < 0 ? "" : filled.slice(queryAt);
+  if (!isAppleArtworkHost(base)) return filled;
+  return `${base.replace(BAKED_ARTWORK_DIMENSION, `/${dimension}x${dimension}`)}${rest}`;
+}
+
+function isAppleArtworkHost(value: string): boolean {
+  try {
+    return new URL(value).hostname.endsWith(".mzstatic.com");
+  } catch {
+    return false;
+  }
 }
 
 export function artworkFromUnknown(

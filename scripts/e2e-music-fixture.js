@@ -138,6 +138,7 @@ function installMusicKitFixture() {
     playlistItems.find((item) => item.id === id) ??
     topSongItems.find((item) => item.id === id) ??
     bigItems.find((item) => item.id === id) ??
+    catalogPlaylistItems.find((item) => item.id === id) ??
     albumItems.find((item) => item.id === id) ??
     navResources[id] ??
     (id === catalogSong.id ? catalogSong : undefined) ??
@@ -189,6 +190,10 @@ function installMusicKitFixture() {
     // Keyed `${type}:${id}`, e.g. `library-songs:song-a`; values are 1 or -1.
     ratings: {},
     libraryAdds: [],
+    // Generated library albums and artists; 0 keeps the seed data only.
+    librarySize: 0,
+    // Artwork URL template for responses and queue items; "" keeps seed URLs.
+    artworkTemplate: "",
   };
   let instance;
 
@@ -261,7 +266,37 @@ function installMusicKitFixture() {
     const list = options?.songs ?? options?.musicVideos ?? [];
     return Array.isArray(list) ? list.map(String) : [];
   };
-  const mediaItem = (id) => clone(resource(String(id)));
+  // With an artwork template set, each artwork URL is replaced by it, with
+  // `{id}` standing for the resource ID. Without one, the copy is unchanged.
+  const templateArtwork = (value, owner) => {
+    if (!state.artworkTemplate || value === undefined) return value;
+    const copy = clone(value);
+    const visit = (node, inherited) => {
+      if (Array.isArray(node)) {
+        for (const entry of node) visit(entry, inherited);
+        return;
+      }
+      if (!node || typeof node !== "object") return;
+      const id = typeof node.id === "string" ? node.id : inherited;
+      if (typeof node.artwork?.url === "string") {
+        node.artwork.url = state.artworkTemplate.replace(
+          "{id}",
+          encodeURIComponent(id ?? "artwork"),
+        );
+      }
+      for (const child of Object.values(node)) visit(child, id);
+    };
+    visit(copy, owner);
+    return copy;
+  };
+  // A queue item also gets the top-level `artwork` that MusicKit's MediaItem
+  // carries, which is where the app reads queue artwork from.
+  const mediaItem = (id) => {
+    const item = clone(resource(String(id)));
+    if (!state.artworkTemplate || !item.attributes?.artwork) return item;
+    const templated = templateArtwork(item, String(id));
+    return { ...templated, artwork: clone(templated.attributes.artwork) };
+  };
   const captureQueue = () => ({
     items: state.queue.map((item) => ({
       id: item.id,
@@ -316,7 +351,79 @@ function installMusicKitFixture() {
     };
   };
 
+  // A catalog playlist of 30 songs, paged 25 at a time like Apple. Its ID is
+  // used only here, so the seed lookups for other IDs are unchanged.
+  const catalogPlaylistItems = Array.from({ length: 30 }, (_, index) => ({
+    ...track(
+      `pl-catalog-${String(index + 1).padStart(2, "0")}`,
+      `Catalog Playlist Track ${index + 1}`,
+      "Catalog Playlist Album",
+    ),
+    type: "songs",
+  }));
+  const catalogPlaylist = {
+    id: "pl.catalog-fixture",
+    type: "playlists",
+    attributes: {
+      name: "Catalog Fixture Playlist",
+      curatorName: "Apple Music",
+      trackCount: catalogPlaylistItems.length,
+      playParams: { id: "pl.catalog-fixture", kind: "playlist" },
+    },
+  };
+  // `next` names the following page with the same path and a new offset.
+  const catalogTrackPage = (path) => {
+    const [pathname, search = ""] = String(path).split("?");
+    const offset = Number(new URLSearchParams(search).get("offset") ?? 0);
+    const next = offset + 25;
+    return {
+      data: catalogPlaylistItems.slice(offset, next).map(clone),
+      ...(next < catalogPlaylistItems.length
+        ? { next: `${pathname}?offset=${next}` }
+        : {}),
+    };
+  };
+  // Detail paths whose `include=tracks` form carries the first track page.
+  const TRACK_DETAIL_PATHS = new Set([
+    "/v1/me/library/albums/album-1",
+    "/v1/me/library/playlists/playlist-1",
+    "/v1/me/library/playlists/playlist-big",
+    "/v1/catalog/us/playlists/pl.catalog-fixture",
+  ]);
+  // Batched `?ids=` lookups; the library and catalog roots are separate.
+  const BATCH_PLAYLIST_PATHS = new Set([
+    "/v1/me/library/playlists",
+    "/v1/catalog/us/playlists",
+  ]);
+
   const itemResponse = (item) => ({ data: [clone(item)] });
+
+  // Generated library for the large-library scenario. Names and IDs depend
+  // only on the index, so a run is repeatable. Artwork uses the mzstatic
+  // template; the URLs never load in the test, only their src is read.
+  const LIBRARY_PAGE_SIZE = 25;
+  // Apple caps a library page at 100 items.
+  const LIBRARY_MAX_PAGE_SIZE = 100;
+  const libraryItem = (type, index) => {
+    const id = `lib-${type}-${String(index).padStart(5, "0")}`;
+    const album = type === "library-albums";
+    return {
+      id,
+      type,
+      attributes: {
+        name: album
+          ? `Library Album ${index + 1}`
+          : `Library Artist ${index + 1}`,
+        artistName: `Library Artist ${(index % 50) + 1}`,
+        ...(album ? { trackCount: 10 } : {}),
+        artwork: {
+          url: `https://is1-ssl.mzstatic.com/image/thumb/Music/e2e/${id}/{w}x{h}bb.jpg`,
+          width: 300,
+          height: 300,
+        },
+      },
+    };
+  };
   const secondPlaylistPage =
     "/v1/me/library/playlists/playlist-1/tracks?offset=4";
   const secondAlbumPage = "/v1/me/library/albums/album-1/tracks?offset=2";
@@ -375,6 +482,35 @@ function installMusicKitFixture() {
     if (pathname === "/v1/me/storefront") {
       return { data: [{ id: "us", type: "storefronts" }] };
     }
+    // `include=tracks` carries the first track page in `relationships.tracks`,
+    // with the same `next` as the tracks endpoint, so callers page on as before.
+    if (call.query?.include === "tracks" && TRACK_DETAIL_PATHS.has(pathname)) {
+      const detail = responseFor(pathname, { method: "GET" });
+      const page = responseFor(`${pathname}/tracks`, { method: "GET" });
+      const [resource] = detail.data ?? [];
+      if (resource) {
+        resource.relationships = {
+          tracks: {
+            data: page.data,
+            ...(page.next ? { next: page.next } : {}),
+          },
+        };
+      }
+      return detail;
+    }
+    if (BATCH_PLAYLIST_PATHS.has(pathname) && call.query?.ids !== undefined) {
+      const playlists = pathname.startsWith("/v1/catalog/")
+        ? [catalogPlaylist]
+        : [playlist, bigPlaylist];
+      const ids = String(call.query.ids).split(",").filter(Boolean);
+      // Ids come back in the order asked for; unknown ids are skipped.
+      return {
+        data: ids.flatMap((id) => {
+          const match = playlists.find((entry) => entry.id === id);
+          return match ? [clone(match)] : [];
+        }),
+      };
+    }
     if (pathname === "/v1/me/library/playlists/playlist-1") {
       return itemResponse(playlist);
     }
@@ -383,6 +519,12 @@ function installMusicKitFixture() {
     }
     if (pathname === "/v1/me/library/playlists/playlist-big/tracks") {
       return bigPlaylistPage(path);
+    }
+    if (pathname === "/v1/catalog/us/playlists/pl.catalog-fixture") {
+      return itemResponse(catalogPlaylist);
+    }
+    if (pathname === "/v1/catalog/us/playlists/pl.catalog-fixture/tracks") {
+      return catalogTrackPage(path);
     }
     if (String(path).includes(secondPlaylistPage)) {
       return {
@@ -516,6 +658,36 @@ function installMusicKitFixture() {
     if (pathname === "/v1/me/library/playlists") {
       return itemResponse(playlist);
     }
+    // Paged like Apple: `next` carries the offset and limit for the next call.
+    const libraryKind = {
+      "/v1/me/library/albums": "library-albums",
+      "/v1/me/library/artists": "library-artists",
+    }[pathname];
+    if (libraryKind && state.librarySize > 0) {
+      const params = new URLSearchParams(String(path).split("?")[1] ?? "");
+      const offset =
+        Math.max(
+          0,
+          Math.floor(Number(params.get("offset") ?? call.query?.offset ?? 0)),
+        ) || 0;
+      // A missing or unusable limit keeps the default; larger ones are capped.
+      const requested = Math.floor(
+        Number(params.get("limit") ?? call.query?.limit ?? LIBRARY_PAGE_SIZE),
+      );
+      const limit =
+        Number.isFinite(requested) && requested > 0
+          ? Math.min(requested, LIBRARY_MAX_PAGE_SIZE)
+          : LIBRARY_PAGE_SIZE;
+      const end = Math.min(state.librarySize, offset + limit);
+      return {
+        data: Array.from({ length: Math.max(0, end - offset) }, (_, index) =>
+          libraryItem(libraryKind, offset + index),
+        ),
+        ...(end < state.librarySize
+          ? { next: `${pathname}?offset=${end}&limit=${limit}` }
+          : {}),
+      };
+    }
     if (pathname === "/v1/me/library/songs") {
       return { data: Object.values(navResources).map(clone) };
     }
@@ -560,7 +732,7 @@ function installMusicKitFixture() {
       request.error = `Fixture request rejected: ${pathText}`;
       throw new Error(request.error);
     }
-    const response = responseFor(pathText, request);
+    const response = templateArtwork(responseFor(pathText, request));
     request.completedAt = Date.now();
     request.response = clone(response);
     // MusicKit v3 `api.music` resolves to an envelope around the JSON body.
@@ -919,6 +1091,15 @@ function installMusicKitFixture() {
       if (Object.prototype.hasOwnProperty.call(options, "nativeQueueEdit")) {
         state.nativeQueueEdit = options.nativeQueueEdit === true;
       }
+      if (Object.prototype.hasOwnProperty.call(options, "librarySize")) {
+        state.librarySize = Math.max(
+          0,
+          Math.floor(Number(options.librarySize)) || 0,
+        );
+      }
+      if (Object.prototype.hasOwnProperty.call(options, "artworkTemplate")) {
+        state.artworkTemplate = String(options.artworkTemplate ?? "");
+      }
       if (Object.prototype.hasOwnProperty.call(options, "queueEditDelayMs")) {
         state.queueEditDelayMs = Math.max(
           0,
@@ -945,6 +1126,8 @@ function installMusicKitFixture() {
       state.queueEditDelayMs = 0;
       state.ratings = {};
       state.libraryAdds = [];
+      state.librarySize = 0;
+      state.artworkTemplate = "";
       state.queue = [];
       state.queueIndex = 0;
       state.shuffleHistory = [];

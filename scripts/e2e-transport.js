@@ -2,6 +2,8 @@
 
 // Keyboard and transport over the injected MusicKit fixture. Keys go through
 // CDP Input events so the real window keydown listener and focus rules run.
+import { sleep, waitFor as pollFor } from "./e2e-helpers.js";
+
 const ALBUM_ID = "album-1";
 const ALBUM_TRACK_IDS = ["album-a", "album-b", "album-c", "album-d"];
 const CTRL = 2;
@@ -17,18 +19,8 @@ const KEY = {
   arrowDown: { key: "ArrowDown", code: "ArrowDown", keyCode: 40 },
 };
 
-async function waitFor(page, expression, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await page.evaluate(`return Boolean(${expression});`)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  return false;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+const waitFor = (page, expression, timeoutMs = 10_000) =>
+  pollFor(page, expression, timeoutMs, 100);
 
 async function press(page, key, modifiers = 0) {
   const base = {

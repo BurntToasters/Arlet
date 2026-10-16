@@ -2,6 +2,8 @@
  * mirrors MusicKit's item loader: an unresolved ID rejects the whole call with
  * NOT_FOUND, and an unplayable ID is dropped without an error. */
 
+import { fixtureCall, sleep, waitFor } from "./e2e-helpers.js";
+
 const FIXTURE = "window.__ARLET_E2E_MUSIC__";
 const PLAYLIST_ID = "playlist-1";
 const PLAYLIST_IDS = [
@@ -13,23 +15,6 @@ const PLAYLIST_IDS = [
   "song-f",
 ];
 const TITLE = `document.querySelector(".player-bar .player-track-copy strong")?.textContent`;
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function fixtureCall(page, method, args = []) {
-  return page.evaluate(`
-    return await ${FIXTURE}[${JSON.stringify(method)}](...${JSON.stringify(args)});
-  `);
-}
-
-async function waitFor(page, expression, timeoutMs = 8000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await page.evaluate(`return Boolean(${expression});`)) return true;
-    await sleep(50);
-  }
-  return false;
-}
-
 const snapshot = (page) => fixtureCall(page, "snapshot");
 const toastText = (page) =>
   page.evaluate(

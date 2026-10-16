@@ -343,6 +343,35 @@ function mergeQueueTrack(normalized: Track, existing: Track): Track {
   return merged;
 }
 
+/** Structural equality for queue data, which is plain objects and arrays. */
+function sameQueueValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (typeof left !== "object" || typeof right !== "object") return false;
+  if (left === null || right === null) return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const keys = Object.keys(leftRecord);
+  return (
+    keys.length === Object.keys(rightRecord).length &&
+    keys.every(
+      (key) =>
+        Object.hasOwn(rightRecord, key) &&
+        sameQueueValue(leftRecord[key], rightRecord[key]),
+    )
+  );
+}
+
+function sameQueueTracks(
+  left: readonly Track[],
+  right: readonly Track[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((track, index) => sameQueueValue(track, right[index]))
+  );
+}
+
 /** Sync app queue from provider queue. Returns false when runtime hides queue. */
 export function syncMusicKitQueue(
   instance: MusicKit.MusicKitInstance,
@@ -388,8 +417,20 @@ export function syncMusicKitQueue(
     if (!existing) return normalized;
     return mergeQueueTrack(normalized, existing);
   });
-  setQueue(tracks, snapshot.index);
-  const current = tracks[snapshot.index];
+  // An unchanged queue keeps the stored array, so queue lists and the session
+  // save see no change. A moved index still updates the current track.
+  const queueUnchanged = sameQueueTracks(tracks, previous);
+  if (!queueUnchanged) setQueue(tracks, snapshot.index);
+  const queue = queueUnchanged ? previous : tracks;
+  const current = queue[snapshot.index];
+  const { playback } = getState();
+  if (
+    queueUnchanged &&
+    playback.queueIndex === snapshot.index &&
+    sameQueueValue(current, playback.current)
+  ) {
+    return true;
+  }
   setCurrentTrack(current, snapshot.index);
   return true;
 }

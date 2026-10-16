@@ -3,6 +3,7 @@ import type { JSX } from "preact";
 import { Artwork } from "./Artwork.tsx";
 import { requestContextMenu } from "./context-menu-events.ts";
 import { useNowPlayingStatus } from "./now-playing.ts";
+import { useSerializedContextRefs } from "./context-refs.ts";
 import type { Track } from "../domain/music.ts";
 
 function formatDuration(durationMs?: number): string {
@@ -39,6 +40,7 @@ export function SongRow({
 }: SongRowProps): JSX.Element {
   const trackLabel = `${track.title} by ${track.artistName}`;
   const nowPlaying = useNowPlayingStatus(track);
+  const refs = useSerializedContextRefs(track.albumRef, track.artistRefs);
   const current = nowPlaying !== "none";
   // Apple marks songs it cannot stream; the menu still offers navigation.
   const unavailable = track.playable === false;
@@ -54,12 +56,8 @@ export function SongRow({
           .join(" ")}
         title={unavailable ? "Not available on Apple Music" : undefined}
         {...contextData}
-        data-context-album-ref={
-          track.albumRef ? JSON.stringify(track.albumRef) : undefined
-        }
-        data-context-artist-refs={
-          track.artistRefs ? JSON.stringify(track.artistRefs) : undefined
-        }
+        data-context-album-ref={refs.album}
+        data-context-artist-refs={refs.artists}
       >
         <button
           className={rowClassName}

@@ -28,7 +28,9 @@ import { runRadioArtist } from "./e2e-radio-artist.js";
 import { runUnavailable } from "./e2e-unavailable.js";
 import { runLayout } from "./e2e-layout.js";
 import { desktopEventRecorderSource, runDesktop } from "./e2e-desktop.js";
+import { runPerformance } from "./e2e-performance.js";
 import { runSessionRestore } from "./e2e-session-restore.js";
+import { sleep } from "./e2e-helpers.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IDENTIFIER = "run.rosie.arlet";
@@ -396,10 +398,6 @@ public static class ArletE2eVisibility {
 }
 
 const near = (actual, expected) => Math.abs(actual - expected) <= 2;
-
-async function sleep(ms) {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /**
  * Waits for the app page on the debugging port. `launched` is the process
@@ -1325,6 +1323,7 @@ async function run() {
         ["layout", runLayout],
         ["desktop", runDesktop],
         ["flows", runFlows],
+        ["performance", runPerformance],
         // Last: it signs out at the end.
         ["session-restore", runSessionRestore],
       ]) {

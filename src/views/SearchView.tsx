@@ -11,7 +11,7 @@ import type { JSX, TargetedEvent } from "preact";
 import {
   useAppController,
   useAppRouter,
-  useAppState,
+  useAppSlices,
 } from "../app/context.tsx";
 import { Artwork } from "../components/Artwork.tsx";
 import { SongRow } from "../components/SongRow.tsx";
@@ -112,7 +112,7 @@ function ResourceCard({
 }
 
 export function SearchView(): JSX.Element {
-  const state = useAppState();
+  const state = useAppSlices("auth", "initialization", "navigation", "search");
   const controller = useAppController();
   const router = useAppRouter();
   const routeQuery =

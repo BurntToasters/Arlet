@@ -1,19 +1,15 @@
 #!/usr/bin/env node
 
+import { waitFor as pollFor } from "./e2e-helpers.js";
+
 const PLAYLIST_ID = "playlist-1";
 const PLAYER_TITLE = `document.querySelector(".player-bar .player-track-copy strong")?.textContent`;
 const DRAWER_ROWS = `document.querySelectorAll(".queue-drawer .queue-list > li:not([aria-hidden])")`;
 const SHUFFLE_BUTTON = `document.querySelector('button[aria-label="Toggle shuffle"]')`;
 const MUSIC_TRANSITION_TYPES = ["setQueue", "selectIndex", "play", "pause"];
 
-async function waitFor(page, expression, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await page.evaluate(`return Boolean(${expression});`)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  return false;
-}
+const waitFor = (page, expression, timeoutMs = 10_000) =>
+  pollFor(page, expression, timeoutMs, 100);
 
 async function snapshotOf(page) {
   return page.evaluate("return window.__ARLET_E2E_MUSIC__.snapshot();");

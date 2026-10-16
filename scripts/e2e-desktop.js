@@ -4,6 +4,8 @@
  * same Tauri events the Rust side emits, through the listeners the app has
  * registered. The tray and the SMTC flyout are release-only evidence. */
 
+import { waitFor as pollFor } from "./e2e-helpers.js";
+
 const PAUSED = 4;
 const PLAYING = 5;
 const FIFTEEN_MINUTES_MS = 15 * 60_000;
@@ -96,14 +98,8 @@ export function recordTauriEvents() {
 
 export const desktopEventRecorderSource = `(${recordTauriEvents.toString()})();`;
 
-async function waitFor(page, expression, timeoutMs = 5000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await page.evaluate(`return Boolean(${expression});`)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return false;
-}
+const waitFor = (page, expression, timeoutMs = 5000) =>
+  pollFor(page, expression, timeoutMs);
 
 const transitionTypes = (page) =>
   page.evaluate(

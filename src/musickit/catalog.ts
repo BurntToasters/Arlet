@@ -321,17 +321,45 @@ export function storefrontFromMeResponse(raw: unknown): string | null {
   return null;
 }
 
-export async function resolveStorefront(
+/**
+ * Fallback lookups by instance. An entry is valid only for the user token it
+ * was made with, so sign-out or a different account never reuses it.
+ */
+const storefrontFallbacks = new WeakMap<
+  object,
+  { userToken: string; storefront: Promise<string> }
+>();
+
+async function fetchStorefrontFromMe(
   instance: MusicKit.MusicKitInstance,
 ): Promise<string> {
-  const existing = String(instance.storefrontId ?? "").trim();
-  if (existing) return existing;
   const request = resolveMusicKitMusicRequest(instance);
   const fromMe = storefrontFromMeResponse(await request("/v1/me/storefront"));
   if (fromMe) return fromMe;
   throw new Error(
     "MusicKit storefront is not available. Sign in and try again.",
   );
+}
+
+export async function resolveStorefront(
+  instance: MusicKit.MusicKitInstance,
+): Promise<string> {
+  const existing = String(instance.storefrontId ?? "").trim();
+  if (existing) return existing;
+  const userToken = String(instance.musicUserToken ?? "");
+  let cached = storefrontFallbacks.get(instance);
+  if (cached?.userToken !== userToken) {
+    const lookup = fetchStorefrontFromMe(instance);
+    cached = { userToken, storefront: lookup };
+    storefrontFallbacks.set(instance, cached);
+    // A failed lookup is not kept, so the next call asks Apple again.
+    void lookup.catch(() => {
+      if (storefrontFallbacks.get(instance)?.storefront === lookup) {
+        storefrontFallbacks.delete(instance);
+      }
+    });
+  }
+  return cached.storefront;
 }
 
 export function songsFromSearchResponse(raw: unknown): CatalogSongResource[] {

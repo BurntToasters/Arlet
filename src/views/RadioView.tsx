@@ -7,7 +7,7 @@ import {
 } from "lucide-preact";
 import { useEffect, useRef } from "preact/hooks";
 import type { JSX } from "preact";
-import { useAppController, useAppState } from "../app/context.tsx";
+import { useAppController, useAppSlices } from "../app/context.tsx";
 import { Artwork } from "../components/Artwork.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import type { Track } from "../domain/music.ts";
@@ -96,7 +96,7 @@ function StationCard({
 }
 
 export function RadioView(): JSX.Element {
-  const state = useAppState();
+  const state = useAppSlices("auth", "radio");
   const controller = useAppController();
   const radio = state.radio;
   const authorized = state.auth.status === "authorized";

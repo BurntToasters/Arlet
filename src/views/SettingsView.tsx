@@ -22,11 +22,16 @@ import {
 } from "lucide-preact";
 import type { JSX, TargetedEvent } from "preact";
 import { useEffect, useState } from "preact/hooks";
-import { useAppController, useAppState } from "../app/context.tsx";
+import {
+  useAppController,
+  useAppSelector,
+  useAppSlices,
+} from "../app/context.tsx";
 import { SHORTCUT_HELP } from "../app/shortcuts.ts";
 import { LicensesDialog } from "../components/LicensesDialog.tsx";
 import { ResetSettingsDialog } from "../components/ResetSettingsDialog.tsx";
 import type {
+  RuntimeAppState,
   ThemePreference,
   UpdateChannel,
   UpdateState,
@@ -66,9 +71,7 @@ function updateChannelDescription(channel: UpdateChannel): string {
   }
 }
 
-function initializationCopy(
-  status: ReturnType<typeof useAppState>["initialization"],
-): string {
+function initializationCopy(status: RuntimeAppState["initialization"]): string {
   switch (status.status) {
     case "ready":
       return "MusicKit is ready";
@@ -88,7 +91,7 @@ interface AccountSummaryLike {
 }
 
 function readAccountSummary(
-  state: ReturnType<typeof useAppState>,
+  state: Pick<RuntimeAppState, "account">,
 ): AccountSummaryLike | undefined {
   const value = (state as unknown as { account?: unknown }).account;
   if (!value || typeof value !== "object") return undefined;
@@ -107,7 +110,18 @@ function readAccountSummary(
 }
 
 export function SettingsView(): JSX.Element {
-  const state = useAppState();
+  const state = useAppSlices(
+    "account",
+    "auth",
+    "initialization",
+    "settings",
+    "updates",
+    "windowEffect",
+  );
+  // Selected alone so volume drags, which change playback, do not re-render Settings.
+  const autoplayAvailable = useAppSelector(
+    (store) => store.playback.modeCapabilities?.autoplay,
+  );
   const controller = useAppController();
   const settings = state.settings;
   const authorized = state.auth.status === "authorized";
@@ -354,7 +368,7 @@ export function SettingsView(): JSX.Element {
                 }
               />
             </label>
-            {state.playback.modeCapabilities?.autoplay ? (
+            {autoplayAvailable ? (
               <label className="settings-field settings-toggle-field">
                 <span>
                   <Play aria-hidden="true" size={16} strokeWidth={1.8} />{" "}

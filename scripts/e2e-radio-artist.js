@@ -1,7 +1,8 @@
 /* Failure modes live in docs/TESTING.md ("Radio and artist pages"). */
 
+import { fixtureCall, waitFor } from "./e2e-helpers.js";
+
 const FIXTURE = "window.__ARLET_E2E_MUSIC__";
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const SONG_STATION_URL =
   "https://music.apple.com/us/station/navigation-song-station/ra.song-one";
 const TOP_IDS = ["top-1", "top-2", "top-3"];
@@ -20,22 +21,6 @@ const EXPECTED_SHORTCUTS = [
   "Alt+←",
   "Alt+→",
 ];
-
-function fixtureCall(page, method, args = []) {
-  return page.evaluate(`
-    const fixture = ${FIXTURE};
-    return await fixture[${JSON.stringify(method)}](...${JSON.stringify(args)});
-  `);
-}
-
-async function waitFor(page, expression, timeoutMs = 8000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await page.evaluate(`return Boolean(${expression});`)) return true;
-    await sleep(50);
-  }
-  return false;
-}
 
 const snapshot = (page) => fixtureCall(page, "snapshot");
 const transitionsOf = async (page) => (await snapshot(page)).transitions;

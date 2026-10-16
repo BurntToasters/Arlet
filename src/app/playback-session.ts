@@ -1,4 +1,4 @@
-import { z } from "zod";
+import * as z from "zod/mini";
 import type { Track } from "../domain/music.ts";
 import {
   deletePlaybackSessionPayload,
@@ -26,9 +26,9 @@ export const SESSION_SAVE_INTERVAL_MS = 30_000;
 const utf8Encoder = new TextEncoder();
 
 const artworkSchema = z.object({
-  url: z.string().startsWith("https://").max(2048),
-  width: z.number().nonnegative(),
-  height: z.number().nonnegative(),
+  url: z.string().check(z.startsWith("https://"), z.maxLength(2048)),
+  width: z.number().check(z.nonnegative()),
+  height: z.number().check(z.nonnegative()),
 });
 
 /**
@@ -36,26 +36,35 @@ const artworkSchema = z.object({
  * validation are dropped instead of dropping the whole track.
  */
 const trackLiteSchema = z.object({
-  id: z.string().min(1).max(512),
-  catalogId: z.string().min(1).max(512).optional().catch(undefined),
-  resourceType: z.string().min(1).max(100).optional().catch(undefined),
-  title: z.string().min(1).max(1000),
-  artistName: z.string().max(1000),
-  albumTitle: z.string().max(1000).optional().catch(undefined),
-  artwork: artworkSchema.optional().catch(undefined),
-  durationMs: z.number().positive().optional().catch(undefined),
+  id: z.string().check(z.minLength(1), z.maxLength(512)),
+  catalogId: z.catch(
+    z.optional(z.string().check(z.minLength(1), z.maxLength(512))),
+    undefined,
+  ),
+  resourceType: z.catch(
+    z.optional(z.string().check(z.minLength(1), z.maxLength(100))),
+    undefined,
+  ),
+  title: z.string().check(z.minLength(1), z.maxLength(1000)),
+  artistName: z.string().check(z.maxLength(1000)),
+  albumTitle: z.catch(
+    z.optional(z.string().check(z.maxLength(1000))),
+    undefined,
+  ),
+  artwork: z.catch(z.optional(artworkSchema), undefined),
+  durationMs: z.catch(z.optional(z.number().check(z.positive())), undefined),
   // Queued as song details, a restored song is not looked up again, so its
   // rating and playability must come from the file.
-  explicit: z.boolean().optional().catch(undefined),
-  playable: z.boolean().optional().catch(undefined),
+  explicit: z.catch(z.optional(z.boolean()), undefined),
+  playable: z.catch(z.optional(z.boolean()), undefined),
 });
 
 const sessionSchema = z.object({
   schemaVersion: z.literal(1),
-  items: z.array(z.unknown()).max(MAX_SESSION_ITEMS),
-  index: z.number().catch(0),
-  positionSeconds: z.number().nonnegative().catch(0),
-  savedAt: z.number().nonnegative().catch(0),
+  items: z.array(z.unknown()).check(z.maxLength(MAX_SESSION_ITEMS)),
+  index: z.catch(z.number(), 0),
+  positionSeconds: z.catch(z.number().check(z.nonnegative()), 0),
+  savedAt: z.catch(z.number().check(z.nonnegative()), 0),
 });
 
 export interface PlaybackSessionSnapshot {
@@ -286,6 +295,8 @@ export function createPlaybackSession(
   let started = false;
   let settingsLoaded = false;
   let restoreStarted = false;
+  // The saved-file read started before MusicKit was ready, if restore is on.
+  let prefetched: { generation: number; payload: Promise<unknown> } | undefined;
   // Saves stay off until the saved file has been read or deliberately skipped;
   // otherwise an early save would overwrite the file before it is restored.
   let ready = false;
@@ -411,8 +422,11 @@ export function createPlaybackSession(
     snapshot: PlaybackSessionSnapshot | undefined,
   ): void => {
     if (!snapshot) return;
-    // Playback the user started while the file was loading wins.
-    if (getState().playback.queue.length > 0) return;
+    // Playback the user or MusicKit started while the file was loading wins.
+    // Restoring over it would pause a live queue and make seek skip MusicKit.
+    const playback = getState().playback;
+    if (playback.queue.length > 0 || playback.current !== undefined) return;
+    if (["loading", "playing", "paused"].includes(playback.status)) return;
     setQueueSnapshot(snapshot.tracks, snapshot.index, false);
     setPlaybackStatus("paused");
     setPlaybackPosition(snapshot.positionSeconds, snapshot.durationSeconds);
@@ -425,6 +439,21 @@ export function createPlaybackSession(
     );
   };
 
+  /**
+   * Reads the saved file ahead of MusicKit configure when restore is on. The
+   * read only fetches; it applies nothing until tryRestore sees an authorized
+   * account, and clear() bumps the generation so a stale read is dropped.
+   */
+  const prefetchSavedSession = (): void => {
+    if (prefetched || restoreStarted || !getState().settings.restoreSession) {
+      return;
+    }
+    const payload = enqueue(() => loadPlaybackSessionPayload(invokeFn));
+    // Nobody may await it yet, so a failed read must not go unhandled here.
+    void payload.catch(() => undefined);
+    prefetched = { generation, payload };
+  };
+
   const tryRestore = (): void => {
     if (restoreStarted || !settingsLoaded) return;
     const state = getState();
@@ -433,11 +462,17 @@ export function createPlaybackSession(
     // Only an authorized account with restore enabled reads the file. Other
     // cases need no read, so saves can start right away.
     if (state.auth.status !== "authorized" || !state.settings.restoreSession) {
+      prefetched = undefined;
       ready = true;
       return;
     }
     const restoreGeneration = generation;
-    void enqueue(() => loadPlaybackSessionPayload(invokeFn))
+    const payload =
+      prefetched?.generation === generation
+        ? prefetched.payload
+        : enqueue(() => loadPlaybackSessionPayload(invokeFn));
+    prefetched = undefined;
+    void payload
       .then((raw) => {
         if (restoreGeneration === generation) {
           applySnapshot(parsePlaybackSession(raw));
@@ -519,6 +554,7 @@ export function createPlaybackSession(
 
     markSettingsLoaded(): void {
       settingsLoaded = true;
+      prefetchSavedSession();
       tryRestore();
     },
 
@@ -549,6 +585,7 @@ export function createPlaybackSession(
 
     async clear(): Promise<void> {
       generation += 1;
+      prefetched = undefined;
       cancelSaveTimer();
       if (getState().playback.pendingRestore) setPendingRestore(undefined);
       try {

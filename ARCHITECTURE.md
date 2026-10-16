@@ -47,8 +47,16 @@ Views and components call the controller through the Preact context rather than
 invoking native commands directly. Components that stay mounted subscribe with
 `useAppSlices(...)`, which re-renders only when a named top-level slice changes
 and types the result as a `Pick` of the state, so a slice that was not
-requested cannot be read. Views use `useAppState()`, which re-renders on every
-change.
+requested cannot be read. A single field is read with
+`useAppSelector(selector, equal?)`, which re-renders only when the selected value
+changes under `equal` (default `Object.is`; `shallowEqual` is provided for
+objects and arrays). Views select only the slices or fields they read, and no
+component subscribes to the whole store. Playback position ticks replace
+`state.playback` but are not a `playback` slice change: `useAppSlices` compares
+that slice without `positionSeconds` and `durationSeconds`, and readers of
+position use `usePlaybackPosition()`. Keep the playback slice out of shell-level
+subscriptions, and keep the volume drag's per-input change to `playback.volume`
+with settings persisted once the drag settles.
 
 ### Module layout
 

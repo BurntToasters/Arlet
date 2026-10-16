@@ -30,9 +30,14 @@ import {
 } from "lucide-preact";
 import type { LucideIcon } from "lucide-preact";
 import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { useAppController, useAppRouter } from "../app/context.tsx";
+import {
+  useAppController,
+  useAppRouter,
+  useAppSelector,
+} from "../app/context.tsx";
 import {
   isLibraryTarget,
+  ratingKeyOf,
   ratingResourceType,
   type RatingTarget,
 } from "../app/ratings.ts";
@@ -95,6 +100,11 @@ interface MenuState {
   requestId: number;
   target: ContextTarget;
   items: MenuItem[];
+  /** Resolved song navigation, kept so a rebuild does not drop it. */
+  navigation?: TrackNavigation;
+  /** Store key of the target rating; the open menu rebuilds when it changes. */
+  ratingKey?: string;
+  build: (navigation?: TrackNavigation) => MenuItem[];
 }
 
 function closestContextTarget(node: EventTarget | null): HTMLElement | null {
@@ -347,12 +357,15 @@ export function ContextMenu(): JSX.Element | null {
           restoreFocus,
           restoreTarget: restoreFocusRef.current ?? undefined,
         });
+      const ratingTarget = ratingTargetOf(target);
       setMenu({
         x,
         y,
         requestId,
         target,
         items: makeItems(),
+        ratingKey: ratingTarget ? ratingKeyOf(ratingTarget) : undefined,
+        build: makeItems,
       });
       setPosition({ x, y });
       let resolvedNavigation: TrackNavigation | undefined;
@@ -364,7 +377,7 @@ export function ContextMenu(): JSX.Element | null {
             resolvedNavigation = navigation;
             setMenu((current) =>
               current?.requestId === requestId
-                ? { ...current, items: makeItems(navigation) }
+                ? { ...current, navigation, items: makeItems(navigation) }
                 : current,
             );
           })
@@ -377,7 +390,6 @@ export function ContextMenu(): JSX.Element | null {
           });
       }
       // Rebuild once the rating is known so Love/Dislike labels are current.
-      const ratingTarget = ratingTargetOf(target);
       if (ratingTarget && extendedController.loadRating) {
         void extendedController.loadRating(ratingTarget).then(() => {
           if (menuRequestRef.current !== requestId) return;
@@ -430,6 +442,20 @@ export function ContextMenu(): JSX.Element | null {
   // Keyed on the request, not the menu: items refresh as lookups finish and
   // must not re-register listeners or move focus.
   const openRequestId = menu?.requestId;
+  // The Love/Dislike labels read the store, so the open menu is rebuilt when
+  // the target's rating lands or changes, not only when the menu opens.
+  const menuRatingKey = menu?.ratingKey;
+  const liveRating = useAppSelector((state) =>
+    menuRatingKey === undefined ? undefined : state.ratings[menuRatingKey],
+  );
+  useEffect(() => {
+    if (menuRatingKey === undefined) return;
+    setMenu((current) =>
+      current?.ratingKey === menuRatingKey
+        ? { ...current, items: current.build(current.navigation) }
+        : current,
+    );
+  }, [menuRatingKey, liveRating]);
   useEffect(() => {
     if (openRequestId === undefined) return undefined;
     const close = (): void => {

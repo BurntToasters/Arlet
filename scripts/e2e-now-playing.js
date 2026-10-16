@@ -1,8 +1,8 @@
 /* Failure modes live in docs/TESTING.md ("Now Playing"). */
 
-const FIXTURE = "window.__ARLET_E2E_MUSIC__";
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+import { waitFor as pollFor } from "./e2e-helpers.js";
 
+const FIXTURE = "window.__ARLET_E2E_MUSIC__";
 function fixtureCall(page, method, args = []) {
   return page.evaluate(`
     const fixture = ${FIXTURE};
@@ -13,14 +13,8 @@ function fixtureCall(page, method, args = []) {
   `);
 }
 
-async function waitFor(page, expression, timeoutMs = 5000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await page.evaluate(`return Boolean(${expression});`)) return true;
-    await sleep(50);
-  }
-  return false;
-}
+const waitFor = (page, expression, timeoutMs = 5000) =>
+  pollFor(page, expression, timeoutMs);
 
 /** Real pointer click, so the browser moves focus like a user click would. */
 async function clickSelector(page, selector) {

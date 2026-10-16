@@ -72,12 +72,14 @@ import {
 import type {
   MusicSource,
   PinnedPlaylist,
+  Playlist,
   RatingValue,
   Station,
   Track,
 } from "../domain/music.ts";
 import { isSameTrack } from "../domain/music.ts";
 import type { DiagnosticsStore } from "../diagnostics/store.ts";
+import { setNativeLogDebugMode } from "../diagnostics/native.ts";
 import { createSupportReport } from "../diagnostics/support-report.ts";
 import type { GateEnvironment } from "../phase0/gate-session.ts";
 import { redactSensitive, registerSensitiveValue } from "../platform/redact.ts";
@@ -478,11 +480,18 @@ export function createAppController(
     playback.syncPlaybackModes(instance);
   };
 
-  /** Saves the latest settings once a volume drag settles. */
+  /**
+   * Saves the latest settings once a volume drag settles. During a drag the
+   * live level is only in `playback.volume`, so it is copied into settings here.
+   */
   const flushVolumeSave = (): void => {
     volumeSaveTimer = undefined;
     const waiters = volumeSaveWaiters;
     volumeSaveWaiters = [];
+    const { volume } = getState().playback;
+    if (getState().settings.volume !== volume) {
+      setSettings({ ...getState().settings, volume });
+    }
     void queueSettingsSave().then(() => {
       for (const resolve of waiters) resolve();
     });
@@ -543,25 +552,58 @@ export function createAppController(
     resolvingPins = true;
     try {
       const listed = getState().library.collections.playlists.items;
+      const pins = getState().pins;
+      const knownOf = (pin: PinnedPlaylist) =>
+        listed.find((item) => item.id === pin.id) as
+          { name?: unknown; artwork?: { url?: unknown } } | undefined;
+      // Pins that neither the list nor the saved pin can name. One batched
+      // request per source covers them; any pin it misses is looked up alone.
+      const needsLookup = pins.filter(
+        (pin) => !knownOf(pin)?.name && !pin.name,
+      );
+      const batched = new Map<string, Playlist>();
+      const batchSources = [...new Set(needsLookup.map((pin) => pin.source))];
+      await Promise.all(
+        batchSources.map(async (source) => {
+          const ids = needsLookup
+            .filter((pin) => pin.source === source)
+            .map((pin) => pin.id);
+          try {
+            for (const playlist of await client.getPlaylistsByIds(
+              ids,
+              source,
+            )) {
+              batched.set(playlist.id, playlist);
+            }
+          } catch (error) {
+            log(`Pinned playlist batch failed: ${safeErrorMessage(error)}`);
+          }
+        }),
+      );
       const updates = new Map<
         string,
         Pick<PinnedPlaylist, "name" | "artworkUrl">
       >();
-      for (const pin of getState().pins) {
-        const known = listed.find((item) => item.id === pin.id) as
-          { name?: unknown; artwork?: { url?: unknown } } | undefined;
+      for (const pin of pins) {
+        const known = knownOf(pin);
         let name = typeof known?.name === "string" ? known.name : undefined;
         let artworkUrl =
           typeof known?.artwork?.url === "string"
             ? known.artwork.url
             : undefined;
         if (!name && !pin.name) {
-          try {
-            const playlist = await client.getPlaylist(pin.id, pin.source);
-            name = playlist?.name;
-            artworkUrl = playlist?.artwork?.url;
-          } catch (error) {
-            log(`Pinned playlist lookup failed: ${safeErrorMessage(error)}`);
+          const found = batched.get(pin.id);
+          if (found) {
+            name = found.name;
+            artworkUrl = found.artwork?.url;
+          } else {
+            try {
+              const playlist = await client.getPlaylist(pin.id, pin.source);
+              name = playlist?.name;
+              artworkUrl = playlist?.artwork?.url;
+            } catch (error) {
+              log(`Pinned playlist lookup failed: ${safeErrorMessage(error)}`);
+            }
           }
         }
         if (
@@ -618,6 +660,9 @@ export function createAppController(
     playbackSession.start();
     setInitializationState({ status: "loading" });
     log("Initializing MusicKit…");
+    // Opens the SQLite cache during MusicKit configure. Nothing is shown from
+    // it here: the account is unknown until configure finishes.
+    void library.openLibraryCache();
     try {
       const instance = await initialize();
       music = instance;
@@ -671,6 +716,9 @@ export function createAppController(
           ? normalizeTrack(instance.nowPlayingItem)
           : undefined;
         if (nowPlaying) setCurrentTrack(nowPlaying);
+        // The saved queue restores now rather than after the cache metadata
+        // read; it is applied only to this authorized account.
+        playbackSession.tryRestore();
         await cachePromise;
         if (storefront) setAccountSummary({ storefront });
         log("Already authorized from previous session.");
@@ -702,6 +750,7 @@ export function createAppController(
     async loadSettings(): Promise<void> {
       const settings = await loadPersistedSettings(invokeFn);
       setSettings(settings);
+      setNativeLogDebugMode(settings.debugMode);
       playbackSession.markSettingsLoaded();
       playback.applyPlaybackVolume(settings.volume);
       if (music) applyAutoplaySetting(music);
@@ -1123,10 +1172,10 @@ export function createAppController(
     },
 
     async setVolume(volume: number): Promise<void> {
-      const safeVolume = playback.applyPlaybackVolume(volume);
-      setSettings({ ...getState().settings, volume: safeVolume });
-      // Slider input fires many times a second; the audio follows each one,
-      // but settings are written once the drag settles.
+      // Slider input fires many times a second. The audio and `playback.volume`
+      // follow each one without touching settings, which are written once the
+      // drag settles.
+      playback.applyPlaybackVolume(volume);
       if (volumeSaveTimer !== undefined) clearTimeout(volumeSaveTimer);
       volumeSaveTimer = setTimeout(flushVolumeSave, VOLUME_SAVE_DELAY_MS);
       await new Promise<void>((resolve) => volumeSaveWaiters.push(resolve));
@@ -1171,6 +1220,7 @@ export function createAppController(
 
     async setDebugMode(enabled: boolean): Promise<void> {
       await persistSettings({ ...getState().settings, debugMode: enabled });
+      setNativeLogDebugMode(enabled);
       log(enabled ? "Debug Mode turned on." : "Debug Mode turned off.");
     },
 

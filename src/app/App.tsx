@@ -1,12 +1,7 @@
 import { useEffect } from "preact/hooks";
 import type { JSX } from "preact";
 import type { HashRouter } from "../routing/router.ts";
-import {
-  clearDiagnosticLogs,
-  getState,
-  setUiState,
-  subscribePlaybackPosition,
-} from "../state.ts";
+import { getState, setUiState, subscribePlaybackPosition } from "../state.ts";
 import type { AppController } from "./controller.ts";
 import { shortcutFor, type ShortcutAction } from "./shortcuts.ts";
 import { reportActionError } from "../components/action-errors.ts";
@@ -22,23 +17,21 @@ import { PlayerBar } from "../components/PlayerBar.tsx";
 import { NowPlaying } from "../components/NowPlaying.tsx";
 import { Titlebar } from "../components/Titlebar.tsx";
 import { RouteView } from "../views/RouteView.tsx";
-import { DiagnosticsDrawer } from "../components/diagnostics/DiagnosticsDrawer.tsx";
+import { DevDiagnostics } from "./DevDiagnostics.tsx";
+import { MediaSessionSync } from "./MediaSessionSync.tsx";
 import { UpdateReadyModal } from "../components/UpdateReadyModal.tsx";
 import { ContextMenu } from "../components/ContextMenu.tsx";
 import { PlaylistDialogs } from "../components/PlaylistDialogs.tsx";
 import { ActionToasts } from "../components/ActionToasts.tsx";
 import { TokenExpiryNotice } from "../components/TokenExpiryNotice.tsx";
-import type { DiagnosticsDrawerController } from "../diagnostics/types.ts";
 import type { DiagnosticsStore } from "../diagnostics/store.ts";
 import {
   clampWindowsMediaSeek,
-  clearWindowsMediaSession,
   createTimelineSync,
   listenWindowsMediaControls,
   listenWindowsMediaRepeat,
   listenWindowsMediaSeek,
   listenWindowsMediaShuffle,
-  updateWindowsMediaSession,
   updateWindowsMediaTimeline,
 } from "../platform/windows-media.ts";
 import { listenBeforeQuit } from "../platform/quit.ts";
@@ -92,16 +85,9 @@ function AppLayout({
 }: {
   diagnosticsStore?: DiagnosticsStore;
 }): JSX.Element {
-  const state = useAppSlices(
-    "diagnostics",
-    "navigation",
-    "playback",
-    "search",
-    "settings",
-    "tracksPlayed",
-    "ui",
-    "windowEffect",
-  );
+  // Playback, diagnostics and search are read by child components that own
+  // their subscriptions, so a playback tick does not re-render the shell.
+  const state = useAppSlices("navigation", "settings", "ui", "windowEffect");
   const controller = useAppControllerForLayout();
   const router = useAppRouter();
 
@@ -196,51 +182,6 @@ function AppLayout({
     };
   }, [controller]);
 
-  const {
-    current,
-    status: playbackStatus,
-    queueIndex,
-    shuffleMode,
-    repeatMode,
-  } = state.playback;
-  const queueLength = state.playback.queue.length;
-  const queueRest = state.playback.queueRest ?? 0;
-  useEffect(() => {
-    if (
-      !current ||
-      playbackStatus === "idle" ||
-      playbackStatus === "stopped" ||
-      playbackStatus === "error"
-    ) {
-      void clearWindowsMediaSession().catch(() => undefined);
-      return;
-    }
-    void updateWindowsMediaSession({
-      title: current.title,
-      artist: current.artistName,
-      album: current.albumTitle,
-      artworkUrl: current.artwork?.url,
-      playbackStatus: playbackStatus === "playing" ? "playing" : "paused",
-      playEnabled: playbackStatus !== "playing",
-      pauseEnabled: playbackStatus === "playing",
-      // More of a long playlist is still to be added after the last song.
-      nextEnabled: queueIndex < queueLength - 1 || queueRest > 0,
-      // Previous restarts the song or steps back into the playlist, as the
-      // in-app button does; a Play always starts at queue index 0.
-      previousEnabled: true,
-      shuffle: shuffleMode === "songs",
-      repeat: repeatMode ?? "off",
-    }).catch(() => undefined);
-  }, [
-    current,
-    playbackStatus,
-    queueIndex,
-    queueLength,
-    queueRest,
-    shuffleMode,
-    repeatMode,
-  ]);
-
   useEffect(() => {
     // MusicKit stays the source of truth: these requests call the same
     // controller methods as the in-app buttons, and SMTC then reflects the
@@ -303,6 +244,7 @@ function AppLayout({
 
   return (
     <div className="app-shell">
+      <MediaSessionSync />
       <Titlebar />
       <div className="app-body">
         <Sidebar />
@@ -317,22 +259,7 @@ function AppLayout({
         <RouteView route={state.navigation} />
         <QueueDrawer />
       </div>
-      {state.ui.diagnosticsOpen && import.meta.env.DEV ? (
-        <DiagnosticsDrawer
-          open
-          onClose={controller.closeDiagnostics}
-          store={diagnosticsStore}
-          appSnapshot={{
-            tracksPlayed: state.tracksPlayed,
-            playbackStatus: state.playback.status,
-            failures: state.diagnostics.failures,
-            sessionStartedAt: new Date(state.diagnostics.sessionStartedAt),
-            consecutiveQueueReady:
-              state.search.results.length >= controller.consecutiveTrackTarget,
-          }}
-          controller={diagnosticsController(controller)}
-        />
-      ) : null}
+      <DevDiagnostics diagnosticsStore={diagnosticsStore} />
       <PlayerBar />
       <NowPlaying />
       <UpdateReadyModal />
@@ -348,20 +275,6 @@ function useAppControllerForLayout(): AppController {
   // Kept as a named helper so AppLayout's diagnostics wiring remains easy to
   // replace with a richer worker-owned drawer without changing shell markup.
   return useAppController();
-}
-
-export function diagnosticsController(
-  controller: AppController,
-): DiagnosticsDrawerController {
-  return {
-    onClearSession: () => {
-      clearDiagnosticLogs();
-    },
-    onOpenMusicDiagnostic: async () => {
-      await controller.openMusicDiagnostic();
-    },
-    onQueueConsecutive: () => controller.playConsecutive(),
-  };
 }
 
 export function App({

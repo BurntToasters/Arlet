@@ -14,6 +14,7 @@ import { useAppController, useAppSlices } from "../app/context.tsx";
 import type { Track } from "../domain/music.ts";
 import { Artwork } from "./Artwork.tsx";
 import { reportActionError, reportQueueEdit } from "./action-errors.ts";
+import { serializeContextRefs } from "./context-refs.ts";
 import { requestContextMenu } from "./context-menu-events.ts";
 import { IconButton } from "./IconButton.tsx";
 import { requestPlaylistDialog } from "./playlist-events.ts";
@@ -65,12 +66,14 @@ export function QueueDrawer(): JSX.Element | null {
           {...(upcoming ? { "data-context-queue-index": String(index) } : {})}
           {...(track.albumRef
             ? {
-                "data-context-album-ref": JSON.stringify(track.albumRef),
+                "data-context-album-ref": serializeContextRefs(track.albumRef),
               }
             : {})}
           {...(track.artistRefs?.length
             ? {
-                "data-context-artist-refs": JSON.stringify(track.artistRefs),
+                "data-context-artist-refs": serializeContextRefs(
+                  track.artistRefs,
+                ),
               }
             : {})}
           {...(track.albumTitle

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { waitFor as pollFor } from "./e2e-helpers.js";
+
 const PLAYLIST_ID = "playlist-1";
 const ALBUM_ID = "album-1";
 const SECOND_PLAYLIST_PAGE =
@@ -20,14 +22,8 @@ async function waitForPlaylistLoadSettled(page, requestsBefore) {
   );
 }
 
-async function waitFor(page, expression, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await page.evaluate(`return Boolean(${expression});`)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  return false;
-}
+const waitFor = (page, expression, timeoutMs = 10_000) =>
+  pollFor(page, expression, timeoutMs, 100);
 
 /** Play from the playlist's right-click menu, which fetches its pages. */
 async function playFromPlaylistMenu(page) {

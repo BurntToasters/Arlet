@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { z } from "zod";
+import * as z from "zod/mini";
 import type { AppSettings, ThemePreference } from "../state.ts";
 import { DEFAULT_SETTINGS } from "../state.ts";
 import {
@@ -18,7 +18,7 @@ export {
 const themeSchema = z.enum(["system", "light", "dark"]);
 const windowEffectSchema = z.enum(["acrylic", "mica", "solid"]);
 const updateChannelSchema = z.enum(["auto", "stable", "beta"]);
-const volumeSchema = z.number().finite().min(0).max(1);
+const volumeSchema = z.number().check(z.gte(0), z.lte(1));
 
 function systemMediaQuery(): Pick<MediaQueryList, "matches"> {
   if (
