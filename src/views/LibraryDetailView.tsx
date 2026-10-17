@@ -24,6 +24,7 @@ import {
   useAppSelector,
   useAppSlices,
 } from "../app/context.tsx";
+import { safeErrorMessage } from "../app/controller-support.ts";
 import type { AppController } from "../app/controller.ts";
 import type { CollectionPlayOptions } from "../app/collection-playback.ts";
 import {
@@ -43,14 +44,13 @@ import {
   toTrack,
   type ResourceLike,
 } from "./LibraryView.tsx";
-import type { Track } from "../domain/music.ts";
+import type { AlbumShelves, Track } from "../domain/music.ts";
 import {
   ARTWORK_BACKDROP_BUCKET,
   normalizeArtworkUrl,
 } from "../musickit/normalize.ts";
 import { reportActionError } from "../components/action-errors.ts";
-import { SongRow } from "../components/SongRow.tsx";
-import { CardActions, CardShell } from "../components/CardActions.tsx";
+import type { PlaylistCuratorRef } from "../musickit/curators.ts";
 import { OfflineBanner } from "../components/OfflineBanner.tsx";
 import { VirtualList } from "../components/VirtualList.tsx";
 import {
@@ -58,11 +58,21 @@ import {
   detailSummary,
   discNumberOf,
   groupByDisc,
+  playlistCuratedBy,
   type DiscGroup,
 } from "./detail-meta.ts";
-
-/** Top Songs rows an artist page shows; Play still uses every top song. */
-const ARTIST_TOP_SONGS_SHOWN = 10;
+import { detailContext, resourceSource } from "./detail-context.ts";
+import { AlbumPageShelves } from "./AlbumShelves.tsx";
+import {
+  ARTIST_TOP_SONGS_SHOWN,
+  ArtistBio,
+  ArtistShelves,
+  ArtistShelvesSkeleton,
+  artistBannerOf,
+  artistBioOf,
+  artistHasShelves,
+  artistShelvesOf,
+} from "./ArtistShelves.tsx";
 
 type DetailKind = "album" | "artist" | "playlist";
 type DetailSource = "library" | "catalog";
@@ -130,18 +140,6 @@ function callLoader(
   if (loader) run(() => loader(id, source, options));
 }
 
-function resourceSource(resource: ResourceLike): DetailSource | undefined {
-  const raw = resource.raw;
-  const attributes =
-    raw.attributes && typeof raw.attributes === "object"
-      ? (raw.attributes as Record<string, unknown>)
-      : undefined;
-  const value = raw.source ?? attributes?.source;
-  if (value === "library" || value === "catalog") return value;
-  const type = resource.type?.toLowerCase();
-  return type?.startsWith("library-") ? "library" : undefined;
-}
-
 function findResource(
   items: readonly unknown[],
   id: string,
@@ -190,25 +188,6 @@ function detailCopy(kind: DetailKind): {
     case "album":
       return { eyebrow: "Album", fallback: "Album", icon: Disc3 };
   }
-}
-
-function detailContext(
-  resource: ResourceLike,
-  kind: DetailKind,
-): Record<string, string> {
-  return {
-    "data-context-kind": kind,
-    "data-context-id": resource.id,
-    "data-context-title": resource.title,
-    "data-context-route-kind": kind,
-    ...(resourceSource(resource)
-      ? { "data-context-source": resourceSource(resource) as string }
-      : {}),
-    // The menu's "Copy Apple Music link" reads this; it validates the URL.
-    ...(resource.catalogUrl
-      ? { "data-context-catalog-url": resource.catalogUrl }
-      : {}),
-  };
 }
 
 function TrackList({
@@ -391,21 +370,90 @@ function DetailHeroActions({
   );
 }
 
+/** "Curated by X": a button to the curator's page when Apple named one. */
+function CuratedBy({
+  label,
+  curator,
+}: {
+  label: string;
+  curator?: PlaylistCuratorRef;
+}): JSX.Element {
+  const router = useAppRouter();
+  if (!curator) return <>{label}</>;
+  return (
+    <button
+      className="curator-link"
+      type="button"
+      onClick={() =>
+        router.navigate({
+          kind: "curator",
+          id: curator.id,
+          curatorKind: curator.kind,
+        })
+      }
+    >
+      {label}
+    </button>
+  );
+}
+
+/**
+ * A catalog playlist's curator, read on its own so the track list does not
+ * wait for it. Undefined until the read lands or when Apple names none.
+ */
+function usePlaylistCurator(
+  controller: AppController,
+  enabled: boolean,
+  id: string,
+): PlaylistCuratorRef | undefined {
+  const [loaded, setLoaded] = useState<{
+    id: string;
+    curator?: PlaylistCuratorRef;
+  }>();
+  useEffect(() => {
+    if (!enabled) return;
+    let current = true;
+    controller
+      .loadPlaylistCurator(id)
+      .then((curator) => {
+        if (current) setLoaded({ id, curator });
+      })
+      .catch((error: unknown) => {
+        controller.log(`Curator unavailable: ${safeErrorMessage(error)}`);
+        if (current) setLoaded({ id });
+      });
+    return () => {
+      current = false;
+    };
+  }, [controller, enabled, id]);
+  return loaded?.id === id ? loaded.curator : undefined;
+}
+
 /** The metadata line under an album or playlist title. */
 function DetailSummary({
   kind,
   resource,
   tracks,
   complete,
+  curator,
 }: {
   kind: "album" | "playlist";
   resource: ResourceLike;
   tracks: ResourceLike[];
   complete: boolean;
+  curator?: PlaylistCuratorRef;
 }): JSX.Element | null {
   const parts = detailSummary(kind, resource, tracks, complete);
-  if (parts.length === 0) return null;
-  return <p className="library-detail-meta">{parts.join(" · ")}</p>;
+  const curatedBy =
+    kind === "playlist" ? playlistCuratedBy(resource) : undefined;
+  if (parts.length === 0 && !curatedBy) return null;
+  return (
+    <p className="library-detail-meta">
+      {parts.join(" · ")}
+      {parts.length > 0 && curatedBy ? " · " : null}
+      {curatedBy ? <CuratedBy label={curatedBy} curator={curator} /> : null}
+    </p>
+  );
 }
 
 /** Collapsed notes, label and copyright; renders nothing when there are none. */
@@ -459,14 +507,17 @@ function DetailMore({
   );
 }
 
-/** Top songs for the open artist; results from a previous artist are ignored. */
+/**
+ * Top songs read on their own, for an artist page whose request lacked them.
+ * Results from a previous artist are ignored. Undefined until a read lands.
+ */
 function useArtistTopSongs(
   controller: AppController,
   enabled: boolean,
   id: string,
   source: DetailSource,
   catalogId: string | undefined,
-): Track[] {
+): Track[] | undefined {
   const key = `${source}:${id}`;
   const [loaded, setLoaded] = useState<{ key: string; tracks: Track[] }>();
   useEffect(() => {
@@ -487,7 +538,7 @@ function useArtistTopSongs(
       current = false;
     };
   }, [controller, enabled, id, source, catalogId, key]);
-  return loaded?.key === key ? loaded.tracks : [];
+  return loaded?.key === key ? loaded.tracks : undefined;
 }
 
 export function LibraryDetailView({
@@ -501,7 +552,6 @@ export function LibraryDetailView({
 }): JSX.Element {
   const state = useAppSlices("auth", "initialization", "library", "ui");
   const controller = useAppController();
-  const router = useAppRouter();
   const extendedController = controller as AppController & DetailController;
   const sourceDetail =
     source === "catalog" ? readDetail(state, kind, `catalog:${id}`) : undefined;
@@ -640,13 +690,39 @@ export function LibraryDetailView({
       }),
     );
   };
-  const topSongs = useArtistTopSongs(
+  // The artist's shelves come with its one request. Top songs are read on
+  // their own only when that request lacked them, and only once it settled.
+  const artistShelves =
+    kind === "artist" ? artistShelvesOf(resource) : undefined;
+  const viewTopSongs = artistShelves?.topSongs;
+  // Only a settled detail counts: before the first read lands the status is
+  // still idle, and the fallback would fire ahead of the artist request.
+  const topSongsFallback =
+    kind === "artist" &&
+    authorized &&
+    detail.status === "success" &&
+    viewTopSongs === undefined;
+  const fallbackTopSongs = useArtistTopSongs(
     controller,
-    kind === "artist" && authorized,
+    topSongsFallback,
     id,
     playbackSource,
     resource?.catalogId,
   );
+  // Only a catalog playlist's "Curated by" needs its curator's id.
+  const playlistCurator = usePlaylistCurator(
+    controller,
+    authorized &&
+      kind === "playlist" &&
+      source === "catalog" &&
+      Boolean(resource?.raw.curatorName),
+    id,
+  );
+  const topSongs = (viewTopSongs ?? fallbackTopSongs ?? []).slice(
+    0,
+    ARTIST_TOP_SONGS_SHOWN,
+  );
+  const topSongsPending = topSongsFallback && fallbackTopSongs === undefined;
   const playTopSongs = (): void => {
     if (topSongs.length) act(() => controller.playTracks(topSongs, 0));
   };
@@ -690,6 +766,7 @@ export function LibraryDetailView({
   }
 
   if (loading) {
+    if (kind === "artist") return <ArtistShelvesSkeleton />;
     return (
       <div className="library-feedback" role="status">
         <LoaderCircle className="spin" aria-hidden="true" size={22} /> Loading{" "}
@@ -731,7 +808,22 @@ export function LibraryDetailView({
   const isArtist = kind === "artist";
   // Totals only count songs that are all loaded; a partial list would under-state them.
   const complete = !detail.next && detail.status !== "loading";
-  const artistBackdrop = isArtist ? artworkTrack?.artwork?.url : undefined;
+  // Apple's editorial banner when it has one; otherwise the blurred portrait.
+  const artistBanner = isArtist ? artistBannerOf(resource) : undefined;
+  const artistBackdrop =
+    isArtist && !artistBanner ? artworkTrack?.artwork?.url : undefined;
+  const artistBio = isArtist ? artistBioOf(resource) : undefined;
+  const albumShelves =
+    kind === "album" && resource
+      ? (resource.raw.shelves as AlbumShelves | undefined)
+      : undefined;
+  // Nothing but the header: no albums, top songs or other shelves came back.
+  const artistEmpty =
+    isArtist &&
+    artistAlbums.length === 0 &&
+    topSongs.length === 0 &&
+    !topSongsPending &&
+    !artistHasShelves(artistShelves);
   return (
     <>
       {offline ? <OfflineBanner /> : null}
@@ -739,7 +831,16 @@ export function LibraryDetailView({
         className={`library-detail-hero${isArtist ? " artist-hero" : ""}`}
         {...(resource ? detailContext(resource, kind) : {})}
       >
-        {/* An image, not a CSS url(): the artwork URL never enters CSS. */}
+        {/* Images, not CSS url(): the artwork URL never enters CSS. */}
+        {artistBanner ? (
+          <img
+            className="artist-hero-banner"
+            src={artistBanner}
+            alt=""
+            aria-hidden="true"
+            decoding="async"
+          />
+        ) : null}
         {artistBackdrop ? (
           <img
             className="artist-hero-backdrop"
@@ -773,6 +874,7 @@ export function LibraryDetailView({
               resource={resource}
               tracks={resources}
               complete={complete}
+              curator={playlistCurator}
             />
           ) : null}
           <div className="library-detail-actions">
@@ -867,6 +969,7 @@ export function LibraryDetailView({
       {kind !== "artist" && resource ? (
         <DetailMore kind={kind} resource={resource} />
       ) : null}
+      {artistBio ? <ArtistBio key={id} notes={artistBio} /> : null}
       {detail.source === "cache" || detail.stale || detail.isStale ? (
         <p className="library-stale-note" role="status">
           Showing saved data while Apple Music refreshes.
@@ -877,120 +980,22 @@ export function LibraryDetailView({
           Refresh failed; showing saved data. {detail.error}
         </p>
       ) : null}
-      {isArtist && topSongs.length ? (
-        <section
-          className="artist-top-songs"
-          aria-labelledby="top-songs-heading"
-        >
-          <h2 id="top-songs-heading">Top Songs</h2>
-          <div className="library-list-panel">
-            <ol className="library-track-list artist-top-songs-grid">
-              {topSongs.slice(0, ARTIST_TOP_SONGS_SHOWN).map((track, index) => (
-                <SongRow
-                  key={`${track.id}:${index}`}
-                  track={track}
-                  index={index}
-                  onPlay={() =>
-                    act(() => controller.playTracks(topSongs, index))
-                  }
-                  onPlayNext={() =>
-                    act(() => controller.playNextTracks([track]))
-                  }
-                  disabled={!authorized}
-                  rowClassName="library-track-row"
-                  numberClassName="library-row-number"
-                  copyClassName="library-row-copy"
-                  durationClassName="library-row-duration"
-                  contextData={{
-                    "data-context-kind": "track",
-                    "data-context-id": track.id,
-                    "data-context-title": track.title,
-                    "data-context-artist": track.artistName,
-                    ...(track.albumTitle
-                      ? { "data-context-album": track.albumTitle }
-                      : {}),
-                    ...(track.artwork?.url
-                      ? { "data-context-artwork": track.artwork.url }
-                      : {}),
-                    ...(track.resourceType
-                      ? { "data-context-resource-type": track.resourceType }
-                      : {}),
-                    ...(track.catalogId
-                      ? { "data-context-catalog-id": track.catalogId }
-                      : {}),
-                  }}
-                />
-              ))}
-            </ol>
-          </div>
-        </section>
-      ) : null}
       {isArtist ? (
-        resources.length ? (
-          <section
-            className="artist-albums"
-            aria-labelledby="artist-albums-heading"
-          >
-            <h2 id="artist-albums-heading">Albums</h2>
-            <div className="library-card-grid" aria-label="Artist albums">
-              {artistAlbums.map((album) => (
-                <CardShell
-                  key={album.id}
-                  contextData={detailContext(album, "album")}
-                  catalogUrl={album.catalogUrl}
-                >
-                  <button
-                    className="library-card"
-                    type="button"
-                    onClick={() =>
-                      router.navigate({
-                        kind: "album",
-                        id: album.id,
-                        source: resourceSource(album) ?? source,
-                      } as Parameters<typeof router.navigate>[0])
-                    }
-                  >
-                    <Artwork
-                      track={toTrack(album)}
-                      size="lg"
-                      alt={`${album.title} artwork`}
-                      className="library-card-art"
-                    />
-                    <span className="library-card-copy">
-                      <strong>{album.title}</strong>
-                      <small>
-                        {/^\d{4}/u.test(String(album.releaseDate ?? ""))
-                          ? String(album.releaseDate).slice(0, 4)
-                          : (album.artistName ?? "Album")}
-                      </small>
-                    </span>
-                  </button>
-                  <CardActions
-                    title={album.title}
-                    onPlay={
-                      album.playable === false
-                        ? undefined
-                        : () =>
-                            act(() =>
-                              extendedController.playCollection?.(
-                                "album",
-                                album.id,
-                                resourceSource(album) ?? playbackSource,
-                                0,
-                              ),
-                            )
-                    }
-                  />
-                </CardShell>
-              ))}
-            </div>
-          </section>
-        ) : (
+        artistEmpty ? (
           <EmptyState
             icon={Disc3}
             title="No albums found"
             description="Apple Music did not return albums for this artist."
             compact
+          />
+        ) : (
+          <ArtistShelves
+            shelves={artistShelves}
+            albums={artistAlbums}
+            topSongs={topSongs}
+            topSongsPending={topSongsPending}
+            authorized={authorized}
+            playbackSource={playbackSource}
           />
         )
       ) : resources.length ? (
@@ -1010,6 +1015,12 @@ export function LibraryDetailView({
           compact
         />
       )}
+      {kind === "album" && resource ? (
+        <AlbumPageShelves
+          shelves={albumShelves}
+          artistName={resource.artistName}
+        />
+      ) : null}
     </>
   );
 }

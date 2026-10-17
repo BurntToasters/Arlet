@@ -496,6 +496,11 @@ Toasts: a success toast carries `action-toast-success`. An error toast has no
 class of its own, so the checks match it as an `.action-toast` that is not a
 success.
 
+Clipboard: the copied text is not read back. Reading it through
+`navigator.clipboard` makes WebView2 show a Block/Allow prompt on the test
+machine, which stalls the run. Copy-link is checked by its success toast, and
+the exact URL is checked on the card shell.
+
 F11 works while focus is in a text field or a dialog, by design: it has no
 text-editing meaning, so it is a window action everywhere (`src/app/shortcuts.ts`).
 
@@ -584,62 +589,190 @@ Keyboard and later items:
 Checks in `scripts/e2e-polish.js`, by the failure mode each one guards (the
 check name is the `report.json` name):
 
-| Check                                                                                                                               | Guards                                                                      |
-| ----------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
-| polish fixture data reachable                                                                                                       | fixture route renders (kept from the first pass)                            |
-| album metadata: year, song count, runtime from 703 s, genre                                                                         | invented values; total length                                               |
-| sparse album shows only its song count                                                                                              | invented values; "NaN" or "0 min"; More shown with no content               |
-| More toggle expands and collapses, with aria-expanded matching the panel                                                            | More toggle state                                                           |
-| editorial notes are plain text: no markup element, no script ran                                                                    | notes render HTML or run script                                             |
-| record label and copyright appear under More                                                                                        | label or copyright for the wrong item                                       |
-| playlist description renders as plain text                                                                                          | description HTML or script                                                  |
-| Disc 1 and Disc 2 headings group the four tracks in album order                                                                     | disc grouping                                                               |
-| rows show per-disc track numbers                                                                                                    | disc numbering (not a listed failure mode; the spec for this pass)          |
-| clicking the first row of Disc 2 starts MusicKit's queue at that song: [d2 t1, d2 t2] at index 0                                    | disc grouping breaks click-to-play                                          |
-| the Disc 2 Play was given the whole album from the page: no track pages fetched                                                     | album re-fetched before Play                                                |
-| Previous from Disc 2 track 1 plays Disc 1 track 2 (the album's earlier songs are kept)                                              | earlier songs dropped from Previous history                                 |
-| a single-disc album shows no Disc heading                                                                                           | single-disc "Disc 1" heading                                                |
-| header Love toggles once per click, sending one PUT then one DELETE                                                                 | Love sends two requests or none; aria-pressed                               |
-| More actions opens the album menu and its target is the album                                                                       | "..." acts on the wrong item                                                |
-| context menu has no leading, trailing or double separators                                                                          | separators doubled, leading or trailing                                     |
-| ArrowDown visits each menu item once, wraps, and never lands on a separator                                                         | separators reachable by arrow keys                                          |
-| album header menu offers Copy Apple Music link                                                                                      | copy-link missing (expected to fail; see above)                             |
-| Escape closes the album menu and returns focus to its More button                                                                   | menu focus                                                                  |
-| Pin and Unpin flip the playlist header label both ways                                                                              | Pin or Unpin label stale                                                    |
-| album card carries its Apple Music link on the card shell                                                                           | copy-link URL                                                               |
-| keyboard Tab from the card reaches its Play button, then its More actions button                                                    | card "..." not focusable                                                    |
-| card menu offers Copy Apple Music link and has clean separators                                                                     | copy-link on a card                                                         |
-| copy-link shows the success toast, not the error style                                                                              | success styled as error                                                     |
-| copy-link copies the album's exact Apple Music URL                                                                                  | copy-link URL (read back only when the clipboard allows)                    |
-| card Play starts the album from its first track                                                                                     | card Play starts the wrong collection                                       |
-| Arrow, Home and End keys move selection, focus and the tabpanel label together                                                      | search tabs ignore Arrow keys                                               |
-| open animation moves the dialog when motion is allowed (baseline)                                                                   | baseline for the reduced-motion check                                       |
-| Now Playing controls carry their state labels                                                                                       | controls missing or stale labels                                            |
-| volume slider reads a percentage and reaches the player                                                                             | volume writes or reads wrong                                                |
-| seek slider reads m:ss of m:ss, not a raw number                                                                                    | slider aria-valuetext "NaN" or raw number                                   |
-| artwork bgColor tints Now Playing through --now-playing-tint                                                                        | tint missing                                                                |
-| a track without bgColor keeps the plain surface                                                                                     | tint on a track without bgColor                                             |
-| closing Now Playing returns focus to the artwork button and unmounts it                                                             | focus after close; dialog left mounted                                      |
-| reduced motion: opening Now Playing runs no transform animation                                                                     | animation with reduced motion                                               |
-| reduced motion: closing Now Playing unmounts within 400 ms                                                                          | exit transition with reduced motion                                         |
-| opening Playing Next moves focus to its heading                                                                                     | queue drawer focus                                                          |
-| Escape closes Playing Next and returns focus to its toggle                                                                          | queue drawer focus after Esc                                                |
-| a rejected rating shows the error style and rolls Love back                                                                         | error styled as success; rollback                                           |
-| radio first load shows a labelled role=status skeleton, removed once data renders                                                   | skeleton stuck or unlabelled                                                |
-| a failed first load ends the skeleton instead of keeping it                                                                         | skeleton on a failed load                                                   |
-| Ctrl+R refresh keeps album cards on screen and shows no skeleton                                                                    | refresh replaces data with a skeleton                                       |
-| About links are enabled type=button elements labelled Project page, Release notes and License, with no href or target (not clicked) | About link navigates the window, is missing, or is disabled                 |
-| a route change moves focus to the page h1                                                                                           | route focus                                                                 |
-| viewport override switches the shell to the compact layout (720 px)                                                                 | environment: the webview ignores the override (a failing check, not a skip) |
-| opening the compact drawer moves focus into it                                                                                      | compact drawer focus                                                        |
-| Escape closes the compact drawer and focuses the menu button                                                                        | compact drawer Esc                                                          |
-| Tab on the last drawer control wraps to the first one                                                                               | compact drawer focus trap                                                   |
-| F11 enters window fullscreen; the Now Playing button then reads Exit full screen                                                    | fullscreen state disagrees with the window                                  |
-| Escape in Now Playing closes it and leaves fullscreen                                                                               | fullscreen sticks after Esc                                                 |
+| Check                                                                                                                                     | Guards                                                                      |
+| ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| polish fixture data reachable                                                                                                             | fixture route renders (kept from the first pass)                            |
+| album metadata: year, song count, runtime from 703 s, genre                                                                               | invented values; total length                                               |
+| sparse album shows only its song count                                                                                                    | invented values; "NaN" or "0 min"; More shown with no content               |
+| More toggle expands and collapses, with aria-expanded matching the panel                                                                  | More toggle state                                                           |
+| editorial notes are plain text: no markup element, no script ran                                                                          | notes render HTML or run script                                             |
+| record label and copyright appear under More                                                                                              | label or copyright for the wrong item                                       |
+| playlist description renders as plain text                                                                                                | description HTML or script                                                  |
+| Disc 1 and Disc 2 headings group the four tracks in album order                                                                           | disc grouping                                                               |
+| rows show per-disc track numbers                                                                                                          | disc numbering (not a listed failure mode; the spec for this pass)          |
+| clicking the first row of Disc 2 starts MusicKit's queue at that song: [d2 t1, d2 t2] at index 0                                          | disc grouping breaks click-to-play                                          |
+| the Disc 2 Play was given the whole album from the page: no track pages fetched                                                           | album re-fetched before Play                                                |
+| Previous from Disc 2 track 1 plays Disc 1 track 2 (the album's earlier songs are kept)                                                    | earlier songs dropped from Previous history                                 |
+| a single-disc album shows no Disc heading                                                                                                 | single-disc "Disc 1" heading                                                |
+| header Love toggles once per click, sending one PUT then one DELETE                                                                       | Love sends two requests or none; aria-pressed                               |
+| More actions opens the album menu and its target is the album                                                                             | "..." acts on the wrong item                                                |
+| context menu has no leading, trailing or double separators                                                                                | separators doubled, leading or trailing                                     |
+| ArrowDown visits each menu item once, wraps, and never lands on a separator                                                               | separators reachable by arrow keys                                          |
+| album header menu offers Copy Apple Music link                                                                                            | copy-link missing (expected to fail; see above)                             |
+| Escape closes the album menu and returns focus to its More button                                                                         | menu focus                                                                  |
+| Pin and Unpin flip the playlist header label both ways                                                                                    | Pin or Unpin label stale                                                    |
+| album card carries its Apple Music link on the card shell                                                                                 | copy-link URL                                                               |
+| keyboard Tab from the card reaches its Play button, then its More actions button                                                          | card "..." not focusable                                                    |
+| card menu offers Copy Apple Music link and has clean separators                                                                           | copy-link on a card                                                         |
+| copy-link shows the success toast, not the error style                                                                                    | success styled as error                                                     |
+| (no check: the copied text is not read back; the exact URL is asserted on the card shell, and copy-link is asserted by its success toast) | copy-link URL                                                               |
+| card Play starts the album from its first track                                                                                           | card Play starts the wrong collection                                       |
+| Arrow, Home and End keys move selection, focus and the tabpanel label together                                                            | search tabs ignore Arrow keys                                               |
+| open animation moves the dialog when motion is allowed (baseline)                                                                         | baseline for the reduced-motion check                                       |
+| Now Playing controls carry their state labels                                                                                             | controls missing or stale labels                                            |
+| volume slider reads a percentage and reaches the player                                                                                   | volume writes or reads wrong                                                |
+| seek slider reads m:ss of m:ss, not a raw number                                                                                          | slider aria-valuetext "NaN" or raw number                                   |
+| artwork bgColor tints Now Playing through --now-playing-tint                                                                              | tint missing                                                                |
+| a track without bgColor keeps the plain surface                                                                                           | tint on a track without bgColor                                             |
+| closing Now Playing returns focus to the artwork button and unmounts it                                                                   | focus after close; dialog left mounted                                      |
+| reduced motion: opening Now Playing runs no transform animation                                                                           | animation with reduced motion                                               |
+| reduced motion: closing Now Playing unmounts within 400 ms                                                                                | exit transition with reduced motion                                         |
+| opening Playing Next moves focus to its heading                                                                                           | queue drawer focus                                                          |
+| Escape closes Playing Next and returns focus to its toggle                                                                                | queue drawer focus after Esc                                                |
+| a rejected rating shows the error style and rolls Love back                                                                               | error styled as success; rollback                                           |
+| radio first load shows a labelled role=status skeleton, removed once data renders                                                         | skeleton stuck or unlabelled                                                |
+| a failed first load ends the skeleton instead of keeping it                                                                               | skeleton on a failed load                                                   |
+| Ctrl+R refresh keeps album cards on screen and shows no skeleton                                                                          | refresh replaces data with a skeleton                                       |
+| About links are enabled type=button elements labelled Project page, Release notes and License, with no href or target (not clicked)       | About link navigates the window, is missing, or is disabled                 |
+| a route change moves focus to the page h1                                                                                                 | route focus                                                                 |
+| viewport override switches the shell to the compact layout (720 px)                                                                       | environment: the webview ignores the override (a failing check, not a skip) |
+| opening the compact drawer moves focus into it                                                                                            | compact drawer focus                                                        |
+| Escape closes the compact drawer and focuses the menu button                                                                              | compact drawer Esc                                                          |
+| Tab on the last drawer control wraps to the first one                                                                                     | compact drawer focus trap                                                   |
+| F11 enters window fullscreen; the Now Playing button then reads Exit full screen                                                          | fullscreen state disagrees with the window                                  |
+| Escape in Now Playing closes it and leaves fullscreen                                                                                     | fullscreen sticks after Esc                                                 |
 
 Fullscreen is read from the window size against the screen, because the app
 uses window fullscreen and not DOM fullscreen (`document.fullscreenElement`
 stays null).
+
+## Apple Music discovery features
+
+`scripts/e2e-discovery.js` runs inside the native suite (before Session
+restore) against the discovery ids in `scripts/e2e-music-fixture.js`. The
+fixture header lists every id, route and control. Each check's `detail` holds
+the values it saw, and the run writes `discovery-trace.json` (the fixture
+snapshot) and `screenshot-discovery.png` to the artifact folder.
+
+The scenario resets the fixture between groups. External sign-out runs last
+and restores the account in `finally`, so Session restore starts signed in.
+
+Not covered yet: the fixture has one account, so recent searches are not
+tested across accounts; the see-all loop guard (`repeatViewCursor`) is in the
+fixture but no check drives it; Home's other card types are not modeled.
+
+Failure modes, each with the check that guards it (the check names are the
+`report.json` names).
+
+Artist page (`views` and `extend` in one request):
+
+- The page sends more than one artist request when views succeed, or sends a
+  See all or fallback request on load. [artist page makes one artist request
+  when views succeed]
+- Albums are fetched again from the first page, or listed twice (the "every
+  album" regression). [artist albums fill from the views with one next page
+  and no duplicates]
+- Views fail and the page shows less than before. [artist page falls back to
+  its separate requests when views fail; the check first visits another
+  artist and waits for each fallback request to settle]
+- Top Songs repeat or drop a song. [artist top songs show the five inline
+  songs, each once]
+- The bio renders the fixture's `<b>`, `<a>` or `<script>` as markup, or runs
+  the script (`window.__ARLET_DISCOVERY_XSS__`). [artist bio shows its markup as
+  text and runs no script]
+- The banner is missing when editorial artwork exists. [artist banner comes
+  from the editorial artwork]
+- A sparse artist shows an empty shelf, or a bio or banner with no data.
+  [sparse artist hides the shelves Apple left out, along with its bio and
+  banner]
+- A library artist renders its library record without its catalog views.
+  [library artist reads its catalog twin, then the catalog views]
+
+Album shelves (`include=tracks` with `views`, album `album-discover`):
+
+- Shelves replace or drop tracks, so the four tracks no longer all list.
+  [album shelves keep all four tracks and hide the empty more-by-artist shelf]
+- The empty more-by-artist shelf shows. [same check]
+- A library album does not load its catalog views. [a library album keeps its
+  tracks and loads the catalog album views]
+
+Search suggestions (`/search/suggestions`):
+
+- A one-character term sends a request. [a one-character term sends no
+  suggestion request]
+- A late reply overwrites a newer list. `configure({ delayTerms: { pol: 1200 } })`
+  delays "pol" while "fix" is typed. [a late suggestion reply never replaces a
+  newer one]
+- Esc does not close the list, or the terms and top result do not show.
+  [suggestions list terms and a top result, and Escape closes them]
+- Tab stays inside the list. [Tab leaves the suggestion list instead of holding
+  focus]
+- Picking a term does not run that search. [picking a suggested term runs that
+  search]
+
+Search results (`with=topResults`, `types`, `limit`, `offset`):
+
+- The overview omits topResults, a requested type, or the limit of 10. [overview
+  search asks every group with topResults and a limit of 10]
+- See all albums duplicates or skips albums (60 albums, 25 a page). [See all
+  albums pages through all 60 with no duplicate pages or albums]
+- Stations or curators land in the Albums section, or a curator tile does not
+  open its page. [stations and curators get their own sections, and a curator
+  tile opens its page]
+
+Browse charts (`/charts` with `genre`, `with`, `next`):
+
+- Choosing a genre does not change the charts request, or shows the same songs.
+  [choosing Pop sends genre 14 to charts and shows its songs]
+- City or daily shelves stay when the genre has none, or hide Top Songs too.
+  [city and daily shelves hide only where the genre has none; Top Songs stays]
+- Top Songs See all repeats songs, or follows a next link that is not a chart
+  path. [Top Songs See all pages through 30 songs with no duplicates, via the
+  chart's next link]
+
+Radio station genres (`station-genres`, `station-genres/{id}/stations`):
+
+- A genre chip does not open its station shelf. [a genre chip opens its
+  station shelf from station-genres]
+- A station with a URL does not play, or a station without one has an active
+  Play. [a station with a URL plays from its card, and one without has no Play]
+- Live text is missing for a live item, or stays after the item changes.
+  [live radio text shows for a live item and clears when the item changes]
+
+Curators (`curators/{id}`, `apple-curators/{id}` with `views=grouped-playlists`,
+`playlists?ids=`, `playlists/{id}?include=curator`):
+
+- An Apple curator shows no groups, because bare playlist refs are not
+  batched. [an Apple curator shows its editorial group, resolved through the
+  playlists batch]
+- A non-Apple curator's flat playlist shelf is wrong, or a batch sends more
+  than 25 ids. [a curator's flat playlist shelf lists its three playlists, and
+  batches stay at 25 ids or fewer]
+- A curator's playlist is a dead link. [a curator's playlist opens and lists its
+  tracks (no dead link)]
+- A playlist's curator link is missing, reads a different curator name, or
+  opens the wrong kind of curator. [a playlist's curator link opens the curator
+  page]
+
+Home (`recent/played`, `history/heavy-rotation`, `recommendations`):
+
+- Recently Played is missing, drops albums or stations, shows a menu on a
+  station card, or does not follow its next page once. [Home shows Recently
+  Played with albums and stations, and station cards have no menu]
+- Heavy Rotation filters out stations or playlists. [Heavy Rotation keeps
+  stations, albums and playlists unfiltered]
+- A nested recommendation group is dropped, or merged into its parent. [a
+  nested recommendation group becomes its own titled shelf]
+
+MusicKit events (fixture controls in the header):
+
+- A late duration leaves seek disabled. [a late duration enables seek and shows
+  the total]
+- An external volume change is not shown or not saved, or the app writes it
+  back again. The control makes one "volume" write; any more is a loop. [an
+  external volume change shows, saves to settings, and does not loop]
+- External sign-out leaves recent searches or the signed-in UI in place. [external
+  sign-out runs local cleanup and shows the signed-out UI]
 
 ## Release-only evidence
 

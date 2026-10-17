@@ -24,12 +24,6 @@ export interface SearchResourceGroups {
   playlists: Playlist[];
 }
 
-export interface BrowseResources {
-  songs: Track[];
-  albums: Album[];
-  playlists: Playlist[];
-}
-
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object") return null;
   return value as Record<string, unknown>;
@@ -435,33 +429,6 @@ export async function searchMusicResources(
   return limitSearchGroups(normalizeSearchGroups(raw, "library-"), limit);
 }
 
-export async function loadBrowseCharts(
-  instance: MusicKit.MusicKitInstance,
-  options: { limit?: number } = {},
-): Promise<BrowseResources> {
-  const requestedLimit = options.limit ?? 20;
-  const limit = Number.isFinite(requestedLimit)
-    ? Math.max(0, Math.floor(requestedLimit))
-    : 20;
-  const storefront = await resolveStorefront(instance);
-  const raw = await resolveMusicKitMusicRequest(instance)(
-    `/v1/catalog/${encodeURIComponent(storefront)}/charts`,
-    {
-      chart: "most-played",
-      types: "songs,albums,playlists",
-      limit,
-    },
-  );
-  const groups = normalizeSearchGroups(raw);
-  return {
-    songs: groups.songs
-      .filter((track) => track.playable !== false)
-      .slice(0, limit),
-    albums: groups.albums.slice(0, limit),
-    playlists: groups.playlists.slice(0, limit),
-  };
-}
-
 function stationUrl(resource: AppleMusicResource): string | undefined {
   const record = asRecord(resource);
   const attributes = asRecord(record?.attributes);
@@ -516,14 +483,21 @@ export function normalizeStation(
   };
 }
 
+/**
+ * The `data` array of a response, whichever shape the caller holds: the plain
+ * body `{ data: [...] }`, the `api.music` envelope `{ data: { data: [...] } }`,
+ * or a bare array. Anything else is an empty list.
+ */
+export function responseDataArray(raw: unknown): unknown[] {
+  const outer = asRecord(raw)?.data;
+  if (Array.isArray(outer)) return outer;
+  const body = asRecord(outer)?.data;
+  if (Array.isArray(body)) return body;
+  return Array.isArray(raw) ? raw : [];
+}
+
 export function stationsFromResponse(raw: unknown): Station[] {
-  const root = asRecord(raw);
-  const data = Array.isArray(root?.data)
-    ? root.data
-    : Array.isArray(raw)
-      ? raw
-      : [];
-  return data
+  return responseDataArray(raw)
     .map((value) => normalizeStation(value as AppleMusicResource))
     .filter((value): value is Station => Boolean(value));
 }

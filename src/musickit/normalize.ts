@@ -409,6 +409,8 @@ export function normalizeTrack(item: MusicKit.MediaItem): Track {
     record?.contentRating,
     attributes?.contentRating,
   )?.toLowerCase();
+  // Same rule as live-metadata's isLiveMediaItem; absent unless it applies.
+  const isLive = attributes?.isLive === true || /station/iu.test(type ?? "");
   return {
     id,
     title,
@@ -418,6 +420,7 @@ export function normalizeTrack(item: MusicKit.MediaItem): Track {
     artwork: normalizeArtwork(item),
     durationMs: catalogDurationMs(item),
     ...(type ? { resourceType: type } : {}),
+    ...(isLive ? { isLive: true } : {}),
     ...(stringValue(playParams?.catalogId)
       ? { catalogId: stringValue(playParams?.catalogId) }
       : {}),
@@ -539,7 +542,46 @@ export function normalizeArtistResource(
   if (catalogId) artist.catalogId = catalogId;
   const catalogUrl = catalogUrlOf(attributes);
   if (catalogUrl) artist.catalogUrl = catalogUrl;
+  // Present only when the request asked for `extend=editorialNotes,...`.
+  const editorialNotes = editorialText(attributes.editorialNotes);
+  if (editorialNotes) artist.editorialNotes = editorialNotes;
+  const editorialBanner = editorialBannerOf(attributes.editorialArtwork);
+  if (editorialBanner) artist.editorialBanner = editorialBanner;
   return artist;
+}
+
+/** Wide enough for a full-width artist banner on a high-DPI screen. */
+const ARTIST_BANNER_SIZE = 1280;
+
+/** Apple's banner for an artist page: `bannerUber`, else `storeFlowcase`. */
+function editorialBannerOf(value: unknown): Artwork | undefined {
+  const artwork = asRecord(value);
+  return (
+    artworkFromUnknown(artwork?.bannerUber, ARTIST_BANNER_SIZE) ??
+    artworkFromUnknown(artwork?.storeFlowcase, ARTIST_BANNER_SIZE)
+  );
+}
+
+/** One `views.<name>` block of a catalog resource: its entries and next page. */
+export interface AppleViewBlock {
+  data: unknown[];
+  next?: string;
+}
+
+/**
+ * The `views.<name>` block Apple returns beside a resource's own attributes,
+ * or undefined when the view is missing (not requested, or left out).
+ */
+export function viewBlockOf(
+  resource: unknown,
+  name: string,
+): AppleViewBlock | undefined {
+  const block = asRecord(asRecord(asRecord(resource)?.views)?.[name]);
+  if (!block) return undefined;
+  return {
+    data: Array.isArray(block.data) ? block.data : [],
+    next: stringValue(block.next),
+  };
 }
 
 export function normalizeAlbumResource(

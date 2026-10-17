@@ -17,9 +17,11 @@ import {
 } from "../app/context.tsx";
 import { ratingKeyOf, trackRatingTarget } from "../app/ratings.ts";
 import type { MusicEntityRef, Track } from "../domain/music.ts";
+import { useLiveMetadata } from "../musickit/live-metadata.ts";
 import { setUiState } from "../state.ts";
 import { Artwork } from "./Artwork.tsx";
 import { IconButton } from "./IconButton.tsx";
+import { liveSubtitle } from "./PlayerBar.tsx";
 import { VirtualList } from "./VirtualList.tsx";
 import { reportActionError } from "./action-errors.ts";
 import { PlaybackProgress, TransportControls } from "./TransportControls.tsx";
@@ -102,6 +104,10 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
   const disliked = rating === -1;
   const shuffling = playback.shuffleMode === "songs";
   const repeating = playback.repeatMode !== "off";
+  const live = useLiveMetadata();
+  const liveText = current?.isLive
+    ? liveSubtitle(live, current.title)
+    : undefined;
 
   useEffect(() => {
     // Unmounting happens on every close path, including the global Esc
@@ -269,31 +275,39 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
               {current?.title ?? "Nothing playing"}
             </h2>
             <p className="now-playing-artists">
-              {album?.name && current ? (
-                <button
-                  type="button"
-                  aria-label={`Go to album: ${album.name}`}
-                  onClick={() => navigateTo("album", album)}
-                >
-                  {album.name}
-                </button>
-              ) : null}
-              {artists.length > 0
-                ? artists.map((artist, index) => (
-                    <span key={artist.id}>
-                      {index > 0 || album?.name ? (
-                        <span aria-hidden="true"> · </span>
-                      ) : null}
-                      <button
-                        type="button"
-                        aria-label={`Go to artist: ${artist.name ?? current?.artistName ?? "Artist"}`}
-                        onClick={() => navigateTo("artist", artist)}
-                      >
-                        {artist.name ?? current?.artistName}
-                      </button>
-                    </span>
-                  ))
-                : (current?.artistName ?? null)}
+              {liveText !== undefined ? (
+                <span className="live-metadata-text" aria-live="polite">
+                  {liveText}
+                </span>
+              ) : (
+                <>
+                  {album?.name && current ? (
+                    <button
+                      type="button"
+                      aria-label={`Go to album: ${album.name}`}
+                      onClick={() => navigateTo("album", album)}
+                    >
+                      {album.name}
+                    </button>
+                  ) : null}
+                  {artists.length > 0
+                    ? artists.map((artist, index) => (
+                        <span key={artist.id}>
+                          {index > 0 || album?.name ? (
+                            <span aria-hidden="true"> · </span>
+                          ) : null}
+                          <button
+                            type="button"
+                            aria-label={`Go to artist: ${artist.name ?? current?.artistName ?? "Artist"}`}
+                            onClick={() => navigateTo("artist", artist)}
+                          >
+                            {artist.name ?? current?.artistName}
+                          </button>
+                        </span>
+                      ))
+                    : (current?.artistName ?? null)}
+                </>
+              )}
             </p>
           </div>
           <div className="now-playing-controls">

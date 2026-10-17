@@ -80,6 +80,10 @@ const RESTART_THRESHOLD_SECONDS = 3;
 const MAX_UNAVAILABLE_BATCHES = 4;
 /** Pause before retrying a queue setup that failed on a song lookup. */
 const SET_QUEUE_RETRY_DELAY_MS = 600;
+/** Two MusicKit volume levels closer than this are the same level. */
+const MUSIC_VOLUME_TOLERANCE = 0.001;
+/** Levels this app wrote recently, kept for their volume echoes. */
+const MAX_SENT_MUSIC_VOLUMES = 16;
 
 const delay = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -104,6 +108,14 @@ export function createPlayback(context: ControllerContext) {
     log(`${label}: ${message}`);
   };
 
+  /** Levels written to MusicKit, so its volume events can be told apart. */
+  const sentMusicVolumes: number[] = [];
+  const rememberSentMusicVolume = (level: number): void => {
+    sentMusicVolumes.push(level);
+    if (sentMusicVolumes.length > MAX_SENT_MUSIC_VOLUMES)
+      sentMusicVolumes.shift();
+  };
+
   /** Sets the unmuted level. Any explicit volume change also unmutes. */
   const applyPlaybackVolume = (volume: number): number => {
     const safeVolume = Number.isFinite(volume)
@@ -112,8 +124,35 @@ export function createPlayback(context: ControllerContext) {
     if (getState().playback.muted) setMuted(false);
     setVolume(safeVolume);
     const music = getMusic();
-    if (music) setMusicVolume(music, safeVolume);
+    if (music) {
+      rememberSentMusicVolume(safeVolume);
+      setMusicVolume(music, safeVolume);
+    }
     return safeVolume;
+  };
+
+  /**
+   * Mirrors a volume MusicKit reports on its own, such as one changed from
+   * another app. A level this app just wrote is an echo and is ignored, and
+   * the audio is never written here, so the change cannot loop. Returns true
+   * when `playback.volume` changed, so the caller can persist it.
+   */
+  const reflectMusicVolume = (volume: number): boolean => {
+    if (!Number.isFinite(volume)) return false;
+    const level = Math.max(0, Math.min(1, volume));
+    const echoIndex = sentMusicVolumes.findIndex(
+      (sent) => Math.abs(sent - level) <= MUSIC_VOLUME_TOLERANCE,
+    );
+    if (echoIndex !== -1) {
+      sentMusicVolumes.splice(0, echoIndex + 1);
+      return false;
+    }
+    const { muted, volume: audible } = getState().playback;
+    const heard = muted ? 0 : audible;
+    if (Math.abs(heard - level) <= MUSIC_VOLUME_TOLERANCE) return false;
+    if (muted) setMuted(false);
+    setVolume(level);
+    return true;
   };
 
   const editQueueLogged = async (
@@ -684,6 +723,7 @@ export function createPlayback(context: ControllerContext) {
 
   return {
     applyPlaybackVolume,
+    reflectMusicVolume,
     syncPlaybackModes,
     playTracks,
     maybeRefillQueue,
@@ -812,7 +852,9 @@ export function createPlayback(context: ControllerContext) {
       setMuted(muted);
       const music = getMusic();
       if (music) {
-        setMusicVolume(music, muted ? 0 : getState().playback.volume);
+        const level = muted ? 0 : getState().playback.volume;
+        rememberSentMusicVolume(level);
+        setMusicVolume(music, level);
       }
     },
 

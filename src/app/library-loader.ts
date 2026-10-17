@@ -526,7 +526,7 @@ export function createLibraryLoader(
     const client = requireLibrary();
     const results = await Promise.allSettled([
       Promise.resolve().then(() =>
-        libraryMethod(client, "getRecentlyPlayedPlaylists")(10),
+        libraryMethod(client, "getRecentlyPlayed")(20),
       ),
       Promise.resolve().then(() =>
         libraryMethod(client, "getHeavyRotation")(10),
@@ -545,6 +545,7 @@ export function createLibraryLoader(
     const [recentResult, heavyResult, recommendationResult] = results;
     if (recentResult.status === "fulfilled") {
       successful += 1;
+      // Home resources include stations, which HomeState does not type yet.
       recentPlaylists = asLibraryEntities(
         asRecord(recentResult.value)?.items ?? recentResult.value,
       ) as HomeState["recentPlaylists"];
@@ -555,17 +556,14 @@ export function createLibraryLoader(
       successful += 1;
       heavyRotation = asLibraryEntities(
         asRecord(heavyResult.value)?.items ?? heavyResult.value,
-      ).filter((item) => {
-        const type = String(item.type ?? item.resourceType ?? "");
-        return type.includes("album") || type.includes("playlist");
-      }) as HomeState["heavyRotation"];
+      ) as HomeState["heavyRotation"];
     } else {
       errors.heavyRotation = safeErrorMessage(heavyResult.reason);
     }
     if (recommendationResult.status === "fulfilled") {
       successful += 1;
       recommendations = Array.isArray(recommendationResult.value)
-        ? recommendationResult.value
+        ? (recommendationResult.value as HomeState["recommendations"])
         : [];
     } else {
       errors.recommendations = safeErrorMessage(recommendationResult.reason);
@@ -692,10 +690,15 @@ export function createLibraryLoader(
     return { items: asLibraryEntities(page), next: asNext(page) };
   };
 
+  /**
+   * `first` is the artist's views page when the artist request carried it;
+   * the rest is requested through the same `next` path.
+   */
   const loadArtistAlbums = async (
     id: string,
     source: MusicSource,
     artistName: unknown,
+    first?: { items: unknown[]; next?: string },
   ): Promise<LibraryEntity[]> => {
     const client = libraryClient;
     // Test and preview clients may not implement the relationship.
@@ -706,9 +709,12 @@ export function createLibraryLoader(
         const albums: LibraryEntity[] = [];
         const seen = new Set<string>();
         let cursor: string | undefined;
+        let loaded = first;
         do {
           // Apple pages an artist's albums (25 at a time in the catalog).
-          const page = await client.getArtistAlbums(id, cursor, source);
+          const page =
+            loaded ?? (await client.getArtistAlbums(id, cursor, source));
+          loaded = undefined;
           albums.push(...asLibraryEntities(page));
           cursor = asNext(page);
           if (cursor && seen.has(cursor)) break;
@@ -1008,13 +1014,21 @@ export function createLibraryLoader(
           kind === "album"
             ? await client.getAlbumDetail(id, source)
             : undefined;
+        // An artist response can carry the page's shelves and first albums.
+        // Test and preview clients may lack the method and use the plain read.
+        const artist =
+          kind === "artist" && typeof client.getArtistDetail === "function"
+            ? await client.getArtistDetail(id, source)
+            : undefined;
         const raw =
           album !== undefined
             ? album.item
-            : await libraryMethod(
-                client,
-                `get${kind.charAt(0).toUpperCase()}${kind.slice(1)}`,
-              )(id, source);
+            : artist !== undefined
+              ? artist.item
+              : await libraryMethod(
+                  client,
+                  `get${kind.charAt(0).toUpperCase()}${kind.slice(1)}`,
+                )(id, source);
         if (!isCurrent()) return undefined;
         const detail = detailFromResponse(raw);
         if (!detail.item && detail.items.length > 0) {
@@ -1035,6 +1049,7 @@ export function createLibraryLoader(
               id,
               source,
               detail.item?.name,
+              artist?.albums,
             );
           } catch (error) {
             log(`Artist album expansion failed: ${safeErrorMessage(error)}`);

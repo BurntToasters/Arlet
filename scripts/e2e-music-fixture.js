@@ -9,6 +9,47 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  * Its tracks carry artwork with bgColor, so Now Playing tints when they play.
  * album-polish-sparse: no release date, genres, label, notes or durations.
  * pl.polish-fixture: 2 songs and a description with HTML-looking text.
+ *
+ * Discovery ids (scripts/e2e-discovery.js; docs/TESTING.md "Apple Music
+ * discovery features"). Search finds them with a term containing "discovery";
+ * suggestions answer terms starting "pol" or "fix"; other terms get none.
+ * artist-views: every view populated; editorialNotes with HTML and a script
+ *   that sets window.__ARLET_DISCOVERY_XSS__; editorialArtwork.bannerUber.
+ *   top-songs (8) and full-albums (30) page at 5 and 25 for the inline view.
+ * artist-views-sparse: only top-songs and full-albums; no notes or artwork.
+ *   Other requested views come back as { data: [] }.
+ * album-discover: 4 tracks; other-versions (1), related-albums (3) and
+ *   more-by-artist (0, so its shelf must stay hidden).
+ * Search "discovery": top results; 60 albums (25 a page); station
+ *   ra.discover-station-1; curator cur.discovery-fixture.
+ * Genres 14 Pop, 20 Alternative, 21 Rock, 7 Electronic. Charts give songs
+ *   per genre: no genre gets chart-song (30), genre 14 pop-chart (12) and
+ *   genre 21 rock-chart (3). Only the no-genre and 14 charts carry the
+ *   cityCharts and dailyGlobalTopCharts shelves; 21 never does.
+ * Station genres sg-pop (ra.genre-pop-1 with url, ra.genre-pop-2 without)
+ *   and sg-rock (ra.genre-rock-1).
+ * cur.discovery-fixture (curators) and apple.discovery-fixture
+ *   (apple-curators): grouped-playlists view and include=playlists.
+ * pl.discovery-curated-1, -curated-2, pl.discovery-apple-1, and the
+ *   featured playlists: 2 songs each, with a curator relationship.
+ * Request controls: configure({ delayTerms: { pol: 1200 } }) delays a
+ *   suggestions term; configure({ rejectQueryKeys: ["views"] }) rejects any
+ *   request carrying that query key; configure({ repeatViewCursor: true })
+ *   makes every page after the first point at itself.
+ * Event controls (payloads as the app's MusicKit events reader expects them):
+ *   emitAuthorizationStatus(false) sets isAuthorized = false, then emits
+ *     authorizationStatusDidChange {}; true sets it back the same way.
+ *   emitPlaybackDuration(240) emits playbackDurationDidChange
+ *     { currentPlaybackDuration: 240 }.
+ *   emitPlaybackVolume(0.4) sets instance.volume, then emits
+ *     playbackVolumeDidChange { volume: 0.4 }.
+ *   setLive(true) marks the current item attributes.isLive; the app clears
+ *     live metadata when nowPlayingItemDidChange carries a non-live item.
+ *   emitTimedMetadata({ title, artist }) emits timedMetadataDidChange
+ *     { timedMetadata: { title, artist } }; it emits whether or not the item
+ *     is live, so a test sets live first.
+ *   emitMetadata({ title, artist }) emits metadataDidChange with the same
+ *     payload, as the alias the app listens for.
  */
 
 function installMusicKitFixture() {
@@ -26,6 +67,12 @@ function installMusicKitFixture() {
     queuePositionDidChange: "queuePositionDidChange",
     shuffleModeDidChange: "shuffleModeDidChange",
     repeatModeDidChange: "repeatModeDidChange",
+    // Not listened to by the app yet; the discovery controls emit them.
+    authorizationStatusDidChange: "authorizationStatusDidChange",
+    playbackDurationDidChange: "playbackDurationDidChange",
+    playbackVolumeDidChange: "playbackVolumeDidChange",
+    timedMetadataDidChange: "timedMetadataDidChange",
+    metadataDidChange: "metadataDidChange",
   };
 
   const track = (id, name, albumName = "Fixture Album") => ({
@@ -154,6 +201,7 @@ function installMusicKitFixture() {
       (item) => item.id === id,
     ) ??
     navResources[id] ??
+    discoveryTrackItems.find((item) => item.id === id) ??
     (id === catalogSong.id ? catalogSong : undefined) ??
     track(id, id);
   const playlist = {
@@ -207,6 +255,11 @@ function installMusicKitFixture() {
     librarySize: 0,
     // Artwork URL template for responses and queue items; "" keeps seed URLs.
     artworkTemplate: "",
+    // Discovery controls (header comment); all off by default.
+    delayTerms: {},
+    rejectQueryKeys: [],
+    repeatViewCursor: false,
+    liveMetadata: null,
   };
   let instance;
 
@@ -533,6 +586,886 @@ function installMusicKitFixture() {
     },
   };
 
+  // Discovery data (ids in the header comment). Shaped as Apple returns
+  // catalog resources; the routes below read only what the request asks for.
+  const nonNegativeInt = (value) => {
+    const number = Math.floor(Number(value));
+    return Number.isFinite(number) && number > 0 ? number : 0;
+  };
+  const pagingOf = (params, fallbackLimit, cap) => {
+    const requested = Math.floor(Number(params.limit));
+    return {
+      offset: nonNegativeInt(params.offset),
+      limit:
+        Number.isFinite(requested) && requested > 0
+          ? Math.min(requested, cap)
+          : fallbackLimit,
+    };
+  };
+  const listParam = (value) =>
+    String(value ?? "")
+      .split(",")
+      .filter(Boolean);
+  // Query parameters from the path's own `?` and from the call. Extra keys
+  // such as `l=` or `limit` are simply ignored by the routes that do not use
+  // them.
+  const requestParams = (path, call = {}) => ({
+    ...Object.fromEntries(
+      new URLSearchParams(String(path).split("?")[1] ?? ""),
+    ),
+    ...Object.fromEntries(
+      Object.entries(call?.query ?? {}).map(([key, value]) => [
+        key,
+        String(value),
+      ]),
+    ),
+  });
+  // Pages a list the way Apple does: `next` repeats the path with the next
+  // offset. With repeatViewCursor set, each page after the first points back
+  // at itself, so following `next` never reaches the end.
+  const pageResponse = (items, base, params, offset, limit) => {
+    const following = offset + limit;
+    const more = state.repeatViewCursor ? offset > 0 : following < items.length;
+    const target = state.repeatViewCursor && offset > 0 ? offset : following;
+    const query = new URLSearchParams({
+      ...params,
+      offset: String(target),
+      limit: String(limit),
+    });
+    return {
+      data: items.slice(offset, following).map(clone),
+      ...(more ? { next: `${base}?${query}` } : {}),
+    };
+  };
+
+  const discoveryTrack = (id, name, album, number) => ({
+    id,
+    type: "songs",
+    attributes: {
+      name,
+      artistName: "Discovery Artist",
+      albumName: album,
+      durationInMillis: 200_000,
+      trackNumber: number,
+      playParams: { id, kind: "song", catalogId: id },
+    },
+  });
+  const discoveryAlbum = (id, name, attributes = {}) => ({
+    id,
+    type: "albums",
+    attributes: {
+      name,
+      artistName: "Discovery Artist",
+      releaseDate: "2020-01-01",
+      trackCount: 1,
+      playParams: { id, kind: "album" },
+      ...attributes,
+    },
+  });
+  const discoveryArtistResource = (id, name) => ({
+    id,
+    type: "artists",
+    attributes: { name },
+  });
+
+  const discoverAlbumTracks = [1, 2, 3, 4].map((number) =>
+    discoveryTrack(
+      `discover-album-t${number}`,
+      `Discovery Album Track ${number}`,
+      "Fixture Discovery Album",
+      number,
+    ),
+  );
+  const discoverAlbum = discoveryAlbum(
+    "album-discover",
+    "Fixture Discovery Album",
+    {
+      releaseDate: "2021-03-05",
+      trackCount: 4,
+      url: "https://music.apple.com/us/album/fixture-discovery-album/album-discover",
+    },
+  );
+  // Shelves on the album page. more-by-artist is empty on purpose.
+  const DISCOVERY_ALBUM_VIEWS = {
+    "other-versions": [
+      discoveryAlbum(
+        "album-discover-deluxe",
+        "Fixture Discovery Album (Deluxe)",
+      ),
+    ],
+    "related-albums": [1, 2, 3].map((number) =>
+      discoveryAlbum(
+        `album-discover-related-${number}`,
+        `Related Discovery Album ${number}`,
+      ),
+    ),
+    "more-by-artist": [],
+  };
+
+  const artistAlbums = Array.from({ length: 30 }, (_, index) =>
+    discoveryAlbum(
+      `artist-views-album-${String(index + 1).padStart(2, "0")}`,
+      `Artist Views Album ${index + 1}`,
+      { releaseDate: `${1995 + index}-06-01` },
+    ),
+  );
+  const artistTopSongs = Array.from({ length: 8 }, (_, index) =>
+    discoveryTrack(
+      `artist-views-song-${index + 1}`,
+      `Artist Views Song ${index + 1}`,
+      "Artist Views Top Songs",
+      index + 1,
+    ),
+  );
+  const sparseTopSongs = [
+    discoveryTrack("sparse-song-1", "Sparse Song One", "Sparse Album", 1),
+    discoveryTrack("sparse-song-2", "Sparse Song Two", "Sparse Album", 2),
+  ];
+  const sparseAlbums = [
+    discoveryAlbum("sparse-album-1", "Sparse Album One"),
+    discoveryAlbum("sparse-album-2", "Sparse Album Two"),
+  ];
+
+  // Playlists that catalog curators and the featured shelves point at.
+  const discoveryPlaylists = {
+    "pl.discovery-curated-1": {
+      name: "Discovery Mix One",
+      curator: { id: "cur.discovery-fixture", type: "curators" },
+    },
+    "pl.discovery-curated-2": {
+      name: "Discovery Mix Two",
+      curator: { id: "cur.discovery-fixture", type: "curators" },
+    },
+    "pl.discovery-apple-1": {
+      name: "Discovery Editors Pick",
+      curator: { id: "apple.discovery-fixture", type: "apple-curators" },
+      curatorName: "Apple Discovery Editors",
+    },
+    "pl.discovery-featured-1": {
+      name: "Discovery Featured One",
+      curator: { id: "cur.discovery-fixture", type: "curators" },
+    },
+    "pl.discovery-featured-2": {
+      name: "Discovery Featured Two",
+      curator: { id: "apple.discovery-fixture", type: "apple-curators" },
+      curatorName: "Apple Discovery Editors",
+    },
+  };
+  const discoveryPlaylistTracks = (id) =>
+    [1, 2].map((number) =>
+      discoveryTrack(
+        `${id}-t${number}`,
+        `${discoveryPlaylists[id].name} Track ${number}`,
+        discoveryPlaylists[id].name,
+        number,
+      ),
+    );
+  const discoveryPlaylistResource = (id) => ({
+    id,
+    type: "playlists",
+    attributes: {
+      name: discoveryPlaylists[id].name,
+      curatorName: discoveryPlaylists[id].curatorName ?? "Discovery Curator",
+      trackCount: 2,
+      playParams: { id, kind: "playlist" },
+    },
+  });
+  const playlistRef = (id) => ({ id, type: "playlists" });
+
+  // Artist views by artist ID. Requested views that are absent from an
+  // artist's entry answer as { data: [] }.
+  const ARTIST_VIEWS = {
+    "artist-views": {
+      "latest-release": [artistAlbums[29]],
+      "top-songs": artistTopSongs,
+      "full-albums": artistAlbums,
+      singles: [1, 2, 3].map((number) =>
+        discoveryAlbum(
+          `artist-views-single-${number}`,
+          `Artist Views Single ${number}`,
+          {
+            isSingle: true,
+            trackCount: 1,
+          },
+        ),
+      ),
+      "live-albums": [
+        discoveryAlbum("artist-views-live-1", "Artist Views Live Album"),
+      ],
+      "compilation-albums": [1, 2].map((number) =>
+        discoveryAlbum(
+          `artist-views-comp-${number}`,
+          `Artist Views Compilation ${number}`,
+        ),
+      ),
+      "appears-on-albums": [
+        discoveryAlbum("artist-views-appears-1", "Artist Views Appears On"),
+      ],
+      "similar-artists": [1, 2, 3].map((number) =>
+        discoveryArtistResource(
+          `artist-views-similar-${number}`,
+          `Similar Artist ${number}`,
+        ),
+      ),
+      "featured-playlists": [
+        discoveryPlaylistResource("pl.discovery-featured-1"),
+        discoveryPlaylistResource("pl.discovery-featured-2"),
+      ],
+    },
+    "artist-views-sparse": {
+      "top-songs": sparseTopSongs,
+      "full-albums": sparseAlbums,
+    },
+  };
+  const DISCOVERY_ARTIST_NAMES = {
+    "artist-views": "Discovery Artist",
+    "artist-views-sparse": "Sparse Discovery Artist",
+  };
+  const ARTIST_NOTES = {
+    "artist-views": {
+      standard:
+        'Bio with <b>markup</b> and <a href="https://example.invalid">a link</a><script>window.__ARLET_DISCOVERY_XSS__ = true</script>',
+      short: "Short <i>bio</i>",
+    },
+  };
+  const ARTIST_BANNERS = {
+    "artist-views": {
+      bannerUber: {
+        url: "https://is1-ssl.mzstatic.com/image/thumb/Music/e2e/artist-views/{w}x{h}bb.jpg",
+        width: 3000,
+        height: 1000,
+      },
+    },
+  };
+  // Views sent inline with the artist; the rest of a view comes by `next`.
+  const INLINE_VIEW_LIMIT = { "top-songs": 5, "full-albums": 25 };
+
+  // Curators by ID; the type must match the route (curators or apple-curators).
+  const discoveryCurators = {
+    "cur.discovery-fixture": {
+      type: "curators",
+      name: "Discovery Curator",
+      playlists: [
+        "pl.discovery-curated-1",
+        "pl.discovery-curated-2",
+        "pl.discovery-featured-1",
+      ],
+      groups: [
+        {
+          id: "discovery-group-new",
+          name: "New Mixes",
+          playlists: ["pl.discovery-curated-1", "pl.discovery-curated-2"],
+        },
+        {
+          id: "discovery-group-featured",
+          name: "Featured",
+          playlists: ["pl.discovery-featured-1"],
+        },
+      ],
+    },
+    "apple.discovery-fixture": {
+      type: "apple-curators",
+      name: "Apple Discovery Editors",
+      playlists: ["pl.discovery-apple-1", "pl.discovery-featured-2"],
+      groups: [
+        {
+          id: "discovery-group-editors",
+          name: "Editors' Picks",
+          playlists: ["pl.discovery-apple-1"],
+        },
+      ],
+    },
+  };
+
+  const DISCOVERY_STATION_URL = (slug, id) =>
+    `https://music.apple.com/us/station/${slug}/${id}`;
+  const discoveryStation = (id, name, url) => ({
+    id,
+    type: "stations",
+    attributes: { name, ...(url ? { url } : {}) },
+  });
+  const STATION_GENRES = [
+    { id: "sg-pop", type: "station-genres", attributes: { name: "Pop" } },
+    { id: "sg-rock", type: "station-genres", attributes: { name: "Rock" } },
+  ];
+  const DISCOVERY_STATIONS = {
+    "sg-pop": [
+      discoveryStation(
+        "ra.genre-pop-1",
+        "Pop Station One",
+        DISCOVERY_STATION_URL("pop-station-one", "ra.genre-pop-1"),
+      ),
+      discoveryStation("ra.genre-pop-2", "Pop Station Two"),
+    ],
+    "sg-rock": [
+      discoveryStation(
+        "ra.genre-rock-1",
+        "Rock Station One",
+        DISCOVERY_STATION_URL("rock-station-one", "ra.genre-rock-1"),
+      ),
+    ],
+  };
+  const SEARCH_STATIONS = [
+    discoveryStation(
+      "ra.discover-station-1",
+      "Discovery Station One",
+      DISCOVERY_STATION_URL("discovery-station-one", "ra.discover-station-1"),
+    ),
+  ];
+
+  const GENRES = [
+    { id: "14", type: "genres", attributes: { name: "Pop" } },
+    { id: "20", type: "genres", attributes: { name: "Alternative" } },
+    { id: "21", type: "genres", attributes: { name: "Rock" } },
+    { id: "7", type: "genres", attributes: { name: "Electronic" } },
+  ];
+  const chartSongs = (prefix, label, count) =>
+    Array.from({ length: count }, (_, index) =>
+      discoveryTrack(
+        `${prefix}-${String(index + 1).padStart(2, "0")}`,
+        `${label} ${index + 1}`,
+        `${label} Album`,
+        index + 1,
+      ),
+    );
+  // Charts by genre ID ("" = no genre). A missing key is a shelf Apple left
+  // out of the response. City and daily charts hold playlists, as Apple sends.
+  const CHARTS = {
+    "": {
+      songs: chartSongs("chart-song", "Chart Song", 30),
+      albums: [1, 2, 3].map((number) =>
+        discoveryAlbum(`chart-album-${number}`, `Chart Album ${number}`),
+      ),
+      playlists: [
+        "pl.discovery-curated-1",
+        "pl.discovery-curated-2",
+        "pl.discovery-apple-1",
+        "pl.discovery-featured-1",
+        "pl.discovery-featured-2",
+      ],
+      cityCharts: ["pl.discovery-curated-1", "pl.discovery-featured-1"],
+      dailyGlobalTopCharts: ["pl.discovery-apple-1", "pl.discovery-featured-2"],
+    },
+    14: {
+      songs: chartSongs("pop-chart", "Pop Chart Song", 12),
+      albums: [1, 2].map((number) =>
+        discoveryAlbum(`pop-album-${number}`, `Pop Album ${number}`),
+      ),
+      cityCharts: ["pl.discovery-curated-2"],
+      dailyGlobalTopCharts: ["pl.discovery-curated-1"],
+    },
+    21: {
+      songs: chartSongs("rock-chart", "Rock Chart Song", 3),
+    },
+  };
+
+  // Search results by Apple type. Each list pages at the request's offset.
+  const SEARCH_RESULTS = {
+    songs: Array.from({ length: 12 }, (_, index) =>
+      discoveryTrack(
+        `search-song-${String(index + 1).padStart(2, "0")}`,
+        `Discovery Search Song ${index + 1}`,
+        "Discovery Search Album",
+        index + 1,
+      ),
+    ),
+    albums: Array.from({ length: 60 }, (_, index) =>
+      discoveryAlbum(
+        `discovery-album-${String(index + 1).padStart(2, "0")}`,
+        `Discovery Search Album ${index + 1}`,
+      ),
+    ),
+    artists: [1, 2, 3].map((number) =>
+      discoveryArtistResource(
+        `discovery-artist-${number}`,
+        `Discovery Artist ${number}`,
+      ),
+    ),
+    playlists: [
+      "pl.discovery-curated-1",
+      "pl.discovery-curated-2",
+      "pl.discovery-apple-1",
+      "pl.discovery-featured-1",
+      "pl.discovery-featured-2",
+    ].map((id) => discoveryPlaylistResource(id)),
+    stations: SEARCH_STATIONS,
+    "apple-curators": [
+      {
+        id: "apple.discovery-fixture",
+        type: "apple-curators",
+        attributes: { name: "Apple Discovery Editors" },
+      },
+    ],
+  };
+
+  // Home lists. Recent played pages 4 at a time, so `next` is followed once.
+  const RECENT_PLAYED = [
+    discoverAlbum,
+    discoveryStation(
+      "ra.discover-station-1",
+      "Discovery Station One",
+      DISCOVERY_STATION_URL("discovery-station-one", "ra.discover-station-1"),
+    ),
+    discoveryPlaylistResource("pl.discovery-curated-1"),
+    discoveryAlbum("recent-album-1", "Recent Album One"),
+    discoveryStation(
+      "ra.genre-rock-1",
+      "Rock Station One",
+      DISCOVERY_STATION_URL("rock-station-one", "ra.genre-rock-1"),
+    ),
+    discoveryAlbum("recent-album-2", "Recent Album Two"),
+  ];
+  // Heavy rotation is unfiltered: albums, stations and playlists together.
+  const HEAVY_ROTATION = [
+    clone(discoverAlbum),
+    discoveryStation(
+      "ra.genre-pop-1",
+      "Pop Station One",
+      DISCOVERY_STATION_URL("pop-station-one", "ra.genre-pop-1"),
+    ),
+    discoveryPlaylistResource("pl.discovery-featured-1"),
+    discoveryAlbum("heavy-album-2", "Heavy Rotation Album"),
+  ];
+  // Groups carry their contents inline. The nested group becomes its own shelf.
+  const RECOMMENDATIONS = [
+    {
+      id: "rec-discover-albums",
+      type: "personal-recommendation",
+      attributes: { title: { stringForDisplay: "Discovery Albums" } },
+      relationships: {
+        contents: {
+          data: [
+            clone(discoverAlbum),
+            discoveryAlbum("rec-album-2", "Recommended Album Two"),
+          ],
+        },
+      },
+    },
+    {
+      id: "rec-discover-mixed",
+      type: "personal-recommendation",
+      attributes: { title: { stringForDisplay: "Mixed Picks" } },
+      relationships: {
+        contents: {
+          data: [
+            discoveryStation(
+              "ra.discover-station-1",
+              "Discovery Station One",
+              DISCOVERY_STATION_URL(
+                "discovery-station-one",
+                "ra.discover-station-1",
+              ),
+            ),
+            discoveryPlaylistResource("pl.discovery-curated-1"),
+            {
+              id: "rec-discover-nested",
+              type: "personal-recommendation",
+              attributes: { title: { stringForDisplay: "Nested Picks" } },
+              relationships: {
+                contents: {
+                  data: [discoveryAlbum("rec-album-3", "Nested Album Three")],
+                },
+              },
+            },
+          ],
+        },
+      },
+    },
+  ];
+
+  // Suggestion terms and top results by prefix; each term is [search, display].
+  const SUGGESTIONS = {
+    pol: {
+      terms: [
+        ["polish fixture", "Polish Fixture"],
+        ["polka", "Polka"],
+      ],
+      topResults: [polishAlbum],
+    },
+    fix: {
+      terms: [
+        ["fixture discovery", "Fixture Discovery"],
+        ["fixture", "Fixture"],
+      ],
+      topResults: [discoverAlbum],
+    },
+  };
+
+  // Every discovery track, so queued items get their names.
+  const discoveryTrackItems = [
+    ...discoverAlbumTracks,
+    ...artistTopSongs,
+    ...sparseTopSongs,
+    ...Object.keys(discoveryPlaylists).flatMap(discoveryPlaylistTracks),
+  ];
+
+  const artistResponse = (id, params) => {
+    const attributes = { name: DISCOVERY_ARTIST_NAMES[id] };
+    const extend = listParam(params.extend);
+    if (extend.includes("editorialNotes") && ARTIST_NOTES[id]) {
+      attributes.editorialNotes = clone(ARTIST_NOTES[id]);
+    }
+    if (extend.includes("editorialArtwork") && ARTIST_BANNERS[id]) {
+      attributes.editorialArtwork = clone(ARTIST_BANNERS[id]);
+    }
+    const resource = { id, type: "artists", attributes };
+    const views = listParam(params.views);
+    if (views.length) {
+      resource.views = Object.fromEntries(
+        views.map((name) => [
+          name,
+          pageResponse(
+            ARTIST_VIEWS[id][name] ?? [],
+            `/v1/catalog/us/artists/${id}/view/${name}`,
+            {},
+            0,
+            INLINE_VIEW_LIMIT[name] ?? 25,
+          ),
+        ]),
+      );
+    }
+    return { data: [resource] };
+  };
+  const albumResponse = (params) => {
+    const resource = clone(discoverAlbum);
+    if (listParam(params.include).includes("tracks")) {
+      resource.relationships = {
+        tracks: { data: discoverAlbumTracks.map(clone) },
+      };
+    }
+    const views = listParam(params.views);
+    if (views.length) {
+      resource.views = Object.fromEntries(
+        views.map((name) => [
+          name,
+          pageResponse(
+            DISCOVERY_ALBUM_VIEWS[name] ?? [],
+            `/v1/catalog/us/albums/album-discover/view/${name}`,
+            {},
+            0,
+            25,
+          ),
+        ]),
+      );
+    }
+    return { data: [resource] };
+  };
+  const playlistResponse = (id, params) => {
+    const resource = discoveryPlaylistResource(id);
+    const include = listParam(params.include);
+    const relationships = {};
+    if (include.includes("curator") || include.includes("curators")) {
+      relationships.curator = {
+        data: [clone(discoveryPlaylists[id].curator)],
+      };
+    }
+    if (include.includes("tracks")) {
+      relationships.tracks = { data: discoveryPlaylistTracks(id).map(clone) };
+    }
+    if (Object.keys(relationships).length)
+      resource.relationships = relationships;
+    return { data: [resource] };
+  };
+  const curatorResponse = (curator, id, params) => {
+    const resource = {
+      id,
+      type: curator.type,
+      attributes: { name: curator.name },
+    };
+    const include = listParam(params.include);
+    if (include.includes("playlists")) {
+      resource.relationships = {
+        playlists: { data: curator.playlists.map(playlistRef) },
+      };
+    }
+    const views = listParam(params.views);
+    if (views.length) {
+      resource.views = Object.fromEntries(
+        views.map((name) => [
+          name,
+          {
+            data:
+              name === "grouped-playlists"
+                ? curator.groups.map((group) => ({
+                    id: group.id,
+                    type: "playlist-groups",
+                    attributes: { name: group.name },
+                    relationships: {
+                      playlists: { data: group.playlists.map(playlistRef) },
+                    },
+                  }))
+                : [],
+          },
+        ]),
+      );
+    }
+    return { data: [resource] };
+  };
+  const chartsResponse = (params) => {
+    const genre = CHARTS[params.genre ?? ""] ?? {};
+    const withList = listParam(params.with);
+    const types = listParam(params.types);
+    const wanted = (type) => types.length === 0 || types.includes(type);
+    const { offset, limit } = pagingOf(params, 25, 100);
+    const results = {};
+    // Only the most-played songs page; each shelf follows its own `next`.
+    if (genre.songs && wanted("songs")) {
+      results.songs = [
+        {
+          chart: "most-played",
+          name: "Top Songs",
+          ...pageResponse(
+            genre.songs,
+            "/v1/catalog/us/charts",
+            params,
+            offset,
+            limit,
+          ),
+        },
+      ];
+    }
+    if (genre.albums && wanted("albums")) {
+      results.albums = [
+        {
+          chart: "most-played",
+          name: "Top Albums",
+          data: genre.albums.map(clone),
+        },
+      ];
+    }
+    if (genre.playlists && wanted("playlists")) {
+      results.playlists = [
+        {
+          chart: "most-played",
+          name: "Top Playlists",
+          data: genre.playlists.map((id) => discoveryPlaylistResource(id)),
+        },
+      ];
+    }
+    // Playlist charts sit beside the songs, and only when the request asks.
+    if (genre.cityCharts && withList.includes("cityCharts")) {
+      results.cityCharts = [
+        {
+          chart: "city-charts",
+          name: "City Charts",
+          data: genre.cityCharts.map((id) => discoveryPlaylistResource(id)),
+        },
+      ];
+    }
+    if (
+      genre.dailyGlobalTopCharts &&
+      withList.includes("dailyGlobalTopCharts")
+    ) {
+      results.dailyGlobalTopCharts = [
+        {
+          chart: "daily-global-top-charts",
+          name: "Daily Top 100",
+          data: genre.dailyGlobalTopCharts.map((id) =>
+            discoveryPlaylistResource(id),
+          ),
+        },
+      ];
+    }
+    return { results };
+  };
+  const searchResponse = (params) => {
+    const { offset, limit } = pagingOf(params, 10, 25);
+    const results = {};
+    if (listParam(params.with).includes("topResults")) {
+      results.top = {
+        data: [
+          clone(discoverAlbum),
+          discoveryArtistResource("artist-views", "Discovery Artist"),
+          discoveryPlaylistResource("pl.discovery-featured-1"),
+        ],
+      };
+    }
+    const types = listParam(params.types);
+    for (const type of types.length ? types : ["albums"]) {
+      if (!Object.hasOwn(SEARCH_RESULTS, type)) continue;
+      results[type] = pageResponse(
+        SEARCH_RESULTS[type],
+        "/v1/catalog/us/search",
+        params,
+        offset,
+        limit,
+      );
+    }
+    return { results };
+  };
+  const suggestionsResponse = (params) => {
+    const term = String(params.term ?? "")
+      .trim()
+      .toLowerCase();
+    const prefix = Object.keys(SUGGESTIONS).find((key) => term.startsWith(key));
+    const entry = prefix ? SUGGESTIONS[prefix] : undefined;
+    const { limit } = pagingOf({ limit: params.limit }, 10, 25);
+    const suggestions = entry
+      ? [
+          ...entry.terms.map(([searchTerm, displayTerm]) => ({
+            kind: "terms",
+            searchTerm,
+            displayTerm,
+          })),
+          ...entry.topResults.map((content) => ({
+            kind: "topResults",
+            content: clone(content),
+          })),
+        ]
+      : [];
+    return { results: { suggestions: suggestions.slice(0, limit) } };
+  };
+
+  // Routes for the discovery ids. Undefined means "not a discovery route", so
+  // the existing handlers answer it as before.
+  const discoveryResponse = (pathname, path, call) => {
+    const params = requestParams(path, call);
+    if (pathname === "/v1/catalog/us/genres") {
+      return { data: GENRES.map(clone) };
+    }
+    if (pathname === "/v1/catalog/us/station-genres") {
+      return { data: STATION_GENRES.map(clone) };
+    }
+    const stationRoute = pathname.match(
+      /^\/v1\/catalog\/us\/station-genres\/([^/]+)\/stations$/u,
+    );
+    if (stationRoute) {
+      return { data: (DISCOVERY_STATIONS[stationRoute[1]] ?? []).map(clone) };
+    }
+    if (pathname === "/v1/catalog/us/playlists" && params.ids !== undefined) {
+      const ids = listParam(params.ids);
+      // Discovery ids resolve here; the catalog and polish playlists resolve
+      // as before. Ids nothing answers are skipped, in request order.
+      if (ids.some((id) => Object.hasOwn(discoveryPlaylists, id))) {
+        const known = [catalogPlaylist, polishPlaylist];
+        return {
+          data: ids.flatMap((id) => {
+            if (Object.hasOwn(discoveryPlaylists, id)) {
+              return [discoveryPlaylistResource(id)];
+            }
+            const match = known.find((entry) => entry.id === id);
+            return match ? [clone(match)] : [];
+          }),
+        };
+      }
+    }
+    if (pathname === "/v1/me/library/artists/library-artist-views") {
+      return {
+        data: [
+          {
+            id: "library-artist-views",
+            type: "library-artists",
+            attributes: { name: "Discovery Artist" },
+            relationships: {
+              catalog: {
+                data: [
+                  discoveryArtistResource("artist-views", "Discovery Artist"),
+                ],
+              },
+            },
+          },
+        ],
+      };
+    }
+    if (pathname === "/v1/me/library/albums/library-album-discover") {
+      return {
+        data: [
+          {
+            id: "library-album-discover",
+            type: "library-albums",
+            attributes: {
+              name: "Fixture Discovery Album",
+              artistName: "Discovery Artist",
+              trackCount: 4,
+            },
+            relationships: {
+              tracks: { data: discoverAlbumTracks.map(clone) },
+              catalog: { data: [{ id: "album-discover", type: "albums" }] },
+            },
+          },
+        ],
+      };
+    }
+    if (pathname === "/v1/me/recent/played") {
+      const { offset } = pagingOf(params, 10, 10);
+      return pageResponse(
+        RECENT_PLAYED,
+        "/v1/me/recent/played",
+        {
+          types: params.types ?? "albums,playlists,library-playlists,stations",
+          limit: params.limit ?? "10",
+        },
+        offset,
+        4,
+      );
+    }
+    if (pathname === "/v1/me/history/heavy-rotation") {
+      return { data: HEAVY_ROTATION.map(clone) };
+    }
+    if (pathname === "/v1/me/recommendations") {
+      return { data: RECOMMENDATIONS.map(clone) };
+    }
+    if (pathname === "/v1/catalog/us/charts") return chartsResponse(params);
+    if (pathname === "/v1/catalog/us/search/suggestions") {
+      return suggestionsResponse(params);
+    }
+    if (
+      pathname === "/v1/catalog/us/search" &&
+      /discovery/iu.test(String(params.term ?? ""))
+    ) {
+      return searchResponse(params);
+    }
+    const artistRoute = pathname.match(
+      /^\/v1\/catalog\/us\/artists\/([^/]+)(?:\/(albums)|\/view\/([^/]+))?$/u,
+    );
+    if (artistRoute && Object.hasOwn(ARTIST_VIEWS, artistRoute[1])) {
+      const [, id, albums, view] = artistRoute;
+      const paging = pagingOf(params, 25, 100);
+      if (albums) {
+        return pageResponse(
+          ARTIST_VIEWS[id]["full-albums"] ?? [],
+          `/v1/catalog/us/artists/${id}/albums`,
+          {},
+          paging.offset,
+          paging.limit,
+        );
+      }
+      if (view) {
+        return pageResponse(
+          ARTIST_VIEWS[id][view] ?? [],
+          `/v1/catalog/us/artists/${id}/view/${view}`,
+          {},
+          paging.offset,
+          paging.limit,
+        );
+      }
+      return artistResponse(id, params);
+    }
+    if (pathname === "/v1/catalog/us/albums/album-discover") {
+      return albumResponse(params);
+    }
+    if (pathname === "/v1/catalog/us/albums/album-discover/tracks") {
+      return { data: discoverAlbumTracks.map(clone) };
+    }
+    const playlistRoute = pathname.match(
+      /^\/v1\/catalog\/us\/playlists\/([^/]+)(\/tracks)?$/u,
+    );
+    if (playlistRoute && Object.hasOwn(discoveryPlaylists, playlistRoute[1])) {
+      return playlistRoute[2]
+        ? { data: discoveryPlaylistTracks(playlistRoute[1]).map(clone) }
+        : playlistResponse(playlistRoute[1], params);
+    }
+    const curatorRoute = pathname.match(
+      /^\/v1\/catalog\/us\/(curators|apple-curators)\/([^/]+)$/u,
+    );
+    if (curatorRoute && Object.hasOwn(discoveryCurators, curatorRoute[2])) {
+      const curator = discoveryCurators[curatorRoute[2]];
+      if (curator.type !== curatorRoute[1]) return { data: [] };
+      return curatorResponse(curator, curatorRoute[2], params);
+    }
+    return undefined;
+  };
+
   // Detail paths whose `include=tracks` form carries the first track page.
   const TRACK_DETAIL_PATHS = new Set([
     "/v1/me/library/albums/album-1",
@@ -632,6 +1565,8 @@ function installMusicKitFixture() {
     const mutation =
       ratingResponse(pathname, call) ?? libraryResponse(pathname, call);
     if (mutation) return mutation;
+    const discovered = discoveryResponse(pathname, path, call);
+    if (discovered !== undefined) return discovered;
     if (pathname === "/v1/me/storefront") {
       return { data: [{ id: "us", type: "storefronts" }] };
     }
@@ -900,14 +1835,28 @@ function installMusicKitFixture() {
     };
     state.requests.push(request);
     const pathText = String(path);
-    const shouldReject = state.rejectPaths.some((entry) =>
-      pathText.includes(String(entry)),
-    );
+    const params = requestParams(pathText, request);
+    const shouldReject =
+      state.rejectPaths.some((entry) => pathText.includes(String(entry))) ||
+      state.rejectQueryKeys.some((key) =>
+        Object.prototype.hasOwnProperty.call(params, key),
+      );
     const delay = state.delayPaths.some((entry) =>
       pathText.includes(String(entry)),
     );
     if (delay)
       await new Promise((resolve) => setTimeout(resolve, state.delayMs));
+    // Suggestions for a term listed in delayTerms answer late.
+    const termDelay = pathText.includes("/search/suggestions")
+      ? state.delayTerms[
+          String(params.term ?? "")
+            .trim()
+            .toLowerCase()
+        ]
+      : undefined;
+    if (typeof termDelay === "number" && termDelay > 0) {
+      await new Promise((resolve) => setTimeout(resolve, termDelay));
+    }
     if (shouldReject) {
       request.error = `Fixture request rejected: ${pathText}`;
       throw new Error(request.error);
@@ -1231,6 +2180,24 @@ function installMusicKitFixture() {
     },
   };
 
+  // Live radio metadata as MusicKit reports it: `{ timedMetadata: { title,
+  // artist? } }` for both event names. The last payload is kept in snapshot.
+  const emitLiveMetadata = (name, metadata) => {
+    if (typeof metadata?.title !== "string") {
+      throw new Error("Fixture live metadata needs a string title");
+    }
+    const fields = {
+      title: metadata.title,
+      ...(metadata.artist === undefined
+        ? {}
+        : { artist: String(metadata.artist) }),
+    };
+    state.liveMetadata = { event: name, ...clone(fields) };
+    state.transitions.push({ type: "liveMetadata", event: name, ...fields });
+    emit(name, { timedMetadata: clone(fields) });
+    return true;
+  };
+
   const fixture = {
     seed: "arlet-playlist-continuation-2026-10-08",
     configure(options = {}) {
@@ -1286,6 +2253,22 @@ function installMusicKitFixture() {
           Number(options.queueEditDelayMs) || 0,
         );
       }
+      if (Object.prototype.hasOwnProperty.call(options, "delayTerms")) {
+        state.delayTerms = Object.fromEntries(
+          Object.entries(options.delayTerms ?? {}).map(([term, ms]) => [
+            String(term).trim().toLowerCase(),
+            Math.max(0, Number(ms) || 0),
+          ]),
+        );
+      }
+      if (Object.prototype.hasOwnProperty.call(options, "rejectQueryKeys")) {
+        state.rejectQueryKeys = [...(options.rejectQueryKeys ?? [])].map(
+          String,
+        );
+      }
+      if (Object.prototype.hasOwnProperty.call(options, "repeatViewCursor")) {
+        state.repeatViewCursor = options.repeatViewCursor === true;
+      }
       return this.snapshot();
     },
     reset() {
@@ -1308,6 +2291,10 @@ function installMusicKitFixture() {
       state.libraryAdds = [];
       state.librarySize = 0;
       state.artworkTemplate = "";
+      state.delayTerms = {};
+      state.rejectQueryKeys = [];
+      state.repeatViewCursor = false;
+      state.liveMetadata = null;
       state.queue = [];
       state.queueIndex = 0;
       state.shuffleHistory = [];
@@ -1483,12 +2470,72 @@ function installMusicKitFixture() {
       );
       return true;
     },
-    emitPlaybackTime(seconds) {
+    emitPlaybackTime(seconds, duration = 180) {
       emit(events.playbackTimeDidChange, {
         currentPlaybackTime: seconds,
-        currentPlaybackDuration: 180,
+        currentPlaybackDuration: duration,
       });
       return true;
+    },
+    // A late duration: the app learns it after the first time events.
+    emitPlaybackDuration(seconds = 240) {
+      const duration = Number(seconds);
+      if (!Number.isFinite(duration) || duration < 0) {
+        throw new Error(`Fixture duration out of range: ${seconds}`);
+      }
+      state.transitions.push({ type: "playbackDuration", seconds: duration });
+      emit(events.playbackDurationDidChange, {
+        currentPlaybackDuration: duration,
+      });
+      return true;
+    },
+    // An external sign-in change: isAuthorized flips, then the event fires.
+    emitAuthorizationStatus(authorized) {
+      instance.isAuthorized = authorized === true;
+      state.transitions.push({
+        type: "authorizationStatus",
+        authorized: instance.isAuthorized,
+      });
+      emit(events.authorizationStatusDidChange, {});
+      return instance.isAuthorized;
+    },
+    // An external volume change: instance.volume is set first (recorded as a
+    // "volume" transition), then the event carries the same value.
+    emitPlaybackVolume(volume) {
+      const value = Number(volume);
+      if (!Number.isFinite(value) || value < 0 || value > 1) {
+        throw new Error(`Fixture volume out of range: ${volume}`);
+      }
+      instance.volume = value;
+      emit(events.playbackVolumeDidChange, { volume: value });
+      return true;
+    },
+    // Marks the current item live or not. A live item is station-type with
+    // attributes.isLive, as the app reads live radio. The item is re-announced
+    // so the app picks up the change.
+    setLive(isLive) {
+      const item = currentItem();
+      if (!item) return false;
+      const live = isLive === true;
+      const type = live
+        ? "stations"
+        : item.type === "stations"
+          ? "library-songs"
+          : item.type;
+      state.queue[state.queueIndex] = {
+        ...item,
+        type,
+        attributes: { ...item.attributes, isLive: live },
+      };
+      state.transitions.push({ type: "setLive", id: item.id, isLive: live });
+      syncProviderQueue(true, true);
+      return true;
+    },
+    emitTimedMetadata(metadata) {
+      return emitLiveMetadata(events.timedMetadataDidChange, metadata);
+    },
+    emitMetadata(metadata) {
+      return emitLiveMetadata(events.metadataDidChange, metadata);
     },
     seedQueue(count) {
       state.queue = Array.from({ length: count }, (_, index) =>
@@ -1515,6 +2562,8 @@ function installMusicKitFixture() {
           repeat: player.repeatMode,
         },
         volume: player.volume,
+        authorized: instance.isAuthorized === true,
+        liveMetadata: state.liveMetadata ? clone(state.liveMetadata) : null,
         contextTarget: state.contextTarget ? clone(state.contextTarget) : null,
       };
     },

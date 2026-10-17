@@ -87,10 +87,13 @@ export function detailSummary(
   if (kind === "album" && info.genreNames?.[0]) {
     parts.push(info.genreNames[0]);
   }
-  if (kind === "playlist" && info.curatorName) {
-    parts.push(`Curated by ${info.curatorName}`);
-  }
   return parts;
+}
+
+/** "Curated by X" for a playlist, shown as a link when its curator is known. */
+export function playlistCuratedBy(resource: ResourceLike): string | undefined {
+  const info = resource.raw as Partial<Playlist>;
+  return info.curatorName ? `Curated by ${info.curatorName}` : undefined;
 }
 
 export interface DetailNotes {

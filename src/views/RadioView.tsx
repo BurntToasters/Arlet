@@ -178,7 +178,15 @@ export function RadioView(): JSX.Element {
     ...radio.personal.items,
     ...radio.live.items,
     ...radio.recent.items,
+    ...radio.genreStations.items,
   ];
+  const openGenre = radio.genres.find((genre) => genre.id === radio.genreId);
+  // Selecting the open genre again closes it.
+  const chooseGenre = (genreId: string): void => {
+    void Promise.resolve(controller.loadRadioGenre?.(genreId)).catch(
+      () => undefined,
+    );
+  };
   const play = (id: string): void => {
     const station = stations.find((item) => item.id === id);
     if (station) {
@@ -220,6 +228,53 @@ export function RadioView(): JSX.Element {
         </SkeletonStatus>
       ) : (
         <>
+          {radio.genres.length ? (
+            <section
+              className="home-feed-section"
+              aria-labelledby="radio-genres-heading"
+            >
+              <div className="section-heading">
+                <div>
+                  <span className="eyebrow">Apple Music</span>
+                  <h2 id="radio-genres-heading">Genres</h2>
+                </div>
+              </div>
+              <div
+                className="browse-chip-row"
+                role="group"
+                aria-labelledby="radio-genres-heading"
+              >
+                {radio.genres.map((genre) => {
+                  const pressed = genre.id === radio.genreId;
+                  return (
+                    <button
+                      key={genre.id}
+                      className="browse-chip"
+                      type="button"
+                      aria-pressed={pressed}
+                      onClick={() => chooseGenre(pressed ? "" : genre.id)}
+                    >
+                      {genre.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
+          {openGenre ? (
+            radio.genreStations.status === "loading" &&
+            !radio.genreStations.items.length ? (
+              <SkeletonStatus label={`Loading ${openGenre.name} stations…`}>
+                <SkeletonCardGrid count={4} />
+              </SkeletonStatus>
+            ) : (
+              <StationCard
+                section={radio.genreStations}
+                title={`${openGenre.name} Stations`}
+                onPlay={play}
+              />
+            )
+          ) : null}
           <StationCard
             section={radio.personal}
             title="Your Station"

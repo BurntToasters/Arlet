@@ -22,6 +22,7 @@ import { EmptyState } from "./EmptyState.tsx";
 import { toResource, toTrack, type ResourceLike } from "./LibraryView.tsx";
 import { reportActionError } from "../components/action-errors.ts";
 import { OfflineBanner } from "../components/OfflineBanner.tsx";
+import type { Station, Track } from "../domain/music.ts";
 import type { RuntimeAppState } from "../state.ts";
 
 type DiscoverySource = "library" | "catalog";
@@ -48,12 +49,23 @@ interface HomeModelLike {
   error?: string;
 }
 
-interface DiscoveryCard {
+interface CollectionCard {
   id: string;
   kind: "album" | "playlist";
   source: DiscoverySource;
   resource: ResourceLike;
 }
+
+/** Stations play directly; they have no detail page to open. */
+interface StationCard {
+  id: string;
+  kind: "station";
+  source: "catalog";
+  resource: ResourceLike;
+  station: Station;
+}
+
+type DiscoveryCard = CollectionCard | StationCard;
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object"
@@ -144,13 +156,26 @@ function discoveryCards(
     const resource = toResource(item);
     if (!resource || seen.has(resource.id)) continue;
     const type = `${resource.type ?? ""} ${resource.kind ?? ""}`.toLowerCase();
-    const kind = type.includes("playlist")
-      ? "playlist"
-      : type.includes("album")
-        ? "album"
-        : undefined;
+    const kind = type.includes("station")
+      ? "station"
+      : type.includes("playlist")
+        ? "playlist"
+        : type.includes("album")
+          ? "album"
+          : undefined;
     if (!kind || type.includes("folder")) continue;
     seen.add(resource.id);
+    if (kind === "station") {
+      // Apple Music stations are catalog-only, whatever the shelf's source.
+      cards.push({
+        id: resource.id,
+        kind,
+        source: "catalog",
+        resource,
+        station: item as Station,
+      });
+      continue;
+    }
     cards.push({
       id: resource.id,
       kind,
@@ -165,6 +190,56 @@ function run(action: () => Promise<unknown> | undefined): void {
   void Promise.resolve(action()).catch(() => undefined);
 }
 
+/**
+ * A station card plays through the same path as the Radio view. Stations
+ * have no context-menu target, so there is no "..." button.
+ */
+function StationCardView({ station }: { station: Station }): JSX.Element {
+  const controller = useAppController();
+  const playable = Boolean(station.url);
+  const track: Track = {
+    id: station.id,
+    title: station.name,
+    artistName: station.isLive ? "Live Radio" : "Apple Music",
+    artwork: station.artwork,
+  };
+  const play = (): void => {
+    void Promise.resolve(controller.playStation?.(station)).catch(
+      reportActionError,
+    );
+  };
+  return (
+    <CardShell>
+      <button
+        className="home-discovery-card"
+        type="button"
+        disabled={!playable}
+        onClick={playable ? play : undefined}
+      >
+        <Artwork
+          track={track}
+          size="lg"
+          alt={`${station.name} artwork`}
+          className="home-discovery-art"
+        />
+        <span className="home-discovery-copy">
+          <strong title={station.name}>{station.name}</strong>
+          <small>
+            {station.description ??
+              (station.isLive ? "Live radio" : "Personal station")}
+          </small>
+        </span>
+        <span className="home-discovery-source">Apple Music</span>
+      </button>
+      <CardActions
+        title={station.name}
+        menu={false}
+        onPlay={playable ? play : undefined}
+      />
+    </CardShell>
+  );
+}
+
 function DiscoveryCardView({
   card,
   onOpen,
@@ -173,6 +248,9 @@ function DiscoveryCardView({
   onOpen: () => void;
 }): JSX.Element {
   const controller = useAppController();
+  if (card.kind === "station") {
+    return <StationCardView station={card.station} />;
+  }
   const track = toTrack(card.resource);
   const Icon = card.kind === "playlist" ? ListMusic : Disc3;
   return (
@@ -408,11 +486,7 @@ export function HomeView(): JSX.Element {
   const recentItems = state.home.recentPlaylists;
   const heavyItems = state.home.heavyRotation;
   const recentCards = useMemo(
-    () =>
-      discoveryCards(
-        { items: recentItems, source: "library" },
-        "library",
-      ).filter((card) => card.kind === "playlist"),
+    () => discoveryCards({ items: recentItems, source: "library" }, "library"),
     [recentItems],
   );
   const heavyCards = useMemo(
@@ -537,16 +611,16 @@ export function HomeView(): JSX.Element {
       ) : (
         <div className="home-feed" aria-live="polite">
           <DiscoverySection
-            id="recent-playlists"
+            id="recently-played"
             eyebrow="Recently played"
-            title="Recent Playlists"
+            title="Recently Played"
             description="Pick up where you left off."
             section={home.recentPlaylists}
             cards={recentCards}
             onOpen={openCard}
             onRetry={refresh}
-            emptyTitle="No recent playlists"
-            emptyDescription="Play a playlist in Apple Music and it will appear here."
+            emptyTitle="Nothing played recently"
+            emptyDescription="Albums, playlists and stations you play in Apple Music will appear here."
           />
           <section
             className="home-feed-section"
@@ -557,7 +631,8 @@ export function HomeView(): JSX.Element {
                 <span className="eyebrow">For you</span>
                 <h2 id="recommendations-heading">Recommendations</h2>
                 <p className="home-feed-description">
-                  Albums and playlists chosen from your Apple Music listening.
+                  Albums, playlists and stations chosen from your Apple Music
+                  listening.
                 </p>
               </div>
             </div>
@@ -601,7 +676,7 @@ export function HomeView(): JSX.Element {
             onOpen={openCard}
             onRetry={refresh}
             emptyTitle="Heavy Rotation is empty"
-            emptyDescription="Your most-played albums and playlists will appear here."
+            emptyDescription="Your most-played albums, playlists and stations will appear here."
           />
           {home.stale ? (
             <p className="home-section-stale" role="status">

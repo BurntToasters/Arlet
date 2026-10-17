@@ -1,5 +1,6 @@
 import {
   AlertCircle,
+  ArrowLeft,
   Disc3,
   ListMusic,
   LoaderCircle,
@@ -16,9 +17,48 @@ import {
 import { Artwork } from "../components/Artwork.tsx";
 import { SongRow } from "../components/SongRow.tsx";
 import { CardActions, CardShell } from "../components/CardActions.tsx";
+import { CuratorSearchTile, SearchTile } from "../components/SearchCards.tsx";
+import {
+  SearchSuggestions,
+  type SearchSuggestionOption,
+} from "../components/SearchSuggestions.tsx";
 import { EmptyState } from "./EmptyState.tsx";
-import type { Album, Artist, Playlist, Track } from "../domain/music.ts";
+import type {
+  Album,
+  Artist,
+  Artwork as ArtworkData,
+  Playlist,
+  Track,
+} from "../domain/music.ts";
 import { reportActionError } from "../components/action-errors.ts";
+import {
+  SEARCH_GROUP_KINDS,
+  SEARCH_OVERVIEW_LIMIT,
+  type SearchGroupKind,
+  type SearchItem,
+} from "../musickit/search.ts";
+import {
+  addRecentSearch,
+  clearRecentSearches,
+  removeRecentSearch,
+} from "../state.ts";
+
+export function trackContextData(track: Track): Record<string, string> {
+  return {
+    "data-context-kind": "track",
+    "data-context-id": track.id,
+    "data-context-title": track.title,
+    "data-context-artist": track.artistName,
+    ...(track.albumTitle ? { "data-context-album": track.albumTitle } : {}),
+    ...(track.artwork?.url
+      ? { "data-context-artwork": track.artwork.url }
+      : {}),
+    ...(track.resourceType
+      ? { "data-context-resource-type": track.resourceType }
+      : {}),
+    ...(track.catalogId ? { "data-context-catalog-id": track.catalogId } : {}),
+  };
+}
 
 export function TrackRow({
   track,
@@ -44,22 +84,7 @@ export function TrackRow({
       numberClassName="search-row-number"
       copyClassName="search-row-copy"
       durationClassName="search-row-duration"
-      contextData={{
-        "data-context-kind": "track",
-        "data-context-id": track.id,
-        "data-context-title": track.title,
-        "data-context-artist": track.artistName,
-        ...(track.albumTitle ? { "data-context-album": track.albumTitle } : {}),
-        ...(track.artwork?.url
-          ? { "data-context-artwork": track.artwork.url }
-          : {}),
-        ...(track.resourceType
-          ? { "data-context-resource-type": track.resourceType }
-          : {}),
-        ...(track.catalogId
-          ? { "data-context-catalog-id": track.catalogId }
-          : {}),
-      }}
+      contextData={trackContextData(track)}
     />
   );
 }
@@ -79,6 +104,111 @@ const SEARCH_SOURCES = [
   { id: "catalog", label: "Apple Music" },
   { id: "library", label: "Your Library" },
 ] as const;
+
+const GROUP_TITLES: Record<SearchGroupKind, string> = {
+  songs: "Songs",
+  albums: "Albums",
+  artists: "Artists",
+  playlists: "Playlists",
+  stations: "Stations",
+  curators: "Curators",
+};
+
+/** Waits this long after a keystroke before asking for suggestions. */
+const SUGGESTION_DELAY_MS = 150;
+/** Waits this long after a keystroke before the results search runs. */
+const SEARCH_DELAY_MS = 250;
+
+interface PopupOption extends SearchSuggestionOption {
+  run(): void;
+}
+
+function routeContextData(
+  kind: "album" | "artist" | "playlist",
+  id: string,
+  title: string,
+): Record<string, string> {
+  return {
+    "data-context-kind": kind,
+    "data-context-id": id,
+    "data-context-title": title,
+    "data-context-route-kind": kind,
+    "data-context-source": "catalog",
+  };
+}
+
+/** Text, artwork, and context-menu data for a catalog result. */
+function displayFor(item: SearchItem): {
+  title: string;
+  subtitle: string;
+  kindLabel: string;
+  artwork?: ArtworkData;
+  catalogUrl?: string;
+  contextData: Record<string, string>;
+} {
+  switch (item.kind) {
+    case "songs":
+      return {
+        title: item.track.title,
+        subtitle: item.track.artistName,
+        kindLabel: "Song",
+        artwork: item.track.artwork,
+        catalogUrl: item.track.catalogUrl,
+        contextData: trackContextData(item.track),
+      };
+    case "albums":
+      return {
+        title: item.album.title,
+        subtitle: item.album.artistName,
+        kindLabel: "Album",
+        artwork: item.album.artwork,
+        catalogUrl: item.album.catalogUrl,
+        contextData: routeContextData("album", item.album.id, item.album.title),
+      };
+    case "artists":
+      return {
+        title: item.artist.name,
+        subtitle: "Artist",
+        kindLabel: "Artist",
+        artwork: item.artist.artwork,
+        catalogUrl: item.artist.catalogUrl,
+        contextData: routeContextData(
+          "artist",
+          item.artist.id,
+          item.artist.name,
+        ),
+      };
+    case "playlists":
+      return {
+        title: item.playlist.name,
+        subtitle: item.playlist.curatorName ?? "Playlist",
+        kindLabel: "Playlist",
+        artwork: item.playlist.artwork,
+        catalogUrl: item.playlist.catalogUrl,
+        contextData: routeContextData(
+          "playlist",
+          item.playlist.id,
+          item.playlist.name,
+        ),
+      };
+    case "stations":
+      return {
+        title: item.station.name,
+        subtitle: item.station.isLive ? "Live radio" : "Station",
+        kindLabel: "Station",
+        artwork: item.station.artwork,
+        contextData: {},
+      };
+    case "curators":
+      return {
+        title: item.curator.name,
+        subtitle: "Curator",
+        kindLabel: "Curator",
+        artwork: item.curator.artwork,
+        contextData: {},
+      };
+  }
+}
 
 function ResourceCard({
   item,
@@ -158,7 +288,14 @@ export function SearchView(): JSX.Element {
   const routeQuery =
     state.navigation.kind === "search" ? state.navigation.query : "";
   const [term, setTerm] = useState(routeQuery);
+  const [popupOpen, setPopupOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [expanded, setExpanded] = useState<SearchGroupKind | undefined>();
   const debounceTimer = useRef<number | undefined>(undefined);
+  const suggestTimer = useRef<number | undefined>(undefined);
+  // The term the last search ran for, so picking a suggestion does not
+  // schedule the same search again after the debounce.
+  const lastSearched = useRef("");
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const source = state.search.activeSource;
   const groups =
@@ -171,19 +308,162 @@ export function SearchView(): JSX.Element {
     groups.songs.length +
     groups.albums.length +
     groups.artists.length +
-    groups.playlists.length;
+    groups.playlists.length +
+    groups.stations.length +
+    groups.curators.length;
   const groupError = groups.status === "error";
+  const trimmedTerm = term.trim();
+  const suggesting = source === "catalog" && canPlay;
+
+  const runSearch = (value: string): void => {
+    const trimmed = value.trim();
+    lastSearched.current = trimmed;
+    setTerm(trimmed);
+    setPopupOpen(false);
+    setActiveIndex(-1);
+    setExpanded(undefined);
+    if (trimmed) addRecentSearch(trimmed);
+    router.navigate({ kind: "search", query: trimmed });
+    if (debounceTimer.current !== undefined) {
+      window.clearTimeout(debounceTimer.current);
+    }
+    void controller.search(trimmed);
+  };
+
+  const playItem = (item: SearchItem): (() => void) | undefined => {
+    if (!canPlay) return undefined;
+    switch (item.kind) {
+      case "songs":
+        return item.track.playable === false
+          ? undefined
+          : () =>
+              void controller.playTracks([item.track]).catch(reportActionError);
+      case "albums":
+        return item.album.playable === false
+          ? undefined
+          : () =>
+              void Promise.resolve(
+                controller.playCollection?.(
+                  "album",
+                  item.album.id,
+                  "catalog",
+                  0,
+                ),
+              ).catch(reportActionError);
+      case "playlists":
+        return () =>
+          void Promise.resolve(
+            controller.playCollection?.(
+              "playlist",
+              item.playlist.id,
+              "catalog",
+              0,
+            ),
+          ).catch(reportActionError);
+      case "stations":
+        return item.station.url
+          ? () =>
+              void Promise.resolve(
+                controller.playStation?.(item.station),
+              ).catch(reportActionError)
+          : undefined;
+      case "artists":
+      case "curators":
+        return undefined;
+    }
+  };
+
+  /** Opens a result: albums, artists, and playlists navigate; songs and stations play. */
+  const openItem = (item: SearchItem): void => {
+    switch (item.kind) {
+      case "albums":
+        router.navigate({
+          kind: "album",
+          id: item.album.id,
+          source: "catalog",
+        });
+        return;
+      case "artists":
+        router.navigate({
+          kind: "artist",
+          id: item.artist.id,
+          source: "catalog",
+        });
+        return;
+      case "playlists":
+        router.navigate({
+          kind: "playlist",
+          id: item.playlist.id,
+          source: "catalog",
+        });
+        return;
+      case "songs":
+      case "stations":
+        playItem(item)?.();
+        return;
+      case "curators":
+        router.navigate({
+          kind: "curator",
+          id: item.curator.id,
+          curatorKind: "apple",
+        });
+        return;
+    }
+  };
+
+  const popupOptions: PopupOption[] = [];
+  if (suggesting && !trimmedTerm) {
+    state.search.recent.forEach((recentTerm, index) => {
+      popupOptions.push({
+        id: `search-option-${index}`,
+        label: recentTerm,
+        recentTerm,
+        run: () => runSearch(recentTerm),
+      });
+    });
+  } else if (
+    suggesting &&
+    state.search.suggestions.term === trimmedTerm &&
+    state.search.suggestions.status === "success"
+  ) {
+    state.search.suggestions.items.forEach((suggestion, index) => {
+      const id = `search-option-${index}`;
+      if (suggestion.kind === "term") {
+        popupOptions.push({
+          id,
+          label: suggestion.displayTerm,
+          run: () => runSearch(suggestion.term),
+        });
+        return;
+      }
+      const display = displayFor(suggestion.item);
+      popupOptions.push({
+        id,
+        label: display.title,
+        detail: display.subtitle,
+        run: () => openItem(suggestion.item),
+      });
+    });
+  }
+  const popupVisible = popupOpen && popupOptions.length > 0;
+  const activeOption = popupVisible ? popupOptions[activeIndex] : undefined;
 
   useEffect(() => {
     setTerm(routeQuery);
+    setExpanded(undefined);
   }, [routeQuery]);
 
   useEffect(() => {
     const value = term.trim();
-    if (!value) return undefined;
+    if (!value) {
+      lastSearched.current = "";
+      return undefined;
+    }
+    if (value === lastSearched.current) return undefined;
     debounceTimer.current = window.setTimeout(() => {
+      lastSearched.current = value;
       void controller.search(value);
-    }, 250);
+    }, SEARCH_DELAY_MS);
     return () => {
       if (debounceTimer.current !== undefined) {
         window.clearTimeout(debounceTimer.current);
@@ -201,14 +481,35 @@ export function SearchView(): JSX.Element {
     void controller.search("");
   }, [controller, state.search.results.length, state.search.status, term]);
 
+  // A new suggestion list starts with nothing highlighted.
+  useEffect(() => {
+    setActiveIndex(-1);
+  }, [state.search.suggestions]);
+
+  useEffect(
+    () => () => {
+      if (suggestTimer.current !== undefined) {
+        window.clearTimeout(suggestTimer.current);
+      }
+    },
+    [],
+  );
+
+  const onTermInput = (value: string): void => {
+    setTerm(value);
+    setActiveIndex(-1);
+    setPopupOpen(true);
+    if (suggestTimer.current !== undefined) {
+      window.clearTimeout(suggestTimer.current);
+    }
+    suggestTimer.current = window.setTimeout(() => {
+      void controller.suggestSearch(value.trim());
+    }, SUGGESTION_DELAY_MS);
+  };
+
   const submit = (event: TargetedEvent<HTMLFormElement>): void => {
     event.preventDefault();
-    const value = term.trim();
-    router.navigate({ kind: "search", query: value });
-    if (debounceTimer.current !== undefined) {
-      window.clearTimeout(debounceTimer.current);
-    }
-    void controller.search(value);
+    runSearch(term);
   };
 
   const selectSource = (next: "catalog" | "library"): void => {
@@ -237,6 +538,251 @@ export function SearchView(): JSX.Element {
     tabRefs.current[next]?.focus();
   };
 
+  // Combobox keys: Up/Down move through the popup, Enter picks, Escape closes,
+  // and Delete removes the active recent search. Other keys type as usual.
+  const onSearchKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      const count = popupOptions.length;
+      if (!count) return;
+      event.preventDefault();
+      setPopupOpen(true);
+      setActiveIndex(
+        event.key === "ArrowDown"
+          ? (activeIndex + 1) % count
+          : activeIndex <= 0
+            ? count - 1
+            : activeIndex - 1,
+      );
+      return;
+    }
+    if (!popupVisible) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setPopupOpen(false);
+      setActiveIndex(-1);
+    } else if (event.key === "Enter" && activeOption) {
+      event.preventDefault();
+      activeOption.run();
+    } else if (
+      event.key === "Delete" &&
+      activeOption?.recentTerm !== undefined
+    ) {
+      event.preventDefault();
+      removeRecentSearch(activeOption.recentTerm);
+      setActiveIndex(-1);
+    }
+  };
+
+  const openSeeAll = (kind: SearchGroupKind): void => {
+    setExpanded(kind);
+    if (groups.paging[kind]?.status === "idle") {
+      void controller.loadMoreSearch(kind);
+    }
+  };
+
+  /** Rows or cards for one group; the overview caps it, See all does not. */
+  const groupItems = (kind: SearchGroupKind, limit?: number): JSX.Element => {
+    const shown = <T,>(items: T[]): T[] =>
+      limit === undefined ? items : items.slice(0, limit);
+    switch (kind) {
+      case "songs":
+        return (
+          <ol className="search-results-list">
+            {shown(groups.songs).map((track, index) => (
+              <TrackRow
+                key={track.id}
+                track={track}
+                index={index}
+                disabled={!canPlay}
+                onPlay={() =>
+                  void controller.playFromSearch(index).catch(reportActionError)
+                }
+                onPlayNext={() =>
+                  void controller
+                    .playNextTracks([track])
+                    .catch(reportActionError)
+                }
+              />
+            ))}
+          </ol>
+        );
+      case "albums":
+        return (
+          <div className="home-discovery-grid">
+            {shown(groups.albums).map((item) => (
+              <ResourceCard
+                key={item.id}
+                item={item}
+                kind="album"
+                source={source}
+                canPlay={canPlay}
+              />
+            ))}
+          </div>
+        );
+      case "artists":
+        return (
+          <div className="home-discovery-grid">
+            {shown(groups.artists).map((item) => (
+              <ResourceCard
+                key={item.id}
+                item={item}
+                kind="artist"
+                source={source}
+                canPlay={canPlay}
+              />
+            ))}
+          </div>
+        );
+      case "playlists":
+        return (
+          <div className="home-discovery-grid">
+            {shown(groups.playlists).map((item) => (
+              <ResourceCard
+                key={item.id}
+                item={item}
+                kind="playlist"
+                source={source}
+                canPlay={canPlay}
+              />
+            ))}
+          </div>
+        );
+      case "stations":
+        return (
+          <div className="home-discovery-grid">
+            {shown(groups.stations).map((station) => {
+              const play =
+                canPlay && station.url
+                  ? () =>
+                      void Promise.resolve(
+                        controller.playStation?.(station),
+                      ).catch(reportActionError)
+                  : undefined;
+              return (
+                <SearchTile
+                  key={station.id}
+                  title={station.name}
+                  subtitle={
+                    station.isLive
+                      ? "Live radio"
+                      : (station.description ?? "Station")
+                  }
+                  kindLabel="Station"
+                  artwork={station.artwork}
+                  onOpen={play}
+                  onPlay={play}
+                />
+              );
+            })}
+          </div>
+        );
+      case "curators":
+        return (
+          <div className="home-discovery-grid">
+            {shown(groups.curators).map((curator) => (
+              <CuratorSearchTile key={curator.id} curator={curator} />
+            ))}
+          </div>
+        );
+    }
+  };
+
+  const groupSection = (kind: SearchGroupKind): JSX.Element | null => {
+    if (!groups[kind].length) return null;
+    const seeAll =
+      source === "catalog" ? (
+        <button
+          className="search-see-all"
+          type="button"
+          aria-label={`See all ${GROUP_TITLES[kind].toLowerCase()}`}
+          onClick={() => openSeeAll(kind)}
+        >
+          See all
+        </button>
+      ) : null;
+    const heading = <h2 id={`search-${kind}-heading`}>{GROUP_TITLES[kind]}</h2>;
+    if (kind === "songs") {
+      return (
+        <section
+          className="search-results-panel"
+          aria-labelledby="search-songs-heading"
+        >
+          <div className="results-toolbar">
+            {heading}
+            {seeAll}
+          </div>
+          {groupItems(kind, SEARCH_OVERVIEW_LIMIT)}
+        </section>
+      );
+    }
+    return (
+      <section
+        className="home-feed-section"
+        aria-labelledby={`search-${kind}-heading`}
+      >
+        <div className="section-heading">
+          {heading}
+          {seeAll}
+        </div>
+        {groupItems(kind, SEARCH_OVERVIEW_LIMIT)}
+      </section>
+    );
+  };
+
+  const seeAllView = (kind: SearchGroupKind): JSX.Element => {
+    const paging = groups.paging[kind];
+    const count = groups[kind].length;
+    return (
+      <section
+        className="search-see-all-view"
+        aria-labelledby="search-see-all-heading"
+      >
+        <div className="section-heading search-see-all-heading">
+          <button
+            className="secondary-button"
+            type="button"
+            onClick={() => setExpanded(undefined)}
+          >
+            <ArrowLeft aria-hidden="true" size={16} /> Back to results
+          </button>
+          <h2 id="search-see-all-heading">{GROUP_TITLES[kind]}</h2>
+        </div>
+        {count ? groupItems(kind) : null}
+        {paging?.status === "loading" ? (
+          <div className="search-feedback" role="status">
+            <LoaderCircle className="spin" size={22} /> Loading more…
+          </div>
+        ) : null}
+        {paging?.status === "error" ? (
+          <p className="library-stale-note" role="alert">
+            More {GROUP_TITLES[kind].toLowerCase()} could not be loaded:{" "}
+            {paging.error ?? "Try again in a moment."}
+          </p>
+        ) : null}
+        {paging && (paging.status === "idle" || paging.status === "error") ? (
+          <div className="search-see-all-more">
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => void controller.loadMoreSearch(kind)}
+            >
+              Load more
+            </button>
+          </div>
+        ) : null}
+        {paging?.status === "done" ? (
+          <p className="search-see-all-end">
+            All {count} {GROUP_TITLES[kind].toLowerCase()} are shown.
+          </p>
+        ) : null}
+      </section>
+    );
+  };
+
+  const top = source === "catalog" ? groups.top : undefined;
+  const topDisplay = top ? displayFor(top) : undefined;
+
   return (
     <>
       <div className="page-heading search-heading">
@@ -252,10 +798,23 @@ export function SearchView(): JSX.Element {
         <SearchIcon aria-hidden="true" size={20} />
         <input
           aria-label={`Search ${source === "library" ? "your library" : "Apple Music"}`}
+          role="combobox"
+          // Preact types a combobox input as needing `list`; no datalist is used.
+          list={undefined}
+          aria-autocomplete="list"
+          aria-controls="search-suggestions-list"
+          aria-expanded={popupVisible}
+          aria-activedescendant={activeOption?.id}
           type="search"
           value={term}
           placeholder="Artists, albums, songs, and more"
-          onInput={(event) => setTerm(event.currentTarget.value)}
+          onInput={(event) => onTermInput(event.currentTarget.value)}
+          onFocus={() => setPopupOpen(true)}
+          onBlur={() => {
+            setPopupOpen(false);
+            setActiveIndex(-1);
+          }}
+          onKeyDown={onSearchKeyDown}
         />
         {term ? (
           <button
@@ -263,7 +822,9 @@ export function SearchView(): JSX.Element {
             type="button"
             aria-label="Clear search"
             onClick={() => {
+              lastSearched.current = "";
               setTerm("");
+              setActiveIndex(-1);
               router.navigate({ kind: "search", query: "" });
               void controller.search("");
             }}
@@ -274,6 +835,23 @@ export function SearchView(): JSX.Element {
         <button className="search-submit" type="submit">
           Search
         </button>
+        <SearchSuggestions
+          listId="search-suggestions-list"
+          heading={trimmedTerm ? "Suggestions" : "Recent searches"}
+          open={popupVisible}
+          options={popupOptions}
+          activeIndex={activeIndex}
+          onSelect={(index) => popupOptions[index]?.run()}
+          onRemoveRecent={(recent) => removeRecentSearch(recent)}
+          onClearRecent={
+            suggesting && !trimmedTerm
+              ? () => {
+                  clearRecentSearches();
+                  setActiveIndex(-1);
+                }
+              : undefined
+          }
+        />
       </form>
       {state.auth.status !== "authorized" ? (
         <EmptyState
@@ -365,6 +943,8 @@ export function SearchView(): JSX.Element {
                 }
                 compact
               />
+            ) : expanded && source === "catalog" ? (
+              seeAllView(expanded)
             ) : (
               <div className="search-groups">
                 {groupError ? (
@@ -374,99 +954,29 @@ export function SearchView(): JSX.Element {
                     {groups.error ?? "Try again in a moment."}
                   </p>
                 ) : null}
-                {groups.songs.length ? (
+                {top && topDisplay ? (
                   <section
-                    className="search-results-panel"
-                    aria-labelledby="search-songs-heading"
-                  >
-                    <div className="results-toolbar">
-                      <h2 id="search-songs-heading">Songs</h2>
-                    </div>
-                    <ol className="search-results-list">
-                      {groups.songs.map((track, index) => (
-                        <TrackRow
-                          key={track.id}
-                          track={track}
-                          index={index}
-                          disabled={!canPlay}
-                          onPlay={() =>
-                            void controller
-                              .playFromSearch(index)
-                              .catch(reportActionError)
-                          }
-                          onPlayNext={() =>
-                            void controller
-                              .playNextTracks([track])
-                              .catch(reportActionError)
-                          }
-                        />
-                      ))}
-                    </ol>
-                  </section>
-                ) : null}
-                {groups.albums.length ? (
-                  <section
-                    className="home-feed-section"
-                    aria-labelledby="search-albums-heading"
+                    className="search-top-section"
+                    aria-labelledby="search-top-heading"
                   >
                     <div className="section-heading">
-                      <h2 id="search-albums-heading">Albums</h2>
+                      <h2 id="search-top-heading">Top Result</h2>
                     </div>
-                    <div className="home-discovery-grid">
-                      {groups.albums.map((item) => (
-                        <ResourceCard
-                          key={item.id}
-                          item={item}
-                          kind="album"
-                          source={source}
-                          canPlay={canPlay}
-                        />
-                      ))}
-                    </div>
+                    <SearchTile
+                      title={topDisplay.title}
+                      subtitle={topDisplay.subtitle}
+                      kindLabel={topDisplay.kindLabel}
+                      artwork={topDisplay.artwork}
+                      catalogUrl={topDisplay.catalogUrl}
+                      contextData={topDisplay.contextData}
+                      featured
+                      menu={Object.keys(topDisplay.contextData).length > 0}
+                      onOpen={() => openItem(top)}
+                      onPlay={playItem(top)}
+                    />
                   </section>
                 ) : null}
-                {groups.artists.length ? (
-                  <section
-                    className="home-feed-section"
-                    aria-labelledby="search-artists-heading"
-                  >
-                    <div className="section-heading">
-                      <h2 id="search-artists-heading">Artists</h2>
-                    </div>
-                    <div className="home-discovery-grid">
-                      {groups.artists.map((item) => (
-                        <ResourceCard
-                          key={item.id}
-                          item={item}
-                          kind="artist"
-                          source={source}
-                          canPlay={canPlay}
-                        />
-                      ))}
-                    </div>
-                  </section>
-                ) : null}
-                {groups.playlists.length ? (
-                  <section
-                    className="home-feed-section"
-                    aria-labelledby="search-playlists-heading"
-                  >
-                    <div className="section-heading">
-                      <h2 id="search-playlists-heading">Playlists</h2>
-                    </div>
-                    <div className="home-discovery-grid">
-                      {groups.playlists.map((item) => (
-                        <ResourceCard
-                          key={item.id}
-                          item={item}
-                          kind="playlist"
-                          source={source}
-                          canPlay={canPlay}
-                        />
-                      ))}
-                    </div>
-                  </section>
-                ) : null}
+                {SEARCH_GROUP_KINDS.map((kind) => groupSection(kind))}
               </div>
             )}
           </div>

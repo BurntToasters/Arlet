@@ -10,6 +10,10 @@ import { safeErrorMessage } from "../app/controller-support.ts";
 import { ratingKeyOf, trackRatingTarget } from "../app/ratings.ts";
 import type { AppErrorCode } from "../domain/errors.ts";
 import type { Track } from "../domain/music.ts";
+import {
+  useLiveMetadata,
+  type LiveMetadata,
+} from "../musickit/live-metadata.ts";
 import type { TrackNavigation } from "../musickit/song-navigation.ts";
 import { setUiState } from "../state.ts";
 import { Artwork } from "./Artwork.tsx";
@@ -46,6 +50,20 @@ export function playerErrorLabel(code: AppErrorCode): string {
   }
 }
 
+/**
+ * Subtitle for a live station: its program text as plain text, or the station
+ * name while the stream has not reported any.
+ */
+export function liveSubtitle(
+  metadata: LiveMetadata | undefined,
+  stationName: string,
+): string {
+  const text = metadata
+    ? [metadata.title, metadata.artist].filter(Boolean).join(" · ")
+    : "";
+  return text || stationName;
+}
+
 export function PlayerBar(): JSX.Element {
   const state = useAppSlices("initialization", "playback", "ratings", "ui");
   const controller = useAppController();
@@ -59,6 +77,10 @@ export function PlayerBar(): JSX.Element {
   const loveTarget = current ? trackRatingTarget(current) : undefined;
   const loveKey = loveTarget ? ratingKeyOf(loveTarget) : undefined;
   const loved = loveKey !== undefined && state.ratings[loveKey] === 1;
+  const live = useLiveMetadata();
+  const liveText = current?.isLive
+    ? liveSubtitle(live, current.title)
+    : undefined;
   const [resolvedNavigation, setResolvedNavigation] = useState<{
     track: Track;
     value: TrackNavigation;
@@ -189,7 +211,15 @@ export function PlayerBar(): JSX.Element {
             )}
           </strong>
           <div className="player-track-links">
-            {artistLinks.length ? (
+            {liveText !== undefined ? (
+              <span
+                className="live-metadata-text"
+                aria-live="polite"
+                title={liveText}
+              >
+                {liveText}
+              </span>
+            ) : artistLinks.length ? (
               artistLinks.map((artist, index) => (
                 <span
                   className="player-track-link-group"

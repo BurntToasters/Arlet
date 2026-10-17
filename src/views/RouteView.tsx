@@ -11,6 +11,7 @@ import { LibraryView } from "./LibraryView.tsx";
 import { LibraryDetailView } from "./LibraryDetailView.tsx";
 import { BrowseView } from "./BrowseView.tsx";
 import { RadioView } from "./RadioView.tsx";
+import { CuratorView } from "./CuratorView.tsx";
 import { useOptionalAppController } from "../app/context.tsx";
 import { safeErrorMessage } from "../app/controller-support.ts";
 import { ErrorBoundary } from "../components/ErrorBoundary.tsx";
@@ -79,6 +80,8 @@ export function RouteView({ route }: { route: Route }): JSX.Element {
         );
       case "search":
         return <SearchView />;
+      case "curator":
+        return <CuratorView id={route.id} kind={route.curatorKind} />;
       case "settings":
         return <SettingsView />;
       case "library":

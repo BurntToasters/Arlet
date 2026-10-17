@@ -1,5 +1,6 @@
 /* Search */
 .search-form {
+  position: relative;
   height: 46px;
   gap: 11px;
   margin-bottom: 22px;
@@ -70,6 +71,220 @@
 }
 .search-submit:hover {
   background: color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+/* Typeahead listbox: anchored under the field, above the results. */
+.search-suggestions {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  left: 0;
+  z-index: 20;
+  display: grid;
+  max-height: min(420px, 60vh);
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 0.22);
+}
+.search-suggestions[hidden] {
+  display: none;
+}
+.search-suggestions-heading {
+  margin: 4px 8px 6px;
+  color: var(--text-faint);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.search-suggestions-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.search-suggestions-list li[role="option"] {
+  display: flex;
+  min-height: 38px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 8px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text);
+  font-size: 13px;
+}
+.search-suggestions-list li[role="option"]:hover,
+.search-suggestions-list li[role="option"].is-active {
+  background: var(--surface-active);
+}
+.search-suggestions-list li[aria-disabled="true"] {
+  color: var(--text-muted);
+  cursor: default;
+}
+.search-suggestion-copy {
+  display: grid;
+  min-width: 0;
+}
+.search-suggestion-copy span,
+.search-suggestion-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-suggestion-copy small {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.search-suggestion-remove {
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 4px;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+}
+.search-suggestion-remove:hover {
+  color: var(--text);
+}
+.search-suggestions-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+  padding: 4px 4px 0;
+  border-top: 1px solid var(--border);
+}
+.search-suggestions-clear {
+  min-height: 28px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--accent-strong);
+  font-size: 11px;
+}
+
+/* "See all" on a result group, and the expanded list it opens. */
+.search-see-all {
+  min-height: 28px;
+  padding: 0 10px;
+  background: transparent;
+  color: var(--accent-strong);
+  font-size: 12px;
+}
+.search-see-all:hover {
+  background: var(--surface-active);
+}
+.search-see-all-heading {
+  align-items: center;
+  justify-content: flex-start;
+  margin-bottom: 12px;
+}
+.search-see-all-heading h2 {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: -0.02em;
+}
+.search-see-all-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 16px;
+}
+.search-see-all-end {
+  margin: 14px 0 0;
+  color: var(--text-faint);
+  font-size: 11px;
+  text-align: center;
+}
+
+/* Top result and the tiles for stations and curators. */
+.search-top-section {
+  display: grid;
+  gap: 10px;
+}
+.search-top-section .section-heading h2 {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: -0.02em;
+}
+.search-tile {
+  display: grid;
+  min-width: 0;
+  max-width: 320px;
+  gap: 9px;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface-raised) 72%, transparent);
+  color: inherit;
+  text-align: left;
+  transition:
+    border-color var(--duration-fast) var(--ease-standard),
+    background var(--duration-fast) var(--ease-standard);
+}
+button.search-tile:hover,
+button.search-tile:focus-visible {
+  border-color: var(--accent);
+  background: var(--surface-active);
+}
+.search-tile.is-static {
+  cursor: default;
+}
+.search-tile-featured {
+  display: grid;
+  grid-template-columns: minmax(0, 140px) minmax(0, 1fr);
+  align-items: center;
+  max-width: 560px;
+  gap: 16px;
+  padding: 12px;
+}
+.search-tile .artwork.search-tile-art {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: var(--radius-sm);
+}
+.search-tile-featured .artwork.search-tile-art {
+  width: 140px;
+}
+/* The wrapper is wider and Play/More cover the 140px artwork, not the card. */
+.card-shell:has(.search-tile-featured) {
+  max-width: 560px;
+}
+.card-shell:has(.search-tile-featured) .card-actions {
+  top: 13px;
+  right: auto;
+  left: 13px;
+  width: 140px;
+}
+.search-tile-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+.search-tile-copy strong,
+.search-tile-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-tile-copy strong {
+  font-size: 13px;
+  font-weight: 650;
+}
+.search-tile-featured .search-tile-copy strong {
+  font-size: 18px;
+  white-space: normal;
+}
+.search-tile-copy small {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+.search-tile-kind {
+  color: var(--accent-strong) !important;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .search-feedback {

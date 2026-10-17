@@ -113,6 +113,14 @@ function copyForRoute(
         description: `Playlist ${route.id} is ready for a catalog detail view.`,
         icon: ListMusic,
       };
+    case "curator":
+      // RouteView renders CuratorView; this copy only keeps the switch exhaustive.
+      return {
+        eyebrow: "Curator",
+        title: "Curator",
+        description: `Curator ${route.id} opens from its own page.`,
+        icon: UserRound,
+      };
   }
 }
 

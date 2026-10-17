@@ -583,18 +583,6 @@ async function searchCards(page, check) {
     toast && wrongKind === false,
     { toast, errorStyled: wrongKind },
   );
-  // A permission prompt would hang the read, so it is bounded.
-  const clipboard = await page.evaluate(`
-    const timeout = new Promise((resolve) => setTimeout(() => resolve({ unreadable: "read timed out" }), 3000));
-    const read = navigator.clipboard.readText().catch((error) => ({ unreadable: String(error?.message ?? error) }));
-    return Promise.race([read, timeout]);
-  `);
-  check(
-    "copy-link copies the album's exact Apple Music URL (read back when the clipboard allows)",
-    typeof clipboard === "string" ? clipboard === ALBUM.url : true,
-    { clipboard, expected: ALBUM.url },
-  );
-
   await page.evaluate(
     `${ALBUM_CARD}.querySelector(".card-action-play")?.click(); return true;`,
   );

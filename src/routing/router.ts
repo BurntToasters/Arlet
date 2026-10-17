@@ -3,6 +3,9 @@ import type { MusicSource } from "../domain/music.ts";
 export type LibrarySection =
   "recent" | "history" | "artists" | "albums" | "songs" | "playlists";
 
+/** Which Apple curator endpoint a curator page reads. */
+export type CuratorKind = "curator" | "apple";
+
 export type Route =
   | { kind: "home" }
   | { kind: "browse" }
@@ -14,6 +17,7 @@ export type Route =
   | { kind: "album"; id: string; source?: MusicSource }
   | { kind: "artist"; id: string; source?: MusicSource }
   | { kind: "playlist"; id: string; source?: MusicSource }
+  | { kind: "curator"; id: string; curatorKind: CuratorKind }
   | { kind: "settings" };
 
 export function routeSource(route: Route): MusicSource {
@@ -75,6 +79,14 @@ export function parseRoute(hash: string): Route {
     }
     return { kind: head, id: segments[1] };
   }
+  if (head === "curator" && segments[1]) {
+    const kind = new URLSearchParams(queryPart).get("kind");
+    return {
+      kind: "curator",
+      id: segments[1],
+      curatorKind: kind === "apple" ? "apple" : "curator",
+    };
+  }
   if (head === "new") return { kind: "new" };
   if (head === "browse") return { kind: "browse" };
   if (head === "radio") return { kind: "radio" };
@@ -104,6 +116,8 @@ export function serializeRoute(route: Route): string {
       return route.source === "catalog"
         ? `#/${route.kind}/${encode(route.id)}?source=catalog`
         : `#/${route.kind}/${encode(route.id)}`;
+    case "curator":
+      return `#/curator/${encode(route.id)}?kind=${route.curatorKind}`;
     case "settings":
       return "#/settings";
   }

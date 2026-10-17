@@ -85,6 +85,8 @@ export interface Track {
   catalogUrl?: string;
   /** Apple resource type. Optional to keep existing local/catalog callers valid. */
   resourceType?: MusicResourceType;
+  /** Live or station item from MusicKit; absent for every other track. */
+  isLive?: boolean;
   /** Catalog ID for a library resource whose playback ID differs. */
   catalogId?: MusicId;
   /** Whether Apple reports this resource as playable. */
@@ -118,6 +120,15 @@ export interface Album {
   isCompilation?: boolean;
   /** Apple Music web link from Apple; the context menu validates it on use. */
   catalogUrl?: string;
+  /** Catalog shelves from the album page's views request; absent when not loaded. */
+  shelves?: AlbumShelves;
+}
+
+/** Album page shelves, each present only when Apple returned its view. */
+export interface AlbumShelves {
+  moreByArtist?: Album[];
+  otherVersions?: Album[];
+  relatedAlbums?: Album[];
 }
 
 export interface Artist {
@@ -129,6 +140,24 @@ export interface Artist {
   catalogId?: MusicId;
   /** Apple Music web link from Apple; the context menu validates it on use. */
   catalogUrl?: string;
+  /** Plain-text editorial notes; Apple's HTML tags are removed. */
+  editorialNotes?: string;
+  /** Wide editorial banner (`bannerUber`, else `storeFlowcase`), when Apple has one. */
+  editorialBanner?: Artwork;
+  /** Catalog shelves from the artist page's views request; absent on older rows. */
+  shelves?: ArtistShelves;
+}
+
+/** Artist page shelves, each present only when Apple returned its view. */
+export interface ArtistShelves {
+  latestRelease?: Album[];
+  topSongs?: Track[];
+  singles?: Album[];
+  liveAlbums?: Album[];
+  compilations?: Album[];
+  appearsOn?: Album[];
+  playlists?: Playlist[];
+  similarArtists?: Artist[];
 }
 
 export interface Playlist {

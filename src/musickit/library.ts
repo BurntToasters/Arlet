@@ -1,4 +1,9 @@
-import { resolveMusicKitMusicRequest, resolveStorefront } from "./catalog.ts";
+import {
+  normalizeStation,
+  resolveMusicKitMusicRequest,
+  resolveStorefront,
+  responseDataArray,
+} from "./catalog.ts";
 import {
   normalizeAlbumResource,
   normalizeArtistResource,
@@ -7,11 +12,14 @@ import {
   normalizePlaylistFolderResource,
   normalizePlaylistResource,
   normalizeTrackResource,
+  viewBlockOf,
   type AppleMusicResource,
 } from "./normalize.ts";
 import type {
   Album,
+  AlbumShelves,
   Artist,
+  ArtistShelves,
   LibraryItem,
   MusicResourceRef,
   Playlist,
@@ -21,6 +29,7 @@ import type {
   MusicSource,
   RatingValue,
   RecommendationSection,
+  Station,
 } from "../domain/music.ts";
 
 export interface Page<T> {
@@ -42,6 +51,9 @@ export interface LibraryPageOptions {
  */
 export const LIBRARY_PAGE_LIMIT = 100;
 
+/** Largest page Apple accepts for recent played resources. */
+const RECENT_PLAYED_PAGE_LIMIT = 10;
+
 /** Most ids Apple takes in one library multi-get or ratings request. */
 const MAX_BATCH_IDS = 100;
 
@@ -52,6 +64,116 @@ const MAX_CATALOG_BATCH_IDS = 25;
 export interface DetailWithTracks<T> {
   item?: T;
   firstTracks?: Page<Track>;
+}
+
+/** An artist with the albums from its views request, when Apple returned them. */
+export interface ArtistDetail {
+  item?: Artist;
+  /** The full-albums view's first page; `next` pages through the rest. */
+  albums?: Page<Album>;
+}
+
+/** Catalog artist views the artist page reads in its one request. */
+const ARTIST_PAGE_VIEWS = [
+  "latest-release",
+  "top-songs",
+  "full-albums",
+  "singles",
+  "live-albums",
+  "compilation-albums",
+  "appears-on-albums",
+  "similar-artists",
+  "featured-playlists",
+] as const;
+
+/** Artist attributes the bio and banner need beyond the default record. */
+const ARTIST_PAGE_EXTEND = "editorialArtwork,editorialNotes";
+
+/** Catalog album views the album page reads beside its track list. */
+const ALBUM_PAGE_VIEWS = [
+  "other-versions",
+  "related-albums",
+  "more-by-artist",
+] as const;
+
+interface DetailRequestOptions<T> {
+  /** Relationships to include; albums and playlists default to `tracks`. */
+  include?: string;
+  /** Views to read on the same request; the record loads without them on failure. */
+  views?: readonly string[];
+  /** Attaches what the views returned to the record. */
+  decorate?: (item: T, resource: AppleMusicResource) => T;
+}
+
+/** Entries of one view, normalized; undefined when Apple left the view out. */
+function viewItems<T>(
+  resource: AppleMusicResource,
+  name: string,
+  normalize: (resource: AppleMusicResource) => T | undefined,
+): T[] | undefined {
+  const block = viewBlockOf(resource, name);
+  if (!block) return undefined;
+  const items: T[] = [];
+  for (const value of block.data) {
+    const entry = asRecord(value) as AppleMusicResource | undefined;
+    const item = entry ? normalize(entry) : undefined;
+    if (item !== undefined) items.push(item);
+  }
+  return items;
+}
+
+/** Artist shelves from the views; undefined when none of them came back. */
+function artistShelvesOf(
+  resource: AppleMusicResource,
+): ArtistShelves | undefined {
+  const shelves: ArtistShelves = {
+    latestRelease: viewItems(
+      resource,
+      "latest-release",
+      normalizeAlbumResource,
+    ),
+    topSongs: viewItems(resource, "top-songs", normalizeTrackResource),
+    singles: viewItems(resource, "singles", normalizeAlbumResource),
+    liveAlbums: viewItems(resource, "live-albums", normalizeAlbumResource),
+    compilations: viewItems(
+      resource,
+      "compilation-albums",
+      normalizeAlbumResource,
+    ),
+    appearsOn: viewItems(resource, "appears-on-albums", normalizeAlbumResource),
+    playlists: viewItems(
+      resource,
+      "featured-playlists",
+      normalizePlaylistResource,
+    ),
+    similarArtists: viewItems(
+      resource,
+      "similar-artists",
+      normalizeArtistResource,
+    ),
+  };
+  return Object.values(shelves).some((items) => items !== undefined)
+    ? shelves
+    : undefined;
+}
+
+/** Album shelves from the views; the album itself is left out of its own shelves. */
+function albumShelvesOf(
+  resource: AppleMusicResource,
+): AlbumShelves | undefined {
+  const ownId = typeof resource.id === "string" ? resource.id : undefined;
+  const others = (name: string): Album[] | undefined =>
+    viewItems(resource, name, normalizeAlbumResource)?.filter(
+      (album) => album.id !== ownId,
+    );
+  const shelves: AlbumShelves = {
+    moreByArtist: others("more-by-artist"),
+    otherVersions: others("other-versions"),
+    relatedAlbums: others("related-albums"),
+  };
+  return Object.values(shelves).some((items) => items !== undefined)
+    ? shelves
+    : undefined;
 }
 
 export interface CreatePlaylistInput {
@@ -74,6 +196,14 @@ export interface CreatePlaylistFolderInput {
 export type PlaylistCreationInput = CreatePlaylistInput;
 export type PlaylistFolderCreationInput = CreatePlaylistFolderInput;
 
+/** A Home card: an album, a playlist, or a station. */
+export type HomeResource = DiscoveryResource | Station;
+
+/** A recommendation shelf whose items can be any Home resource. */
+export type HomeRecommendationSection = Omit<RecommendationSection, "items"> & {
+  items: HomeResource[];
+};
+
 export interface AppleMusicLibraryClient {
   getSongs(cursor?: string | LibraryPageOptions): Promise<Page<Track>>;
   getAlbums(cursor?: string | LibraryPageOptions): Promise<Page<Album>>;
@@ -85,9 +215,9 @@ export interface AppleMusicLibraryClient {
   getRecentlyPlayedTracks(
     cursor?: string | LibraryPageOptions,
   ): Promise<Page<Track>>;
-  getRecentlyPlayedPlaylists(limit?: number): Promise<Page<Playlist>>;
-  getHeavyRotation(limit?: number): Promise<Page<DiscoveryResource>>;
-  getRecommendations(limit?: number): Promise<RecommendationSection[]>;
+  getRecentlyPlayed(limit?: number): Promise<Page<HomeResource>>;
+  getHeavyRotation(limit?: number): Promise<Page<HomeResource>>;
+  getRecommendations(limit?: number): Promise<HomeRecommendationSection[]>;
   getAlbum(id: string, source?: MusicSource): Promise<Album | undefined>;
   /** One request for the album and, when complete, its first track page. */
   getAlbumDetail(
@@ -100,6 +230,11 @@ export interface AppleMusicLibraryClient {
     cursor?: string | LibraryPageOptions,
   ): Promise<Page<Track>>;
   getArtist(id: string, source?: MusicSource): Promise<Artist | undefined>;
+  /**
+   * The artist page's shelves in one catalog request. A library artist first
+   * resolves its catalog ID; without one it returns the library record alone.
+   */
+  getArtistDetail(id: string, source?: MusicSource): Promise<ArtistDetail>;
   getArtistAlbums(
     id: string,
     cursor?: string | LibraryPageOptions,
@@ -370,80 +505,160 @@ function displayString(value: unknown): string | undefined {
   );
 }
 
-function recommendationRelationshipData(group: unknown): unknown[] {
-  const relationships = asRecord(asRecord(group)?.relationships);
-  for (const key of ["contents", "recommendations", "items", "resources"]) {
-    const relationshipValue = relationships?.[key];
-    if (Array.isArray(relationshipValue)) return relationshipValue;
-    const relationship = asRecord(relationshipValue);
-    const data = relationship?.data;
-    if (Array.isArray(data)) return data;
-  }
+const RECOMMENDATION_KEYS = [
+  "contents",
+  "recommendations",
+  "items",
+  "resources",
+];
+
+/**
+ * Child entries of a recommendation group, taken from every relationship it
+ * names (contents, nested recommendations) and deduplicated by type and id.
+ */
+function recommendationChildren(group: unknown): unknown[] {
   const record = asRecord(group);
-  for (const key of ["contents", "recommendations", "items", "resources"]) {
-    if (Array.isArray(record?.[key])) return record[key] as unknown[];
+  const relationships = asRecord(record?.relationships);
+  const children: unknown[] = [];
+  for (const key of RECOMMENDATION_KEYS) {
+    const relationshipValue = relationships?.[key];
+    const data = Array.isArray(relationshipValue)
+      ? relationshipValue
+      : asRecord(relationshipValue)?.data;
+    if (Array.isArray(data)) children.push(...data);
+    else if (Array.isArray(record?.[key]))
+      children.push(...(record[key] as unknown[]));
   }
-  return [];
+  const seen = new Set<string>();
+  return children.filter((child) => {
+    const key = resourceKey(child);
+    if (!key) return true;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
-function normalizeDiscoveryResource(
-  value: unknown,
-): DiscoveryResource | undefined {
+/** Nested recommendation groups carry a "recommendation" resource type. */
+function isRecommendationGroup(value: unknown): boolean {
+  return (
+    nonEmptyString(asRecord(value)?.type)?.includes("recommendation") === true
+  );
+}
+
+/**
+ * Home resources: albums and playlists, plus stations. Other types (music
+ * videos, songs, folders) and unknown types are skipped.
+ */
+function normalizeHomeResource(value: unknown): HomeResource | undefined {
+  if (nonEmptyString(asRecord(value)?.type) === "stations") {
+    return normalizeStation(value as AppleMusicResource);
+  }
   if (!supportedDiscoveryType(value)) return undefined;
   return normalizeLibraryItemResource(value as AppleMusicResource) as
     DiscoveryResource | undefined;
 }
 
-/** Normalize Apple's recommendation envelope and keep only album/playlist cards. */
+/** Nested recommendation groups deeper than this are not read. */
+const MAX_RECOMMENDATION_DEPTH = 3;
+
+interface RecommendationReadContext {
+  includedByKey: Map<string, unknown>;
+  limit: number;
+  sections: HomeRecommendationSection[];
+  sectionIds: Set<string>;
+}
+
+/**
+ * Appends one shelf per group that has displayable items, then reads its
+ * nested groups in order, so nesting becomes a flat list of titled shelves.
+ */
+function readRecommendationGroup(
+  group: unknown,
+  context: RecommendationReadContext,
+  fallbackTitle: string,
+  depth: number,
+): void {
+  const groupRecord = asRecord(group);
+  if (!groupRecord) return;
+  const items: HomeResource[] = [];
+  const nested: unknown[] = [];
+  for (const child of recommendationChildren(group)) {
+    const key = resourceKey(child);
+    const resolved = (key && context.includedByKey.get(key)) ?? child;
+    if (isRecommendationGroup(resolved)) {
+      nested.push(resolved);
+      continue;
+    }
+    const item = normalizeHomeResource(resolved);
+    if (item && items.length < context.limit) items.push(item);
+  }
+  if (items.length === 0 && nested.length === 0) {
+    const direct = normalizeHomeResource(group);
+    if (direct) items.push(direct);
+  }
+  const attributes = recommendationAttributes(group);
+  const title =
+    displayString(attributes.title) ??
+    displayString(attributes.name) ??
+    fallbackTitle;
+  if (items.length > 0) {
+    const baseId =
+      nonEmptyString(groupRecord.id) ??
+      `recommendation-${context.sections.length}`;
+    const id = context.sectionIds.has(baseId)
+      ? `${baseId}-${context.sections.length}`
+      : baseId;
+    context.sectionIds.add(id);
+    const kind = displayString(attributes.kind);
+    const reason = displayString(attributes.reason);
+    context.sections.push({
+      id,
+      title,
+      items,
+      ...(kind ? { kind } : {}),
+      ...(reason ? { reason } : {}),
+    });
+  }
+  if (depth >= MAX_RECOMMENDATION_DEPTH) return;
+  for (const child of nested) {
+    readRecommendationGroup(child, context, title, depth + 1);
+  }
+}
+
+/**
+ * Normalize Apple's recommendation envelope into titled shelves of albums,
+ * playlists, and stations. Nested recommendation groups become their own
+ * shelves; other resource types are skipped.
+ */
 export function normalizeRecommendationGroups(
   raw: unknown,
   limit = 10,
-): RecommendationSection[] {
-  const root = asRecord(raw);
-  const data = Array.isArray(root?.data) ? root.data : [];
-  const included = Array.isArray(root?.included) ? root.included : [];
+): HomeRecommendationSection[] {
+  // MusicKit resolves to an envelope around Apple's body; accept either shape.
+  const envelope = asRecord(raw);
+  const body = asRecord(envelope?.data) ?? envelope;
+  const data = responseDataArray(raw);
+  const included = Array.isArray(body?.included) ? body.included : [];
   const includedByKey = new Map<string, unknown>();
   for (const resource of included) {
     const key = resourceKey(resource);
     if (key) includedByKey.set(key, resource);
   }
-  const sections: RecommendationSection[] = [];
+  const context: RecommendationReadContext = {
+    includedByKey,
+    limit,
+    sections: [],
+    sectionIds: new Set(),
+  };
   for (const group of data) {
-    const groupRecord = asRecord(group);
-    if (!groupRecord) continue;
-    const candidates = recommendationRelationshipData(group)
-      .map((candidate) => {
-        const key = resourceKey(candidate);
-        return (key && includedByKey.get(key)) ?? candidate;
-      })
-      .map(normalizeDiscoveryResource)
-      .filter((item): item is DiscoveryResource => Boolean(item))
-      .slice(0, limit);
-    const direct = normalizeDiscoveryResource(group);
-    if (direct && candidates.length === 0) candidates.push(direct);
-    if (candidates.length === 0) continue;
-    const attributes = recommendationAttributes(group);
-    const id =
-      nonEmptyString(groupRecord.id) ?? `recommendation-${sections.length}`;
-    const title =
-      displayString(attributes.title) ??
-      displayString(attributes.name) ??
-      "Recommendations";
-    const kind = displayString(attributes.kind);
-    const reason = displayString(attributes.reason);
-    sections.push({
-      id,
-      title,
-      items: candidates,
-      ...(kind ? { kind } : {}),
-      ...(reason ? { reason } : {}),
-    });
+    readRecommendationGroup(group, context, "Recommendations", 0);
   }
-  if (sections.length > 0) return sections;
+  if (context.sections.length > 0) return context.sections;
 
   const fallback = data
-    .map(normalizeDiscoveryResource)
-    .filter((item): item is DiscoveryResource => Boolean(item))
+    .map(normalizeHomeResource)
+    .filter((item): item is HomeResource => Boolean(item))
     .slice(0, limit);
   return fallback.length > 0
     ? [{ id: "recommendations", title: "Recommendations", items: fallback }]
@@ -592,10 +807,18 @@ export function createAppleMusicLibraryClient(
   async function getWithFirstTracks<T>(
     path: string,
     normalize: (resource: AppleMusicResource) => T | undefined,
+    options: DetailRequestOptions<T> = {},
   ): Promise<DetailWithTracks<T>> {
-    const raw = await request(path, { include: "tracks" });
+    const query: Query = { include: options.include ?? "tracks" };
+    const raw = options.views
+      ? await requestWithViews(path, query, options.views)
+      : await request(path, query);
     const resource = firstResource(raw);
-    const item = resource ? normalize(resource) : undefined;
+    const built = resource ? normalize(resource) : undefined;
+    const item =
+      built !== undefined && resource && options.decorate
+        ? options.decorate(built, resource)
+        : built;
     const declared = asRecord(resource?.attributes)?.trackCount;
     const relationship = asRecord(asRecord(resource?.relationships)?.tracks);
     const data = Array.isArray(relationship?.data)
@@ -626,6 +849,73 @@ export function createAppleMusicLibraryClient(
       items.push(track);
     }
     return { item, firstTracks: { items } };
+  }
+
+  /**
+   * Adds views (and `extend`) to a read. Views are an extra: when Apple
+   * rejects them, the same read runs again without them, so the record still
+   * loads and the caller falls back to its separate requests.
+   */
+  async function requestWithViews(
+    path: string,
+    query: Query | undefined,
+    views: readonly string[],
+    extend?: string,
+  ): Promise<unknown> {
+    const withViews: Query = {
+      ...(query ?? {}),
+      views: views.join(","),
+      ...(extend ? { extend } : {}),
+    };
+    try {
+      return await request(path, withViews);
+    } catch {
+      return query === undefined ? request(path) : request(path, query);
+    }
+  }
+
+  async function catalogArtistPath(id: string): Promise<string> {
+    return `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/artists/${encodePathPart(id)}`;
+  }
+
+  /** One catalog artist request carries its shelves and the first album page. */
+  async function catalogArtistDetail(id: string): Promise<ArtistDetail> {
+    const raw = await requestWithViews(
+      await catalogArtistPath(id),
+      undefined,
+      ARTIST_PAGE_VIEWS,
+      ARTIST_PAGE_EXTEND,
+    );
+    const resource = firstResource(raw);
+    const item = resource ? normalizeArtistResource(resource) : undefined;
+    if (!resource || !item) return { item };
+    const shelves = artistShelvesOf(resource);
+    const fullAlbums = viewBlockOf(resource, "full-albums");
+    return {
+      item: shelves ? { ...item, shelves } : item,
+      albums: fullAlbums
+        ? {
+            items:
+              viewItems(resource, "full-albums", normalizeAlbumResource) ?? [],
+            next: fullAlbums.next,
+          }
+        : undefined,
+    };
+  }
+
+  /** A library album's views come from its catalog twin; a failed read leaves them out. */
+  async function catalogAlbumShelves(
+    catalogId: string,
+  ): Promise<AlbumShelves | undefined> {
+    try {
+      const raw = await request(await albumPath(catalogId, "catalog"), {
+        views: ALBUM_PAGE_VIEWS.join(","),
+      });
+      const resource = firstResource(raw);
+      return resource ? albumShelvesOf(resource) : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   async function albumPath(id: string, source: MusicSource): Promise<string> {
@@ -763,21 +1053,52 @@ export function createAppleMusicLibraryClient(
         },
         normalizeTrackResource,
       ),
-    getRecentlyPlayedPlaylists: (limit = 10) =>
-      getPage(
+    /**
+     * Apple caps recent-played pages at 10, so one more page is read through
+     * its `next` link. The second page is optional: if it fails, the first
+     * page is still returned.
+     */
+    async getRecentlyPlayed(limit = 20): Promise<Page<HomeResource>> {
+      const query = {
+        types: "albums,playlists,library-playlists,stations",
+        limit: RECENT_PLAYED_PAGE_LIMIT,
+      };
+      const first = await getPage(
         "/v1/me/recent/played",
         undefined,
-        { types: "playlists,library-playlists", limit },
-        normalizePlaylistResource,
-      ),
+        query,
+        normalizeHomeResource,
+      );
+      const items = [...first.items];
+      const seen = new Set(items.map((item) => item.id));
+      if (first.next && items.length < limit) {
+        try {
+          const second = await getPage(
+            "/v1/me/recent/played",
+            first.next,
+            undefined,
+            normalizeHomeResource,
+          );
+          for (const item of second.items) {
+            if (items.length >= limit) break;
+            if (seen.has(item.id)) continue;
+            seen.add(item.id);
+            items.push(item);
+          }
+        } catch {
+          // The first page stands on its own.
+        }
+      }
+      return { items: items.slice(0, limit) };
+    },
     getHeavyRotation: (limit = 10) =>
       getPage(
         "/v1/me/history/heavy-rotation",
         undefined,
         { limit },
-        normalizeDiscoveryResource,
+        normalizeHomeResource,
       ),
-    async getRecommendations(limit = 10): Promise<RecommendationSection[]> {
+    async getRecommendations(limit = 10): Promise<HomeRecommendationSection[]> {
       // Default recommendations endpoint does not expose a limit query. Slice
       // normalized groups locally and apply limit to each content section.
       const raw = await request("/v1/me/recommendations");
@@ -793,10 +1114,26 @@ export function createAppleMusicLibraryClient(
       id: string,
       source: MusicSource = "library",
     ): Promise<DetailWithTracks<Album>> {
-      return getWithFirstTracks(
+      // A library album asks for its catalog ID too, to find its views.
+      const detail = await getWithFirstTracks(
         await albumPath(id, source),
         normalizeAlbumResource,
+        {
+          include: source === "catalog" ? "tracks" : "tracks,catalog",
+          ...(source === "catalog" ? { views: ALBUM_PAGE_VIEWS } : {}),
+          decorate: (album, resource) => {
+            const shelves = albumShelvesOf(resource);
+            return shelves ? { ...album, shelves } : album;
+          },
+        },
       );
+      const catalogId =
+        source === "library" ? detail.item?.catalogId : undefined;
+      if (!detail.item || !catalogId) return detail;
+      const shelves = await catalogAlbumShelves(catalogId);
+      return shelves
+        ? { ...detail, item: { ...detail.item, shelves } }
+        : detail;
     },
     async getAlbumTracks(
       id: string,
@@ -818,6 +1155,32 @@ export function createAppleMusicLibraryClient(
           ? `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/artists/${encodePathPart(id)}`
           : `/v1/me/library/artists/${encodePathPart(id)}`;
       return getOne(path, normalizeArtistResource);
+    },
+    async getArtistDetail(
+      id: string,
+      source: MusicSource = "library",
+    ): Promise<ArtistDetail> {
+      if (source === "catalog") return catalogArtistDetail(id);
+      const library = await getOne(
+        `/v1/me/library/artists/${encodePathPart(id)}`,
+        normalizeArtistResource,
+        { include: "catalog" },
+      );
+      if (!library?.catalogId) return { item: library };
+      // Without the catalog artist the library record still renders, as before.
+      const catalog = await catalogArtistDetail(library.catalogId).catch(
+        () => undefined,
+      );
+      if (!catalog) return { item: library };
+      return {
+        item: {
+          ...library,
+          editorialNotes: catalog.item?.editorialNotes,
+          editorialBanner: catalog.item?.editorialBanner,
+          shelves: catalog.item?.shelves,
+        },
+        albums: catalog.albums,
+      };
     },
     async getArtistAlbums(
       id: string,

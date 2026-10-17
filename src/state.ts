@@ -14,6 +14,13 @@ import type {
   MusicSource,
 } from "./domain/music.ts";
 import type { AppErrorCode } from "./domain/errors.ts";
+import type {
+  SearchCurator,
+  SearchGroupKind,
+  SearchItem,
+  SearchSuggestion,
+} from "./musickit/search.ts";
+import type { BrowseGenre, BrowseShelfKind } from "./musickit/browse.ts";
 import type { Route } from "./routing/router.ts";
 import { redactSensitive } from "./platform/redact.ts";
 import { isSameTrack } from "./domain/music.ts";
@@ -93,6 +100,22 @@ export interface SearchState {
   library: SearchResourceGroups;
   error?: string;
   requestId: number;
+  /** Submitted terms, newest first, kept on this PC; never holds tokens. */
+  recent: string[];
+  suggestions: SearchSuggestionState;
+}
+
+export interface SearchSuggestionState {
+  term: string;
+  status: "idle" | "loading" | "success" | "error";
+  items: SearchSuggestion[];
+}
+
+/** Paging for one "See all" group; `offset` is Apple's raw item offset. */
+export interface SearchPagingState {
+  status: "idle" | "loading" | "done" | "error";
+  offset: number;
+  error?: string;
 }
 
 export interface SearchResourceGroups {
@@ -100,6 +123,12 @@ export interface SearchResourceGroups {
   albums: Album[];
   artists: Artist[];
   playlists: Playlist[];
+  /** Catalog-only; the library source leaves these empty. */
+  stations: Station[];
+  curators: SearchCurator[];
+  /** Catalog top result (`with=topResults`); absent for the library. */
+  top?: SearchItem;
+  paging: Partial<Record<SearchGroupKind, SearchPagingState>>;
   status: "idle" | "loading" | "success" | "error";
   error?: string;
 }
@@ -107,11 +136,24 @@ export interface SearchResourceGroups {
 export type DiscoveryLoadStatus =
   "idle" | "loading" | "refreshing" | "success" | "error";
 
+/** Paging for one Browse shelf: Apple's cursor for the next page, if any. */
+export interface BrowseShelfPaging {
+  next?: string;
+  status: "idle" | "loading" | "error";
+  error?: string;
+}
+
 export interface BrowseState {
   status: DiscoveryLoadStatus;
+  /** Genre the charts are filtered to; "" means every genre. */
+  genreId: string;
+  genres: BrowseGenre[];
   songs: Track[];
   albums: Album[];
   playlists: Playlist[];
+  cityCharts: Playlist[];
+  dailyCharts: Playlist[];
+  paging: Partial<Record<BrowseShelfKind, BrowseShelfPaging>>;
   error?: string;
   lastUpdatedAt?: number;
 }
@@ -127,6 +169,11 @@ export interface RadioState {
   personal: RadioSectionState;
   live: RadioSectionState;
   recent: RadioSectionState;
+  /** Station genres for the Genres shelf. */
+  genres: BrowseGenre[];
+  /** Selected station genre; "" when none is selected. */
+  genreId: string;
+  genreStations: RadioSectionState;
   error?: string;
   lastUpdatedAt?: number;
 }
@@ -381,12 +428,72 @@ function emptySearchGroups(): SearchResourceGroups {
     albums: [],
     artists: [],
     playlists: [],
+    stations: [],
+    curators: [],
+    paging: {},
     status: "idle",
   };
 }
 
+const RECENT_SEARCHES_KEY = "arlet.search.recent";
+const RECENT_SEARCH_LIMIT = 10;
+
+function searchStorage(): Storage | undefined {
+  try {
+    return typeof localStorage === "undefined" ? undefined : localStorage;
+  } catch {
+    // Blocked site data makes the accessor throw; recents then stay in memory.
+    return undefined;
+  }
+}
+
+/** Reads the saved terms; anything malformed is treated as no history. */
+function readRecentSearches(): string[] {
+  try {
+    const raw = searchStorage()?.getItem(RECENT_SEARCHES_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (value): value is string =>
+          typeof value === "string" && value.trim().length > 0,
+      )
+      .slice(0, RECENT_SEARCH_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+function writeRecentSearches(terms: string[]): void {
+  try {
+    const storage = searchStorage();
+    if (!storage) return;
+    if (terms.length) {
+      storage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(terms));
+    } else {
+      storage.removeItem(RECENT_SEARCHES_KEY);
+    }
+  } catch {
+    // A failed write only loses history across restarts.
+  }
+}
+
+function emptySearchSuggestions(): SearchSuggestionState {
+  return { term: "", status: "idle", items: [] };
+}
+
 export function createInitialBrowseState(): BrowseState {
-  return { status: "idle", songs: [], albums: [], playlists: [] };
+  return {
+    status: "idle",
+    genreId: "",
+    genres: [],
+    songs: [],
+    albums: [],
+    playlists: [],
+    cityCharts: [],
+    dailyCharts: [],
+    paging: {},
+  };
 }
 
 export function createInitialRadioState(): RadioState {
@@ -396,6 +503,9 @@ export function createInitialRadioState(): RadioState {
     personal: section(),
     live: section(),
     recent: section(),
+    genres: [],
+    genreId: "",
+    genreStations: section(),
   };
 }
 
@@ -435,6 +545,8 @@ const initialState: RuntimeAppState = {
     library: emptySearchGroups(),
     error: undefined,
     requestId: 0,
+    recent: readRecentSearches(),
+    suggestions: emptySearchSuggestions(),
   },
   settings: { ...DEFAULT_SETTINGS },
   windowEffect: {
@@ -477,6 +589,8 @@ function cloneInitialState(): RuntimeAppState {
       results: [],
       catalog: emptySearchGroups(),
       library: emptySearchGroups(),
+      recent: [],
+      suggestions: emptySearchSuggestions(),
     },
     settings: { ...DEFAULT_SETTINGS },
     windowEffect: { ...initialState.windowEffect },
@@ -818,10 +932,36 @@ export function setRadioState(patch: Partial<RadioState>): void {
   update({ ...state, radio: { ...state.radio, ...patch } });
 }
 
+/** Recent searches are per account, so they are dropped with the results. */
+export function addRecentSearch(term: string): void {
+  const trimmed = term.trim();
+  if (!trimmed) return;
+  const key = trimmed.toLocaleLowerCase();
+  const recent = [
+    trimmed,
+    ...state.search.recent.filter((entry) => entry.toLocaleLowerCase() !== key),
+  ].slice(0, RECENT_SEARCH_LIMIT);
+  writeRecentSearches(recent);
+  setSearchState({ recent });
+}
+
+export function removeRecentSearch(term: string): void {
+  const recent = state.search.recent.filter((entry) => entry !== term);
+  writeRecentSearches(recent);
+  setSearchState({ recent });
+}
+
+export function clearRecentSearches(): void {
+  writeRecentSearches([]);
+  setSearchState({ recent: [] });
+}
+
 /**
  * Drops Browse, Radio, and search results for an account change. Requests in
  * flight were invalidated, so their loading states would never settle; the
- * views reload from idle. The search query and source stay as typed.
+ * views reload from idle. The search query and source stay as typed. Suggestions
+ * go too. Recent searches are not touched: sign-in runs this reset, and recents
+ * are cleared only on sign-out (clearRecentSearches).
  */
 export function resetDiscoveryState(): void {
   update({
@@ -835,6 +975,7 @@ export function resetDiscoveryState(): void {
       catalog: emptySearchGroups(),
       library: emptySearchGroups(),
       error: undefined,
+      suggestions: emptySearchSuggestions(),
     },
   });
 }

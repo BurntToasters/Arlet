@@ -9,12 +9,22 @@ import {
 import { initializeMusicKit } from "../musickit/bootstrap.ts";
 import { developerTokenExpiry } from "../musickit/token.ts";
 import type {
-  loadBrowseCharts,
   loadRadioStations,
   searchMusicResources,
   searchCatalogSongs,
 } from "../musickit/catalog.ts";
+import type { BrowseShelfKind, loadBrowseCharts } from "../musickit/browse.ts";
 import { registerMusicKitEvents } from "../musickit/events.ts";
+import type { SearchGroupKind } from "../musickit/search.ts";
+import {
+  loadCuratorPage,
+  loadCuratorPlaylistsPage,
+  loadPlaylistCurator,
+  type CuratorPage,
+  type CuratorPlaylistsPage,
+  type PlaylistCuratorRef,
+} from "../musickit/curators.ts";
+import type { CuratorKind } from "../routing/router.ts";
 import {
   CONSECUTIVE_TRACK_TARGET,
   setAutoplayEnabled,
@@ -31,6 +41,7 @@ import { normalizeTrack } from "../musickit/normalize.ts";
 import { classifyPlaybackKind } from "../musickit/preview.ts";
 import {
   appendDiagnosticLog,
+  clearRecentSearches,
   DEFAULT_SETTINGS,
   getState,
   resetState,
@@ -161,8 +172,15 @@ export interface AppController {
   ): Promise<void>;
   refreshLibrarySection(section: LibrarySection): Promise<void>;
   loadHome(options?: { refresh?: boolean }): Promise<void>;
-  loadBrowse?(options?: { refresh?: boolean }): Promise<void>;
+  loadBrowse?(options?: { refresh?: boolean; genreId?: string }): Promise<void>;
+  loadMoreBrowseShelf?(kind: BrowseShelfKind): Promise<void>;
   loadRadio?(options?: { refresh?: boolean }): Promise<void>;
+  loadRadioGenre?(genreId: string): Promise<void>;
+  loadCurator(id: string, kind: CuratorKind): Promise<CuratorPage>;
+  loadMoreCuratorPlaylists(next: string): Promise<CuratorPlaylistsPage>;
+  loadPlaylistCurator(
+    playlistId: string,
+  ): Promise<PlaylistCuratorRef | undefined>;
   playStation?(station: Station): Promise<void>;
   loadAlbum(
     id: string,
@@ -215,6 +233,10 @@ export interface AppController {
   clearUpNext(): Promise<QueueEditTier>;
   refreshCurrentData(): Promise<void>;
   search(term: string): Promise<Track[]>;
+  /** Typeahead for the Search field; terms under two characters clear it. */
+  suggestSearch(term: string): Promise<void>;
+  /** Appends the next "See all" page of one catalog group. */
+  loadMoreSearch(kind: SearchGroupKind): Promise<void>;
   setSearchSource?(source: "catalog" | "library"): void;
   playFromSearch(index: number): Promise<void>;
   playTracks(tracks: readonly Track[], startIndex?: number): Promise<void>;
@@ -527,6 +549,8 @@ export function createAppController(
 
   /** Bumped on sign-in and sign-out; work started earlier must not land. */
   let accountGeneration = 0;
+  /** Sign-out work in progress, whose MusicKit auth events are our own. */
+  let accountTransitions = 0;
 
   /**
    * Cancels everything tied to the current account. Sign-in runs it too,
@@ -544,6 +568,69 @@ export function createAppController(
     // Library artist mappings belong to the previous account.
     stationResolver = undefined;
     trackNavigation.clear();
+  };
+
+  /**
+   * Local sign-out: drops the account's cached library, pins, and saved queue.
+   * It never calls Apple, so it also serves a session Apple already ended.
+   */
+  const clearSignedInData = async (): Promise<void> => {
+    await clearLibraryCache();
+    // Pins are local and not tied to an Apple ID; the next account to
+    // sign in on this PC must not see them.
+    try {
+      await deletePersistedPins(invokeFn);
+    } catch (error) {
+      log(`Pinned playlists clear failed: ${safeErrorMessage(error)}`);
+    }
+    await playbackSession.clear();
+    // Recent searches belong to the signed-in account, so sign-out (and a
+    // revoked session) is what clears them; sign-in does not.
+    clearRecentSearches();
+    discovery.resetAccount();
+    resetState();
+    setPins([]);
+    setInitializationState({ status: "ready" });
+  };
+
+  /**
+   * Runs the local sign-out for a session MusicKit no longer authorizes. No
+   * request goes to Apple, since the session is already gone.
+   */
+  const endSessionFromMusicKit = async (
+    instance: MusicKit.MusicKitInstance,
+  ): Promise<void> => {
+    accountTransitions += 1;
+    try {
+      resetAccountScope();
+      try {
+        instance.stop?.();
+      } catch (error) {
+        log(`Stop after revoked session failed: ${safeErrorMessage(error)}`);
+      }
+      await clearSignedInData();
+      log("Apple Music reports the session is no longer authorized.");
+    } catch (error) {
+      log(`Local sign-out failed: ${safeErrorMessage(error)}`);
+    } finally {
+      accountTransitions -= 1;
+    }
+  };
+
+  /**
+   * MusicKit reports a revoked token or a sign-out from elsewhere. The app
+   * then runs its local sign-out and shows the signed-out UI. Our own sign-in
+   * and sign-out are ignored here because they update the state themselves.
+   * A sign-in from elsewhere is left to the sign-in flow.
+   */
+  const onMusicKitAuthorizationChange = (
+    instance: MusicKit.MusicKitInstance,
+  ): void => {
+    if (accountTransitions > 0 || getState().auth.pending) return;
+    if (typeof instance.isAuthorized !== "boolean") return;
+    if (isAuthorized(instance)) return;
+    if (getState().auth.status !== "authorized") return;
+    void endSessionFromMusicKit(instance);
   };
 
   const persistPins = async (
@@ -728,6 +815,19 @@ export function createAppController(
           },
           undefined,
           () => playback.syncPlaybackModes(instance),
+          {
+            onAuthorizationChange: () =>
+              onMusicKitAuthorizationChange(instance),
+            onMusicVolumeChange: (volume) => {
+              if (!playback.reflectMusicVolume(volume)) return;
+              // Saved on the same debounce as a drag, so it survives a restart.
+              if (volumeSaveTimer !== undefined) clearTimeout(volumeSaveTimer);
+              volumeSaveTimer = setTimeout(
+                flushVolumeSave,
+                VOLUME_SAVE_DELAY_MS,
+              );
+            },
+          },
         );
         playback.syncPlaybackModes(instance);
       }
@@ -736,6 +836,9 @@ export function createAppController(
       restoreAuthProbe = installAuthPopupProbe(log);
       setInitializationState({ status: "ready" });
       log("MusicKit initialized successfully.");
+      // Saved recents with no signed-in account belong to a session that
+      // ended, so they are not carried into the next sign-in.
+      if (!isAuthorized(instance)) clearRecentSearches();
       if (isAuthorized(instance)) {
         setAuthState({ status: "authorized" });
         const cachePromise = ensureLibraryCache();
@@ -867,35 +970,28 @@ export function createAppController(
     },
 
     async signOut(): Promise<void> {
-      // Late responses from this account must not land after sign-out.
-      resetAccountScope();
+      accountTransitions += 1;
       try {
-        const instance = requireMusic();
-        // Sign-out resets the UI to idle; audio must not keep playing.
+        // Late responses from this account must not land after sign-out.
+        resetAccountScope();
         try {
-          instance.stop?.();
+          const instance = requireMusic();
+          // Sign-out resets the UI to idle; audio must not keep playing.
+          try {
+            instance.stop?.();
+          } catch (error) {
+            log(`Stop before sign-out failed: ${safeErrorMessage(error)}`);
+          }
+          await unauthorize(instance);
+          await clearSignedInData();
+          log("Signed out.");
         } catch (error) {
-          log(`Stop before sign-out failed: ${safeErrorMessage(error)}`);
+          const message = safeErrorMessage(error);
+          log(`Sign out failed: ${message}`);
+          throw error;
         }
-        await unauthorize(instance);
-        await clearLibraryCache();
-        // Pins are local and not tied to an Apple ID; the next account to
-        // sign in on this PC must not see them.
-        try {
-          await deletePersistedPins(invokeFn);
-        } catch (error) {
-          log(`Pinned playlists clear failed: ${safeErrorMessage(error)}`);
-        }
-        await playbackSession.clear();
-        discovery.resetAccount();
-        resetState();
-        setPins([]);
-        setInitializationState({ status: "ready" });
-        log("Signed out.");
-      } catch (error) {
-        const message = safeErrorMessage(error);
-        log(`Sign out failed: ${message}`);
-        throw error;
+      } finally {
+        accountTransitions -= 1;
       }
     },
 
@@ -909,7 +1005,16 @@ export function createAppController(
 
     loadBrowse: discovery.loadBrowse,
 
+    loadMoreBrowseShelf: discovery.loadMoreBrowseShelf,
+
     loadRadio: discovery.loadRadio,
+
+    loadRadioGenre: discovery.loadRadioGenre,
+    loadCurator: (id, kind) => loadCuratorPage(requireMusic(), id, kind),
+    loadMoreCuratorPlaylists: (next) =>
+      loadCuratorPlaylistsPage(requireMusic(), next),
+    loadPlaylistCurator: (playlistId) =>
+      loadPlaylistCurator(requireMusic(), playlistId),
 
     playStation(station: Station): Promise<void> {
       collections.invalidate();
@@ -1067,6 +1172,8 @@ export function createAppController(
     setSearchSource: discovery.setSearchSource,
 
     search: discovery.search,
+    suggestSearch: discovery.suggestSearch,
+    loadMoreSearch: discovery.loadMoreSearch,
 
     async playFromSearch(index: number): Promise<void> {
       await playTracks(discovery.searchTracks().slice(Math.max(0, index)));

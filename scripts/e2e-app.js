@@ -30,6 +30,7 @@ import { runLayout } from "./e2e-layout.js";
 import { desktopEventRecorderSource, runDesktop } from "./e2e-desktop.js";
 import { runPerformance } from "./e2e-performance.js";
 import { runPolish } from "./e2e-polish.js";
+import { runDiscovery } from "./e2e-discovery.js";
 import { runSessionRestore } from "./e2e-session-restore.js";
 import { sleep } from "./e2e-helpers.js";
 
@@ -1326,6 +1327,7 @@ async function run() {
         ["flows", runFlows],
         ["performance", runPerformance],
         ["polish", runPolish],
+        ["discovery", runDiscovery],
         // Last: it signs out at the end.
         ["session-restore", runSessionRestore],
       ]) {
