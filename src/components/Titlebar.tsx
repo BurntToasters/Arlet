@@ -20,9 +20,9 @@ import appIconUrl from "../assets/app-icon.png";
 import {
   useAppController,
   useAppRouter,
+  useAppSelector,
   useAppSlices,
 } from "../app/context.tsx";
-import type { AppController } from "../app/controller.ts";
 import { setUiState, type RuntimeAppState } from "../state.ts";
 import {
   closeWindow,
@@ -35,81 +35,16 @@ import {
 } from "../platform/window.ts";
 import { IconButton } from "./IconButton.tsx";
 
-interface AccountSummaryLike {
-  displayName?: string;
-  name?: string;
-  storefront?: string;
-  lastRefreshAt?: number | string;
-}
-
-interface CollectionSummaryLike {
-  lastUpdatedAt?: number | string;
-  source?: string;
-}
-
-interface ExtendedState {
-  account?: unknown;
-  library?: unknown;
-}
-
-interface ExtendedController {
-  refreshCurrentData?: () => Promise<unknown>;
-  refreshCurrentView?: () => Promise<unknown>;
-  refreshLibrarySection?: (section: string) => Promise<unknown>;
-}
-
-function readAccountSummary(
-  state: Pick<RuntimeAppState, "account">,
-): AccountSummaryLike | undefined {
-  const value = (state as unknown as ExtendedState).account;
-  if (!value || typeof value !== "object") return undefined;
-  const candidate = value as Record<string, unknown>;
-  return {
-    displayName:
-      typeof candidate.displayName === "string"
-        ? candidate.displayName
-        : undefined,
-    name: typeof candidate.name === "string" ? candidate.name : undefined,
-    storefront:
-      typeof candidate.storefront === "string"
-        ? candidate.storefront
-        : undefined,
-    lastRefreshAt:
-      typeof candidate.lastRefreshAt === "number" ||
-      typeof candidate.lastRefreshAt === "string"
-        ? candidate.lastRefreshAt
-        : undefined,
-  };
-}
-
 function readLastRefresh(
   state: Pick<RuntimeAppState, "account" | "library">,
 ): number | undefined {
-  const account = readAccountSummary(state);
-  const accountRefresh = account?.lastRefreshAt;
-  if (accountRefresh !== undefined) {
-    const parsed =
-      typeof accountRefresh === "number"
-        ? accountRefresh
-        : Date.parse(accountRefresh);
-    if (Number.isFinite(parsed)) return parsed;
+  const accountRefresh = state.account.lastRefreshAt;
+  if (accountRefresh !== undefined && Number.isFinite(accountRefresh)) {
+    return accountRefresh;
   }
-  const candidate = (state as unknown as ExtendedState).library;
-  if (!candidate || typeof candidate !== "object") return undefined;
-  const library = candidate as Record<string, unknown>;
-  const collections =
-    library.collections && typeof library.collections === "object"
-      ? (library.collections as Record<string, unknown>)
-      : library;
-  const timestamps = Object.values(collections)
-    .filter((value): value is CollectionSummaryLike => {
-      return Boolean(value && typeof value === "object");
-    })
-    .map((value) => value.lastUpdatedAt)
-    .filter((value): value is number | string => value !== undefined)
-    .map((value) =>
-      typeof value === "number" ? value : Date.parse(String(value)),
-    )
+  const timestamps = Object.values(state.library.collections)
+    .map((collection) => collection.lastUpdatedAt)
+    .filter((value): value is number => value !== undefined)
     .filter((value) => Number.isFinite(value));
   return timestamps.length ? Math.max(...timestamps) : undefined;
 }
@@ -129,8 +64,9 @@ export function Titlebar(): JSX.Element {
     "initialization",
     "library",
     "navigation",
-    "ui",
   );
+  const sidebarOpen = useAppSelector((store) => store.ui.sidebarOpen);
+  const diagnosticsOpen = useAppSelector((store) => store.ui.diagnosticsOpen);
   const controller = useAppController();
   const router = useAppRouter();
   const maximizeButton = useRef<HTMLButtonElement>(null);
@@ -139,9 +75,8 @@ export function Titlebar(): JSX.Element {
   const [maximized, setMaximized] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const showDiagnostics = import.meta.env.DEV;
-  const account = readAccountSummary(state);
+  const account = state.account;
   const lastRefresh = readLastRefresh(state);
-  const extendedController = controller as AppController & ExtendedController;
 
   useEffect(() => {
     let active = true;
@@ -214,7 +149,11 @@ export function Titlebar(): JSX.Element {
 
   useEffect(() => {
     if (!statusOpen) return;
-    statusMenu.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    statusMenu.current
+      ?.querySelector<HTMLButtonElement>(
+        'button[role="menuitem"]:not(:disabled)',
+      )
+      ?.focus();
   }, [statusOpen]);
 
   useEffect(() => {
@@ -272,17 +211,7 @@ export function Titlebar(): JSX.Element {
   };
 
   const refreshCurrentView = (): void => {
-    const librarySection =
-      state.navigation.kind === "library"
-        ? state.navigation.section
-        : undefined;
-    const action =
-      extendedController.refreshCurrentData ??
-      extendedController.refreshCurrentView ??
-      (librarySection !== undefined && extendedController.refreshLibrarySection
-        ? () => extendedController.refreshLibrarySection!(librarySection)
-        : undefined);
-    runStatusAction(action);
+    runStatusAction(() => controller.refreshCurrentData());
   };
 
   const statusLabel =
@@ -293,8 +222,7 @@ export function Titlebar(): JSX.Element {
       : state.initialization.status === "error"
         ? "Offline"
         : "Starting";
-  const signedInLabel =
-    account?.displayName ?? account?.name ?? "Apple Music account";
+  const signedInLabel = "Apple Music account";
 
   return (
     <header
@@ -307,7 +235,7 @@ export function Titlebar(): JSX.Element {
         className="mobile-menu-button icon-button"
         type="button"
         aria-label="Open navigation"
-        onClick={() => setUiState({ sidebarOpen: !state.ui.sidebarOpen })}
+        onClick={() => setUiState({ sidebarOpen: !sidebarOpen })}
         data-no-drag
       >
         <Menu aria-hidden="true" size={18} strokeWidth={1.9} />
@@ -357,13 +285,8 @@ export function Titlebar(): JSX.Element {
           <ChevronDown aria-hidden="true" size={14} strokeWidth={1.8} />
         </button>
         {statusOpen ? (
-          <div
-            ref={statusMenu}
-            className="connection-popover"
-            role="menu"
-            aria-label="Apple Music connection details"
-            data-no-drag
-          >
+          // Only the action buttons are a menu; the status text stays plain.
+          <div ref={statusMenu} className="connection-popover" data-no-drag>
             <div className="connection-popover-heading">
               <span className="eyebrow">Apple Music</span>
               <strong>
@@ -373,7 +296,7 @@ export function Titlebar(): JSX.Element {
               </strong>
               <small>
                 {state.auth.status === "authorized"
-                  ? account?.storefront
+                  ? account.storefront
                     ? `${account.storefront} storefront`
                     : "Connected for this session"
                   : state.initialization.status === "error"
@@ -397,7 +320,11 @@ export function Titlebar(): JSX.Element {
                 {formatLastRefresh(lastRefresh)}
               </span>
             </div>
-            <div className="connection-popover-actions">
+            <div
+              className="connection-popover-actions"
+              role="menu"
+              aria-label="Connection actions"
+            >
               <button
                 type="button"
                 role="menuitem"
@@ -452,10 +379,10 @@ export function Titlebar(): JSX.Element {
 
       {showDiagnostics ? (
         <button
-          className={`titlebar-debug icon-button ${state.ui.diagnosticsOpen ? "is-active" : ""}`.trim()}
+          className={`titlebar-debug icon-button ${diagnosticsOpen ? "is-active" : ""}`.trim()}
           type="button"
           aria-label="Toggle developer diagnostics"
-          aria-pressed={state.ui.diagnosticsOpen}
+          aria-pressed={diagnosticsOpen}
           onClick={controller.toggleDiagnostics}
           data-no-drag
         >

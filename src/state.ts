@@ -1,54 +1,42 @@
+export type * from "./state-types.ts";
+
 import type {
-  Album,
-  Artist,
-  DiscoveryResource,
   PinnedPlaylist,
   PendingPlaybackRestore,
   PlaybackState,
-  Playlist,
   RatingValue,
   SleepTimerState,
-  RecommendationSection,
-  Station,
   Track,
   MusicSource,
 } from "./domain/music.ts";
 import type { AppErrorCode } from "./domain/errors.ts";
 import type { Route } from "./routing/router.ts";
+import type {
+  AppSettings,
+  AuthState,
+  InitializationState,
+  SearchState,
+  SearchSuggestionState,
+  SearchResourceGroups,
+  BrowseState,
+  RadioSectionState,
+  RadioState,
+  LibrarySection,
+  LibraryLoadStatus,
+  LibraryDataSource,
+  LibraryCollectionState,
+  LibraryDetailState,
+  HomeState,
+  AccountSummary,
+  LibraryDetailsState,
+  LibraryState,
+  UiState,
+  WindowEffectState,
+  UpdateState,
+  RuntimeAppState,
+} from "./state-types.ts";
 import { redactSensitive } from "./platform/redact.ts";
 import { isSameTrack } from "./domain/music.ts";
-
-export type ThemePreference = "system" | "light" | "dark";
-export type WindowEffectPreference = "acrylic" | "mica" | "solid";
-export type UpdateChannel = "auto" | "stable" | "beta";
-
-export type UpdateStatus =
-  | "idle"
-  | "checking"
-  | "downloading"
-  | "ready"
-  | "up-to-date"
-  | "error"
-  | "installing";
-
-export interface AppSettings {
-  schemaVersion: 1;
-  theme: ThemePreference;
-  windowEffect: WindowEffectPreference;
-  autoCheckUpdates: boolean;
-  updateChannel: UpdateChannel;
-  volume: number;
-  /** Ask MusicKit to keep playing similar music after the queue ends. */
-  autoplay: boolean;
-  /** Restore the last queue and position, paused, after restart. */
-  restoreSession: boolean;
-  /** Show the tray icon; closing the window then hides to it instead of quitting. */
-  trayIcon: boolean;
-  /** Write the app log to disk (`arlet.log`). Off by default. */
-  debugMode: boolean;
-  /** Reserved for forward-compatible settings owned by other versions. */
-  [key: string]: unknown;
-}
 
 export const DEFAULT_SETTINGS: AppSettings = {
   schemaVersion: 1,
@@ -62,256 +50,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   trayIcon: true,
   debugMode: false,
 };
-
-export type AuthState =
-  | {
-      status: "unauthorized";
-      /** True while the MusicKit authorization popup is in flight. */
-      pending?: boolean;
-      [key: string]: unknown;
-    }
-  | {
-      status: "authorized";
-      /** True while the MusicKit authorization popup is in flight. */
-      pending?: boolean;
-      /** Source-compatibility index for older Phase 0 report fixtures. */
-      [key: string]: unknown;
-    };
-
-export type InitializationState =
-  | { status: "idle" }
-  | { status: "loading" }
-  | { status: "ready" }
-  | { status: "error"; message: string };
-
-export interface SearchState {
-  query: string;
-  status: "idle" | "loading" | "success" | "error";
-  results: Track[];
-  activeSource: "catalog" | "library";
-  catalog: SearchResourceGroups;
-  library: SearchResourceGroups;
-  error?: string;
-  requestId: number;
-}
-
-export interface SearchResourceGroups {
-  songs: Track[];
-  albums: Album[];
-  artists: Artist[];
-  playlists: Playlist[];
-  status: "idle" | "loading" | "success" | "error";
-  error?: string;
-}
-
-export type DiscoveryLoadStatus =
-  "idle" | "loading" | "refreshing" | "success" | "error";
-
-export interface BrowseState {
-  status: DiscoveryLoadStatus;
-  songs: Track[];
-  albums: Album[];
-  playlists: Playlist[];
-  error?: string;
-  lastUpdatedAt?: number;
-}
-
-export interface RadioSectionState {
-  status: DiscoveryLoadStatus;
-  items: Station[];
-  error?: string;
-}
-
-export interface RadioState {
-  status: DiscoveryLoadStatus;
-  personal: RadioSectionState;
-  live: RadioSectionState;
-  recent: RadioSectionState;
-  error?: string;
-  lastUpdatedAt?: number;
-}
-
-export type LibrarySection =
-  "recent" | "history" | "artists" | "albums" | "songs" | "playlists";
-
-export type LibraryLoadStatus =
-  "idle" | "loading" | "refreshing" | "success" | "error";
-
-export type LibraryDataSource = "none" | "cache" | "network";
-
-/**
- * Normalized resources are intentionally structural here. The API/domain
- * layer owns the richer resource types, while the store can remain stable as
- * Apple adds resource kinds.
- */
-export interface LibraryEntity {
-  id: string;
-  type?: string;
-  name?: string;
-  title?: string;
-  [key: string]: unknown;
-}
-
-export interface LibraryCollectionState<
-  T extends { id: string } = LibraryEntity,
-> {
-  items: T[];
-  status: LibraryLoadStatus;
-  source: LibraryDataSource;
-  next?: string;
-  error?: string;
-  lastUpdatedAt?: number;
-  /** True when network refresh failed but cached items remain renderable. */
-  stale: boolean;
-}
-
-export interface LibraryDetailState<T extends { id: string } = LibraryEntity> {
-  status: LibraryLoadStatus;
-  source: LibraryDataSource;
-  item?: T;
-  items: T[];
-  next?: string;
-  error?: string;
-  lastUpdatedAt?: number;
-  stale: boolean;
-  /** Compatibility aliases consumed by detail views. */
-  resource?: T;
-  tracks?: T[];
-  albums?: T[];
-}
-
-export type HomeLoadStatus =
-  "idle" | "loading" | "refreshing" | "success" | "error";
-
-export interface HomeErrors {
-  recentPlaylists?: string;
-  heavyRotation?: string;
-  recommendations?: string;
-}
-
-export interface HomeState {
-  status: HomeLoadStatus;
-  recentPlaylists: Playlist[];
-  heavyRotation: DiscoveryResource[];
-  recommendations: RecommendationSection[];
-  errors: HomeErrors;
-  lastUpdatedAt?: number;
-  /** True when a prior session snapshot remains after refresh failure. */
-  stale: boolean;
-}
-
-export interface AccountSummary {
-  /** Generic provider label; Apple identity is not exposed by MusicKit. */
-  provider: "Apple Music";
-  label: "Apple Music account";
-  storefront?: string;
-  connectedAt?: number;
-  lastRefreshAt?: number;
-}
-
-export interface LibraryDetailsState {
-  album: LibraryDetailState & Record<string, unknown>;
-  artist: LibraryDetailState & Record<string, unknown>;
-  playlist: LibraryDetailState & Record<string, unknown>;
-  playlistFolder: LibraryDetailState & Record<string, unknown>;
-}
-
-export interface LibraryState {
-  account: AccountSummary;
-  hydrated: boolean;
-  /** MusicKit could not start; views show the cached library read-only. */
-  offline: boolean;
-  collections: Record<LibrarySection, LibraryCollectionState>;
-  details: LibraryDetailsState;
-}
-
-export interface DiagnosticsState {
-  logs: string[];
-  failures: string[];
-  sessionStartedAt: number;
-}
-
-export interface PendingCollectionPlay {
-  kind: "album" | "playlist";
-  id: string;
-}
-
-export interface UiState {
-  queueOpen: boolean;
-  diagnosticsOpen: boolean;
-  sidebarOpen: boolean;
-  nowPlayingOpen: boolean;
-  /** Collection whose pages load before playback starts. */
-  pendingCollection?: PendingCollectionPlay;
-}
-
-export interface WindowEffectState {
-  requested: WindowEffectPreference;
-  applied: WindowEffectPreference | "solid";
-  fallbackReason?: string;
-}
-
-export interface UpdateState {
-  status: UpdateStatus;
-  channel: UpdateChannel;
-  /** The concrete feed selected by the channel preference and installed version. */
-  resolvedChannel: "stable" | "beta";
-  target?: string;
-  version?: string;
-  progress?: number;
-  downloadedBytes?: number;
-  contentLength?: number;
-  /** Sanitized, bounded release notes retained for the downloaded update. */
-  releaseNotes?: string;
-  message?: string;
-  error?: string;
-  /** True while the ready-to-install prompt is visible. */
-  promptOpen: boolean;
-  lastCheckedAt?: number;
-}
-
-export interface AppState {
-  auth: AuthState;
-  playback: PlaybackState;
-  tracksPlayed: number;
-  account?: AccountSummary;
-  library?: LibraryState;
-  home?: HomeState;
-  browse?: BrowseState;
-  radio?: RadioState;
-  /** Milestone 0-compatible snapshots may omit the shell fields. */
-  initialization?: InitializationState;
-  navigation?: Route;
-  search?: SearchState;
-  settings?: AppSettings;
-  windowEffect?: WindowEffectState;
-  updates?: UpdateState;
-  pins?: PinnedPlaylist[];
-  ui?: UiState;
-  diagnostics?: DiagnosticsState;
-  /** Ratings keyed by `ratingKey(type, id)`. */
-  ratings?: Record<string, RatingValue>;
-}
-
-export interface RuntimeAppState extends AppState {
-  initialization: InitializationState;
-  /** Embedded MusicKit developer token expiry (epoch ms), when known. */
-  developerTokenExpiresAt?: number;
-  navigation: Route;
-  search: SearchState;
-  settings: AppSettings;
-  windowEffect: WindowEffectState;
-  updates: UpdateState;
-  pins: PinnedPlaylist[];
-  ui: UiState;
-  diagnostics: DiagnosticsState;
-  library: LibraryState;
-  home: HomeState;
-  browse: BrowseState;
-  radio: RadioState;
-  account: AccountSummary;
-  ratings: Record<string, RatingValue>;
-}
 
 const initialPlaybackState: PlaybackState = {
   status: "idle",
@@ -381,12 +119,77 @@ function emptySearchGroups(): SearchResourceGroups {
     albums: [],
     artists: [],
     playlists: [],
+    stations: [],
+    curators: [],
+    paging: {},
     status: "idle",
   };
 }
 
+const RECENT_SEARCHES_KEY = "arlet.search.recent";
+const RECENT_SEARCH_LIMIT = 10;
+const RECENT_SEARCH_MAX_LENGTH = 200;
+
+/** Trims a term and caps its length; an empty result means nothing to keep. */
+function normalizeRecentSearch(term: string): string {
+  return term.trim().slice(0, RECENT_SEARCH_MAX_LENGTH).trimEnd();
+}
+
+function searchStorage(): Storage | undefined {
+  try {
+    return typeof localStorage === "undefined" ? undefined : localStorage;
+  } catch {
+    // Blocked site data makes the accessor throw; recents then stay in memory.
+    return undefined;
+  }
+}
+
+/** Reads the saved terms; anything malformed is treated as no history. */
+function readRecentSearches(): string[] {
+  try {
+    const raw = searchStorage()?.getItem(RECENT_SEARCHES_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((value): value is string => typeof value === "string")
+      .map(normalizeRecentSearch)
+      .filter((value) => value.length > 0)
+      .slice(0, RECENT_SEARCH_LIMIT);
+  } catch {
+    return [];
+  }
+}
+
+function writeRecentSearches(terms: string[]): void {
+  try {
+    const storage = searchStorage();
+    if (!storage) return;
+    if (terms.length) {
+      storage.setItem(RECENT_SEARCHES_KEY, JSON.stringify(terms));
+    } else {
+      storage.removeItem(RECENT_SEARCHES_KEY);
+    }
+  } catch {
+    // A failed write only loses history across restarts.
+  }
+}
+
+function emptySearchSuggestions(): SearchSuggestionState {
+  return { term: "", status: "idle", items: [] };
+}
+
 export function createInitialBrowseState(): BrowseState {
-  return { status: "idle", songs: [], albums: [], playlists: [] };
+  return {
+    status: "idle",
+    genreId: "",
+    genres: [],
+    songs: [],
+    albums: [],
+    playlists: [],
+    cityCharts: [],
+    dailyCharts: [],
+    paging: {},
+  };
 }
 
 export function createInitialRadioState(): RadioState {
@@ -396,6 +199,9 @@ export function createInitialRadioState(): RadioState {
     personal: section(),
     live: section(),
     recent: section(),
+    genres: [],
+    genreId: "",
+    genreStations: section(),
   };
 }
 
@@ -435,6 +241,8 @@ const initialState: RuntimeAppState = {
     library: emptySearchGroups(),
     error: undefined,
     requestId: 0,
+    recent: readRecentSearches(),
+    suggestions: emptySearchSuggestions(),
   },
   settings: { ...DEFAULT_SETTINGS },
   windowEffect: {
@@ -477,6 +285,8 @@ function cloneInitialState(): RuntimeAppState {
       results: [],
       catalog: emptySearchGroups(),
       library: emptySearchGroups(),
+      recent: [],
+      suggestions: emptySearchSuggestions(),
     },
     settings: { ...DEFAULT_SETTINGS },
     windowEffect: { ...initialState.windowEffect },
@@ -818,10 +628,36 @@ export function setRadioState(patch: Partial<RadioState>): void {
   update({ ...state, radio: { ...state.radio, ...patch } });
 }
 
+/** Recent searches are per account, so they are dropped with the results. */
+export function addRecentSearch(term: string): void {
+  const trimmed = normalizeRecentSearch(term);
+  if (!trimmed) return;
+  const key = trimmed.toLocaleLowerCase();
+  const recent = [
+    trimmed,
+    ...state.search.recent.filter((entry) => entry.toLocaleLowerCase() !== key),
+  ].slice(0, RECENT_SEARCH_LIMIT);
+  writeRecentSearches(recent);
+  setSearchState({ recent });
+}
+
+export function removeRecentSearch(term: string): void {
+  const recent = state.search.recent.filter((entry) => entry !== term);
+  writeRecentSearches(recent);
+  setSearchState({ recent });
+}
+
+export function clearRecentSearches(): void {
+  writeRecentSearches([]);
+  setSearchState({ recent: [] });
+}
+
 /**
  * Drops Browse, Radio, and search results for an account change. Requests in
  * flight were invalidated, so their loading states would never settle; the
- * views reload from idle. The search query and source stay as typed.
+ * views reload from idle. The search query and source stay as typed. Suggestions
+ * go too. Recent searches are not touched: sign-in runs this reset, and recents
+ * are cleared only on sign-out (clearRecentSearches).
  */
 export function resetDiscoveryState(): void {
   update({
@@ -835,6 +671,7 @@ export function resetDiscoveryState(): void {
       catalog: emptySearchGroups(),
       library: emptySearchGroups(),
       error: undefined,
+      suggestions: emptySearchSuggestions(),
     },
   });
 }
@@ -1062,6 +899,19 @@ export function ratingKey(type: string, id: string): string {
 
 export function setRating(key: string, value: RatingValue): void {
   update({ ...state, ratings: { ...state.ratings, [key]: value } });
+}
+
+/** Writes many ratings in one update, and skips the update when none change. */
+export function setRatings(
+  entries: ReadonlyArray<[string, RatingValue]>,
+): void {
+  let ratings: Record<string, RatingValue> | undefined;
+  for (const [key, value] of entries) {
+    if ((ratings ?? state.ratings)[key] === value) continue;
+    ratings ??= { ...state.ratings };
+    ratings[key] = value;
+  }
+  if (ratings) update({ ...state, ratings });
 }
 
 export function clearRatings(): void {

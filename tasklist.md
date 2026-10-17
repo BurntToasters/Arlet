@@ -2,30 +2,50 @@
 
 This document tracks our progress through the Arlet `docs/history/plan.md` architecture brief to easily pick up where we left off.
 
-## 📌 Status (2026-10-09 — read first)
+## 📌 Status (2026-10-16 — read first)
 
-Stable releases have shipped (see `CHANGELOG.md`); `next-0.2.4` is in progress.
+`v0.3.0-beta.2` is the latest beta; `v0.3.0-beta.3` is written up in
+`CHANGELOG.md` and ships after the checks below. Performance, UI polish, and
+discovery are done for 0.3.0.
 
-- [x] **0.2.4 audit fixes (2026-10-09):** account switch cancels all
-      account-scoped work; queue loads no longer cancel a pending play;
-      sign-out keeps volume/mode state; pins backup validated; atomic writes
-      fsync; file commands off the UI thread with ordered saves; WebView2
-      restart-loop guard; main/diagnostic window navigation guards; library
-      cache in local app data with orphan cleanup; CHANGELOG parser handles
-      fences, RC headings, and every download link; SHA256SUMS.asc pinned to
-      the release key; native E2E is part of the release proof.
+- [x] **0.3.0 performance:** virtualized library grid and Up Next, store
+      subscriptions split by slice, sized artwork, batched ratings, WAL
+      library cache with deferred compaction, and a smaller startup bundle.
+- [x] **0.3.0 UI polish and accessibility:** detail headers and disc groups,
+      card actions, skeletons, Now Playing controls, tint and fullscreen,
+      copy link, success toasts, About section, keyboard and screen-reader
+      fixes.
+- [x] **0.3.0 discovery:** artist and album shelves, search suggestions,
+      recent searches, top result, `See all`, Browse genres and city/daily
+      charts, Radio genres and live text, Home additions, curator pages.
+- [x] **0.3.0 audit round:** shared response parsing, next-page validation,
+      safer cache writes, async link opening, test artifact pruning.
+- [x] **0.2.5: update dialog readability.** `09-update-modal.css` makes the
+      dialog 94% solid and darkens the scrim behind it (42% with blur), so
+      the release notes read clearly under every window material. Check
+      light and dark themes once more during the beta.3 manual pass.
+
+Next, in order:
+
+- [ ] **Wave D:** library sort/filter, multi-select, drag to playlist,
+      shortcut overlay, taskbar thumbnail buttons, tray tooltip, launch at
+      startup, mini player.
+- [ ] **Wave E:** Phase 0 matrix and CSP narrowing (see the Phase 0 item
+      below), DPI and high-contrast checks.
+
+Before beta.3 ships:
+
+- [ ] **Real-account check of discovery:** artist and album shelves, search
+      suggestions, Browse charts and genres, Radio genres, and curator pages
+      on a real Apple Music account. The E2E fixture does not cover live
+      Apple data.
 - [ ] **Release VM `.env`:** set `GPG_RELEASE_FINGERPRINT` (full release key
       fingerprint, or a long `GPG_KEY_ID`). `release:draft` checks it before
-      the build and stops the release if it is missing or too short.
-
-- [ ] **0.2.5: update dialog readability.** With a window material on,
-      the "Update downloaded" dialog lets too much of the blurred app show
-      through, and the release notes are hard to read (reported on the
-      0.2.3 → 0.2.4 update). Keep the glassy look, but make the dialog and
-      its notes panel close to opaque, and darken the scrim behind it
-      (`src/styles/base/09-update-modal.css`: `.update-modal-scrim`,
-      `.update-modal`, `.update-modal-notes`). Check light and dark themes
-      and every window material.
+      the build and stops the release if it is missing or too short. Also
+      confirm `MUSICKIT_DEVELOPER_TOKEN`, updater key and password,
+      `AZURE_*`, `GPG_KEY_ID`, and `AFTER_PACK_LOC` are set.
+- [ ] **Token expiry calendar:** put the developer token's expiry date on the
+      calendar, and ship a new release before it lapses.
 
 The Preact shell, library, search, browse, radio, playlists, queue, SMTC, and
 window materials are implemented; the 2026-09-11 notes below are history.

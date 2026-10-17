@@ -7,10 +7,15 @@ granted per window label in `src-tauri/capabilities/`; the default set covers
 only version, window management, updater, clipboard text, the
 library cache (fixed Rust commands, no SQL), settings, pins, the saved
 playback session (fixed load/save/delete commands, size- and item-capped),
-logging, window effects, the Windows media session, and opening the diagnostic
-window. There is no `shell`, `dialog`, `notification`, `process`, or
-`global-shortcut` plugin, no arbitrary command execution, and remote Apple
-origins get no filesystem/shell/updater access.
+logging, window effects, the Windows media session, opening the diagnostic
+window, and full-screen toggling for Now Playing (`core:window:allow-set-fullscreen`
+and `core:window:allow-is-fullscreen`). Browser opening is limited to two fixed
+commands: `open_support_page` (no arguments, `https://rosie.run/support`) and
+`open_about_link`, which accepts only `project`, `release_notes`, or `license`
+and builds its GitHub URL in Rust, so web content cannot choose a URL. Both go
+through `open_in_default_browser`. There is no `shell`, `dialog`,
+`notification`, `process`, or `global-shortcut` plugin, no arbitrary command
+execution, and remote Apple origins get no filesystem/shell/updater access.
 
 The tray icon is Tauri's core `tray-icon` feature, built in Rust. Its menu
 emits the same `windows-media-control` event as the Windows media buttons and
@@ -64,7 +69,8 @@ first.
   left), or fails the build. At runtime `get_developer_token` serves only the
   embedded token, never the user's environment, and reports an expired token
   as "install the latest update". `release-preflight.js` runs the same check
-  before a draft release exists.
+  before a draft release exists and needs 150 days left, so the token
+  outlives the weekly canary's 150-day release-age warning.
 - The embedded JWT can be extracted from the binary, as with any MusicKit web
   app. Its lifetime is the exposure window: Apple caps it at 6 months, so a
   new release must ship before the embedded token expires.
@@ -97,9 +103,9 @@ The log file (`arlet.log` in the local app data folder) is opt-in: it is
 written only while Settings › Debug Mode is on, which is off by default. The
 in-memory recent log that `Copy diagnostics report` uses works either way and
 never leaves the machine unless the user pastes it. One exception is written
-regardless of Debug Mode: a native crash, or the main window failing to open,
-appends a single redacted `[native]` line, because nothing else would record
-it.
+regardless of Debug Mode: a native crash, the main window failing to open,
+or a WebView2 process dying appends a single redacted `[native]` line,
+because nothing else would record it.
 
 ## Third-party script
 
@@ -110,7 +116,8 @@ keep the grant small: the webview has no generic SQL, filesystem, shell,
 dialog, notification, or process access, and the library cache is reachable
 only through fixed, size-bounded commands (`src-tauri/src/library_cache.rs`).
 Clipboard read remains for paste in the context menu. Window permissions are
-the ones the custom title bar uses, plus `set-size` for the native E2E.
+the ones the custom title bar uses, the full-screen pair Now Playing uses
+(`set-fullscreen`, `is-fullscreen`), and `set-size` for the native E2E.
 Tauri's isolation pattern is the next step if the grant ever needs to grow.
 
 Now-playing artwork is fetched by Windows itself for the media overlay, so
@@ -120,8 +127,9 @@ host would learn the user's IP address.
 ## Sign-out
 
 Signing out stops playback, revokes MusicKit authorization, clears the SQLite
-library cache, and deletes the local pinned-playlist file, so the next Apple ID
-on the same Windows account starts clean.
+library cache, and deletes the local pinned-playlist file and the saved
+playback queue, so the next Apple ID on the same Windows account starts
+clean.
 
 ## Signing separation
 

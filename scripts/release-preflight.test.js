@@ -13,44 +13,46 @@ function token(payload, header = { alg: "ES256", kid: "KEYID12345" }) {
 
 // Failure modes: a release starts (and a draft is created) with a missing,
 // skipped, non-ES256, nearly expired, or wrongly origin-scoped token, which
-// build.rs would only reject later; error text echoes the token.
+// build.rs would only reject later; a token with under 150 days left, which
+// expires before the canary's release-age warning; error text echoes the token.
 test("checkMusicKitToken rejects tokens build.rs would refuse", () => {
   const cases = [
     {},
     { MUSICKIT_DEVELOPER_TOKEN: "" },
     {
-      MUSICKIT_DEVELOPER_TOKEN: token({ exp: NOW + 90 * DAY }),
+      MUSICKIT_DEVELOPER_TOKEN: token({ exp: NOW + 170 * DAY }),
       ARLET_SKIP_MUSICKIT_TOKEN: "1",
     },
     { MUSICKIT_DEVELOPER_TOKEN: "not.a.jwt" },
     {
       MUSICKIT_DEVELOPER_TOKEN: token(
-        { exp: NOW + 90 * DAY },
+        { exp: NOW + 170 * DAY },
         { alg: "HS256" },
       ),
     },
     { MUSICKIT_DEVELOPER_TOKEN: token({ exp: NOW + 29 * DAY }) },
+    { MUSICKIT_DEVELOPER_TOKEN: token({ exp: NOW + 149 * DAY }) },
     {
       MUSICKIT_DEVELOPER_TOKEN: token({
-        exp: NOW + 90 * DAY,
+        exp: NOW + 170 * DAY,
         origin: ["http://tauri.localhost"],
       }),
     },
     {
       MUSICKIT_DEVELOPER_TOKEN: token({
-        exp: NOW + 90 * DAY,
+        exp: NOW + 170 * DAY,
         origin: ["http://localhost:5173"],
       }),
     },
     {
       MUSICKIT_DEVELOPER_TOKEN: token({
-        exp: NOW + 90 * DAY,
+        exp: NOW + 170 * DAY,
         origin: ["http://tauri.localhost", "http://127.0.0.1:5173"],
       }),
     },
     {
       MUSICKIT_DEVELOPER_TOKEN: token({
-        exp: NOW + 90 * DAY,
+        exp: NOW + 170 * DAY,
         origin: "http://tauri.localhost",
       }),
     },
@@ -69,8 +71,8 @@ test("checkMusicKitToken rejects tokens build.rs would refuse", () => {
 
 test("checkMusicKitToken accepts a token without an origin claim", () => {
   const open = checkMusicKitToken(
-    { MUSICKIT_DEVELOPER_TOKEN: token({ exp: NOW + 90 * DAY }) },
+    { MUSICKIT_DEVELOPER_TOKEN: token({ exp: NOW + 170 * DAY }) },
     NOW,
   );
-  assert.deepEqual(open, { exp: NOW + 90 * DAY });
+  assert.deepEqual(open, { exp: NOW + 170 * DAY });
 });

@@ -5,29 +5,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { fixtureCall, sleep, waitFor } from "./e2e-helpers.js";
 
 const FIXTURE = "window.__ARLET_E2E_MUSIC__";
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const VERSION = JSON.parse(
   fs.readFileSync(path.join(root, "package.json"), "utf8"),
 ).version;
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function fixtureCall(page, method, args = []) {
-  return page.evaluate(`
-    return await ${FIXTURE}[${JSON.stringify(method)}](...${JSON.stringify(args)});
-  `);
-}
-
-async function waitFor(page, expression, timeoutMs = 8000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await page.evaluate(`return Boolean(${expression});`)) return true;
-    await sleep(50);
-  }
-  return false;
-}
-
 async function clickMenuItem(page, target, itemId) {
   await fixtureCall(page, "selectContext", [target]);
   const ready = await waitFor(
@@ -127,10 +111,28 @@ async function addToPlaylist({ page, check }) {
   await fixtureCall(page, "reset");
   await page.evaluate(`location.hash = "#/home"; return true;`);
   const opened = await clickMenuItem(page, "song-a", "add-to-playlist");
+  // The picker lists playlists only after its library load answers (the
+  // fixture delays it 800 ms, and a refresh left by an earlier scenario can
+  // run alongside it), so wait for the rendered option, not a fixed pause.
+  const pickerTimeoutMs = 20000;
+  const dialogShown = await waitFor(
+    page,
+    `document.querySelector(".playlist-dialog-backdrop")`,
+    pickerTimeoutMs,
+  );
   const listed = await waitFor(
     page,
     `[...document.querySelectorAll(".playlist-dialog-option")].some((node) => node.textContent.includes("Fixture Playlist"))`,
+    pickerTimeoutMs,
   );
+  const picker = await page.evaluate(`
+    return {
+      options: [...document.querySelectorAll(".playlist-dialog-option")].map((node) => node.textContent),
+      feedback: document.querySelector(".playlist-dialog-feedback")?.textContent ?? null,
+      playlistRequests: ${FIXTURE}.snapshot().requests
+        .filter((request) => request.path.includes("/v1/me/library/playlists"))
+        .map((request) => ({ method: request.method, path: request.path, error: request.error })),
+    };`);
   const since = (await fixtureCall(page, "snapshot")).requests.length;
   await page.evaluate(`
     [...document.querySelectorAll(".playlist-dialog-option")]
@@ -152,7 +154,7 @@ async function addToPlaylist({ page, check }) {
       listed &&
       closed &&
       JSON.stringify(added?.body ?? "").includes("song-a"),
-    { opened, listed, closed, added },
+    { opened, dialogShown, listed, closed, added, picker },
   );
 }
 
@@ -283,13 +285,32 @@ async function errorRecovery({ page, check }) {
   await waitFor(page, `document.querySelector(".library-track-row")`);
   await page.evaluate(`location.hash = "#/settings"; return true;`);
   await waitFor(page, `document.querySelector(".settings-section")`);
-  // A real render failure in one view: the Library view formats its
-  // "Updated" time while rendering; nothing in the shell does.
+  // A real render failure in one view. The Library view formats its "Updated"
+  // time with a formatter made once at import, so the `format` getter throws
+  // only for formatters that predate this injection. Formatters made since
+  // (the Titlebar and Home views make theirs per render) still work, so only
+  // the Library view fails to render. Both are restored exactly in `finally`.
   await page.evaluate(`
-    window.__ARLET_E2E_INTL__ = Intl.DateTimeFormat;
-    Intl.DateTimeFormat = function () {
-      throw new Error("e2e-render-marker");
+    const proto = Intl.DateTimeFormat.prototype;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, "format");
+    const Original = Intl.DateTimeFormat;
+    const created = new WeakSet();
+    const Tracked = function DateTimeFormat(locales, options) {
+      const formatter = new Original(locales, options);
+      created.add(formatter);
+      return formatter;
     };
+    Tracked.prototype = Original.prototype;
+    Tracked.supportedLocalesOf = Original.supportedLocalesOf;
+    window.__ARLET_E2E_INTL__ = { descriptor, Original };
+    Object.defineProperty(proto, "format", {
+      configurable: true,
+      get() {
+        if (!created.has(this)) throw new Error("e2e-render-marker");
+        return descriptor.get.call(this);
+      },
+    });
+    Intl.DateTimeFormat = Tracked;
     location.hash = "#/library/songs";
     return true;`);
   let contained = false;
@@ -305,7 +326,12 @@ async function errorRecovery({ page, check }) {
     );
   } finally {
     await page.evaluate(`
-      if (window.__ARLET_E2E_INTL__) Intl.DateTimeFormat = window.__ARLET_E2E_INTL__;
+      const saved = window.__ARLET_E2E_INTL__;
+      if (saved) {
+        Object.defineProperty(Intl.DateTimeFormat.prototype, "format", saved.descriptor);
+        Intl.DateTimeFormat = saved.Original;
+        delete window.__ARLET_E2E_INTL__;
+      }
       return true;`);
   }
   await page.evaluate(`

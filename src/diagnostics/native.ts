@@ -8,6 +8,16 @@ export type DiagnosticsInvoke = <T>(
 ) => Promise<T>;
 
 /**
+ * Debug Mode as last loaded or saved by the frontend. `undefined` means not
+ * known yet, so lines are still sent and Rust decides what to write.
+ */
+let debugModeHint: boolean | undefined;
+
+export function setNativeLogDebugMode(enabled: boolean): void {
+  debugModeHint = enabled;
+}
+
+/**
  * Thin command adapter kept separate from the store so tests and browser
  * development can provide a no-op adapter without importing Tauri globals.
  */
@@ -17,8 +27,11 @@ export function createTauriDiagnosticsAdapter(
   // Log writes run off the UI thread; the queue keeps lines in order.
   const writes = createSerialQueue();
   return {
-    appendLocalLog: (entry) =>
-      writes(() => call<void>("append_local_log", { entry })),
+    appendLocalLog: (entry) => {
+      // Rust drops these lines when Debug Mode is off, so skip the IPC.
+      if (debugModeHint === false) return undefined;
+      return writes(() => call<void>("append_local_log", { entry }));
+    },
     clearLogs: () => writes(() => call<void>("clear_logs")),
     getLogDir: () => call<string>("get_log_dir"),
   };

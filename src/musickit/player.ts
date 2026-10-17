@@ -1,8 +1,7 @@
+import { asRecord } from "./response.ts";
 import { idSource, isSameTrack, type Track } from "../domain/music.ts";
 import { normalizeTrack } from "./normalize.ts";
 import { getState, setCurrentTrack, setQueue } from "../state.ts";
-
-export const CONSECUTIVE_TRACK_TARGET = 20;
 
 export interface QueueSnapshot {
   items: MusicKit.MediaItem[];
@@ -173,12 +172,6 @@ export function setRepeatMode(
   }
 }
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
 function mediaItems(value: unknown): MusicKit.MediaItem[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const items = value.filter((item): item is MusicKit.MediaItem => {
@@ -343,6 +336,35 @@ function mergeQueueTrack(normalized: Track, existing: Track): Track {
   return merged;
 }
 
+/** Structural equality for queue data, which is plain objects and arrays. */
+function sameQueueValue(left: unknown, right: unknown): boolean {
+  if (left === right) return true;
+  if (typeof left !== "object" || typeof right !== "object") return false;
+  if (left === null || right === null) return false;
+  if (Array.isArray(left) !== Array.isArray(right)) return false;
+  const leftRecord = left as Record<string, unknown>;
+  const rightRecord = right as Record<string, unknown>;
+  const keys = Object.keys(leftRecord);
+  return (
+    keys.length === Object.keys(rightRecord).length &&
+    keys.every(
+      (key) =>
+        Object.hasOwn(rightRecord, key) &&
+        sameQueueValue(leftRecord[key], rightRecord[key]),
+    )
+  );
+}
+
+function sameQueueTracks(
+  left: readonly Track[],
+  right: readonly Track[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((track, index) => sameQueueValue(track, right[index]))
+  );
+}
+
 /** Sync app queue from provider queue. Returns false when runtime hides queue. */
 export function syncMusicKitQueue(
   instance: MusicKit.MusicKitInstance,
@@ -388,8 +410,20 @@ export function syncMusicKitQueue(
     if (!existing) return normalized;
     return mergeQueueTrack(normalized, existing);
   });
-  setQueue(tracks, snapshot.index);
-  const current = tracks[snapshot.index];
+  // An unchanged queue keeps the stored array, so queue lists and the session
+  // save see no change. A moved index still updates the current track.
+  const queueUnchanged = sameQueueTracks(tracks, previous);
+  if (!queueUnchanged) setQueue(tracks, snapshot.index);
+  const queue = queueUnchanged ? previous : tracks;
+  const current = queue[snapshot.index];
+  const { playback } = getState();
+  if (
+    queueUnchanged &&
+    playback.queueIndex === snapshot.index &&
+    sameQueueValue(current, playback.current)
+  ) {
+    return true;
+  }
   setCurrentTrack(current, snapshot.index);
   return true;
 }
@@ -422,24 +456,29 @@ export function queueOptionsForTracks(
  * Queue options carrying each song's details instead of its ID. MusicKit then
  * skips its per-song lookup (one Apple request per 16 songs), measured on
  * live MusicKit: one lookup by IDs, none with details. Undefined when any
- * song lacks a catalog ID or details (library-only songs, music videos), so
- * the caller queues by ID.
+ * song lacks an ID Arlet can describe, or is a music video, so the caller
+ * queues by ID.
  */
 export function queueDescriptorsForTracks(
   tracks: readonly Track[],
 ): MusicKit.QueueOptions | undefined {
   const items: Record<string, unknown>[] = [];
   for (const track of tracks) {
-    const id =
+    // A library-only song (an upload, or one Apple no longer sells) has no
+    // catalog ID; it is described as a library song, as MusicKit does.
+    const catalogId =
       track.catalogId ??
       (idSource(track.id) === "catalog" ? track.id : undefined);
+    const libraryId =
+      !catalogId && idSource(track.id) === "library" ? track.id : undefined;
+    const id = catalogId ?? libraryId;
     const video =
       track.resourceType === "music-videos" ||
       track.resourceType === "library-music-videos";
     if (!id || video || !track.title.trim()) return undefined;
     items.push({
       id,
-      type: "songs",
+      type: libraryId ? "library-songs" : "songs",
       attributes: {
         name: track.title,
         artistName: track.artistName,
@@ -457,7 +496,9 @@ export function queueDescriptorsForTracks(
               },
             }
           : {}),
-        playParams: { id, kind: "song" },
+        playParams: libraryId
+          ? { id, kind: "song", isLibrary: true }
+          : { id, kind: "song" },
       },
     });
   }

@@ -7,7 +7,6 @@ import {
   Folder,
   History as HistoryIcon,
   ListMusic,
-  LoaderCircle,
   Music2,
   RefreshCw,
   UserRound,
@@ -17,19 +16,26 @@ import type { JSX } from "preact";
 import {
   useAppController,
   useAppRouter,
-  useAppState,
+  useAppSlices,
 } from "../app/context.tsx";
 import { nearestTrackIndex } from "../app/queue-window.ts";
-import type { AppController } from "../app/controller.ts";
+import type { RuntimeAppState } from "../state.ts";
 import { Artwork } from "../components/Artwork.tsx";
 import { SongRow } from "../components/SongRow.tsx";
+import { CardActions, CardShell } from "../components/CardActions.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import type { Track } from "../domain/music.ts";
 import { normalizeTrackNavigation } from "../musickit/normalize.ts";
 import type { LibrarySection } from "../routing/router.ts";
 import { reportActionError } from "../components/action-errors.ts";
 import { OfflineBanner } from "../components/OfflineBanner.tsx";
+import { VirtualGrid } from "../components/VirtualGrid.tsx";
 import { VirtualList } from "../components/VirtualList.tsx";
+import {
+  SkeletonCardGrid,
+  SkeletonRows,
+  SkeletonStatus,
+} from "../components/Skeleton.tsx";
 
 export interface ResourceLike {
   id: string;
@@ -46,6 +52,8 @@ export interface ResourceLike {
   durationMs?: number;
   explicit?: boolean;
   catalogUrl?: string;
+  /** Track's position on its disc, from Apple. */
+  trackNumber?: number;
   catalogId?: string;
   /** Albums: `YYYY-MM-DD` (or `YYYY`) from Apple. */
   releaseDate?: string;
@@ -79,26 +87,8 @@ interface DetailLike extends CollectionLike {
 
 interface LibraryModelLike {
   collections?: Record<string, unknown>;
-  details?: Record<string, unknown>;
+  details?: object;
   [key: string]: unknown;
-}
-
-interface LibraryController {
-  loadLibrarySection?: (
-    section: LibrarySection,
-    options?: { refresh?: boolean; cursor?: string },
-  ) => Promise<unknown>;
-  loadMoreLibrarySection?: (
-    section: LibrarySection,
-    cursor?: string,
-  ) => Promise<unknown>;
-  refreshLibrarySection?: (section: LibrarySection) => Promise<unknown>;
-  loadAlbum?: (id: string) => Promise<unknown>;
-  loadArtist?: (id: string) => Promise<unknown>;
-  loadPlaylist?: (id: string) => Promise<unknown>;
-  loadPlaylistFolder?: (id?: string) => Promise<unknown>;
-  playNextTracks?: (tracks: readonly Track[]) => Promise<void>;
-  playLaterTracks?: (tracks: readonly Track[]) => Promise<void>;
 }
 
 const SECTION_COPY: Record<
@@ -158,6 +148,14 @@ function numberValue(...values: unknown[]): number | undefined {
   );
 }
 
+/** A 1-based track position from Apple; anything else is unknown. */
+function positionValue(...values: unknown[]): number | undefined {
+  return values.find(
+    (value): value is number =>
+      typeof value === "number" && Number.isInteger(value) && value > 0,
+  );
+}
+
 function artworkValue(value: unknown): Track["artwork"] | undefined {
   const artwork = objectValue(value);
   if (!artwork) return undefined;
@@ -174,7 +172,24 @@ function artworkValue(value: unknown): Track["artwork"] | undefined {
   };
 }
 
+/**
+ * Converted items, keyed on the stored object. The store keeps earlier items
+ * by identity, so a page append converts only its own items. `null` marks an
+ * item that does not convert.
+ */
+const resourceCache = new WeakMap<object, ResourceLike | null>();
+const trackCache = new WeakMap<object, Track | null>();
+
 export function toResource(value: unknown): ResourceLike | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const cached = resourceCache.get(value);
+  if (cached !== undefined) return cached ?? undefined;
+  const resource = convertResource(value);
+  resourceCache.set(value, resource ?? null);
+  return resource;
+}
+
+function convertResource(value: unknown): ResourceLike | undefined {
   const raw = objectValue(value);
   if (!raw) return undefined;
   const attributes = objectValue(raw.attributes) ?? raw;
@@ -244,6 +259,7 @@ export function toResource(value: unknown): ResourceLike | undefined {
           : undefined,
     // `href` is an API path (/v1/...), not a page link.
     catalogUrl: stringValue(raw.catalogUrl, attributes.url),
+    trackNumber: positionValue(raw.trackNumber, attributes.trackNumber),
     catalogId: stringValue(raw.catalogId, attributes.catalogId),
     releaseDate: stringValue(raw.releaseDate, attributes.releaseDate),
     playable: typeof raw.playable === "boolean" ? raw.playable : undefined,
@@ -262,8 +278,19 @@ export function toResource(value: unknown): ResourceLike | undefined {
   };
 }
 
+/** One Track per item, so rows that memoize on it keep their identity. */
 export function toTrack(value: unknown): Track | undefined {
-  const resource = toResource(value);
+  if (!value || typeof value !== "object") return undefined;
+  const cached = trackCache.get(value);
+  if (cached !== undefined) return cached ?? undefined;
+  const track = trackFromResource(toResource(value));
+  trackCache.set(value, track ?? null);
+  return track;
+}
+
+function trackFromResource(
+  resource: ResourceLike | undefined,
+): Track | undefined {
   if (!resource) return undefined;
   return {
     id: resource.id,
@@ -276,6 +303,7 @@ export function toTrack(value: unknown): Track | undefined {
     durationMs: resource.durationMs,
     explicit: resource.explicit,
     catalogUrl: resource.catalogUrl,
+    trackNumber: resource.trackNumber,
     resourceType: resource.type,
     catalogId: resource.catalogId,
     playable: resource.playable,
@@ -283,13 +311,14 @@ export function toTrack(value: unknown): Track | undefined {
   };
 }
 
-function readLibrary(state: ReturnType<typeof useAppState>): LibraryModelLike {
-  const value = (state as unknown as { library?: unknown }).library;
-  return objectValue(value) ?? {};
+function readLibrary(
+  state: Pick<RuntimeAppState, "library">,
+): LibraryModelLike {
+  return { ...state.library };
 }
 
 export function readCollection(
-  state: ReturnType<typeof useAppState>,
+  state: Pick<RuntimeAppState, "library">,
   section: LibrarySection,
 ): CollectionLike {
   const library = readLibrary(state);
@@ -314,7 +343,7 @@ export function readCollection(
 }
 
 export function readDetail(
-  state: ReturnType<typeof useAppState>,
+  state: Pick<RuntimeAppState, "library">,
   kind: "album" | "artist" | "playlist",
   id: string,
 ): DetailLike {
@@ -348,7 +377,7 @@ export function readDetail(
 const NO_ITEMS: readonly unknown[] = [];
 
 function readPlaylistFolderItems(
-  state: ReturnType<typeof useAppState>,
+  state: Pick<RuntimeAppState, "library">,
 ): readonly unknown[] {
   const library = readLibrary(state);
   const details = objectValue(library.details);
@@ -356,11 +385,16 @@ function readPlaylistFolderItems(
   return Array.isArray(folder?.items) ? folder.items : NO_ITEMS;
 }
 
+const updatedFormatter = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short",
+});
+
 function formatUpdated(value: number | string | undefined): string {
   if (value === undefined) return "";
   const parsed = typeof value === "number" ? value : Date.parse(value);
   if (!Number.isFinite(parsed)) return "";
-  return `Updated ${new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(parsed))}`;
+  return `Updated ${updatedFormatter.format(new Date(parsed))}`;
 }
 
 function contextData(
@@ -407,6 +441,7 @@ export function LibraryTrackRow({
   onPlayNext,
   disabled,
   contextData: collectionContext,
+  discTrackNumbers,
 }: {
   resource: ResourceLike;
   index: number;
@@ -414,6 +449,8 @@ export function LibraryTrackRow({
   onPlayNext?: (track: Track) => void;
   disabled: boolean;
   contextData?: Record<string, string>;
+  /** Shows the track's position on its disc; see SongRow. */
+  discTrackNumbers?: boolean;
 }): JSX.Element {
   const appController = useAppController();
   const track = toTrack(resource);
@@ -435,6 +472,7 @@ export function LibraryTrackRow({
       copyClassName="library-row-copy"
       durationClassName="library-row-duration"
       contextData={{ ...contextData(resource, "track"), ...collectionContext }}
+      discTrackNumbers={discTrackNumbers}
     />
   );
 }
@@ -448,36 +486,57 @@ function ResourceCard({
   kind: "album" | "artist" | "playlist";
   onOpen: () => void;
 }): JSX.Element {
+  const appController = useAppController();
   const Icon =
     kind === "album" ? AlbumIcon : kind === "artist" ? UserRound : ListMusic;
   const trackLike = toTrack(resource);
+  // Artists have no collection playback, so only albums and playlists get Play.
+  const collectionKind = kind === "artist" ? undefined : kind;
   return (
-    <button
-      className="library-card"
-      type="button"
-      {...contextData(resource, kind)}
-      onClick={onOpen}
+    <CardShell
+      contextData={contextData(resource, kind)}
+      catalogUrl={resource.catalogUrl}
     >
-      {kind === "artist" && !resource.artwork ? (
-        <span
-          className="library-card-art library-card-art-icon"
-          aria-hidden="true"
-        >
-          <Icon size={27} strokeWidth={1.5} />
+      <button className="library-card" type="button" onClick={onOpen}>
+        {kind === "artist" && !resource.artwork ? (
+          <span
+            className="library-card-art library-card-art-icon"
+            aria-hidden="true"
+          >
+            <Icon size={27} strokeWidth={1.5} />
+          </span>
+        ) : (
+          <Artwork
+            track={trackLike}
+            size="lg"
+            alt={`${resource.title} artwork`}
+            className="library-card-art"
+          />
+        )}
+        <span className="library-card-copy">
+          <strong title={resource.title}>{resource.title}</strong>
+          <small title={resource.artistName}>
+            {resource.artistName ?? kind}
+          </small>
         </span>
-      ) : (
-        <Artwork
-          track={trackLike}
-          size="lg"
-          alt={`${resource.title} artwork`}
-          className="library-card-art"
-        />
-      )}
-      <span className="library-card-copy">
-        <strong title={resource.title}>{resource.title}</strong>
-        <small title={resource.artistName}>{resource.artistName ?? kind}</small>
-      </span>
-    </button>
+      </button>
+      <CardActions
+        title={resource.title}
+        onPlay={
+          collectionKind && resource.playable !== false
+            ? () =>
+                act(() =>
+                  appController.playCollection(
+                    collectionKind,
+                    resource.id,
+                    "library",
+                    0,
+                  ),
+                )
+            : undefined
+        }
+      />
+    </CardShell>
   );
 }
 
@@ -573,11 +632,30 @@ function CollectionFeedback({
   onRetry: () => void;
 }): JSX.Element | null {
   if (collection.status === "loading" && collection.items.length === 0) {
+    const label = `Loading ${SECTION_COPY[section].title}…`;
+    if (section === "recent") {
+      return (
+        <SkeletonStatus label={label}>
+          <SkeletonRows count={5} />
+          <SkeletonCardGrid count={4} />
+        </SkeletonStatus>
+      );
+    }
+    if (
+      section === "artists" ||
+      section === "albums" ||
+      section === "playlists"
+    ) {
+      return (
+        <SkeletonStatus label={label}>
+          <SkeletonCardGrid count={8} />
+        </SkeletonStatus>
+      );
+    }
     return (
-      <div className="library-feedback" role="status">
-        <LoaderCircle className="spin" aria-hidden="true" size={22} /> Loading
-        your library…
-      </div>
+      <SkeletonStatus label={label}>
+        <SkeletonRows count={8} />
+      </SkeletonStatus>
     );
   }
   if (collection.error && collection.items.length === 0) {
@@ -626,11 +704,10 @@ export function LibraryView({
 }: {
   section: LibrarySection;
 }): JSX.Element {
-  const state = useAppState();
+  const state = useAppSlices("auth", "initialization", "library");
   const controller = useAppController();
   const router = useAppRouter();
   const loadMoreTrigger = useRef<HTMLButtonElement>(null);
-  const extendedController = controller as AppController & LibraryController;
   const copy = SECTION_COPY[section];
   const collection = readCollection(state, section);
   const authorized =
@@ -640,6 +717,8 @@ export function LibraryView({
   const canView = authorized || offline;
   const folderItems =
     section === "playlists" ? readPlaylistFolderItems(state) : NO_ITEMS;
+  // Rebuilt only when the stored items change; converted items are cached,
+  // so an appended page converts just its own rows.
   const resources = useMemo(() => {
     const items = [...folderItems, ...collection.items]
       .map(toResource)
@@ -651,39 +730,37 @@ export function LibraryView({
       return true;
     });
   }, [collection.items, folderItems]);
-  const recentCards =
-    section === "recent"
-      ? resources.filter((resource) =>
-          ["album", "artist", "playlist"].some((kind) =>
-            resource.type?.includes(kind),
-          ),
-        )
-      : [];
-  const trackResources =
-    section === "recent"
-      ? resources.filter((resource) => !recentCards.includes(resource))
-      : resources;
+  const { recentCards, trackResources } = useMemo(() => {
+    if (section !== "recent") {
+      return { recentCards: [] as ResourceLike[], trackResources: resources };
+    }
+    const cards = resources.filter((resource) =>
+      ["album", "artist", "playlist"].some((kind) =>
+        resource.type?.includes(kind),
+      ),
+    );
+    const cardSet = new Set(cards);
+    return {
+      recentCards: cards,
+      trackResources: resources.filter((resource) => !cardSet.has(resource)),
+    };
+  }, [resources, section]);
 
   useEffect(() => {
-    if (!canView || !extendedController.loadLibrarySection) return;
-    run(() => extendedController.loadLibrarySection?.(section));
-    if (section === "playlists" && extendedController.loadPlaylistFolder) {
-      run(() => extendedController.loadPlaylistFolder?.());
+    if (!canView) return;
+    run(() => controller.loadLibrarySection(section));
+    if (section === "playlists") {
+      run(() => controller.loadPlaylistFolder());
     }
-  }, [canView, extendedController, section]);
+  }, [canView, controller, section]);
 
   const retry = (): void => {
-    if (extendedController.refreshLibrarySection)
-      run(() => extendedController.refreshLibrarySection?.(section));
-    else if (extendedController.loadLibrarySection)
-      run(() =>
-        extendedController.loadLibrarySection?.(section, { refresh: true }),
-      );
+    run(() => controller.refreshLibrarySection(section));
   };
   const loadMore = (): void => {
-    if (collection.next && extendedController.loadMoreLibrarySection) {
+    if (collection.next) {
       run(() =>
-        extendedController.loadMoreLibrarySection?.(
+        controller.loadMoreLibrarySection(
           section,
           collection.next ?? undefined,
         ),
@@ -738,6 +815,7 @@ export function LibraryView({
         : controller.playTracks([track]),
     );
   };
+  const updatedLabel = formatUpdated(collection.lastUpdatedAt);
   return (
     <>
       <div className="page-heading library-heading">
@@ -754,10 +832,8 @@ export function LibraryView({
               {offline ? "Cached" : "Cached · updating"}
             </span>
           ) : null}
-          {formatUpdated(collection.lastUpdatedAt) ? (
-            <span className="library-updated">
-              {formatUpdated(collection.lastUpdatedAt)}
-            </span>
+          {updatedLabel ? (
+            <span className="library-updated">{updatedLabel}</span>
           ) : null}
           <button
             className="icon-button"
@@ -815,7 +891,7 @@ export function LibraryView({
                     index={index}
                     onPlay={playTrack}
                     onPlayNext={(track) =>
-                      act(() => controller.playNextTracks?.([track]))
+                      act(() => controller.playNextTracks([track]))
                     }
                     disabled={!authorized}
                   />
@@ -846,31 +922,39 @@ export function LibraryView({
             </section>
           ) : null}
           {resources.length && section === "albums" ? (
-            <section className="library-card-grid" aria-label="Albums">
-              {resources.map((resource) => (
-                <ResourceCard
-                  key={resource.id}
-                  resource={resource}
-                  kind="album"
-                  onOpen={() =>
-                    router.navigate({ kind: "album", id: resource.id })
-                  }
-                />
-              ))}
+            <section aria-label="Albums">
+              <VirtualGrid
+                className="library-card-grid"
+                items={resources}
+                getKey={(resource) => resource.id}
+                renderItem={(resource) => (
+                  <ResourceCard
+                    resource={resource}
+                    kind="album"
+                    onOpen={() =>
+                      router.navigate({ kind: "album", id: resource.id })
+                    }
+                  />
+                )}
+              />
             </section>
           ) : null}
           {resources.length && section === "artists" ? (
-            <section className="library-card-grid" aria-label="Artists">
-              {resources.map((resource) => (
-                <ResourceCard
-                  key={resource.id}
-                  resource={resource}
-                  kind="artist"
-                  onOpen={() =>
-                    router.navigate({ kind: "artist", id: resource.id })
-                  }
-                />
-              ))}
+            <section aria-label="Artists">
+              <VirtualGrid
+                className="library-card-grid"
+                items={resources}
+                getKey={(resource) => resource.id}
+                renderItem={(resource) => (
+                  <ResourceCard
+                    resource={resource}
+                    kind="artist"
+                    onOpen={() =>
+                      router.navigate({ kind: "artist", id: resource.id })
+                    }
+                  />
+                )}
+              />
             </section>
           ) : null}
           {resources.length && section === "playlists" ? (

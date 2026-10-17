@@ -1,0 +1,62 @@
+/* Curator pages and the curator link on playlist pages. The header reuses
+   the library detail hero (16-library.css); only curator parts live here. */
+.curator-page {
+  display: grid;
+  gap: 24px;
+  min-width: 0;
+}
+
+.curator-header {
+  margin-bottom: 0;
+}
+
+.curator-header .library-detail-copy h1 {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.curator-shelf {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.curator-shelf h2 {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: -0.02em;
+}
+
+.curator-more {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+}
+
+.curator-more-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+/* A text-styled button, so "Curated by" keeps its place in the meta line. */
+.curator-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-strong);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.curator-link:hover {
+  color: var(--accent);
+}
+
+.curator-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}

@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { sleep, waitFor as pollFor } from "./e2e-helpers.js";
+
 const LIBRARY_SONG = "song-a";
 const CATALOG_SONG = "catalog-song";
 const LIBRARY_SONG_PATH = `/v1/me/ratings/library-songs/${LIBRARY_SONG}`;
@@ -8,14 +10,8 @@ const CATALOG_SONG_PATH = `/v1/me/ratings/songs/${CATALOG_SONG}`;
 // The now-playing heart is the only Love/Unlove button in the player bar.
 const HEART = `[...document.querySelectorAll('.player-bar button')].find((button) => ['Love', 'Unlove'].includes(button.getAttribute('aria-label')))`;
 
-async function waitFor(page, expression, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await page.evaluate(`return Boolean(${expression});`)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  return false;
-}
+const waitFor = (page, expression, timeoutMs = 10_000) =>
+  pollFor(page, expression, timeoutMs, 100);
 
 async function snapshot(page) {
   return page.evaluate("return window.__ARLET_E2E_MUSIC__.snapshot();");
@@ -26,8 +22,6 @@ function mutationsAt(requests, path) {
     (request) => request.method !== "GET" && request.path === path,
   );
 }
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function heartIs(label, pressed) {
   return `(${HEART})?.getAttribute('aria-label') === '${label}' && (${HEART})?.getAttribute('aria-pressed') === '${pressed}'`;

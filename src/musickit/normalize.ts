@@ -1,3 +1,4 @@
+import { asRecord, responseBody } from "./response.ts";
 import type {
   Album,
   Artist,
@@ -43,13 +44,6 @@ export interface AppleMusicResource {
 }
 
 type UnknownRecord = Record<string, unknown>;
-
-function asRecord(value: unknown): UnknownRecord | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  return value as UnknownRecord;
-}
 
 function stringValue(...values: unknown[]): string | undefined {
   for (const value of values) {
@@ -145,11 +139,13 @@ function resourceWithRelationships(value: unknown): {
   resource: AppleMusicResource;
   included: unknown[];
 } {
-  const outer = asRecord(value);
   // MusicKit v3 wraps the JSON body as `{ request, response, data }`.
-  const body = asRecord(outer?.data);
+  // A resource with its own `id` is the data itself, not an envelope.
+  const body = responseBody(value);
   const root =
-    body && typeof body.id !== "string" && "data" in body ? body : outer;
+    body && typeof body.id !== "string" && "data" in body
+      ? body
+      : asRecord(value);
   const data = root?.data;
   const firstData = Array.isArray(data) ? data[0] : data;
   const candidate = asRecord(firstData);
@@ -292,17 +288,55 @@ function validArtworkUrl(value: string): boolean {
   }
 }
 
+/** Fixed sizes for Apple artwork requests so the WebView HTTP cache hits. */
+export const ARTWORK_BUCKETS = [96, 300, 640] as const;
+/** Blurred backdrops never show detail, so they take the smallest request. */
+export const ARTWORK_BACKDROP_BUCKET = 64;
+
+/** Smallest bucket that covers the rendered CSS size at the given DPR. */
+export function artworkBucketFor(
+  cssPixels: number,
+  devicePixelRatio = 1,
+): number {
+  const needed = cssPixels * devicePixelRatio;
+  if (!Number.isFinite(needed) || needed <= 0) return 300;
+  return ARTWORK_BUCKETS.find((bucket) => bucket >= needed) ?? 640;
+}
+
+// Baked Apple URLs end in "NNNxNNN" plus an optional crop and quality suffix,
+// e.g. "/300x300bb.jpg" or "/600x600bb-60.jpg".
+const BAKED_ARTWORK_DIMENSION =
+  /\/\d+x\d+(?=(?:bb|cc|sr)?(?:-\d+)?\.[a-z0-9]+$)/iu;
+
 export function normalizeArtworkUrl(url: string, size: number): string {
   const dimension = Number.isFinite(size) && size > 0 ? Math.round(size) : 300;
   const source = typeof url === "string" ? url : "";
   // Editorial and playlist art also template the crop ({c}) and format
   // ({f}); "bb" keeps the whole image inside the box.
-  return source
+  const filled = source
     .replace(/\{w\}/gu, String(dimension))
     .replace(/\{h\}/gu, String(dimension))
     .replace(/\{c\}/gu, "bb")
     .replace(/\{f\}/gu, "jpg");
+  // Persisted rows hold URLs baked at an older size, so rewrite Apple's
+  // dimension in place. Only the path is touched; query and hash pass through.
+  const queryAt = filled.search(/[?#]/u);
+  const base = queryAt < 0 ? filled : filled.slice(0, queryAt);
+  const rest = queryAt < 0 ? "" : filled.slice(queryAt);
+  if (!isAppleArtworkHost(base)) return filled;
+  return `${base.replace(BAKED_ARTWORK_DIMENSION, `/${dimension}x${dimension}`)}${rest}`;
 }
+
+function isAppleArtworkHost(value: string): boolean {
+  try {
+    return new URL(value).hostname.endsWith(".mzstatic.com");
+  } catch {
+    return false;
+  }
+}
+
+/** Apple's `bgColor` is exactly six hex digits with no leading '#'. */
+const ARTWORK_BG_COLOR = /^[0-9a-f]{6}$/iu;
 
 export function artworkFromUnknown(
   value: unknown,
@@ -313,10 +347,15 @@ export function artworkFromUnknown(
   if (!rawUrl) return undefined;
   const url = normalizeArtworkUrl(rawUrl, size);
   if (!validArtworkUrl(url)) return undefined;
+  const bgColor = stringValue(artwork?.bgColor);
   return {
     url,
     width: Number.isFinite(size) && size > 0 ? Math.round(size) : 300,
     height: Number.isFinite(size) && size > 0 ? Math.round(size) : 300,
+    // Anything but six hex digits is dropped, so the tint falls back to none.
+    ...(bgColor && ARTWORK_BG_COLOR.test(bgColor)
+      ? { bgColor: bgColor.toLowerCase() }
+      : {}),
   };
 }
 
@@ -366,6 +405,8 @@ export function normalizeTrack(item: MusicKit.MediaItem): Track {
     record?.contentRating,
     attributes?.contentRating,
   )?.toLowerCase();
+  // Same rule as live-metadata's isLiveMediaItem; absent unless it applies.
+  const isLive = attributes?.isLive === true || /station/iu.test(type ?? "");
   return {
     id,
     title,
@@ -375,6 +416,7 @@ export function normalizeTrack(item: MusicKit.MediaItem): Track {
     artwork: normalizeArtwork(item),
     durationMs: catalogDurationMs(item),
     ...(type ? { resourceType: type } : {}),
+    ...(isLive ? { isLive: true } : {}),
     ...(stringValue(playParams?.catalogId)
       ? { catalogId: stringValue(playParams?.catalogId) }
       : {}),
@@ -424,6 +466,11 @@ export function normalizeCatalogSong(resource: CatalogSongResource): Track {
   };
 }
 
+/** Apple's `attributes.url` page link. `href` is an API path (/v1/...), not one. */
+function catalogUrlOf(attributes: UnknownRecord): string | undefined {
+  return stringValue(attributes.url);
+}
+
 function normalizeResourceTrack(
   resource: AppleMusicResource,
   type: MusicResourceType,
@@ -455,12 +502,15 @@ function normalizeResourceTrack(
   };
   const explicit = stringValue(attributes.contentRating);
   if (explicit) track.explicit = explicit.toLowerCase() === "explicit";
+  const discNumber = positiveInteger(attributes.discNumber);
+  if (discNumber) track.discNumber = discNumber;
+  const trackNumber = positiveInteger(attributes.trackNumber);
+  if (trackNumber) track.trackNumber = trackNumber;
   const catalogId =
     stringValue(playParams?.catalogId) ??
     firstResourceId(relationshipData(resource, "catalog"));
   if (catalogId) track.catalogId = catalogId;
-  // `href` is an API path (/v1/...), not a page link.
-  const catalogUrl = stringValue(attributes.url);
+  const catalogUrl = catalogUrlOf(attributes);
   if (catalogUrl) track.catalogUrl = catalogUrl;
   return track;
 }
@@ -486,7 +536,48 @@ export function normalizeArtistResource(
   if (albumCount !== undefined) artist.albumCount = albumCount;
   const catalogId = firstResourceId(relationshipData(resource, "catalog"));
   if (catalogId) artist.catalogId = catalogId;
+  const catalogUrl = catalogUrlOf(attributes);
+  if (catalogUrl) artist.catalogUrl = catalogUrl;
+  // Present only when the request asked for `extend=editorialNotes,...`.
+  const editorialNotes = editorialText(attributes.editorialNotes);
+  if (editorialNotes) artist.editorialNotes = editorialNotes;
+  const editorialBanner = editorialBannerOf(attributes.editorialArtwork);
+  if (editorialBanner) artist.editorialBanner = editorialBanner;
   return artist;
+}
+
+/** Wide enough for a full-width artist banner on a high-DPI screen. */
+const ARTIST_BANNER_SIZE = 1280;
+
+/** Apple's banner for an artist page: `bannerUber`, else `storeFlowcase`. */
+function editorialBannerOf(value: unknown): Artwork | undefined {
+  const artwork = asRecord(value);
+  return (
+    artworkFromUnknown(artwork?.bannerUber, ARTIST_BANNER_SIZE) ??
+    artworkFromUnknown(artwork?.storeFlowcase, ARTIST_BANNER_SIZE)
+  );
+}
+
+/** One `views.<name>` block of a catalog resource: its entries and next page. */
+export interface AppleViewBlock {
+  data: unknown[];
+  next?: string;
+}
+
+/**
+ * The `views.<name>` block Apple returns beside a resource's own attributes,
+ * or undefined when the view is missing (not requested, or left out).
+ */
+export function viewBlockOf(
+  resource: unknown,
+  name: string,
+): AppleViewBlock | undefined {
+  const block = asRecord(asRecord(asRecord(resource)?.views)?.[name]);
+  if (!block) return undefined;
+  return {
+    data: Array.isArray(block.data) ? block.data : [],
+    next: stringValue(block.next),
+  };
 }
 
 export function normalizeAlbumResource(
@@ -518,13 +609,93 @@ export function normalizeAlbumResource(
   if (playable) album.playable = true;
   const catalogId = firstResourceId(relationshipData(resource, "catalog"));
   if (catalogId) album.catalogId = catalogId;
+  const catalogUrl = catalogUrlOf(attributes);
+  if (catalogUrl) album.catalogUrl = catalogUrl;
+  const editorialNotes = editorialText(attributes.editorialNotes);
+  if (editorialNotes) album.editorialNotes = editorialNotes;
+  const recordLabel = stringValue(attributes.recordLabel);
+  if (recordLabel) album.recordLabel = recordLabel;
+  const copyright = stringValue(attributes.copyright);
+  if (copyright) album.copyright = copyright;
+  const genreNames = stringList(attributes.genreNames);
+  if (genreNames.length) album.genreNames = genreNames;
+  if (typeof attributes.isSingle === "boolean")
+    album.isSingle = attributes.isSingle;
+  if (typeof attributes.isCompilation === "boolean")
+    album.isCompilation = attributes.isCompilation;
   return album;
 }
 
-function descriptionValue(value: unknown): string | undefined {
-  if (typeof value === "string") return value.trim() || undefined;
+const NAMED_ENTITIES: Record<string, string> = {
+  amp: "&",
+  apos: "'",
+  gt: ">",
+  hellip: "…",
+  ldquo: "“",
+  lsquo: "‘",
+  lt: "<",
+  mdash: "—",
+  nbsp: " ",
+  ndash: "–",
+  quot: '"',
+  rdquo: "”",
+  rsquo: "’",
+};
+
+/**
+ * Plain text from Apple's limited HTML (`<br>`, `<i>`, `<b>`, ...): line breaks
+ * are kept, tags are dropped, and common entities are decoded. The result is
+ * only ever rendered as text, never as HTML.
+ */
+export function plainTextFromHtml(value: string): string {
+  const withBreaks = value
+    .replace(/<br\s*\/?>/giu, "\n")
+    .replace(/<\/(?:p|div|li|h[1-6])\s*>/giu, "\n");
+  const stripped = withBreaks.replace(/<\/?[a-z][^>]*>/giu, "");
+  // One pass, so an entity that decodes to "&" is not decoded again.
+  const decoded = stripped.replace(
+    /&(#x[0-9a-f]+|#\d+|[a-z]+);/giu,
+    (match: string, entity: string) => {
+      if (entity.startsWith("#")) {
+        const hex = /^#x/iu.test(entity);
+        const code = Number.parseInt(entity.slice(hex ? 2 : 1), hex ? 16 : 10);
+        return Number.isFinite(code) && code > 0 && code <= 0x10ffff
+          ? String.fromCodePoint(code)
+          : match;
+      }
+      return NAMED_ENTITIES[entity.toLowerCase()] ?? match;
+    },
+  );
+  return decoded
+    .split("\n")
+    .map((line) => line.trim())
+    .join("\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+}
+
+/** Apple's `{ short, standard }` notes, or a plain string, as plain text. */
+function editorialText(value: unknown): string | undefined {
   const record = asRecord(value);
-  return stringValue(record?.standard) ?? stringValue(record?.short);
+  const raw =
+    typeof value === "string"
+      ? stringValue(value)
+      : (stringValue(record?.standard) ?? stringValue(record?.short));
+  if (!raw) return undefined;
+  return plainTextFromHtml(raw) || undefined;
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => stringValue(item))
+    .filter((item): item is string => Boolean(item));
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? value
+    : undefined;
 }
 
 export function normalizePlaylistResource(
@@ -540,8 +711,10 @@ export function normalizePlaylistResource(
     resourceType: resourceType(resource) ?? "playlists",
     source: resourceSource(resourceType(resource) ?? "playlists"),
   };
-  const description = descriptionValue(attributes.description);
+  const description = editorialText(attributes.description);
   if (description) playlist.description = description;
+  const curatorName = stringValue(attributes.curatorName);
+  if (curatorName) playlist.curatorName = curatorName;
   const trackCount =
     positiveNumber(attributes.trackCount) ??
     relationshipTotal(resource, "tracks");
@@ -553,6 +726,8 @@ export function normalizePlaylistResource(
   }
   if (typeof attributes.isPublic === "boolean")
     playlist.isPublic = attributes.isPublic;
+  const catalogUrl = catalogUrlOf(attributes);
+  if (catalogUrl) playlist.catalogUrl = catalogUrl;
   return playlist;
 }
 

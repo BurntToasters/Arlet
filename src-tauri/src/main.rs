@@ -148,6 +148,13 @@ fn main() {
                         // A shown-again window may move without a final Moved
                         // event; capture the geometry it closes at.
                         window_state::record(window);
+                        // A settings reset closes for its restart; any other
+                        // close quits once the page has saved its queue.
+                        if !settings::reset_pending() {
+                            use tauri::Manager;
+                            api.prevent_close();
+                            tray::request_quit(window.app_handle());
+                        }
                     }
                 }
             }
@@ -168,6 +175,8 @@ fn main() {
             commands::get_developer_token,
             commands::get_beta_updater_target,
             commands::open_support_page,
+            commands::open_about_link,
+            tray::quit_ready,
             music_diagnostic::open_music_diagnostic,
             settings::load_settings,
             settings::save_settings,

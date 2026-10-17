@@ -4,6 +4,8 @@
  * same Tauri events the Rust side emits, through the listeners the app has
  * registered. The tray and the SMTC flyout are release-only evidence. */
 
+import { waitFor as pollFor } from "./e2e-helpers.js";
+
 const PAUSED = 4;
 const PLAYING = 5;
 const FIFTEEN_MINUTES_MS = 15 * 60_000;
@@ -22,9 +24,13 @@ export function recordTauriEvents() {
   if (window.__ARLET_E2E_TAURI_EVENTS__) return;
   const handlers = new Map();
   const seen = [];
+  let mediaSession;
   const record = (command, args) => {
     seen.push(command);
     if (seen.length > 50) seen.shift();
+    if (command === "update_windows_media_session") {
+      mediaSession = args?.payload;
+    }
     if (
       command === "plugin:event|listen" &&
       typeof args?.event === "string" &&
@@ -83,19 +89,17 @@ export function recordTauriEvents() {
     debug() {
       return { events: [...handlers.keys()], commands: [...seen] };
     },
+    /** The last payload sent to the Windows media session. */
+    mediaSession() {
+      return mediaSession;
+    },
   };
 }
 
 export const desktopEventRecorderSource = `(${recordTauriEvents.toString()})();`;
 
-async function waitFor(page, expression, timeoutMs = 5000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await page.evaluate(`return Boolean(${expression});`)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return false;
-}
+const waitFor = (page, expression, timeoutMs = 5000) =>
+  pollFor(page, expression, timeoutMs);
 
 const transitionTypes = (page) =>
   page.evaluate(
@@ -359,6 +363,30 @@ export async function runDesktop({ page, check }) {
         seeks,
         recorder: await page.evaluate(
           "return window.__ARLET_E2E_TAURI_EVENTS__?.debug?.();",
+        ),
+      },
+    );
+
+    // A Play always starts at queue index 0. Windows must still offer
+    // Previous there (the in-app button restarts the song or steps back).
+    const firstSongPlaying = await startPlayback(page, ["song-a", "song-c"]);
+    const previousOffered = await waitFor(
+      page,
+      `(() => {
+        const media = window.__ARLET_E2E_TAURI_EVENTS__?.mediaSession?.();
+        return media?.playbackStatus === "playing" &&
+          window.__ARLET_E2E_MUSIC__.snapshot().queue.index === 0 &&
+          media.previousEnabled === true;
+      })()`,
+      5000,
+    );
+    check(
+      "Windows media controls offer Previous on the first song of a Play",
+      firstSongPlaying && previousOffered,
+      {
+        firstSongPlaying,
+        media: await page.evaluate(
+          "return window.__ARLET_E2E_TAURI_EVENTS__?.mediaSession?.() ?? null;",
         ),
       },
     );

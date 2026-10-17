@@ -21,7 +21,8 @@ export function EmptyState({
       <span className="empty-icon">
         <Icon aria-hidden="true" size={compact ? 22 : 30} strokeWidth={1.6} />
       </span>
-      <h2>{title}</h2>
+      {/* Focus target for RouteView when a page has no h1. */}
+      <h2 tabIndex={-1}>{title}</h2>
       <p>{description}</p>
       {action ? <div className="empty-action">{action}</div> : null}
     </section>

@@ -1,59 +1,66 @@
-import { resolveMusicKitMusicRequest, resolveStorefront } from "./catalog.ts";
+import {
+  createPageReaders,
+  type LibraryPageOptions,
+  type MusicRequest,
+  type Page,
+} from "./library-pages.ts";
+import {
+  createDetailMethods,
+  type ArtistDetail,
+  type DetailWithTracks,
+} from "./library-detail.ts";
+import {
+  createFolderMethods,
+  type CreatePlaylistFolderInput,
+  type CreatePlaylistInput,
+} from "./library-folders.ts";
+import {
+  createHomeMethods,
+  type HomeRecommendationSection,
+  type HomeResource,
+} from "./library-home.ts";
+import { addTracksToPlaylist } from "./library-mutations.ts";
+import { resolveMusicKitMusicRequest } from "./catalog.ts";
 import {
   normalizeAlbumResource,
   normalizeArtistResource,
   normalizeLibraryItemResource,
-  normalizeMusicResourceRef,
-  normalizePlaylistFolderResource,
   normalizePlaylistResource,
   normalizeTrackResource,
-  type AppleMusicResource,
 } from "./normalize.ts";
 import type {
   Album,
   Artist,
   LibraryItem,
   MusicResourceRef,
+  MusicSource,
   Playlist,
   PlaylistFolder,
   Track,
-  DiscoveryResource,
-  MusicSource,
-  RatingValue,
-  RecommendationSection,
 } from "../domain/music.ts";
 
-export interface Page<T> {
-  items: T[];
-  /** Opaque path supplied by Apple for the next page. */
-  next?: string;
-  total?: number;
-}
-
-export interface LibraryPageOptions {
-  cursor?: string;
-  limit?: number;
-}
-
-export interface CreatePlaylistInput {
-  name: string;
-  description?: string;
-  isPublic?: boolean;
-  parentFolderId?: string;
-  /** Alias accepted for callers that use the API's parent terminology. */
-  parentId?: string;
-  tracks?: readonly MusicResourceRef[];
-}
-
-export interface CreatePlaylistFolderInput {
-  name: string;
-  parentFolderId?: string;
-  /** Alias accepted for callers that use the API's parent terminology. */
-  parentId?: string;
-}
-
-export type PlaylistCreationInput = CreatePlaylistInput;
-export type PlaylistFolderCreationInput = CreatePlaylistFolderInput;
+export { LIBRARY_PAGE_LIMIT } from "./library-pages.ts";
+export type {
+  LibraryPageOptions,
+  MusicRequest,
+  Page,
+} from "./library-pages.ts";
+export type { ArtistDetail, DetailWithTracks } from "./library-detail.ts";
+export type {
+  CreatePlaylistFolderInput,
+  CreatePlaylistInput,
+  PlaylistCreationInput,
+  PlaylistFolderCreationInput,
+} from "./library-folders.ts";
+export type {
+  HomeRecommendationSection,
+  HomeResource,
+} from "./library-home.ts";
+export { normalizeRecommendationGroups } from "./library-home.ts";
+export type { AddToLibraryIds } from "./library-mutations.ts";
+export { addToLibrary } from "./library-mutations.ts";
+export type { RatingResourceType } from "./library-ratings.ts";
+export { clearRating, getRatings, setRating } from "./library-ratings.ts";
 
 export interface AppleMusicLibraryClient {
   getSongs(cursor?: string | LibraryPageOptions): Promise<Page<Track>>;
@@ -66,22 +73,42 @@ export interface AppleMusicLibraryClient {
   getRecentlyPlayedTracks(
     cursor?: string | LibraryPageOptions,
   ): Promise<Page<Track>>;
-  getRecentlyPlayedPlaylists(limit?: number): Promise<Page<Playlist>>;
-  getHeavyRotation(limit?: number): Promise<Page<DiscoveryResource>>;
-  getRecommendations(limit?: number): Promise<RecommendationSection[]>;
+  getRecentlyPlayed(limit?: number): Promise<Page<HomeResource>>;
+  getHeavyRotation(limit?: number): Promise<Page<HomeResource>>;
+  getRecommendations(limit?: number): Promise<HomeRecommendationSection[]>;
   getAlbum(id: string, source?: MusicSource): Promise<Album | undefined>;
+  /** One request for the album and, when complete, its first track page. */
+  getAlbumDetail(
+    id: string,
+    source?: MusicSource,
+  ): Promise<DetailWithTracks<Album>>;
   getAlbumTracks(
     id: string,
     source?: MusicSource,
     cursor?: string | LibraryPageOptions,
   ): Promise<Page<Track>>;
   getArtist(id: string, source?: MusicSource): Promise<Artist | undefined>;
+  /**
+   * The artist page's shelves in one catalog request. A library artist first
+   * resolves its catalog ID; without one it returns the library record alone.
+   */
+  getArtistDetail(id: string, source?: MusicSource): Promise<ArtistDetail>;
   getArtistAlbums(
     id: string,
     cursor?: string | LibraryPageOptions,
     source?: MusicSource,
   ): Promise<Page<Album>>;
   getPlaylist(id: string, source?: MusicSource): Promise<Playlist | undefined>;
+  /** One request for the playlist and, when complete, its first track page. */
+  getPlaylistDetail(
+    id: string,
+    source?: MusicSource,
+  ): Promise<DetailWithTracks<Playlist>>;
+  /** Batched lookup: 25 ids per catalog request, 100 per library request. */
+  getPlaylistsByIds(
+    ids: readonly string[],
+    source?: MusicSource,
+  ): Promise<Playlist[]>;
   getPlaylistTracks(
     id: string,
     cursor?: string | LibraryPageOptions,
@@ -103,528 +130,16 @@ export interface AppleMusicLibraryClient {
   ): Promise<void>;
 }
 
-type Query = Record<string, unknown>;
-type RequestOptions = {
-  method?: string;
-  body?: string;
-  headers?: Record<string, string>;
-  [key: string]: unknown;
-};
-export type MusicRequest = (
-  path: string,
-  query?: Query,
-  options?: RequestOptions,
-) => Promise<unknown>;
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  return value as Record<string, unknown>;
-}
-
-function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function resourceLike(value: unknown): value is AppleMusicResource {
-  const record = asRecord(value);
-  return Boolean(
-    record &&
-    nonEmptyString(record.id) &&
-    (nonEmptyString(record.type) ?? record.attributes !== undefined),
-  );
-}
-
-function isPlaylistFolderResource(
-  value: AppleMusicResource | undefined,
-): value is AppleMusicResource {
-  const type = nonEmptyString(asRecord(value)?.type);
-  return type === "library-playlist-folders" || type === "playlist-folders";
-}
-
-function resourceArray(value: unknown, depth = 0): unknown[] | undefined {
-  if (depth > 8) return undefined;
-  if (Array.isArray(value)) return value;
-  const record = asRecord(value);
-  if (!record) return undefined;
-
-  // Standard Apple response shape and common SDK envelope shape.
-  if (Array.isArray(record.data)) return record.data;
-  for (const key of [
-    "data",
-    "results",
-    "resources",
-    "items",
-    "songs",
-    "albums",
-    "artists",
-    "playlists",
-    "tracks",
-    "library-songs",
-    "library-albums",
-    "library-artists",
-    "library-playlists",
-    "library-music-videos",
-  ]) {
-    const found = resourceArray(record[key], depth + 1);
-    if (found) return found;
-  }
-  return undefined;
-}
-
-function firstResource(
-  value: unknown,
-  depth = 0,
-): AppleMusicResource | undefined {
-  if (depth > 8) return undefined;
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const found = firstResource(item, depth + 1);
-      if (found) return found;
-    }
-    return undefined;
-  }
-  if (resourceLike(value)) return value;
-  const record = asRecord(value);
-  if (!record) return undefined;
-  for (const key of [
-    "data",
-    "results",
-    "resource",
-    "item",
-    "playlist",
-    "album",
-    "artist",
-    "library-playlists",
-    "library-playlist-folders",
-  ]) {
-    const found = firstResource(record[key], depth + 1);
-    if (found) return found;
-  }
-  return undefined;
-}
-
-function findResourceDeep(
-  value: unknown,
-  depth = 0,
-): AppleMusicResource | undefined {
-  if (depth > 10) return undefined;
-  if (resourceLike(value)) return value;
-  if (Array.isArray(value)) {
-    for (const entry of value) {
-      const found = findResourceDeep(entry, depth + 1);
-      if (found) return found;
-    }
-    return undefined;
-  }
-  const record = asRecord(value);
-  if (!record) return undefined;
-  for (const entry of Object.values(record)) {
-    const found = findResourceDeep(entry, depth + 1);
-    if (found) return found;
-  }
-  return undefined;
-}
-
-function nextValue(value: unknown, depth = 0): string | undefined {
-  if (depth > 8 || Array.isArray(value)) return undefined;
-  const record = asRecord(value);
-  if (!record) return undefined;
-  const next = nonEmptyString(record.next);
-  if (next) return next;
-  const links = asRecord(record.links);
-  const linkNext = nonEmptyString(links?.next);
-  if (linkNext) return linkNext;
-  for (const key of [
-    "data",
-    "results",
-    "resources",
-    "items",
-    "meta",
-    "songs",
-    "albums",
-    "artists",
-    "playlists",
-    "tracks",
-    "library-playlists",
-    "library-songs",
-  ]) {
-    const found = nextValue(record[key], depth + 1);
-    if (found) return found;
-  }
-  return undefined;
-}
-
-function totalValue(value: unknown, depth = 0): number | undefined {
-  if (depth > 8 || Array.isArray(value)) return undefined;
-  const record = asRecord(value);
-  if (!record) return undefined;
-  const directTotal = record.total;
-  if (
-    typeof directTotal === "number" &&
-    Number.isFinite(directTotal) &&
-    directTotal >= 0
-  ) {
-    return directTotal;
-  }
-  const meta = asRecord(record.meta);
-  if (
-    typeof meta?.total === "number" &&
-    Number.isFinite(meta.total) &&
-    meta.total >= 0
-  ) {
-    return meta.total;
-  }
-  for (const key of [
-    "data",
-    "results",
-    "resources",
-    "items",
-    "songs",
-    "albums",
-    "artists",
-    "playlists",
-    "tracks",
-    "library-playlists",
-    "library-songs",
-  ]) {
-    const found = totalValue(record[key], depth + 1);
-    if (found !== undefined) return found;
-  }
-  return undefined;
-}
-
-function withPageMetadata<T>(items: T[], raw: unknown): Page<T> {
-  const page: Page<T> = { items };
-  const next = nextValue(raw);
-  if (next) page.next = next;
-  const total = totalValue(raw);
-  if (total !== undefined) page.total = total;
-  return page;
-}
-
-function supportedDiscoveryType(value: unknown): boolean {
-  const type = nonEmptyString(asRecord(value)?.type);
-  return (
-    type === "albums" ||
-    type === "library-albums" ||
-    type === "playlists" ||
-    type === "library-playlists"
-  );
-}
-
-function resourceKey(value: unknown): string | undefined {
-  const record = asRecord(value);
-  const id = nonEmptyString(record?.id);
-  const type = nonEmptyString(record?.type);
-  return id && type ? `${type}:${id}` : undefined;
-}
-
-function recommendationAttributes(value: unknown): Record<string, unknown> {
-  return asRecord(asRecord(value)?.attributes) ?? {};
-}
-
-function displayString(value: unknown): string | undefined {
-  if (typeof value === "string" && value.trim()) return value.trim();
-  const record = asRecord(value);
-  return (
-    nonEmptyString(record?.stringForDisplay) ??
-    nonEmptyString(record?.standard) ??
-    nonEmptyString(record?.short) ??
-    nonEmptyString(record?.name)
-  );
-}
-
-function recommendationRelationshipData(group: unknown): unknown[] {
-  const relationships = asRecord(asRecord(group)?.relationships);
-  for (const key of ["contents", "recommendations", "items", "resources"]) {
-    const relationshipValue = relationships?.[key];
-    if (Array.isArray(relationshipValue)) return relationshipValue;
-    const relationship = asRecord(relationshipValue);
-    const data = relationship?.data;
-    if (Array.isArray(data)) return data;
-  }
-  const record = asRecord(group);
-  for (const key of ["contents", "recommendations", "items", "resources"]) {
-    if (Array.isArray(record?.[key])) return record[key] as unknown[];
-  }
-  return [];
-}
-
-function normalizeDiscoveryResource(
-  value: unknown,
-): DiscoveryResource | undefined {
-  if (!supportedDiscoveryType(value)) return undefined;
-  return normalizeLibraryItemResource(value as AppleMusicResource) as
-    DiscoveryResource | undefined;
-}
-
-/** Normalize Apple's recommendation envelope and keep only album/playlist cards. */
-export function normalizeRecommendationGroups(
-  raw: unknown,
-  limit = 10,
-): RecommendationSection[] {
-  const root = asRecord(raw);
-  const data = Array.isArray(root?.data) ? root.data : [];
-  const included = Array.isArray(root?.included) ? root.included : [];
-  const includedByKey = new Map<string, unknown>();
-  for (const resource of included) {
-    const key = resourceKey(resource);
-    if (key) includedByKey.set(key, resource);
-  }
-  const sections: RecommendationSection[] = [];
-  for (const group of data) {
-    const groupRecord = asRecord(group);
-    if (!groupRecord) continue;
-    const candidates = recommendationRelationshipData(group)
-      .map((candidate) => {
-        const key = resourceKey(candidate);
-        return (key && includedByKey.get(key)) ?? candidate;
-      })
-      .map(normalizeDiscoveryResource)
-      .filter((item): item is DiscoveryResource => Boolean(item))
-      .slice(0, limit);
-    const direct = normalizeDiscoveryResource(group);
-    if (direct && candidates.length === 0) candidates.push(direct);
-    if (candidates.length === 0) continue;
-    const attributes = recommendationAttributes(group);
-    const id =
-      nonEmptyString(groupRecord.id) ?? `recommendation-${sections.length}`;
-    const title =
-      displayString(attributes.title) ??
-      displayString(attributes.name) ??
-      "Recommendations";
-    const kind = displayString(attributes.kind);
-    const reason = displayString(attributes.reason);
-    sections.push({
-      id,
-      title,
-      items: candidates,
-      ...(kind ? { kind } : {}),
-      ...(reason ? { reason } : {}),
-    });
-  }
-  if (sections.length > 0) return sections;
-
-  const fallback = data
-    .map(normalizeDiscoveryResource)
-    .filter((item): item is DiscoveryResource => Boolean(item))
-    .slice(0, limit);
-  return fallback.length > 0
-    ? [{ id: "recommendations", title: "Recommendations", items: fallback }]
-    : [];
-}
-
-/** 100 children per page; 50 pages is far beyond any real folder. */
-const MAX_FOLDER_PAGES = 50;
-
-function encodePathPart(value: string): string {
-  return encodeURIComponent(value.trim());
-}
-
-function requiredName(value: string): string {
-  const name = value.trim();
-  if (!name) throw new Error("Playlist name is required.");
-  return name;
-}
-
-function appendParentRelationship(
-  relationships: Record<string, unknown>,
-  parentId: string | undefined,
-): void {
-  if (!parentId?.trim()) return;
-  relationships.parent = {
-    data: [
-      {
-        id: parentId.trim(),
-        type: "library-playlist-folders",
-      },
-    ],
-  };
-}
-
-function normalizedRefs(
-  refs: readonly (MusicResourceRef | string)[],
-): MusicResourceRef[] {
-  return refs.map((ref) => {
-    const normalized = normalizeMusicResourceRef(
-      typeof ref === "string" ? { id: ref, type: "songs" } : ref,
-    );
-    if (!normalized) {
-      throw new Error("Unsupported playlist track resource reference.");
-    }
-    return normalized;
-  });
-}
-
-/**
- * Options for a non-GET call. MusicKit v3 sends only `fetchOptions` to
- * `fetch`; the top-level `method` tells the retry wrapper not to retry.
- */
-function mutationOptions(method: string, body?: unknown): RequestOptions {
-  const init: RequestOptions = { method };
-  if (body !== undefined) init.body = JSON.stringify(body);
-  // MusicKit merges these headers with its auth headers.
-  const fetchOptions =
-    body === undefined
-      ? { ...init }
-      : { ...init, headers: { "Content-Type": "application/json" } };
-  return { ...init, fetchOptions };
-}
-
-/**
- * Apple's `next` cursor does not always repeat the page size, so later pages
- * would fall back to 25 items; the requested limit is carried over.
- */
-function withLimit(cursor: string, limit: number | undefined): string {
-  if (limit === undefined || /[?&]limit=/u.test(cursor)) return cursor;
-  return `${cursor}${cursor.includes("?") ? "&" : "?"}limit=${limit}`;
-}
-
-const FOLDER_REQUEST_CONCURRENCY = 4;
-
-/** Runs at most `limit` tasks at once, the rest in call order. */
-function createRequestLimiter(
-  limit: number,
-): <T>(task: () => Promise<T>) => Promise<T> {
-  let active = 0;
-  const waiting: (() => void)[] = [];
-  return async <T>(task: () => Promise<T>): Promise<T> => {
-    // A finished task hands its slot straight to the next waiter.
-    if (active >= limit) {
-      await new Promise<void>((resolve) => waiting.push(resolve));
-    } else {
-      active += 1;
-    }
-    try {
-      return await task();
-    } finally {
-      const next = waiting.shift();
-      if (next) next();
-      else active -= 1;
-    }
-  };
-}
-
 export function createAppleMusicLibraryClient(
   instance: MusicKit.MusicKitInstance,
 ): AppleMusicLibraryClient {
   const request = resolveMusicKitMusicRequest(instance) as MusicRequest;
-
-  async function getPage<T>(
-    path: string,
-    cursor: string | LibraryPageOptions | undefined,
-    query: Query | undefined,
-    normalize: (resource: AppleMusicResource) => T | undefined,
-  ): Promise<Page<T>> {
-    const cursorValue = typeof cursor === "string" ? cursor : cursor?.cursor;
-    const limit = typeof cursor === "object" ? cursor.limit : undefined;
-    const firstQuery =
-      limit === undefined ? query : { ...(query ?? {}), limit };
-    const raw = cursorValue?.trim()
-      ? await request(withLimit(cursorValue, limit))
-      : firstQuery === undefined
-        ? await request(path)
-        : await request(path, firstQuery);
-    const resources = resourceArray(raw) ?? [];
-    const items: T[] = [];
-    for (const value of resources) {
-      const resource = asRecord(value) as AppleMusicResource | undefined;
-      if (!resource) continue;
-      const item = normalize(resource);
-      if (item !== undefined) items.push(item);
-    }
-    return withPageMetadata(items, raw);
-  }
-
-  async function getOne<T>(
-    path: string,
-    normalize: (resource: AppleMusicResource) => T | undefined,
-    query?: Query,
-  ): Promise<T | undefined> {
-    const raw =
-      query === undefined ? await request(path) : await request(path, query);
-    const resource = firstResource(raw);
-    return resource ? normalize(resource) : undefined;
-  }
-
-  // Sibling folders load in parallel; this caps the requests in flight.
-  // Only network calls take a slot, so a parent waiting on its children
-  // never holds one.
-  const folderRequests = createRequestLimiter(FOLDER_REQUEST_CONCURRENCY);
-
-  async function folderChildren(
-    folderId: string,
-    visited: Set<string>,
-  ): Promise<LibraryItem[]> {
-    const children: LibraryItem[] = [];
-    const seenCursors = new Set<string>();
-    let cursor: string | undefined;
-    let pages = 0;
-    do {
-      pages += 1;
-      const pageCursor = cursor;
-      const raw = await folderRequests(() =>
-        pageCursor
-          ? request(pageCursor)
-          : request(
-              `/v1/me/library/playlist-folders/${encodePathPart(folderId)}/children`,
-              { limit: 100 },
-            ),
-      );
-      const resources = resourceArray(raw) ?? [];
-      const pageChildren = await Promise.all(
-        resources.map(async (value): Promise<LibraryItem | undefined> => {
-          const resource = asRecord(value) as AppleMusicResource | undefined;
-          if (!resource) return undefined;
-          const item = normalizeLibraryItemResource(resource);
-          if (!item) return undefined;
-          if (item.resourceType?.includes("playlist-folder")) {
-            return hydrateFolder(item as PlaylistFolder, folderId, visited);
-          }
-          return { ...item, parentId: folderId } as LibraryItem;
-        }),
-      );
-      for (const child of pageChildren) if (child) children.push(child);
-      cursor = nextValue(raw);
-      // A repeated or endless cursor must not hang the folder tree.
-      if (cursor && seenCursors.has(cursor)) break;
-      if (cursor) seenCursors.add(cursor);
-    } while (cursor && pages < MAX_FOLDER_PAGES);
-    return children;
-  }
-
-  async function hydrateFolder(
-    folder: PlaylistFolder,
-    parentId: string | undefined,
-    visited: Set<string>,
-  ): Promise<PlaylistFolder> {
-    const hydrated: PlaylistFolder = {
-      ...folder,
-      ...(parentId ? { parentId } : {}),
-    };
-    if (visited.has(folder.id)) return { ...hydrated, children: [] };
-    visited.add(folder.id);
-    hydrated.children = await folderChildren(folder.id, visited);
-    return hydrated;
-  }
-
-  async function getFolder(
-    id: string,
-    raw?: unknown,
-  ): Promise<PlaylistFolder | undefined> {
-    const response =
-      raw ??
-      (await request(`/v1/me/library/playlist-folders/${encodePathPart(id)}`));
-    const resource = firstResource(response) ?? findResourceDeep(response);
-    const folder = isPlaylistFolderResource(resource)
-      ? normalizePlaylistFolderResource(resource)
-      : undefined;
-    return folder ? hydrateFolder(folder, undefined, new Set()) : undefined;
-  }
+  const { getPage } = createPageReaders(request);
 
   return {
+    ...createHomeMethods(request),
+    ...createDetailMethods(request, instance),
+    ...createFolderMethods(request),
     getSongs: (cursor) =>
       getPage(
         "/v1/me/library/songs",
@@ -669,107 +184,7 @@ export function createAppleMusicLibraryClient(
         },
         normalizeTrackResource,
       ),
-    getRecentlyPlayedPlaylists: (limit = 10) =>
-      getPage(
-        "/v1/me/recent/played",
-        undefined,
-        { types: "playlists,library-playlists", limit },
-        normalizePlaylistResource,
-      ),
-    getHeavyRotation: (limit = 10) =>
-      getPage(
-        "/v1/me/history/heavy-rotation",
-        undefined,
-        { limit },
-        normalizeDiscoveryResource,
-      ),
-    async getRecommendations(limit = 10): Promise<RecommendationSection[]> {
-      // Default recommendations endpoint does not expose a limit query. Slice
-      // normalized groups locally and apply limit to each content section.
-      const raw = await request("/v1/me/recommendations");
-      return normalizeRecommendationGroups(raw, limit);
-    },
-    async getAlbum(
-      id: string,
-      source: MusicSource = "library",
-    ): Promise<Album | undefined> {
-      const path =
-        source === "catalog"
-          ? `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/albums/${encodePathPart(id)}`
-          : `/v1/me/library/albums/${encodePathPart(id)}`;
-      return getOne(path, normalizeAlbumResource);
-    },
-    async getAlbumTracks(
-      id: string,
-      source: MusicSource = "library",
-      cursor?: string | LibraryPageOptions,
-    ): Promise<Page<Track>> {
-      const path =
-        source === "catalog"
-          ? `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/albums/${encodePathPart(id)}/tracks`
-          : `/v1/me/library/albums/${encodePathPart(id)}/tracks`;
-      return getPage(path, cursor, undefined, normalizeTrackResource);
-    },
-    async getArtist(
-      id: string,
-      source: MusicSource = "library",
-    ): Promise<Artist | undefined> {
-      const path =
-        source === "catalog"
-          ? `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/artists/${encodePathPart(id)}`
-          : `/v1/me/library/artists/${encodePathPart(id)}`;
-      return getOne(path, normalizeArtistResource);
-    },
-    async getArtistAlbums(
-      id: string,
-      cursor?: string | LibraryPageOptions,
-      source: MusicSource = "library",
-    ): Promise<Page<Album>> {
-      const path =
-        source === "catalog"
-          ? `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/artists/${encodePathPart(id)}/albums`
-          : `/v1/me/library/artists/${encodePathPart(id)}/albums`;
-      return getPage(path, cursor, undefined, normalizeAlbumResource);
-    },
-    async getPlaylist(
-      id: string,
-      source: MusicSource = "library",
-    ): Promise<Playlist | undefined> {
-      const path =
-        source === "catalog"
-          ? `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/playlists/${encodePathPart(id)}`
-          : `/v1/me/library/playlists/${encodePathPart(id)}`;
-      return getOne(path, normalizePlaylistResource);
-    },
-    async getPlaylistTracks(
-      id: string,
-      cursor?: string | LibraryPageOptions,
-      source: MusicSource = "library",
-    ): Promise<Page<Track>> {
-      // Permit the convenient getPlaylistTracks(id, "catalog") form while
-      // retaining the existing opaque-cursor position in the API.
-      if (cursor === "catalog" || cursor === "library") {
-        source = cursor;
-        cursor = undefined;
-      }
-      const path =
-        source === "catalog"
-          ? `/v1/catalog/${encodePathPart(await resolveStorefront(instance))}/playlists/${encodePathPart(id)}/tracks`
-          : `/v1/me/library/playlists/${encodePathPart(id)}/tracks`;
-      return getPage(path, cursor, undefined, normalizeTrackResource);
-    },
-    async getRootPlaylistFolder(): Promise<PlaylistFolder | undefined> {
-      const raw = await request("/v1/me/library/playlist-folders", {
-        "filter[identity]": "playlistsroot",
-        limit: 1,
-      });
-      const resource = firstResource(raw) ?? findResourceDeep(raw);
-      const folder = isPlaylistFolderResource(resource)
-        ? normalizePlaylistFolderResource(resource)
-        : undefined;
-      return folder ? hydrateFolder(folder, undefined, new Set()) : undefined;
-    },
-    getPlaylistFolder: (id) => getFolder(id),
+
     searchPlaylists: (term, cursor) => {
       const normalizedTerm = term.trim();
       if (!normalizedTerm) return Promise.resolve({ items: [] });
@@ -780,169 +195,8 @@ export function createAppleMusicLibraryClient(
         normalizePlaylistResource,
       );
     },
-    async createPlaylist(
-      input: CreatePlaylistInput | string,
-      legacyDescription?: string,
-    ): Promise<Playlist> {
-      const normalizedInput: CreatePlaylistInput =
-        typeof input === "string"
-          ? { name: input, description: legacyDescription }
-          : input;
-      const attributes: Record<string, unknown> = {
-        name: requiredName(normalizedInput.name),
-      };
-      if (normalizedInput.description !== undefined) {
-        attributes.description = normalizedInput.description;
-      }
-      if (normalizedInput.isPublic !== undefined) {
-        attributes.isPublic = normalizedInput.isPublic;
-      }
-      const relationships: Record<string, unknown> = {};
-      appendParentRelationship(
-        relationships,
-        normalizedInput.parentFolderId ?? normalizedInput.parentId,
-      );
-      if (normalizedInput.tracks && normalizedInput.tracks.length > 0) {
-        relationships.tracks = { data: normalizedRefs(normalizedInput.tracks) };
-      }
-      const body: Record<string, unknown> = { attributes };
-      if (Object.keys(relationships).length > 0)
-        body.relationships = relationships;
-      const raw = await request(
-        "/v1/me/library/playlists",
-        undefined,
-        mutationOptions("POST", body),
-      );
-      const resource = firstResource(raw);
-      const playlist = resource
-        ? normalizePlaylistResource(resource)
-        : undefined;
-      if (!playlist) throw new Error("Apple Music returned no playlist.");
-      return playlist;
-    },
-    async createPlaylistFolder(
-      input: CreatePlaylistFolderInput | string,
-    ): Promise<PlaylistFolder> {
-      const normalizedInput: CreatePlaylistFolderInput =
-        typeof input === "string" ? { name: input } : input;
-      const body: Record<string, unknown> = {
-        attributes: { name: requiredName(normalizedInput.name) },
-      };
-      const relationships: Record<string, unknown> = {};
-      appendParentRelationship(
-        relationships,
-        normalizedInput.parentFolderId ?? normalizedInput.parentId,
-      );
-      if (Object.keys(relationships).length > 0)
-        body.relationships = relationships;
-      const raw = await request(
-        "/v1/me/library/playlist-folders",
-        undefined,
-        mutationOptions("POST", body),
-      );
-      const resource = firstResource(raw);
-      const folder = resource
-        ? normalizePlaylistFolderResource(resource)
-        : undefined;
-      if (!folder) throw new Error("Apple Music returned no playlist folder.");
-      return folder;
-    },
-    async addTracksToPlaylist(
-      playlistId: string,
-      refs: readonly (MusicResourceRef | string)[],
-    ): Promise<void> {
-      if (!playlistId.trim()) throw new Error("Playlist id is required.");
-      if (refs.length === 0) return;
-      await request(
-        `/v1/me/library/playlists/${encodePathPart(playlistId)}/tracks`,
-        undefined,
-        mutationOptions("POST", { data: normalizedRefs(refs) }),
-      );
-    },
+
+    addTracksToPlaylist: (playlistId, refs) =>
+      addTracksToPlaylist(request, playlistId, refs),
   };
-}
-
-/** Library and catalog kinds Apple accepts for rating endpoints. */
-export type RatingResourceType =
-  | "songs"
-  | "library-songs"
-  | "albums"
-  | "library-albums"
-  | "playlists"
-  | "library-playlists";
-
-/** Catalog kinds accepted by `POST /v1/me/library`. */
-export interface AddToLibraryIds {
-  songs?: readonly string[];
-  albums?: readonly string[];
-  playlists?: readonly string[];
-}
-
-function ratingPath(type: RatingResourceType, id: string): string {
-  const trimmed = id.trim();
-  if (!trimmed) throw new Error("Rating item id is required.");
-  return `/v1/me/ratings/${type}/${encodePathPart(trimmed)}`;
-}
-
-const MAX_RATING_IDS = 100;
-
-/** Loads ratings for the given ids; unrated ids are absent from the map. */
-export async function getRatings(
-  request: MusicRequest,
-  type: RatingResourceType,
-  ids: readonly string[],
-): Promise<Map<string, RatingValue>> {
-  const values = new Map<string, RatingValue>();
-  const list = ids.map((id) => id.trim()).filter(Boolean);
-  // Apple caps the ids in one ratings request.
-  for (let start = 0; start < list.length; start += MAX_RATING_IDS) {
-    const chunk = list.slice(start, start + MAX_RATING_IDS);
-    const raw = await request(`/v1/me/ratings/${type}`, {
-      ids: chunk.join(","),
-    });
-    for (const value of resourceArray(raw) ?? []) {
-      const resource = asRecord(value);
-      const id = nonEmptyString(resource?.id);
-      if (!id) continue;
-      const rating = asRecord(resource?.attributes)?.value;
-      values.set(id, rating === 1 ? 1 : rating === -1 ? -1 : 0);
-    }
-  }
-  return values;
-}
-
-export async function setRating(
-  request: MusicRequest,
-  type: RatingResourceType,
-  id: string,
-  value: 1 | -1,
-): Promise<void> {
-  await request(
-    ratingPath(type, id),
-    undefined,
-    mutationOptions("PUT", { type: "rating", attributes: { value } }),
-  );
-}
-
-export async function clearRating(
-  request: MusicRequest,
-  type: RatingResourceType,
-  id: string,
-): Promise<void> {
-  await request(ratingPath(type, id), undefined, mutationOptions("DELETE"));
-}
-
-export async function addToLibrary(
-  request: MusicRequest,
-  items: AddToLibraryIds,
-): Promise<void> {
-  const query: Record<string, string> = {};
-  for (const type of ["songs", "albums", "playlists"] as const) {
-    const ids = (items[type] ?? []).map((id) => id.trim()).filter(Boolean);
-    if (ids.length > 0) query[`ids[${type}]`] = ids.join(",");
-  }
-  if (Object.keys(query).length === 0) {
-    throw new Error("At least one item is required.");
-  }
-  await request("/v1/me/library", query, mutationOptions("POST"));
 }

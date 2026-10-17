@@ -28,7 +28,11 @@ import { runRadioArtist } from "./e2e-radio-artist.js";
 import { runUnavailable } from "./e2e-unavailable.js";
 import { runLayout } from "./e2e-layout.js";
 import { desktopEventRecorderSource, runDesktop } from "./e2e-desktop.js";
+import { runPerformance } from "./e2e-performance.js";
+import { runPolish } from "./e2e-polish.js";
+import { runDiscovery } from "./e2e-discovery.js";
 import { runSessionRestore } from "./e2e-session-restore.js";
+import { sleep } from "./e2e-helpers.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IDENTIFIER = "run.rosie.arlet";
@@ -77,6 +81,32 @@ function dataDirs() {
     return target;
   });
 }
+
+/**
+ * Injected for the expired-token check only: answers `get_developer_token`
+ * with the release build's expiry error, as Tauri's IPC protocol does.
+ */
+const EXPIRED_TOKEN_SOURCE = `(() => {
+  if (sessionStorage.getItem("arlet-e2e-expired-token") !== "1") return;
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    try {
+      const url = new URL(String(input?.url ?? input));
+      if (
+        url.hostname === "ipc.localhost" &&
+        decodeURIComponent(url.pathname.slice(1)) === "get_developer_token"
+      ) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify("Arlet's Apple Music access token has expired. Install the latest Arlet update."),
+            { headers: { "Content-Type": "application/json", "Tauri-Response": "error" } },
+          ),
+        );
+      }
+    } catch {}
+    return nativeFetch(input, init);
+  };
+})();`;
 
 // Written into the test profile so a later run can tell it from real data.
 const TEST_PROFILE_MARKER = ".arlet-e2e-test-profile";
@@ -136,8 +166,15 @@ function moveAside(stamp) {
 }
 
 function restore(moved) {
+  // One profile that cannot be deleted must not stop the other restores.
   for (const dir of dataDirs()) {
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
+    } catch (error) {
+      console.error(
+        `[e2e-app] Could not remove the test profile at ${dir}: ${error.message}`,
+      );
+    }
   }
   for (const { dir, backup } of moved) {
     try {
@@ -364,10 +401,6 @@ public static class ArletE2eVisibility {
 
 const near = (actual, expected) => Math.abs(actual - expected) <= 2;
 
-async function sleep(ms) {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 /**
  * Waits for the app page on the debugging port. `launched` is the process
  * just started; its early exit is reported instead of a 60-second timeout.
@@ -450,6 +483,65 @@ async function settle(page, command, args) {
   return page.evaluate(
     `try { return { ok: true, value: await ${invoke(command, args)} }; } catch (error) { return { ok: false, error: String(error?.message ?? error) }; }`,
   );
+}
+
+// Run folders are named by the stamp written in run() (ISO time with ':' and
+// '.' replaced by '-'), so only names of that exact shape are ever pruned.
+const RUN_STAMP_PATTERN = /^\d{4}(?:-\d{2}){2}T(?:\d{2}-){2}\d{2}-\d{3}Z$/u;
+const DEFAULT_KEEP_RUNS = 20;
+
+function keepRunCount() {
+  const raw = String(process.env.ARLET_E2E_KEEP_RUNS ?? "").trim();
+  if (raw === "") return DEFAULT_KEEP_RUNS;
+  if (!/^\d+$/u.test(raw)) {
+    console.warn(
+      `[e2e-app] ignoring ARLET_E2E_KEEP_RUNS=${raw}; using ${DEFAULT_KEEP_RUNS}`,
+    );
+    return DEFAULT_KEEP_RUNS;
+  }
+  return Number(raw);
+}
+
+// Deletes old run folders directly under e2e-artifacts/, keeping the newest
+// `keep` (the current run included). Symlinks, junctions, files, and folders
+// with other names are never touched. Failures are logged, never thrown.
+function pruneOldRuns(artifactsRoot, currentStamp, keep) {
+  if (keep === 0) return;
+  try {
+    const runs = [];
+    for (const name of fs.readdirSync(artifactsRoot)) {
+      if (!RUN_STAMP_PATTERN.test(name) || name === currentStamp) continue;
+      const entry = path.join(artifactsRoot, name);
+      const info = fs.lstatSync(entry);
+      if (info.isSymbolicLink() || !info.isDirectory()) continue;
+      runs.push(name);
+    }
+    // Fixed-width ISO stamps sort chronologically, so newest comes last.
+    runs.sort();
+    // The current run already occupies one of the `keep` slots.
+    const stale = runs.slice(0, Math.max(0, runs.length - (keep - 1)));
+    let pruned = 0;
+    for (const name of stale) {
+      try {
+        fs.rmSync(path.join(artifactsRoot, name), {
+          recursive: true,
+          force: true,
+        });
+        pruned += 1;
+      } catch (error) {
+        console.warn(
+          `[e2e-app] could not prune ${name}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    console.log(
+      `[e2e-app] pruned ${pruned} old run folder(s), keeping ${keep}`,
+    );
+  } catch (error) {
+    console.warn(
+      `[e2e-app] run pruning skipped: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 async function run() {
@@ -1037,6 +1129,41 @@ async function run() {
       path.join(artifactDir, "screenshot-offline.png"),
       Buffer.from(offlineShot.data, "base64"),
     );
+
+    // 11b. An expired embedded token: the update notice shows, not the
+    // offline banner (its Reconnect could never work). The token command is
+    // answered with the release-build error through Tauri's IPC transport.
+    await page.send("Page.enable");
+    const expiredScript = await page.send(
+      "Page.addScriptToEvaluateOnNewDocument",
+      { source: EXPIRED_TOKEN_SOURCE },
+    );
+    await page.evaluate(
+      "sessionStorage.setItem('arlet-e2e-expired-token', '1'); return true;",
+    );
+    await page.send("Page.reload", { ignoreCache: true });
+    await sleep(1000);
+    const expiredNotice = await waitFor(
+      page,
+      `document.querySelector(".token-expiry-notice")?.textContent.includes("expired")`,
+      30_000,
+    );
+    const expiredView = await page.evaluate(`return {
+      offlineBanner: Boolean(document.querySelector(".offline-banner")),
+      notice: document.querySelector(".token-expiry-notice")?.textContent ?? null,
+    };`);
+    check(
+      "an expired embedded token shows the update notice, not the offline banner",
+      expiredNotice && !expiredView.offlineBanner,
+      expiredView,
+    );
+    await page.evaluate(
+      "sessionStorage.removeItem('arlet-e2e-expired-token'); return true;",
+    );
+    await page.send("Page.removeScriptToEvaluateOnNewDocument", {
+      identifier: expiredScript.identifier,
+    });
+
     await page.send("Network.setBlockedURLs", { urls: [] });
 
     // 12. Renderer crash: the window reloads instead of staying blank.
@@ -1052,6 +1179,18 @@ async function run() {
       30_000,
     );
     check("renderer crash reloads the window", recovered);
+    // The crash is recorded whatever Debug Mode says: nothing else would.
+    const crashLogged = await (async () => {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (readTestLog().includes("[native] WebView2 process failed (kind")) {
+          return true;
+        }
+        await sleep(200);
+      }
+      return false;
+    })();
+    check("a WebView2 crash is written to arlet.log", crashLogged);
 
     // 13. Reset settings: Cancel changes nothing; confirming restores
     // defaults and restarts, keeping sign-in storage and pins.
@@ -1245,6 +1384,9 @@ async function run() {
         ["layout", runLayout],
         ["desktop", runDesktop],
         ["flows", runFlows],
+        ["performance", runPerformance],
+        ["polish", runPolish],
+        ["discovery", runDiscovery],
         // Last: it signs out at the end.
         ["session-restore", runSessionRestore],
       ]) {
@@ -1330,6 +1472,50 @@ async function run() {
       json: JSON.stringify({ ...DEFAULT_SETTINGS_FOR_E2E, trayIcon: false }),
     });
 
+    // Quitting saves the queue position first. Sign back in (the session
+    // scenario signed out), play, then report 100s and at once 123s: the
+    // second report is inside the 30-second save throttle, so only the save
+    // on quit can write it.
+    await page.evaluate('location.hash = "#/settings"; return true;');
+    await waitFor(
+      page,
+      '[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign in")',
+      10_000,
+    );
+    await page.evaluate(`
+      [...document.querySelectorAll("button")]
+        .find((node) => node.textContent.trim() === "Sign in")
+        ?.click();
+      return true;`);
+    await waitFor(
+      page,
+      '[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign out")',
+      10_000,
+    );
+    await page.evaluate(
+      'location.hash = "#/playlist/playlist-1"; return true;',
+    );
+    await waitFor(
+      page,
+      'document.querySelector(".library-track-row")?.textContent.includes("Track A")',
+      10_000,
+    );
+    await page.evaluate(
+      'document.querySelectorAll(".library-track-row")[0]?.click(); return true;',
+    );
+    const playingBeforeQuit = await waitFor(
+      page,
+      'document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Track A"',
+      10_000,
+    );
+    await sleep(2500);
+    await page.evaluate(`
+      window.__ARLET_E2E_MUSIC__.emitPlaybackTime(100);
+      window.__ARLET_E2E_MUSIC__.emitPlaybackTime(123);
+      return true;`);
+    await sleep(300);
+    const sessionFile = path.join(dataDirs()[0], "playback-session.json");
+
     // Resize, then close normally: the new geometry is saved for next launch.
     const resized = await settle(page, "plugin:window|set_size", {
       label: "main",
@@ -1372,6 +1558,22 @@ async function run() {
       "with the tray off, closing the window quits Arlet",
       trayDisabled.ok && appPid !== undefined && !processAlive(appPid),
       { trayDisabled: trayDisabled.ok, appPid, alive: processAlive(appPid) },
+    );
+    let quitSession = null;
+    try {
+      quitSession = JSON.parse(fs.readFileSync(sessionFile, "utf8"));
+    } catch {
+      // Left null so the check fails with the detail below.
+    }
+    check(
+      "quitting saves the queue's latest position before Arlet exits",
+      playingBeforeQuit &&
+        Math.abs(Number(quitSession?.positionSeconds) - 123) < 1,
+      {
+        playingBeforeQuit,
+        positionSeconds: quitSession?.positionSeconds ?? null,
+        firstId: quitSession?.items?.[0]?.id ?? null,
+      },
     );
 
     // Stop the app, then confirm the roaming cache moved to the local data
@@ -1447,6 +1649,7 @@ async function run() {
     `${JSON.stringify(report, null, 2)}\n`,
   );
   console.log(`[e2e-app] artifact: ${path.relative(root, artifactDir)}`);
+  pruneOldRuns(path.join(root, "e2e-artifacts"), stamp, keepRunCount());
   if (!report.passed) fail("one or more checks failed");
 }
 

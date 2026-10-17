@@ -4,7 +4,9 @@ import { getState, subscribe } from "../state.ts";
 
 export type NowPlayingStatus = "none" | "playing" | "paused";
 
-function statusFor(track: Track): NowPlayingStatus {
+type TrackIdentity = Pick<Track, "id" | "catalogId">;
+
+function statusFor(track: TrackIdentity): NowPlayingStatus {
   const { current, status } = getState().playback;
   if (!isSameTrack(track, current)) return "none";
   if (status === "playing" || status === "loading") return "playing";
@@ -17,10 +19,14 @@ function statusFor(track: Track): NowPlayingStatus {
  * status changes, not on every app state update.
  */
 export function useNowPlayingStatus(track: Track): NowPlayingStatus {
-  const [status, setStatus] = useState(() => statusFor(track));
+  // Only the identity fields decide a match, so a row rebuilt with the same
+  // ids keeps its subscription instead of resubscribing.
+  const { id, catalogId } = track;
+  const [status, setStatus] = useState(() => statusFor({ id, catalogId }));
   useEffect(() => {
-    setStatus(statusFor(track));
-    return subscribe(() => setStatus(statusFor(track)));
-  }, [track]);
+    const identity = { id, catalogId };
+    setStatus(statusFor(identity));
+    return subscribe(() => setStatus(statusFor(identity)));
+  }, [id, catalogId]);
   return status;
 }

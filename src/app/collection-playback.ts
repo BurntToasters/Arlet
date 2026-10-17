@@ -1,6 +1,7 @@
 import type { MusicSource, Track } from "../domain/music.ts";
 import { getState, setUiState } from "../state.ts";
 import { readPlaybackModes } from "../musickit/player.ts";
+import { LIBRARY_PAGE_LIMIT } from "../musickit/library.ts";
 import type { LibraryLoader } from "./library-loader.ts";
 import { FIRST_BATCH_LENGTH, nearestTrackIndex } from "./queue-window.ts";
 
@@ -86,8 +87,15 @@ function createTrackPager(
     async next(): Promise<Track[]> {
       const page =
         kind === "playlist"
-          ? await client.getPlaylistTracks(id, cursor, source)
-          : await client.getAlbumTracks(id, source, cursor);
+          ? await client.getPlaylistTracks(
+              id,
+              { cursor, limit: LIBRARY_PAGE_LIMIT },
+              source,
+            )
+          : await client.getAlbumTracks(id, source, {
+              cursor,
+              limit: LIBRARY_PAGE_LIMIT,
+            });
       cursor = page.next;
       if (!cursor) done = true;
       else if (cursors.has(cursor)) {
@@ -116,8 +124,15 @@ export async function loadAllTracks(
   do {
     const page =
       kind === "playlist"
-        ? await client.getPlaylistTracks(id, cursor, source)
-        : await client.getAlbumTracks(id, source, cursor);
+        ? await client.getPlaylistTracks(
+            id,
+            { cursor, limit: LIBRARY_PAGE_LIMIT },
+            source,
+          )
+        : await client.getAlbumTracks(id, source, {
+            cursor,
+            limit: LIBRARY_PAGE_LIMIT,
+          });
     if (isStale()) return undefined;
     onPage();
     tracks.push(...page.items);

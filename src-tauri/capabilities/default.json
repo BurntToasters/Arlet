@@ -13,6 +13,8 @@
     "core:window:allow-minimize",
     "core:window:allow-toggle-maximize",
     "core:window:allow-is-maximized",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-is-fullscreen",
     "updater:allow-check",
     "updater:allow-download",
     "updater:allow-install",
@@ -22,6 +24,7 @@
     "allow-get-developer-token",
     "allow-get-beta-updater-target",
     "allow-open-support-page",
+    "allow-open-about-link",
     "allow-open-music-diagnostic",
     "allow-load-settings",
     "allow-save-settings",
@@ -47,6 +50,7 @@
     "allow-set-snap-overlay-bounds",
     "allow-update-windows-media-session",
     "allow-update-windows-media-timeline",
-    "allow-clear-windows-media-session"
+    "allow-clear-windows-media-session",
+    "allow-quit-ready"
   ]
 }

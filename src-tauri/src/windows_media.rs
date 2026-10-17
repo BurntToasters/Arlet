@@ -138,20 +138,26 @@ mod platform {
         display_key: Option<String>,
     }
 
-    /// True when the display text or artwork differs from what is shown,
-    /// and records the new key.
-    fn display_changed(key: String) -> Result<bool, String> {
+    /// True when the display text or artwork differs from what is shown.
+    fn display_changed(key: &str) -> Result<bool, String> {
+        let guard = session()
+            .lock()
+            .map_err(|_| "Windows media session lock poisoned".to_string())?;
+        Ok(guard
+            .as_ref()
+            .is_none_or(|existing| existing.display_key.as_deref() != Some(key)))
+    }
+
+    /// Records the key once Windows accepted the display, so a failed update
+    /// is retried by the next one instead of being skipped as unchanged.
+    fn record_display(key: String) -> Result<(), String> {
         let mut guard = session()
             .lock()
             .map_err(|_| "Windows media session lock poisoned".to_string())?;
-        let Some(existing) = guard.as_mut() else {
-            return Ok(true);
-        };
-        if existing.display_key.as_deref() == Some(key.as_str()) {
-            return Ok(false);
+        if let Some(existing) = guard.as_mut() {
+            existing.display_key = Some(key);
         }
-        existing.display_key = Some(key);
-        Ok(true)
+        Ok(())
     }
 
     static SESSION: OnceLock<Mutex<Option<Session>>> = OnceLock::new();
@@ -345,7 +351,7 @@ mod platform {
             payload.album.as_deref().unwrap_or(""),
             artwork_url.as_deref().unwrap_or("")
         );
-        if !display_changed(key)? {
+        if !display_changed(&key)? {
             return Ok(());
         }
         let display = controls
@@ -376,7 +382,8 @@ mod platform {
                 }
             }
         }
-        display.Update().map_err(|error| error.to_string())
+        display.Update().map_err(|error| error.to_string())?;
+        record_display(key)
     }
 
     /// Updates only an existing session; a timeline alone never creates one.
@@ -507,6 +514,8 @@ pub fn update_windows_media_timeline(payload: TimelinePayload) -> Result<(), Str
 
 #[tauri::command]
 pub fn clear_windows_media_session(window: WebviewWindow) -> Result<(), String> {
+    // Nothing plays after a clear: the tray toggle must send Play next.
+    PLAYING.store(false, Ordering::SeqCst);
     #[cfg(target_os = "windows")]
     {
         platform::clear(&window)

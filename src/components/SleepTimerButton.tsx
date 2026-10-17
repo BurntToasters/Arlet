@@ -105,8 +105,8 @@ export function SleepTimerButton(): JSX.Element {
   const choose = (option: SleepTimerOption | undefined): void => {
     setOpen(false);
     try {
-      if (option) controller.startSleepTimer?.(option);
-      else controller.cancelSleepTimer?.();
+      if (option) controller.startSleepTimer(option);
+      else controller.cancelSleepTimer();
     } catch (error) {
       reportActionError(error);
     }

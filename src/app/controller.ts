@@ -9,17 +9,24 @@ import {
 import { initializeMusicKit } from "../musickit/bootstrap.ts";
 import { developerTokenExpiry } from "../musickit/token.ts";
 import type {
-  loadBrowseCharts,
   loadRadioStations,
   searchMusicResources,
   searchCatalogSongs,
 } from "../musickit/catalog.ts";
+import type { BrowseShelfKind, loadBrowseCharts } from "../musickit/browse.ts";
+import { safeNextPath } from "../musickit/response.ts";
 import { registerMusicKitEvents } from "../musickit/events.ts";
+import type { SearchGroupKind } from "../musickit/search.ts";
 import {
-  CONSECUTIVE_TRACK_TARGET,
-  setAutoplayEnabled,
-  syncMusicKitQueue,
-} from "../musickit/player.ts";
+  loadCuratorPage,
+  loadCuratorPlaylistsPage,
+  loadPlaylistCurator,
+  type CuratorPage,
+  type CuratorPlaylistsPage,
+  type PlaylistCuratorRef,
+} from "../musickit/curators.ts";
+import type { CuratorKind } from "../routing/router.ts";
+import { syncMusicKitQueue } from "../musickit/player.ts";
 import {
   createStationResolver,
   type StationTarget,
@@ -31,6 +38,7 @@ import { normalizeTrack } from "../musickit/normalize.ts";
 import { classifyPlaybackKind } from "../musickit/preview.ts";
 import {
   appendDiagnosticLog,
+  clearRecentSearches,
   DEFAULT_SETTINGS,
   getState,
   resetState,
@@ -45,33 +53,16 @@ import {
   setSleepTimer,
   setUpdateState,
   setUiState,
-  setWindowEffectState,
   subscribePlaybackPosition,
-  type AppSettings,
   type LibraryEntity,
   type LibrarySection,
   type ThemePreference,
   type UpdateChannel,
   type WindowEffectPreference,
 } from "../state.ts";
-import {
-  applyWindowEffect,
-  darkModeForTheme,
-  loadSettings as loadPersistedSettings,
-  resetSettings as resetPersistedSettings,
-  saveSettings as savePersistedSettings,
-  watchSystemTheme,
-  type InvokeFunction,
-} from "./settings.ts";
-import {
-  MAX_PINS,
-  deletePins as deletePersistedPins,
-  loadPins as loadPersistedPins,
-  savePins as savePersistedPins,
-} from "./pins.ts";
+import type { InvokeFunction } from "./settings.ts";
 import type {
   MusicSource,
-  PinnedPlaylist,
   RatingValue,
   Station,
   Track,
@@ -111,6 +102,8 @@ import {
   type CreatePlaylistRequest,
 } from "./playlist-editing.ts";
 import { createPlaybackSession } from "./playback-session.ts";
+import { createControllerPins } from "./controller-pins.ts";
+import { createControllerSettings } from "./controller-settings.ts";
 import {
   createTrackNavigationResolver,
   type TrackNavigation,
@@ -118,9 +111,10 @@ import {
 
 export type { DetailLoadOptions } from "./library-loader.ts";
 
-const VOLUME_SAVE_DELAY_MS = 300;
 /** A clipboard write still pending after this is reported as failed. */
 const CLIPBOARD_WRITE_TIMEOUT_MS = 5_000;
+/** Longest wait for the queue save before an update installs (as tray.rs). */
+const QUIT_SAVE_TIMEOUT_MS = 1_500;
 
 export interface ControllerDependencies {
   initializeMusicKit?: typeof initializeMusicKit;
@@ -157,9 +151,16 @@ export interface AppController {
   ): Promise<void>;
   refreshLibrarySection(section: LibrarySection): Promise<void>;
   loadHome(options?: { refresh?: boolean }): Promise<void>;
-  loadBrowse?(options?: { refresh?: boolean }): Promise<void>;
-  loadRadio?(options?: { refresh?: boolean }): Promise<void>;
-  playStation?(station: Station): Promise<void>;
+  loadBrowse(options?: { refresh?: boolean; genreId?: string }): Promise<void>;
+  loadMoreBrowseShelf(kind: BrowseShelfKind): Promise<void>;
+  loadRadio(options?: { refresh?: boolean }): Promise<void>;
+  loadRadioGenre(genreId: string): Promise<void>;
+  loadCurator(id: string, kind: CuratorKind): Promise<CuratorPage>;
+  loadMoreCuratorPlaylists(next: string): Promise<CuratorPlaylistsPage>;
+  loadPlaylistCurator(
+    playlistId: string,
+  ): Promise<PlaylistCuratorRef | undefined>;
+  playStation(station: Station): Promise<void>;
   loadAlbum(
     id: string,
     source?: MusicSource,
@@ -202,11 +203,20 @@ export interface AppController {
   playQueueItem(index: number): Promise<void>;
   /** `trackId` guards against the queue shifting before the remove runs. */
   removeQueueItem(index: number, trackId?: string): Promise<QueueEditTier>;
-  moveQueueItem(from: number, to: number): Promise<QueueEditTier>;
+  /** `trackId` guards against the queue shifting before the move runs. */
+  moveQueueItem(
+    from: number,
+    to: number,
+    trackId?: string,
+  ): Promise<QueueEditTier>;
   clearUpNext(): Promise<QueueEditTier>;
   refreshCurrentData(): Promise<void>;
   search(term: string): Promise<Track[]>;
-  setSearchSource?(source: "catalog" | "library"): void;
+  /** Typeahead for the Search field; terms under two characters clear it. */
+  suggestSearch(term: string): Promise<void>;
+  /** Appends the next "See all" page of one catalog group. */
+  loadMoreSearch(kind: SearchGroupKind): Promise<void>;
+  setSearchSource(source: "catalog" | "library"): void;
   playFromSearch(index: number): Promise<void>;
   playTracks(tracks: readonly Track[], startIndex?: number): Promise<void>;
   /** Plays the tracks in shuffled order. */
@@ -225,7 +235,7 @@ export interface AppController {
     source: MusicSource,
     catalogId?: string,
   ): Promise<Track[]>;
-  playCollection?(
+  playCollection(
     kind: "playlist" | "album",
     id: string,
     source?: MusicSource,
@@ -233,29 +243,32 @@ export interface AppController {
     options?: CollectionPlayOptions,
   ): Promise<void>;
   /** `trackId` is the song at `startIndex` when the user picked it. */
-  playPlaylist?(
+  playPlaylist(
     id: string,
     source?: MusicSource,
     startIndex?: number,
     trackId?: string,
   ): Promise<void>;
-  playAlbum?(
+  playAlbum(
     id: string,
     source?: MusicSource,
     startIndex?: number,
     trackId?: string,
   ): Promise<void>;
-  resolveTrackNavigation?(track: Track): Promise<TrackNavigation>;
-  playConsecutive(): Promise<void>;
+  resolveTrackNavigation(track: Track): Promise<TrackNavigation>;
+  /** Saves the queue position and pending settings before Arlet quits. */
+  prepareToQuit(): Promise<void>;
+  /** Every queued song, including the rest of a long playlist still to come. */
+  fullQueue(): Track[];
   togglePlayback(): Promise<void>;
-  play?(): Promise<void>;
-  pause?(): Promise<void>;
-  setShuffleMode?(mode: "off" | "songs"): Promise<void>;
-  cycleRepeatMode?(): Promise<void>;
-  setRepeatMode?(mode: "off" | "all" | "one"): Promise<void>;
+  play(): Promise<void>;
+  pause(): Promise<void>;
+  setShuffleMode(mode: "off" | "songs"): Promise<void>;
+  cycleRepeatMode(): Promise<void>;
+  setRepeatMode(mode: "off" | "all" | "one"): Promise<void>;
   /** Pauses when the timer ends; in-memory only, cleared on sign-out. */
-  startSleepTimer?(option: SleepTimerOption): void;
-  cancelSleepTimer?(): void;
+  startSleepTimer(option: SleepTimerOption): void;
+  cancelSleepTimer(): void;
   previous(): Promise<void>;
   next(): Promise<void>;
   seek(seconds: number): Promise<void>;
@@ -268,10 +281,10 @@ export interface AppController {
   setWindowEffect(preference: WindowEffectPreference): Promise<void>;
   setAutoCheckUpdates(enabled: boolean): Promise<void>;
   /** Rejects when the runtime has no writable autoplay; saves only on success. */
-  setAutoplay?(enabled: boolean): Promise<void>;
-  setTrayIcon?(enabled: boolean): Promise<void>;
+  setAutoplay(enabled: boolean): Promise<void>;
+  setTrayIcon(enabled: boolean): Promise<void>;
   /** Saving it switches the native log file on or off at once. */
-  setDebugMode?(enabled: boolean): Promise<void>;
+  setDebugMode(enabled: boolean): Promise<void>;
   /** Turning this off deletes the saved queue. */
   setRestoreSession(enabled: boolean): Promise<void>;
   setUpdateChannel(channel: UpdateChannel): Promise<void>;
@@ -285,13 +298,40 @@ export interface AppController {
   openMusicDiagnostic(): Promise<string>;
   setDiagnosticsEnvironment(environment: GateEnvironment): void;
   /** Copies a redacted support report for bug reports (release builds). */
-  copyDiagnosticsReport?(): Promise<void>;
+  copyDiagnosticsReport(): Promise<void>;
+  /** Copies plain text through the same writer and timeout as the report. */
+  copyText(text: string): Promise<void>;
   log(message: string): void;
   dispose(): void;
-  readonly consecutiveTrackTarget: number;
 }
 
 export type { CreatePlaylistRequest } from "./playlist-editing.ts";
+
+/**
+ * Writes to the clipboard. Another app holding the clipboard can leave the
+ * write pending with no error, so a write still pending after the timeout
+ * fails with `busyMessage` instead of never settling.
+ */
+async function writeClipboardWithTimeout(
+  write: (text: string) => Promise<void>,
+  text: string,
+  busyMessage: string,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      write(text),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(busyMessage)),
+          CLIPBOARD_WRITE_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * Composition root for the app: owns MusicKit initialization, auth,
@@ -308,12 +348,8 @@ export function createAppController(
   const createLibraryClient =
     dependencies.createLibraryClient ?? createAppleMusicLibraryClient;
   let music: MusicKit.MusicKitInstance | null = null;
-  let volumeSaveQueue: Promise<void> = Promise.resolve();
-  let volumeSaveTimer: ReturnType<typeof setTimeout> | undefined;
-  let volumeSaveWaiters: Array<() => void> = [];
   let restoreAuthProbe: (() => void) | undefined;
   let stopMusicKitEvents: (() => void) | undefined;
-  let stopThemeWatcher: (() => void) | undefined;
 
   const log = (message: string): void => {
     const line = redactSensitive(`[${timestamp(now)}] ${message}`);
@@ -348,6 +384,10 @@ export function createAppController(
   const playback = createPlayback(context);
   const ratings = createRatings(context);
   const playlists = createPlaylistEditing(context, library);
+  const pinning = createControllerPins(context, {
+    invokeFn,
+    libraryClient: () => library.client(),
+  });
   const trackNavigation = createTrackNavigationResolver(requireMusic);
   const { requireLibrary, ensureLibraryCache, clearLibraryCache } = library;
   const collections = createCollectionPlayback({
@@ -392,6 +432,7 @@ export function createAppController(
     playTracks,
     seek: playback.seek,
     playIntent: playback.playIntent,
+    fullQueue: playback.fullQueue,
   });
   const updater =
     dependencies.updater ??
@@ -401,37 +442,15 @@ export function createAppController(
       now,
     });
 
-  const applyCurrentEffect = async (): Promise<void> => {
-    const settings = getState().settings;
-    const dark = darkModeForTheme(settings.theme);
-    const result = await applyWindowEffect(
-      settings.windowEffect,
-      dark,
-      invokeFn,
-    );
-    setWindowEffectState(result);
-    if (result.fallbackReason) {
-      log(`Window effect fallback: ${result.fallbackReason}`);
-    }
-  };
-
-  /**
-   * Every settings save goes through one queue and reads the settings when it
-   * runs, so an older snapshot can never land after a newer one.
-   */
-  const queueSettingsSave = (): Promise<void> => {
-    volumeSaveQueue = volumeSaveQueue
-      .then(() => savePersistedSettings(getState().settings, invokeFn))
-      .catch((error: unknown) => {
-        log(`Settings save failed: ${errorMessage(error)}`);
-      });
-    return volumeSaveQueue;
-  };
-
-  const persistSettings = async (settings: AppSettings): Promise<void> => {
-    setSettings(settings);
-    await queueSettingsSave();
-  };
+  const preferences = createControllerSettings(context, {
+    invokeFn,
+    playback,
+    playbackSession,
+    configureUpdater: (settings) => {
+      updater.configure(settings);
+    },
+    loadPins: () => pinning.reload(),
+  });
 
   const autoSkip = createAutoSkip({
     readPlayback: () => getState().playback,
@@ -456,28 +475,10 @@ export function createAppController(
     sleepTimer.observe(getState().playback),
   );
 
-  /** Pushes the saved autoplay preference to MusicKit once it is available. */
-  const applyAutoplaySetting = (instance: MusicKit.MusicKitInstance): void => {
-    playback.syncPlaybackModes(instance);
-    if (!getState().playback.modeCapabilities?.autoplay) return;
-    if (!setAutoplayEnabled(instance, getState().settings.autoplay)) {
-      log("Autoplay setting could not be applied in this MusicKit runtime.");
-    }
-    playback.syncPlaybackModes(instance);
-  };
-
-  /** Saves the latest settings once a volume drag settles. */
-  const flushVolumeSave = (): void => {
-    volumeSaveTimer = undefined;
-    const waiters = volumeSaveWaiters;
-    volumeSaveWaiters = [];
-    void queueSettingsSave().then(() => {
-      for (const resolve of waiters) resolve();
-    });
-  };
-
   /** Bumped on sign-in and sign-out; work started earlier must not land. */
   let accountGeneration = 0;
+  /** Sign-out work in progress, whose MusicKit auth events are our own. */
+  let accountTransitions = 0;
 
   /**
    * Cancels everything tied to the current account. Sign-in runs it too,
@@ -497,86 +498,63 @@ export function createAppController(
     trackNavigation.clear();
   };
 
-  const persistPins = async (
-    pins: readonly PinnedPlaylist[],
-  ): Promise<void> => {
-    try {
-      await savePersistedPins(pins, invokeFn);
-    } catch (error) {
-      log(`Pinned playlists save failed: ${safeErrorMessage(error)}`);
-    }
-  };
-
-  const reloadPins = async (): Promise<void> => {
-    setPins(await loadPersistedPins(invokeFn));
-    void resolvePinDetails();
-  };
-
-  let resolvingPins = false;
-  // A request that arrives mid-run (a new pin) runs once more afterwards.
-  let resolvePinsAgain = false;
   /**
-   * Saves each pin's name and artwork, so the sidebar can show a pinned
-   * playlist that is not in the loaded playlist list. Uses the loaded list
-   * when it has the playlist (also picking up renames) and asks Apple for the
-   * rest. Runs once at a time; needs a signed-in library.
+   * Local sign-out: drops the account's cached library, pins, and saved queue.
+   * It never calls Apple, so it also serves a session Apple already ended.
    */
-  const resolvePinDetails = async (): Promise<void> => {
-    if (resolvingPins) {
-      resolvePinsAgain = true;
-      return;
-    }
-    const client = library.client();
-    if (!client || getState().auth.status !== "authorized") return;
-    resolvingPins = true;
+  const clearSignedInData = async (): Promise<void> => {
+    await clearLibraryCache();
+    // Pins are local and not tied to an Apple ID; the next account to
+    // sign in on this PC must not see them.
+    await pinning.clearStored();
+    await playbackSession.clear();
+    // Recent searches belong to the signed-in account, so sign-out (and a
+    // revoked session) is what clears them; sign-in does not.
+    clearRecentSearches();
+    discovery.resetAccount();
+    resetState();
+    setPins([]);
+    setInitializationState({ status: "ready" });
+  };
+
+  /**
+   * Runs the local sign-out for a session MusicKit no longer authorizes. No
+   * request goes to Apple, since the session is already gone.
+   */
+  const endSessionFromMusicKit = async (
+    instance: MusicKit.MusicKitInstance,
+  ): Promise<void> => {
+    accountTransitions += 1;
     try {
-      const listed = getState().library.collections.playlists.items;
-      const updates = new Map<
-        string,
-        Pick<PinnedPlaylist, "name" | "artworkUrl">
-      >();
-      for (const pin of getState().pins) {
-        const known = listed.find((item) => item.id === pin.id) as
-          { name?: unknown; artwork?: { url?: unknown } } | undefined;
-        let name = typeof known?.name === "string" ? known.name : undefined;
-        let artworkUrl =
-          typeof known?.artwork?.url === "string"
-            ? known.artwork.url
-            : undefined;
-        if (!name && !pin.name) {
-          try {
-            const playlist = await client.getPlaylist(pin.id, pin.source);
-            name = playlist?.name;
-            artworkUrl = playlist?.artwork?.url;
-          } catch (error) {
-            log(`Pinned playlist lookup failed: ${safeErrorMessage(error)}`);
-          }
-        }
-        if (
-          (name && name !== pin.name) ||
-          (artworkUrl && artworkUrl !== pin.artworkUrl)
-        ) {
-          updates.set(pin.id, {
-            name: name ?? pin.name,
-            artworkUrl: artworkUrl ?? pin.artworkUrl,
-          });
-        }
+      resetAccountScope();
+      try {
+        instance.stop?.();
+      } catch (error) {
+        log(`Stop after revoked session failed: ${safeErrorMessage(error)}`);
       }
-      if (updates.size === 0) return;
-      // Pins may have changed during the lookups; apply to the latest list.
-      const next = getState().pins.map((pin) => {
-        const update = updates.get(pin.id);
-        return update ? { ...pin, ...update } : pin;
-      });
-      setPins(next);
-      await persistPins(next);
+      await clearSignedInData();
+      log("Apple Music reports the session is no longer authorized.");
+    } catch (error) {
+      log(`Local sign-out failed: ${safeErrorMessage(error)}`);
     } finally {
-      resolvingPins = false;
-      if (resolvePinsAgain) {
-        resolvePinsAgain = false;
-        void resolvePinDetails();
-      }
+      accountTransitions -= 1;
     }
+  };
+
+  /**
+   * MusicKit reports a revoked token or a sign-out from elsewhere. The app
+   * then runs its local sign-out and shows the signed-out UI. Our own sign-in
+   * and sign-out are ignored here because they update the state themselves.
+   * A sign-in from elsewhere is left to the sign-in flow.
+   */
+  const onMusicKitAuthorizationChange = (
+    instance: MusicKit.MusicKitInstance,
+  ): void => {
+    if (accountTransitions > 0 || getState().auth.pending) return;
+    if (typeof instance.isAuthorized !== "boolean") return;
+    if (isAuthorized(instance)) return;
+    if (getState().auth.status !== "authorized") return;
+    void endSessionFromMusicKit(instance);
   };
 
   const syncPlaybackDiagnostics = (): void => {
@@ -606,6 +584,9 @@ export function createAppController(
     playbackSession.start();
     setInitializationState({ status: "loading" });
     log("Initializing MusicKit…");
+    // Opens the SQLite cache during MusicKit configure. Nothing is shown from
+    // it here: the account is unknown until configure finishes.
+    void library.openLibraryCache();
     try {
       const instance = await initialize();
       music = instance;
@@ -643,14 +624,26 @@ export function createAppController(
           },
           undefined,
           () => playback.syncPlaybackModes(instance),
+          {
+            onAuthorizationChange: () =>
+              onMusicKitAuthorizationChange(instance),
+            onMusicVolumeChange: (volume) => {
+              if (!playback.reflectMusicVolume(volume)) return;
+              // Saved on the same debounce as a drag, so it survives a restart.
+              preferences.scheduleVolumeSave();
+            },
+          },
         );
         playback.syncPlaybackModes(instance);
       }
       syncMusicKitQueue(instance);
-      applyAutoplaySetting(instance);
+      preferences.applyAutoplaySetting(instance);
       restoreAuthProbe = installAuthPopupProbe(log);
       setInitializationState({ status: "ready" });
       log("MusicKit initialized successfully.");
+      // Saved recents with no signed-in account belong to a session that
+      // ended, so they are not carried into the next sign-in.
+      if (!isAuthorized(instance)) clearRecentSearches();
       if (isAuthorized(instance)) {
         setAuthState({ status: "authorized" });
         const cachePromise = ensureLibraryCache();
@@ -659,10 +652,13 @@ export function createAppController(
           ? normalizeTrack(instance.nowPlayingItem)
           : undefined;
         if (nowPlaying) setCurrentTrack(nowPlaying);
+        // The saved queue restores now rather than after the cache metadata
+        // read; it is applied only to this authorized account.
+        playbackSession.tryRestore();
         await cachePromise;
         if (storefront) setAccountSummary({ storefront });
         log("Already authorized from previous session.");
-        void resolvePinDetails();
+        void pinning.resolveDetails();
       }
       // Not awaited: a restored queue must never hold up the update check.
       playbackSession.tryRestore();
@@ -672,6 +668,12 @@ export function createAppController(
       const message = safeErrorMessage(error);
       setInitializationState({ status: "error", message });
       log(`MusicKit init failed: ${message}`);
+      // An expired embedded token is not a connection problem: show the
+      // update notice instead of an offline banner whose Reconnect never works.
+      if ((error as { code?: unknown } | null)?.code === "TOKEN_EXPIRED") {
+        setDeveloperTokenExpiry(now());
+        return;
+      }
       if (await library.enterOfflineMode()) {
         log("Showing the cached library offline.");
       }
@@ -681,30 +683,10 @@ export function createAppController(
   const controller: AppController = {
     initialize: initializeController,
 
-    async loadSettings(): Promise<void> {
-      const settings = await loadPersistedSettings(invokeFn);
-      setSettings(settings);
-      playbackSession.markSettingsLoaded();
-      playback.applyPlaybackVolume(settings.volume);
-      if (music) applyAutoplaySetting(music);
-      updater.configure(settings);
-      const effectPromise = applyCurrentEffect();
-      const pinsPromise = reloadPins();
-      stopThemeWatcher?.();
-      stopThemeWatcher = watchSystemTheme((dark) => {
-        if (getState().settings.theme === "system") {
-          void applyWindowEffect(
-            getState().settings.windowEffect,
-            dark,
-            invokeFn,
-          ).then(setWindowEffectState);
-        }
-      });
-      await Promise.all([effectPromise, pinsPromise]);
-    },
+    loadSettings: preferences.loadSettings,
 
     async loadPins(): Promise<void> {
-      await reloadPins();
+      await pinning.reload();
     },
 
     async authorize(): Promise<void> {
@@ -741,7 +723,7 @@ export function createAppController(
             `Library API unavailable after authorization: ${safeErrorMessage(error)}`,
           );
         }
-        await Promise.all([ensureLibraryCache(), reloadPins()]);
+        await Promise.all([ensureLibraryCache(), pinning.reload()]);
         const storefront = String(instance.storefrontId ?? "").trim();
         if (storefront) setAccountSummary({ storefront, connectedAt: now() });
         log("Authorization successful.");
@@ -754,57 +736,52 @@ export function createAppController(
       }
     },
 
-    async resetSettingsAndRestart(): Promise<void> {
-      // A debounced volume save would write the old settings back after the
-      // reset, so drop it and let any save already running finish first.
-      if (volumeSaveTimer !== undefined) {
-        clearTimeout(volumeSaveTimer);
-        volumeSaveTimer = undefined;
-      }
-      const waiters = volumeSaveWaiters;
-      volumeSaveWaiters = [];
-      for (const resolve of waiters) resolve();
-      await volumeSaveQueue;
-      log("Resetting settings to defaults and restarting.");
-      await resetPersistedSettings(invokeFn);
-    },
+    resetSettingsAndRestart: preferences.resetSettingsAndRestart,
 
     async signOut(): Promise<void> {
-      // Late responses from this account must not land after sign-out.
-      resetAccountScope();
+      accountTransitions += 1;
       try {
-        const instance = requireMusic();
-        // Sign-out resets the UI to idle; audio must not keep playing.
+        // Late responses from this account must not land after sign-out.
+        resetAccountScope();
         try {
-          instance.stop?.();
+          const instance = requireMusic();
+          // Sign-out resets the UI to idle; audio must not keep playing.
+          try {
+            instance.stop?.();
+          } catch (error) {
+            log(`Stop before sign-out failed: ${safeErrorMessage(error)}`);
+          }
+          await unauthorize(instance);
+          await clearSignedInData();
+          log("Signed out.");
         } catch (error) {
-          log(`Stop before sign-out failed: ${safeErrorMessage(error)}`);
+          const message = safeErrorMessage(error);
+          log(`Sign out failed: ${message}`);
+          throw error;
         }
-        await unauthorize(instance);
-        await clearLibraryCache();
-        // Pins are local and not tied to an Apple ID; the next account to
-        // sign in on this PC must not see them.
-        try {
-          await deletePersistedPins(invokeFn);
-        } catch (error) {
-          log(`Pinned playlists clear failed: ${safeErrorMessage(error)}`);
-        }
-        await playbackSession.clear();
-        discovery.resetAccount();
-        resetState();
-        setPins([]);
-        setInitializationState({ status: "ready" });
-        log("Signed out.");
-      } catch (error) {
-        const message = safeErrorMessage(error);
-        log(`Sign out failed: ${message}`);
-        throw error;
+      } finally {
+        accountTransitions -= 1;
       }
     },
 
-    loadLibrarySection: library.loadLibrarySection,
+    // An invalid cursor is treated as no more pages, so nothing is requested.
+    loadLibrarySection: (section, options) => {
+      if (options?.cursor === undefined) {
+        return library.loadLibrarySection(section, options);
+      }
+      const cursor = safeNextPath(options.cursor, ["/v1/me/"]);
+      return cursor
+        ? library.loadLibrarySection(section, { ...options, cursor })
+        : Promise.resolve();
+    },
 
-    loadMoreLibrarySection: library.loadMoreLibrarySection,
+    loadMoreLibrarySection: (section, cursor) => {
+      if (cursor === undefined) return library.loadMoreLibrarySection(section);
+      const next = safeNextPath(cursor, ["/v1/me/"]);
+      return next
+        ? library.loadMoreLibrarySection(section, next)
+        : Promise.resolve();
+    },
 
     refreshLibrarySection: library.refreshLibrarySection,
 
@@ -812,7 +789,20 @@ export function createAppController(
 
     loadBrowse: discovery.loadBrowse,
 
+    loadMoreBrowseShelf: discovery.loadMoreBrowseShelf,
+
     loadRadio: discovery.loadRadio,
+
+    loadRadioGenre: discovery.loadRadioGenre,
+    loadCurator: (id, kind) => loadCuratorPage(requireMusic(), id, kind),
+    loadMoreCuratorPlaylists: (next) => {
+      const cursor = safeNextPath(next, ["/v1/catalog/"]);
+      return cursor
+        ? loadCuratorPlaylistsPage(requireMusic(), cursor)
+        : Promise.resolve({ playlists: [] });
+    },
+    loadPlaylistCurator: (playlistId) =>
+      loadPlaylistCurator(requireMusic(), playlistId),
 
     playStation(station: Station): Promise<void> {
       collections.invalidate();
@@ -839,28 +829,9 @@ export function createAppController(
 
     loadPlaylistFolder: library.loadPlaylistFolder,
 
-    async togglePin(
-      id: string,
-      source: MusicSource = "library",
-    ): Promise<void> {
-      const trimmed = id.trim();
-      if (!trimmed) return;
-      const current = getState().pins;
-      const next = current.some((pin) => pin.id === trimmed)
-        ? current.filter((pin) => pin.id !== trimmed)
-        : [...current, { id: trimmed, source }].slice(0, MAX_PINS);
-      setPins(next);
-      await persistPins(next);
-      void resolvePinDetails();
-    },
+    togglePin: pinning.togglePin,
 
-    async unpin(id: string): Promise<void> {
-      const current = getState().pins;
-      if (!current.some((pin) => pin.id === id)) return;
-      const next = current.filter((pin) => pin.id !== id);
-      setPins(next);
-      await persistPins(next);
-    },
+    unpin: pinning.unpin,
 
     isPinned(id: string): boolean {
       return getState().pins.some((pin) => pin.id === id);
@@ -916,9 +887,13 @@ export function createAppController(
       return playback.removeQueueItem(index, trackId);
     },
 
-    moveQueueItem(from: number, to: number): Promise<QueueEditTier> {
+    moveQueueItem(
+      from: number,
+      to: number,
+      trackId?: string,
+    ): Promise<QueueEditTier> {
       collections.invalidate();
-      return playback.moveQueueItem(from, to);
+      return playback.moveQueueItem(from, to, trackId);
     },
 
     clearUpNext(): Promise<QueueEditTier> {
@@ -966,6 +941,8 @@ export function createAppController(
     setSearchSource: discovery.setSearchSource,
 
     search: discovery.search,
+    suggestSearch: discovery.suggestSearch,
+    loadMoreSearch: discovery.loadMoreSearch,
 
     async playFromSearch(index: number): Promise<void> {
       await playTracks(discovery.searchTracks().slice(Math.max(0, index)));
@@ -1028,15 +1005,15 @@ export function createAppController(
       playCollection("album", id, source, startIndex, { trackId }),
     resolveTrackNavigation: trackNavigation.resolve,
 
-    async playConsecutive(): Promise<void> {
-      const lastTracks = discovery.lastSearchTracks();
-      const tracks = lastTracks.length ? lastTracks : getState().search.results;
-      if (tracks.length < CONSECUTIVE_TRACK_TARGET) {
-        throw new Error(
-          `Need at least ${CONSECUTIVE_TRACK_TARGET} search results.`,
-        );
-      }
-      await playTracks(tracks.slice(0, CONSECUTIVE_TRACK_TARGET));
+    fullQueue: (): Track[] => playback.fullQueue().tracks,
+
+    async prepareToQuit(): Promise<void> {
+      // A volume change still waiting on its debounce is saved too.
+      preferences.flushPendingVolume();
+      await Promise.allSettled([
+        playbackSession.saveNow(),
+        preferences.saveQueue(),
+      ]);
     },
 
     async togglePlayback(): Promise<void> {
@@ -1087,57 +1064,19 @@ export function createAppController(
         .catch(() => undefined);
     },
 
-    async setVolume(volume: number): Promise<void> {
-      const safeVolume = playback.applyPlaybackVolume(volume);
-      setSettings({ ...getState().settings, volume: safeVolume });
-      // Slider input fires many times a second; the audio follows each one,
-      // but settings are written once the drag settles.
-      if (volumeSaveTimer !== undefined) clearTimeout(volumeSaveTimer);
-      volumeSaveTimer = setTimeout(flushVolumeSave, VOLUME_SAVE_DELAY_MS);
-      await new Promise<void>((resolve) => volumeSaveWaiters.push(resolve));
-    },
+    setVolume: preferences.setVolume,
 
-    async setTheme(theme: ThemePreference): Promise<void> {
-      await persistSettings({ ...getState().settings, theme });
-      await applyCurrentEffect();
-    },
+    setTheme: preferences.setTheme,
 
-    async setWindowEffect(preference: WindowEffectPreference): Promise<void> {
-      await persistSettings({
-        ...getState().settings,
-        windowEffect: preference,
-      });
-      await applyCurrentEffect();
-    },
+    setWindowEffect: preferences.setWindowEffect,
 
-    async setAutoCheckUpdates(enabled: boolean): Promise<void> {
-      const settings: AppSettings = {
-        ...getState().settings,
-        autoCheckUpdates: enabled,
-      };
-      setSettings(settings);
-      updater.configure(settings);
-      await persistSettings(settings);
-    },
+    setAutoCheckUpdates: preferences.setAutoCheckUpdates,
 
-    async setAutoplay(enabled: boolean): Promise<void> {
-      const instance = requireMusic();
-      if (!setAutoplayEnabled(instance, enabled)) {
-        playback.syncPlaybackModes(instance);
-        throw new Error("Autoplay is not available in this MusicKit runtime.");
-      }
-      playback.syncPlaybackModes(instance);
-      await persistSettings({ ...getState().settings, autoplay: enabled });
-    },
+    setAutoplay: preferences.setAutoplay,
 
-    async setTrayIcon(enabled: boolean): Promise<void> {
-      await persistSettings({ ...getState().settings, trayIcon: enabled });
-    },
+    setTrayIcon: preferences.setTrayIcon,
 
-    async setDebugMode(enabled: boolean): Promise<void> {
-      await persistSettings({ ...getState().settings, debugMode: enabled });
-      log(enabled ? "Debug Mode turned on." : "Debug Mode turned off.");
-    },
+    setDebugMode: preferences.setDebugMode,
 
     startSleepTimer(option: SleepTimerOption): void {
       sleepTimer.start(option);
@@ -1152,23 +1091,9 @@ export function createAppController(
       sleepTimer.cancel();
     },
 
-    async setRestoreSession(enabled: boolean): Promise<void> {
-      await persistSettings({
-        ...getState().settings,
-        restoreSession: enabled,
-      });
-      if (!enabled) await playbackSession.clear();
-    },
+    setRestoreSession: preferences.setRestoreSession,
 
-    async setUpdateChannel(channel: UpdateChannel): Promise<void> {
-      const settings: AppSettings = {
-        ...getState().settings,
-        updateChannel: channel,
-      };
-      setSettings(settings);
-      updater.configure(settings);
-      await persistSettings(settings);
-    },
+    setUpdateChannel: preferences.setUpdateChannel,
 
     startupUpdateCheck(): Promise<void> {
       return updater.startupCheck();
@@ -1182,7 +1107,15 @@ export function createAppController(
       updater.dismissPending();
     },
 
-    installUpdate(): Promise<void> {
+    async installUpdate(): Promise<void> {
+      // The Windows installer exits Arlet at once, without the quit
+      // handshake; save the queue and settings first, briefly.
+      await Promise.race([
+        controller.prepareToQuit(),
+        new Promise<void>((resolve) =>
+          setTimeout(resolve, QUIT_SAVE_TIMEOUT_MS),
+        ),
+      ]);
       return updater.installPending();
     },
 
@@ -1219,29 +1152,20 @@ export function createAppController(
       if (!diagnosticsStore) {
         throw new Error("Diagnostics are unavailable in this session.");
       }
-      const write = dependencies.writeClipboardText ?? writeText;
-      // Another app holding the clipboard can leave the write pending with no
-      // error; the button would then never confirm or fail.
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          write(createSupportReport(diagnosticsStore.getSnapshot())),
-          new Promise<never>((_, reject) => {
-            timer = setTimeout(
-              () =>
-                reject(
-                  new Error(
-                    "Couldn't copy the report: the clipboard is busy. Try again.",
-                  ),
-                ),
-              CLIPBOARD_WRITE_TIMEOUT_MS,
-            );
-          }),
-        ]);
-      } finally {
-        clearTimeout(timer);
-      }
+      await writeClipboardWithTimeout(
+        dependencies.writeClipboardText ?? writeText,
+        createSupportReport(diagnosticsStore.getSnapshot()),
+        "Couldn't copy the report: the clipboard is busy. Try again.",
+      );
       log("Diagnostics report copied to the clipboard.");
+    },
+
+    async copyText(text: string): Promise<void> {
+      await writeClipboardWithTimeout(
+        dependencies.writeClipboardText ?? writeText,
+        text,
+        "Couldn't copy: the clipboard is busy. Try again.",
+      );
     },
 
     log,
@@ -1253,20 +1177,14 @@ export function createAppController(
       stopSleepTimerPositions();
       sleepTimer.cancel();
       trackNavigation.clear();
-      if (volumeSaveTimer !== undefined) {
-        clearTimeout(volumeSaveTimer);
-        flushVolumeSave();
-      }
+      preferences.flushPendingVolume();
       stopMusicKitEvents?.();
       stopMusicKitEvents = undefined;
       restoreAuthProbe?.();
       restoreAuthProbe = undefined;
-      stopThemeWatcher?.();
-      stopThemeWatcher = undefined;
+      preferences.stopThemeWatching();
       updater.dispose();
     },
-
-    consecutiveTrackTarget: CONSECUTIVE_TRACK_TARGET,
   };
 
   // The settings defaults are intentionally stable if load is delayed/fails.

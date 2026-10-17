@@ -1,6 +1,7 @@
 import { LoaderCircle, Plus, Search, X } from "lucide-preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { JSX, TargetedEvent } from "preact";
+import type { AppController } from "../app/controller.ts";
 import { useAppController, useAppSlices } from "../app/context.tsx";
 import type { Track } from "../domain/music.ts";
 import {
@@ -24,19 +25,14 @@ interface DialogState {
   restoreFocus?: HTMLElement;
 }
 
-interface PlaylistController {
-  loadLibrarySection?: (
-    section: "playlists",
-    options?: { refresh?: boolean },
-  ) => Promise<unknown>;
-  searchPlaylists?: (query: string) => Promise<unknown[]>;
-  createPlaylist?: (...args: unknown[]) => Promise<unknown>;
-  addTracksToPlaylist?: (
-    playlistId: string,
-    tracks: readonly Track[],
-  ) => Promise<unknown>;
-  createPlaylistFolder?: (name: string) => Promise<unknown>;
-}
+type PlaylistController = Pick<
+  AppController,
+  | "loadLibrarySection"
+  | "searchPlaylists"
+  | "createPlaylist"
+  | "addTracksToPlaylist"
+  | "createPlaylistFolder"
+>;
 
 function recordValue(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object"
@@ -94,18 +90,16 @@ async function createPlaylistWithTracks(
   description: string,
   tracks: readonly Track[],
 ): Promise<void> {
-  const create = controller.createPlaylist;
-  if (!create) throw new Error("Playlist creation is not available.");
   const input = {
     name,
     description: description || undefined,
     tracks: tracks.length ? tracks : undefined,
   };
-  await create(input);
+  await controller.createPlaylist(input);
 }
 
 export function PlaylistDialogs(): JSX.Element | null {
-  const controller = useAppController() as PlaylistController;
+  const controller = useAppController();
   const state = useAppSlices("library");
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [query, setQuery] = useState("");
@@ -151,9 +145,9 @@ export function PlaylistDialogs(): JSX.Element | null {
       setError(undefined);
       setBusy(false);
       setLoadingPlaylists(detail.mode === "picker");
-      if (detail.mode === "picker" && controller.loadLibrarySection) {
+      if (detail.mode === "picker") {
         void Promise.resolve()
-          .then(() => controller.loadLibrarySection?.("playlists"))
+          .then(() => controller.loadLibrarySection("playlists"))
           .catch((reason: unknown) => {
             if (isOpenDialog(generation)) setError(errorMessage(reason));
           })
@@ -186,7 +180,8 @@ export function PlaylistDialogs(): JSX.Element | null {
     let active = true;
     setSearching(true);
     const timer = window.setTimeout(() => {
-      void (controller.searchPlaylists?.(trimmed) ?? Promise.resolve([]))
+      void controller
+        .searchPlaylists(trimmed)
         .then((values) => {
           if (!active) return;
           setResults(
@@ -251,7 +246,7 @@ export function PlaylistDialogs(): JSX.Element | null {
   closeDialogRef.current = closeDialog;
 
   const addToPlaylist = (playlist: PlaylistOption): void => {
-    if (!dialog?.tracks.length || !controller.addTracksToPlaylist) {
+    if (!dialog?.tracks.length) {
       closeDialog();
       return;
     }
@@ -279,10 +274,6 @@ export function PlaylistDialogs(): JSX.Element | null {
         setError("Folder name is required.");
         return;
       }
-      if (!controller.createPlaylistFolder) {
-        setError("Folder creation is not available.");
-        return;
-      }
       setBusy(true);
       setError(undefined);
       void controller
@@ -299,10 +290,6 @@ export function PlaylistDialogs(): JSX.Element | null {
     }
     if (!trimmed) {
       setError("Playlist name is required.");
-      return;
-    }
-    if (!controller.createPlaylist) {
-      setError("Playlist creation is not available.");
       return;
     }
     setBusy(true);

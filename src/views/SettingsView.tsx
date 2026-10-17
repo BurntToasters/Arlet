@@ -1,4 +1,5 @@
 import {
+  AlertCircle,
   Bug,
   Check,
   ClipboardCopy,
@@ -22,17 +23,107 @@ import {
 } from "lucide-preact";
 import type { JSX, TargetedEvent } from "preact";
 import { useEffect, useState } from "preact/hooks";
-import { useAppController, useAppState } from "../app/context.tsx";
+import {
+  useAppController,
+  useAppSelector,
+  useAppSlices,
+} from "../app/context.tsx";
 import { SHORTCUT_HELP } from "../app/shortcuts.ts";
-import { LicensesDialog } from "../components/LicensesDialog.tsx";
+import { lazyView } from "../components/lazy.tsx";
+import { EmptyState } from "./EmptyState.tsx";
 import { ResetSettingsDialog } from "../components/ResetSettingsDialog.tsx";
+import {
+  createTauriEnvironmentAdapter,
+  type NativeDiagnosticsInfo,
+} from "../diagnostics/native.ts";
 import type {
+  RuntimeAppState,
   ThemePreference,
   UpdateChannel,
   UpdateState,
   WindowEffectPreference,
 } from "../state.ts";
 import { reportActionError } from "../components/action-errors.ts";
+import { openAboutLink } from "../platform/support.ts";
+
+const PROJECT_URL = "https://github.com/BurntToasters/Arlet";
+const LICENSE_URL = `${PROJECT_URL}/blob/main/LICENSE`;
+
+interface LicensesDialogProps {
+  onClose: () => void;
+}
+
+// The licenses list is large and opened rarely, so its dialog is a separate
+// chunk. Loading and failure keep the dialog shell so Close still works.
+const LicensesDialogView = lazyView<LicensesDialogProps>(
+  () =>
+    import("../components/LicensesDialog.tsx").then(
+      (module) => module.LicensesDialog,
+    ),
+  {
+    name: "Licenses",
+    loading: ({ onClose }) => (
+      <div
+        className="playlist-dialog-backdrop"
+        role="presentation"
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget) onClose();
+        }}
+      >
+        <section
+          className="playlist-dialog licenses-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-busy="true"
+          aria-label="Open-source licenses"
+        >
+          <p className="licenses-intro" role="status">
+            Loading licenses…
+          </p>
+        </section>
+      </div>
+    ),
+    failed: (retry, { onClose }) => (
+      <div className="playlist-dialog-backdrop" role="presentation">
+        <section
+          className="playlist-dialog licenses-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Open-source licenses"
+        >
+          <EmptyState
+            compact
+            icon={AlertCircle}
+            title="Licenses couldn't be shown"
+            description="The license list didn't load. Try again, or close this dialog."
+            action={
+              <>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={retry}
+                >
+                  Try again
+                </button>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={onClose}
+                >
+                  Close
+                </button>
+              </>
+            }
+          />
+        </section>
+      </div>
+    ),
+  },
+);
+
+function releaseNotesUrl(version: string): string {
+  return `${PROJECT_URL}/releases/tag/v${version}`;
+}
 
 function updateStatusCopy(updates: UpdateState): string {
   switch (updates.status) {
@@ -66,9 +157,7 @@ function updateChannelDescription(channel: UpdateChannel): string {
   }
 }
 
-function initializationCopy(
-  status: ReturnType<typeof useAppState>["initialization"],
-): string {
+function initializationCopy(status: RuntimeAppState["initialization"]): string {
   switch (status.status) {
     case "ready":
       return "MusicKit is ready";
@@ -81,40 +170,48 @@ function initializationCopy(
   }
 }
 
-interface AccountSummaryLike {
-  displayName?: string;
-  name?: string;
-  storefront?: string;
-}
-
-function readAccountSummary(
-  state: ReturnType<typeof useAppState>,
-): AccountSummaryLike | undefined {
-  const value = (state as unknown as { account?: unknown }).account;
-  if (!value || typeof value !== "object") return undefined;
-  const candidate = value as Record<string, unknown>;
-  return {
-    displayName:
-      typeof candidate.displayName === "string"
-        ? candidate.displayName
-        : undefined,
-    name: typeof candidate.name === "string" ? candidate.name : undefined,
-    storefront:
-      typeof candidate.storefront === "string"
-        ? candidate.storefront
-        : undefined,
-  };
-}
-
 export function SettingsView(): JSX.Element {
-  const state = useAppState();
+  const state = useAppSlices(
+    "account",
+    "auth",
+    "initialization",
+    "settings",
+    "updates",
+    "windowEffect",
+  );
+  // Selected alone so volume drags, which change playback, do not re-render Settings.
+  const autoplayAvailable = useAppSelector(
+    (store) => store.playback.modeCapabilities?.autoplay,
+  );
   const controller = useAppController();
   const settings = state.settings;
   const authorized = state.auth.status === "authorized";
   const authorizationPending = state.auth.pending === true;
-  const account = readAccountSummary(state);
+  const account = state.account;
   const [licensesOpen, setLicensesOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
+  // undefined while loading, null when app info is unavailable (browser dev).
+  const [appInfo, setAppInfo] = useState<NativeDiagnosticsInfo | null>();
+  useEffect(() => {
+    let current = true;
+    void createTauriEnvironmentAdapter()()
+      .then((info) => {
+        if (current) setAppInfo(info);
+      })
+      .catch(() => {
+        if (current) setAppInfo(null);
+      });
+    return () => {
+      current = false;
+    };
+  }, []);
+  const appVersion =
+    appInfo?.version && appInfo.version !== "unknown"
+      ? appInfo.version
+      : undefined;
+  const versionCopy =
+    appVersion ?? (appInfo === undefined ? "Loading…" : "Unknown");
+  const channelInUse = `${state.updates.resolvedChannel === "beta" ? "Beta" : "Stable"}${settings.updateChannel === "auto" ? " (auto)" : ""}`;
   const [reportCopied, setReportCopied] = useState(false);
   useEffect(() => {
     if (!reportCopied) return undefined;
@@ -122,7 +219,7 @@ export function SettingsView(): JSX.Element {
     return () => window.clearTimeout(timer);
   }, [reportCopied]);
   const copyReport = (): void => {
-    void Promise.resolve(controller.copyDiagnosticsReport?.())
+    void Promise.resolve(controller.copyDiagnosticsReport())
       .then(() => setReportCopied(true))
       .catch(reportActionError);
   };
@@ -178,14 +275,12 @@ export function SettingsView(): JSX.Element {
             <div className="account-card-copy">
               <strong>
                 {authorized
-                  ? (account?.displayName ??
-                    account?.name ??
-                    "Apple Music connected")
+                  ? "Apple Music connected"
                   : "Apple Music not connected"}
               </strong>
               <span>
                 {initializationCopy(state.initialization)}
-                {authorized && account?.storefront
+                {authorized && account.storefront
                   ? ` · ${account.storefront} storefront`
                   : ""}
               </span>
@@ -354,7 +449,7 @@ export function SettingsView(): JSX.Element {
                 }
               />
             </label>
-            {state.playback.modeCapabilities?.autoplay ? (
+            {autoplayAvailable ? (
               <label className="settings-field settings-toggle-field">
                 <span>
                   <Play aria-hidden="true" size={16} strokeWidth={1.8} />{" "}
@@ -365,7 +460,7 @@ export function SettingsView(): JSX.Element {
                   checked={settings.autoplay}
                   onChange={(event) =>
                     void Promise.resolve(
-                      controller.setAutoplay?.(event.currentTarget.checked),
+                      controller.setAutoplay(event.currentTarget.checked),
                     ).catch(reportActionError)
                   }
                 />
@@ -455,7 +550,7 @@ export function SettingsView(): JSX.Element {
                 checked={settings.trayIcon}
                 onChange={(event) =>
                   void Promise.resolve(
-                    controller.setTrayIcon?.(event.currentTarget.checked),
+                    controller.setTrayIcon(event.currentTarget.checked),
                   ).catch(reportActionError)
                 }
               />
@@ -516,6 +611,74 @@ export function SettingsView(): JSX.Element {
               </div>
             ))}
           </dl>
+        </section>
+
+        <section className="settings-section" aria-labelledby="about-heading">
+          <div className="settings-section-heading">
+            <span className="settings-icon">
+              <Info aria-hidden="true" size={19} strokeWidth={1.8} />
+            </span>
+            <div>
+              <h2 id="about-heading">About</h2>
+              <p>Installed version, update channel, and project links.</p>
+            </div>
+          </div>
+          <div className="settings-fields">
+            <div className="settings-field">
+              <span>Arlet version</span>
+              <strong>{versionCopy}</strong>
+            </div>
+            <div className="settings-field">
+              <span>Update channel in use</span>
+              <strong>{channelInUse}</strong>
+            </div>
+            {appInfo?.webview_version ? (
+              <div className="settings-field">
+                <span>WebView2 runtime</span>
+                <strong>{appInfo.webview_version}</strong>
+              </div>
+            ) : null}
+            <button
+              className="settings-field about-link"
+              type="button"
+              onClick={() =>
+                void openAboutLink("project").catch(reportActionError)
+              }
+            >
+              <span>Project page</span>
+              <strong>{PROJECT_URL}</strong>
+              <ExternalLink aria-hidden="true" size={14} strokeWidth={1.8} />
+            </button>
+            <button
+              className="settings-field about-link"
+              type="button"
+              disabled={!appVersion}
+              onClick={() =>
+                void openAboutLink("release_notes").catch(reportActionError)
+              }
+            >
+              <span>Release notes</span>
+              <strong>
+                {appVersion
+                  ? releaseNotesUrl(appVersion)
+                  : appInfo === undefined
+                    ? "Loading…"
+                    : "Unavailable"}
+              </strong>
+              <ExternalLink aria-hidden="true" size={14} strokeWidth={1.8} />
+            </button>
+            <button
+              className="settings-field about-link"
+              type="button"
+              onClick={() =>
+                void openAboutLink("license").catch(reportActionError)
+              }
+            >
+              <span>License</span>
+              <strong>{LICENSE_URL}</strong>
+              <ExternalLink aria-hidden="true" size={14} strokeWidth={1.8} />
+            </button>
+          </div>
         </section>
 
         <section className="settings-section" aria-labelledby="support-heading">
@@ -599,7 +762,7 @@ export function SettingsView(): JSX.Element {
                 checked={settings.debugMode}
                 onChange={(event) =>
                   void Promise.resolve(
-                    controller.setDebugMode?.(event.currentTarget.checked),
+                    controller.setDebugMode(event.currentTarget.checked),
                   ).catch(reportActionError)
                 }
               />
@@ -644,7 +807,7 @@ export function SettingsView(): JSX.Element {
         ) : null}
       </div>
       {licensesOpen ? (
-        <LicensesDialog onClose={() => setLicensesOpen(false)} />
+        <LicensesDialogView onClose={() => setLicensesOpen(false)} />
       ) : null}
       {resetOpen ? (
         <ResetSettingsDialog

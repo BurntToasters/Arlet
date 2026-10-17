@@ -1,29 +1,28 @@
-import {
-  CircleAlert,
-  Heart,
-  ListMusic,
-  Repeat,
-  Shuffle,
-  Volume2,
-  VolumeX,
-} from "lucide-preact";
+import { CircleAlert, Heart, ListMusic, Repeat, Shuffle } from "lucide-preact";
 import type { JSX } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import {
   useAppController,
   useAppRouter,
+  useAppSelector,
   useAppSlices,
 } from "../app/context.tsx";
 import { safeErrorMessage } from "../app/controller-support.ts";
 import { ratingKeyOf, trackRatingTarget } from "../app/ratings.ts";
 import type { AppErrorCode } from "../domain/errors.ts";
 import type { Track } from "../domain/music.ts";
+import {
+  useLiveMetadata,
+  type LiveMetadata,
+} from "../musickit/live-metadata.ts";
 import type { TrackNavigation } from "../musickit/song-navigation.ts";
 import { setUiState } from "../state.ts";
 import { Artwork } from "./Artwork.tsx";
 import { IconButton } from "./IconButton.tsx";
 import { SleepTimerButton } from "./SleepTimerButton.tsx";
+import { VolumeControl } from "./VolumeControl.tsx";
 import { reportActionError } from "./action-errors.ts";
+import { useSerializedContextRefs } from "./context-refs.ts";
 import { PlaybackProgress, TransportControls } from "./TransportControls.tsx";
 import { displayArtistLinks } from "./artist-links.ts";
 
@@ -52,21 +51,41 @@ export function playerErrorLabel(code: AppErrorCode): string {
   }
 }
 
+/**
+ * Subtitle for a live station: its program text as plain text, or the station
+ * name while the stream has not reported any.
+ */
+export function liveSubtitle(
+  metadata: LiveMetadata | undefined,
+  stationName: string,
+): string {
+  const text = metadata
+    ? [metadata.title, metadata.artist].filter(Boolean).join(" · ")
+    : "";
+  return text || stationName;
+}
+
 export function PlayerBar(): JSX.Element {
-  const state = useAppSlices("initialization", "playback", "ratings", "ui");
+  const state = useAppSlices("initialization", "playback");
+  const queueOpen = useAppSelector((store) => store.ui.queueOpen);
   const controller = useAppController();
   const router = useAppRouter();
   const playback = state.playback;
   const current = playback.current;
   const playing = playback.status === "playing";
   const loading = playback.status === "loading";
-  const muted = playback.muted === true;
-  const shownVolume = muted ? 0 : playback.volume;
   const canControl =
     state.initialization.status === "ready" && Boolean(current);
   const loveTarget = current ? trackRatingTarget(current) : undefined;
   const loveKey = loveTarget ? ratingKeyOf(loveTarget) : undefined;
-  const loved = loveKey !== undefined && state.ratings[loveKey] === 1;
+  // Only the playing track's rating, so other ratings do not re-render the bar.
+  const loved = useAppSelector(
+    (store) => loveKey !== undefined && store.ratings[loveKey] === 1,
+  );
+  const live = useLiveMetadata();
+  const liveText = current?.isLive
+    ? liveSubtitle(live, current.title)
+    : undefined;
   const [resolvedNavigation, setResolvedNavigation] = useState<{
     track: Track;
     value: TrackNavigation;
@@ -129,6 +148,7 @@ export function PlayerBar(): JSX.Element {
           album: current?.albumRef,
           artists: current?.artistRefs ?? [],
         };
+  const refs = useSerializedContextRefs(navigation.album, navigation.artists);
 
   const artistLinks = displayArtistLinks(
     navigation.artists,
@@ -161,14 +181,9 @@ export function PlayerBar(): JSX.Element {
         data-context-album={current?.albumTitle}
         data-context-resource-type={current?.resourceType}
         data-context-catalog-id={current?.catalogId}
-        data-context-album-ref={
-          navigation.album ? JSON.stringify(navigation.album) : undefined
-        }
-        data-context-artist-refs={
-          navigation.artists.length
-            ? JSON.stringify(navigation.artists)
-            : undefined
-        }
+        data-context-catalog-url={current?.catalogUrl}
+        data-context-album-ref={refs.album}
+        data-context-artist-refs={refs.artists}
       >
         <button
           className="player-artwork-button"
@@ -201,7 +216,15 @@ export function PlayerBar(): JSX.Element {
             )}
           </strong>
           <div className="player-track-links">
-            {artistLinks.length ? (
+            {liveText !== undefined ? (
+              <span
+                className="live-metadata-text"
+                aria-live="polite"
+                title={liveText}
+              >
+                {liveText}
+              </span>
+            ) : artistLinks.length ? (
               artistLinks.map((artist, index) => (
                 <span
                   className="player-track-link-group"
@@ -238,7 +261,11 @@ export function PlayerBar(): JSX.Element {
             }
           />
         ) : null}
-        {current?.explicit ? <span className="explicit-badge">E</span> : null}
+        {current?.explicit ? (
+          <span className="explicit-badge" role="img" aria-label="Explicit">
+            E
+          </span>
+        ) : null}
       </div>
 
       <div className="player-center">
@@ -265,7 +292,7 @@ export function PlayerBar(): JSX.Element {
             className={playback.shuffleMode === "songs" ? "is-active" : ""}
             onClick={() =>
               void Promise.resolve(
-                controller.setShuffleMode?.(
+                controller.setShuffleMode(
                   playback.shuffleMode === "songs" ? "off" : "songs",
                 ),
               ).catch(reportActionError)
@@ -279,7 +306,7 @@ export function PlayerBar(): JSX.Element {
             pressed={playback.repeatMode !== "off"}
             className={playback.repeatMode !== "off" ? "is-active" : ""}
             onClick={() =>
-              void Promise.resolve(controller.cycleRepeatMode?.()).catch(
+              void Promise.resolve(controller.cycleRepeatMode()).catch(
                 reportActionError,
               )
             }
@@ -292,38 +319,12 @@ export function PlayerBar(): JSX.Element {
             <span>{playerErrorLabel(playback.error.code)}</span>
           </span>
         ) : null}
-        <div className="volume-control">
-          <button
-            className="volume-mute-button"
-            type="button"
-            aria-label={muted ? "Unmute" : "Mute"}
-            aria-pressed={muted}
-            onClick={controller.toggleMute}
-          >
-            {muted || playback.volume === 0 ? (
-              <VolumeX aria-hidden="true" size={16} strokeWidth={1.8} />
-            ) : (
-              <Volume2 aria-hidden="true" size={16} strokeWidth={1.8} />
-            )}
-          </button>
-          <input
-            aria-label="Volume"
-            type="range"
-            min="0"
-            max="1"
-            step="0.01"
-            value={shownVolume}
-            style={{ "--range-progress": `${shownVolume * 100}%` }}
-            onInput={(event) => {
-              void controller.setVolume(Number(event.currentTarget.value));
-            }}
-          />
-        </div>
+        <VolumeControl />
         <IconButton
           icon={ListMusic}
           label="Toggle Playing Next"
-          pressed={state.ui.queueOpen}
-          className={state.ui.queueOpen ? "is-active" : ""}
+          pressed={queueOpen}
+          className={queueOpen ? "is-active" : ""}
           onClick={controller.toggleQueue}
         />
       </div>

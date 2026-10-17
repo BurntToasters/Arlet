@@ -44,14 +44,14 @@ export interface InitializeApplicationOptions {
 async function logNativeDiagnostics(controller: AppController): Promise<void> {
   try {
     const info = await invoke<NativeDiagnostics>("get_app_info");
-    controller.setDiagnosticsEnvironment?.(mapNativeDiagnostics(info));
+    controller.setDiagnosticsEnvironment(mapNativeDiagnostics(info));
     controller.log(
       `App ${info.version} / Tauri ${info.tauri_version} / ${info.os}-${info.arch} / ` +
         `WebView2 ${info.webview_version ?? "unknown"} / Windows ${info.windows_build ?? "unknown"} / ` +
         `${info.debug ? "debug" : "release"}`,
     );
   } catch {
-    controller.setDiagnosticsEnvironment?.(fallbackDiagnosticsEnvironment());
+    controller.setDiagnosticsEnvironment(fallbackDiagnosticsEnvironment());
     controller.log(
       "Running outside the Tauri shell; native diagnostics unavailable.",
     );

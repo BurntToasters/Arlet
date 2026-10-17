@@ -39,17 +39,63 @@ export function useAppController(): AppController {
   return controller;
 }
 
-export function useAppState(): Readonly<RuntimeAppState> {
-  const [, setVersion] = useState(0);
-  useEffect(() => subscribe(() => setVersion((version) => version + 1)), []);
-  return getState();
+/** Shallow equality: same own keys, each value compared with `Object.is`. */
+export function shallowEqual<T>(previous: T, next: T): boolean {
+  if (Object.is(previous, next)) return true;
+  if (
+    typeof previous !== "object" ||
+    typeof next !== "object" ||
+    previous === null ||
+    next === null
+  ) {
+    return false;
+  }
+  const before = previous as Record<string, unknown>;
+  const after = next as Record<string, unknown>;
+  const keys = Object.keys(before);
+  if (keys.length !== Object.keys(after).length) return false;
+  return keys.every(
+    (key) =>
+      Object.prototype.hasOwnProperty.call(after, key) &&
+      Object.is(before[key], after[key]),
+  );
+}
+
+/**
+ * Position ticks replace `playback` with a new object, so the playback slice
+ * is compared without `positionSeconds` and `durationSeconds`. Readers of
+ * those fields use `usePlaybackPosition`; see `setPlaybackPosition`.
+ */
+function playbackSliceEqual(
+  previous: RuntimeAppState["playback"],
+  next: RuntimeAppState["playback"],
+): boolean {
+  return shallowEqual(
+    { ...previous, positionSeconds: 0, durationSeconds: 0 },
+    { ...next, positionSeconds: 0, durationSeconds: 0 },
+  );
+}
+
+function sliceChanged<K extends keyof RuntimeAppState>(
+  key: K,
+  previous: RuntimeAppState[K],
+  next: RuntimeAppState[K],
+): boolean {
+  if (key === "playback") {
+    return !playbackSliceEqual(
+      previous as RuntimeAppState["playback"],
+      next as RuntimeAppState["playback"],
+    );
+  }
+  return !Object.is(previous, next);
 }
 
 /**
  * Subscribes to named top-level slices only. A component re-renders when one
- * of its slices changes, not on every store update. The result is a `Pick`,
- * so reading a slice that was not requested fails to type-check; prefer this
- * over `useAppState` in components that stay mounted.
+ * of its slices changes, not on every store update, and a playback position
+ * tick is not a `playback` change. The result is a `Pick`, so reading a slice
+ * that was not requested fails to type-check; prefer this over subscribing to
+ * the whole store.
  */
 export function useAppSlices<K extends keyof RuntimeAppState>(
   ...keys: K[]
@@ -62,7 +108,10 @@ export function useAppSlices<K extends keyof RuntimeAppState>(
     const check = (): void => {
       const seen = seenRef.current;
       const state = getState();
-      if (!seen || keysRef.current.some((key) => seen[key] !== state[key])) {
+      if (
+        !seen ||
+        keysRef.current.some((key) => sliceChanged(key, seen[key], state[key]))
+      ) {
         setVersion((version) => version + 1);
       }
     };
@@ -76,6 +125,39 @@ export function useAppSlices<K extends keyof RuntimeAppState>(
   for (const key of keys) slices[key] = state[key];
   seenRef.current = slices;
   return slices;
+}
+
+/**
+ * Subscribes to one derived value and re-renders only when `equal` says it
+ * changed. Use it for a single field, e.g. `useAppSelector((state) => state.ui.queueOpen)`.
+ */
+export function useAppSelector<T>(
+  selector: (state: Readonly<RuntimeAppState>) => T,
+  equal: (previous: T, next: T) => boolean = Object.is,
+): T {
+  const [, setVersion] = useState(0);
+  // The selector and equality may close over props; refs keep the single
+  // subscription pointing at the latest ones.
+  const selectorRef = useRef(selector);
+  const equalRef = useRef(equal);
+  selectorRef.current = selector;
+  equalRef.current = equal;
+  const selected = selector(getState());
+  const seenRef = useRef(selected);
+  seenRef.current = selected;
+  useEffect(() => {
+    const check = (): void => {
+      const next = selectorRef.current(getState());
+      if (!equalRef.current(seenRef.current, next)) {
+        setVersion((version) => version + 1);
+      }
+    };
+    const unsubscribe = subscribe(check);
+    // An update between render and subscribing would otherwise be missed.
+    check();
+    return unsubscribe;
+  }, []);
+  return selected;
 }
 
 export interface PlaybackPosition {

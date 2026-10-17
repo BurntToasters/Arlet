@@ -44,13 +44,27 @@
 }
 
 .artist-top-songs h2,
-.artist-albums h2 {
+.artist-albums h2,
+.artist-shelf h2,
+.album-shelf h2 {
   margin: 0 0 10px;
   font-size: 1.05rem;
 }
 
-.artist-albums {
+.artist-albums,
+.artist-shelf,
+.album-shelf {
   margin-bottom: 24px;
+}
+
+/* The newest release leads the artist page, a little wider than a card. */
+.library-card.artist-featured-card {
+  max-width: 360px;
+}
+
+/* Similar artists are round, like their portraits on the artist page. */
+.artwork.artist-card-art {
+  border-radius: 50%;
 }
 
 /* Wide windows: Top Songs in two columns, like Apple Music's artist page. */
@@ -84,6 +98,18 @@
   object-fit: cover;
   filter: blur(42px) saturate(1.25);
   opacity: 0.6;
+  pointer-events: none;
+}
+
+/* Apple's editorial banner replaces the blurred portrait behind the header. */
+.artist-hero-banner {
+  position: absolute;
+  z-index: -2;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.85;
   pointer-events: none;
 }
 
@@ -196,13 +222,6 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
-}
-
-/* A large library loads thousands of cards; the browser skips layout and
-   paint for those off screen. The size hint keeps the scrollbar steady. */
-.library-card-grid > .library-card {
-  content-visibility: auto;
-  contain-intrinsic-size: auto 240px;
 }
 
 .library-card {
@@ -384,7 +403,118 @@
 
 .library-detail-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-top: 16px;
+}
+
+/* Pressed Love reads as active, like the player's toggle buttons. */
+.library-detail-actions .secondary-button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong));
+  background: var(--surface-active);
+  color: var(--accent-strong);
+}
+
+.library-detail-copy .library-detail-meta {
+  margin: 6px 0 0;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+/* Collapsed "More" notes under the header; they do not stretch the hero. */
+.library-detail-more {
+  margin: -12px 0 22px;
+  padding: 0 4px;
+}
+
+.library-detail-more-toggle {
+  display: inline-flex;
+  min-height: 30px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px 0 6px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 650;
+  transition: background var(--duration-fast) var(--ease-standard);
+}
+
+.library-detail-more-toggle:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.library-detail-more-toggle svg {
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.library-detail-more-toggle[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+.library-detail-more-body {
+  display: grid;
+  max-width: 720px;
+  gap: 12px;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.library-detail-more-body[hidden] {
+  display: none;
+}
+
+/* Apple's line breaks survive; the text is plain, never HTML. */
+.library-detail-notes {
+  margin: 0;
+  white-space: pre-line;
+}
+
+.library-detail-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 14px;
+  margin: 0;
+}
+
+.library-detail-facts dt {
+  color: var(--text-faint);
+}
+
+.library-detail-facts dd {
+  margin: 0;
+  color: var(--text);
+}
+
+/* Multi-disc albums: one heading and one list per disc. */
+.library-disc-groups {
+  display: grid;
+  gap: 20px;
+}
+
+.library-disc-heading {
+  margin: 0 0 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+@media (max-width: 720px) {
+  .library-detail-hero {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .library-detail-copy {
+    width: 100%;
+  }
+
+  .library-detail-copy h1 {
+    white-space: normal;
+  }
 }

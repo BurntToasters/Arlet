@@ -2,7 +2,7 @@
 
 | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                                          | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
 | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.1/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.1/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.2/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.2/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -18,6 +18,48 @@
 ### ℹ️ Enjoying Arlet? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
+
+## Changes in `v0.3.0-beta.2:`
+
+- **Improvement - Faster rendering:** Long lists, such as the library grid, the Up Next queue, and long song lists, only draw the rows you can see, so they stay smooth with large libraries. Playback progress no longer redraws the whole window.
+- **Improvement - Sized artwork:** Artwork is requested at the size it's shown, so small covers download less and large ones stay sharp.
+- **Improvement - Faster cache:** The library cache starts without waiting on maintenance, which now runs in the background.
+- **Improvement - Fewer Apple requests:** Ratings for the songs, albums, and playlists on screen are requested together, and song details already on hand are reused instead of looked up again.
+- **Improvement - Smaller startup:** Settings, Browse, Radio, curator pages, and release notes load when you first open them, so Arlet has less to load at startup.
+- **NEW - Artist shelves:** Artist pages add shelves for `Latest Release`, `Singles & EPs`, `Live Albums`, and `Compilations`, next to `Top Songs` and `Albums`.
+- **NEW - Album shelves:** Album pages show shelves of more music from the same source.
+- **NEW - Search suggestions:** Search suggests matches as you type, lists your recent searches, and shows a top result. Each group of results has a `See all` button that loads more.
+- **NEW - Browse charts and genres:** Browse lists genres, and its charts include city and daily charts. Each chart has a `Load more` button.
+- **NEW - Radio genres:** Radio lists station genres, and live stations show their current song and other live text.
+- **NEW - Curator pages:** Curators and Apple's editorial curators have their own pages, with their playlists grouped under their titles.
+- **Improvement - Home:** Home shows richer resources from Apple Music.
+- **Fix - Changes made in Apple Music:** When Apple Music signs out, changes the volume, or reports a different song length, Arlet follows it, so the player and Now Playing stay correct.
+- **Improvement - Album and artist details:** Detail pages show the runtime and year, and albums with several discs are grouped by disc.
+- **Improvement - Card actions:** Cards have a `...` button for their menu, and `Copy Apple Music link` copies the link to an item.
+- **Improvement - Loading:** Pages show placeholder shapes while they load, so the layout doesn't jump when the content arrives.
+- **Improvement - Now Playing:** Now Playing has a tint taken from the artwork's colors, clearer controls, and a fullscreen view.
+- **Improvement - Success messages:** Actions that succeed, such as `Add to Library`, now show a short confirmation.
+- **Improvement - About:** Settings → About has links to the project page, the release notes, and the license, opened in your browser.
+- **Improvement - Keyboard and screen readers:** Menus, search suggestions, the volume slider, and cards are easier to use with the keyboard and with screen readers.
+- **Fix - Paging:** Arlet only follows Apple's next-page links that point at Apple Music, so a malformed reply can't send requests somewhere else.
+- **Fix - Saving the library cache:** A cache save that is interrupted no longer leaves half-written data behind.
+- **Fix - Opening links:** Links from Settings open in your browser without freezing the window.
+- **Testing:** End-to-end tests now check that long lists draw only what's visible, that artwork is sized to its place, that ratings are requested together, that the lazy views load on first use, that the artist and album shelves, search suggestions, `See all`, Browse charts and genres, Radio genres, and curator pages work, that Apple Music sign-out, volume, and song length changes are followed, that card actions, skeletons, Now Playing, success messages, and the About links behave, that paging rejects links outside Apple Music, and that old test run folders are cleaned up.
+- **Fix - Quitting:** Quitting Arlet while a song plays, from the tray or by closing the window with the tray off, now saves where you were. Before, up to the last 30 seconds could be lost.
+- **Fix - Playing Next:** Moving a song up or down moves the song you picked, even if the queue changed a moment before.
+- **Improvement - Faster starts:** Songs that are only in your library (such as uploads) now start as quickly as other songs. If Apple Music can't start a song from the details Arlet sends, Arlet retries the usual way once instead of showing an error.
+- **Fix - Songs Apple Music removed:** If a song can't start from its details and Apple Music no longer has it, Arlet skips it (or plays your library copy) instead of failing the whole Play.
+- **Fix - Resuming after a restart:** A long playlist now resumes in full after you restart Arlet. Before, it stopped about 100 songs later. Restored songs also keep their explicit rating.
+- **Fix - Media keys:** The keyboard's Previous key and the Windows media controls now work on the first song you play, like the Previous button in Arlet. Next stays available while more songs of a long playlist are still to be added.
+- **Fix - Save as playlist:** `Save as playlist` in `Playing Next` now saves every song of a long playlist, including the ones not yet added to the queue.
+- **Fix - Updates and Reset:** Installing an update or resetting settings now saves where you were first, as quitting does.
+- **Fix - Expired versions:** A version of Arlet whose Apple Music access has expired now says to install the latest update, instead of saying you're offline.
+- **Fix - Quitting:** With the tray icon off, closing the window now hides it at once while Arlet saves and quits.
+- **Fix - Windows media controls:** The media overlay no longer stays out of date after a failed update, and the tray's `Play/Pause` plays again after playback has stopped.
+- **Improvement - Crash records:** If Windows' web view crashes, a short note is now saved in the log even with `Debug Mode` off, so the problem can be found.
+- **Improvement - Fewer requests:** Songs added to the queue in the background, and with `Play Next` or `Play Later`, are sent with their details, so Apple Music no longer looks each one up.
+- **Release:** A release now needs a developer token with at least 150 days left, so it never expires before the weekly reminder to ship a new release.
+- **Testing:** End-to-end tests now check that quitting saves the latest position, that library-only songs are queued as library songs, that a song Apple Music can't start from its details plays after one retry (or is skipped when Apple Music no longer has it), that a web view crash is logged, that the saved session and `Save as playlist` hold the whole playlist, that restored songs keep their explicit rating, that background additions send song details, that Windows offers Previous on the first song, and that an expired version shows the update notice.
 
 ## Changes in `v0.3.0-beta.1:`
 

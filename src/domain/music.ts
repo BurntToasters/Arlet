@@ -68,6 +68,8 @@ export interface Artwork {
   url: string;
   width: number;
   height: number;
+  /** Apple's dominant color: six lowercase hex digits, no '#'. Absent when unknown. */
+  bgColor?: string;
 }
 
 export interface Track {
@@ -83,12 +85,18 @@ export interface Track {
   catalogUrl?: string;
   /** Apple resource type. Optional to keep existing local/catalog callers valid. */
   resourceType?: MusicResourceType;
+  /** Live or station item from MusicKit; absent for every other track. */
+  isLive?: boolean;
   /** Catalog ID for a library resource whose playback ID differs. */
   catalogId?: MusicId;
   /** Whether Apple reports this resource as playable. */
   playable?: boolean;
   /** Whether this resource can be appended to an Apple Music playlist. */
   addable?: boolean;
+  /** Disc the song sits on in its album, from Apple. */
+  discNumber?: number;
+  /** Position on its disc, from Apple. */
+  trackNumber?: number;
 }
 
 export interface Album {
@@ -103,6 +111,24 @@ export interface Album {
   source?: MusicSource;
   catalogId?: MusicId;
   playable?: boolean;
+  /** Plain-text editorial notes; Apple's HTML tags are removed. */
+  editorialNotes?: string;
+  recordLabel?: string;
+  copyright?: string;
+  genreNames?: string[];
+  isSingle?: boolean;
+  isCompilation?: boolean;
+  /** Apple Music web link from Apple; the context menu validates it on use. */
+  catalogUrl?: string;
+  /** Catalog shelves from the album page's views request; absent when not loaded. */
+  shelves?: AlbumShelves;
+}
+
+/** Album page shelves, each present only when Apple returned its view. */
+export interface AlbumShelves {
+  moreByArtist?: Album[];
+  otherVersions?: Album[];
+  relatedAlbums?: Album[];
 }
 
 export interface Artist {
@@ -112,6 +138,26 @@ export interface Artist {
   albumCount?: number;
   resourceType?: MusicResourceType;
   catalogId?: MusicId;
+  /** Apple Music web link from Apple; the context menu validates it on use. */
+  catalogUrl?: string;
+  /** Plain-text editorial notes; Apple's HTML tags are removed. */
+  editorialNotes?: string;
+  /** Wide editorial banner (`bannerUber`, else `storeFlowcase`), when Apple has one. */
+  editorialBanner?: Artwork;
+  /** Catalog shelves from the artist page's views request; absent on older rows. */
+  shelves?: ArtistShelves;
+}
+
+/** Artist page shelves, each present only when Apple returned its view. */
+export interface ArtistShelves {
+  latestRelease?: Album[];
+  topSongs?: Track[];
+  singles?: Album[];
+  liveAlbums?: Album[];
+  compilations?: Album[];
+  appearsOn?: Album[];
+  playlists?: Playlist[];
+  similarArtists?: Artist[];
 }
 
 export interface Playlist {
@@ -127,6 +173,10 @@ export interface Playlist {
   source?: MusicSource;
   /** Parent folder when the playlist was loaded through a folder relationship. */
   parentId?: MusicId;
+  /** Apple's curator for a catalog playlist. */
+  curatorName?: string;
+  /** Apple Music web link from Apple; the context menu validates it on use. */
+  catalogUrl?: string;
 }
 
 export interface PlaylistFolder {

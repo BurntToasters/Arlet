@@ -1,6 +1,6 @@
 {
   "name": "arlet",
-  "version": "0.3.0-beta.1",
+  "version": "0.3.0-beta.2",
   "license": "GPL-3.0-only",
   "private": true,
   "packageManager": "npm@12.0.2",
@@ -69,7 +69,8 @@
     "vi": "node scripts/vi.js",
     "b": "git fetch origin && git switch -C beta origin/beta && npm run vi",
     "r": "git fetch origin && git switch -C main origin/main && npm run vi && npm run gitprune:force",
-    "u": "node scripts/npm-safe-update.mjs && node scripts/cargo-safe-update.mjs --manifest-path src-tauri/Cargo.toml && node scripts/sync-version.js",
+    "u": "node scripts/npm-safe-update.mjs && node scripts/cargo-safe-update.mjs --manifest-path src-tauri/Cargo.toml && node scripts/sync-version.js && npm run check:tauri-alignment",
+    "check:tauri-alignment": "node scripts/check-tauri-alignment.mjs",
     "win-compiler:x64": "powershell -NoProfile -ExecutionPolicy Bypass -NoExit -File scripts/launch-vs-devshell.ps1 -Arch x64",
     "win-compiler:arm64": "powershell -NoProfile -ExecutionPolicy Bypass -NoExit -File scripts/launch-vs-devshell.ps1 -Arch arm64",
     "setup:win:artifact-signing": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-windows-artifact-signing.ps1",

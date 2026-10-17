@@ -60,6 +60,7 @@ fn main() {
         "get_developer_token",
         "get_beta_updater_target",
         "open_support_page",
+        "open_about_link",
         "open_music_diagnostic",
         "load_settings",
         "save_settings",
@@ -86,6 +87,7 @@ fn main() {
         "update_windows_media_session",
         "update_windows_media_timeline",
         "clear_windows_media_session",
+        "quit_ready",
     ];
     tauri_build::try_build(
         tauri_build::Attributes::new()

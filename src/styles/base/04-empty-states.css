@@ -38,6 +38,10 @@
   font-size: 17px;
   letter-spacing: -0.02em;
 }
+/* RouteView focuses this heading after navigation; it is not a control. */
+.empty-state h2:focus {
+  outline: none;
+}
 .empty-state p {
   max-width: 410px;
   margin: 0;

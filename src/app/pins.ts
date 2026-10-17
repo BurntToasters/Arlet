@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { z } from "zod";
+import * as z from "zod/mini";
 import type { PinnedPlaylist } from "../domain/music.ts";
 import {
   deletePinsPayload,
@@ -16,22 +16,26 @@ export const MAX_PINS = 100;
 const MAX_PIN_NAME_LENGTH = 300;
 
 const pinSchema = z.object({
-  id: z.string().min(1),
-  source: z.enum(["library", "catalog"]).default("library"),
+  id: z.string().check(z.minLength(1)),
+  source: z._default(z.enum(["library", "catalog"]), "library"),
   // Display-only hints; a bad value is dropped, never the pin itself.
-  name: z
-    .string()
-    .trim()
-    .min(1)
-    .max(MAX_PIN_NAME_LENGTH)
-    .optional()
-    .catch(undefined),
-  artworkUrl: z
-    .string()
-    .max(2048)
-    .refine((url) => url.startsWith("https://"))
-    .optional()
-    .catch(undefined),
+  name: z.catch(
+    z.optional(
+      z
+        .string()
+        .check(z.trim(), z.minLength(1), z.maxLength(MAX_PIN_NAME_LENGTH)),
+    ),
+    undefined,
+  ),
+  artworkUrl: z.catch(
+    z.optional(
+      z.string().check(
+        z.maxLength(2048),
+        z.refine((url: string) => url.startsWith("https://")),
+      ),
+    ),
+    undefined,
+  ),
 });
 
 function isRecord(value: unknown): value is Record<string, unknown> {

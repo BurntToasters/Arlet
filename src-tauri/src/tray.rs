@@ -5,6 +5,7 @@
 
 use crate::{auth_popup, settings, window_state, windows_media};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager};
@@ -97,12 +98,47 @@ fn toggle_main_window(app: &AppHandle) {
     }
 }
 
-fn quit(app: &AppHandle) {
+/// Sent to the page before Arlet exits, so it can save the queue position.
+pub const BEFORE_QUIT_EVENT: &str = "arlet-before-quit";
+/// Longest wait for the page to confirm it saved; a dead page never answers.
+const QUIT_SAVE_TIMEOUT: Duration = Duration::from_millis(1500);
+static QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
+static QUIT_READY: AtomicBool = AtomicBool::new(false);
+
+/// Quits after the page has saved. The page's own unload save is fire and
+/// forget and is lost when the process exits first, so a quit while playing
+/// used to drop up to 30 seconds of position.
+pub fn request_quit(app: &AppHandle) {
+    if QUIT_REQUESTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
     QUITTING.store(true, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window(auth_popup::MAIN_WINDOW_LABEL) {
         window_state::persist(&window.as_ref().window());
+        // Quitting looks immediate while the page saves in the background.
+        let _ = window.hide();
     }
-    app.exit(0);
+    let asked = app
+        .emit_to(auth_popup::MAIN_WINDOW_LABEL, BEFORE_QUIT_EVENT, ())
+        .is_ok();
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let deadline = Instant::now() + QUIT_SAVE_TIMEOUT;
+        while asked && !QUIT_READY.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        handle.exit(0);
+    });
+}
+
+/// The page saved and Arlet may exit now.
+#[tauri::command]
+pub fn quit_ready() {
+    QUIT_READY.store(true, Ordering::SeqCst);
+}
+
+fn quit(app: &AppHandle) {
+    request_quit(app);
 }
 
 fn handle_menu(app: &AppHandle, id: &str) {

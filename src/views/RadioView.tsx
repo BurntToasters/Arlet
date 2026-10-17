@@ -7,8 +7,10 @@ import {
 } from "lucide-preact";
 import { useEffect, useRef } from "preact/hooks";
 import type { JSX } from "preact";
-import { useAppController, useAppState } from "../app/context.tsx";
+import { useAppController, useAppSlices } from "../app/context.tsx";
 import { Artwork } from "../components/Artwork.tsx";
+import { CardActions, CardShell } from "../components/CardActions.tsx";
+import { SkeletonCardGrid, SkeletonStatus } from "../components/Skeleton.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import type { Track } from "../domain/music.ts";
 import type { RadioSectionState } from "../state.ts";
@@ -56,30 +58,37 @@ function StationCard({
               artwork: station.artwork,
             };
             return (
-              <button
-                className="home-discovery-card"
-                key={station.id}
-                type="button"
-                disabled={!station.url}
-                onClick={() => onPlay(station.id)}
-              >
-                <Artwork
-                  track={track}
-                  size="lg"
-                  alt={`${station.name} artwork`}
-                  className="home-discovery-art"
+              <CardShell key={station.id}>
+                <button
+                  className="home-discovery-card"
+                  type="button"
+                  disabled={!station.url}
+                  onClick={() => onPlay(station.id)}
+                >
+                  <Artwork
+                    track={track}
+                    size="lg"
+                    alt={`${station.name} artwork`}
+                    className="home-discovery-art"
+                  />
+                  <span className="home-discovery-copy">
+                    <strong>{station.name}</strong>
+                    <small>
+                      {station.description ??
+                        (station.isLive ? "Live radio" : "Personal station")}
+                    </small>
+                  </span>
+                  <span className="home-discovery-source">
+                    <Play size={14} fill="currentColor" /> Play
+                  </span>
+                </button>
+                {/* Stations have no context-menu target, so no "..." button. */}
+                <CardActions
+                  title={station.name}
+                  menu={false}
+                  onPlay={station.url ? () => onPlay(station.id) : undefined}
                 />
-                <span className="home-discovery-copy">
-                  <strong>{station.name}</strong>
-                  <small>
-                    {station.description ??
-                      (station.isLive ? "Live radio" : "Personal station")}
-                  </small>
-                </span>
-                <span className="home-discovery-source">
-                  <Play size={14} fill="currentColor" /> Play
-                </span>
-              </button>
+              </CardShell>
             );
           })}
         </div>
@@ -96,7 +105,7 @@ function StationCard({
 }
 
 export function RadioView(): JSX.Element {
-  const state = useAppState();
+  const state = useAppSlices("auth", "radio");
   const controller = useAppController();
   const radio = state.radio;
   const authorized = state.auth.status === "authorized";
@@ -115,7 +124,7 @@ export function RadioView(): JSX.Element {
   loadingRef.current = loading;
   useEffect(() => {
     if (authorized && !pending && !loadingRef.current) {
-      void Promise.resolve(controller.loadRadio?.()).catch(() => undefined);
+      void Promise.resolve(controller.loadRadio()).catch(() => undefined);
     }
   }, [authorized, pending, idle, controller]);
 
@@ -154,7 +163,7 @@ export function RadioView(): JSX.Element {
             type="button"
             onClick={() =>
               void Promise.resolve(
-                controller.loadRadio?.({ refresh: true }),
+                controller.loadRadio({ refresh: true }),
               ).catch(() => undefined)
             }
           >
@@ -169,11 +178,19 @@ export function RadioView(): JSX.Element {
     ...radio.personal.items,
     ...radio.live.items,
     ...radio.recent.items,
+    ...radio.genreStations.items,
   ];
+  const openGenre = radio.genres.find((genre) => genre.id === radio.genreId);
+  // Selecting the open genre again closes it.
+  const chooseGenre = (genreId: string): void => {
+    void Promise.resolve(controller.loadRadioGenre(genreId)).catch(
+      () => undefined,
+    );
+  };
   const play = (id: string): void => {
     const station = stations.find((item) => item.id === id);
     if (station) {
-      void Promise.resolve(controller.playStation?.(station)).catch(
+      void Promise.resolve(controller.playStation(station)).catch(
         reportActionError,
       );
     }
@@ -192,9 +209,9 @@ export function RadioView(): JSX.Element {
           aria-label="Refresh Radio"
           disabled={loading}
           onClick={() =>
-            void Promise.resolve(
-              controller.loadRadio?.({ refresh: true }),
-            ).catch(() => undefined)
+            void Promise.resolve(controller.loadRadio({ refresh: true })).catch(
+              () => undefined,
+            )
           }
         >
           <RefreshCw size={16} className={loading ? "spin" : ""} />
@@ -206,11 +223,58 @@ export function RadioView(): JSX.Element {
         </p>
       ) : null}
       {loading && !hasStations ? (
-        <div className="search-feedback" role="status">
-          <LoaderCircle className="spin" size={22} /> Loading Radio…
-        </div>
+        <SkeletonStatus label="Loading Radio…">
+          <SkeletonCardGrid count={4} />
+        </SkeletonStatus>
       ) : (
         <>
+          {radio.genres.length ? (
+            <section
+              className="home-feed-section"
+              aria-labelledby="radio-genres-heading"
+            >
+              <div className="section-heading">
+                <div>
+                  <span className="eyebrow">Apple Music</span>
+                  <h2 id="radio-genres-heading">Genres</h2>
+                </div>
+              </div>
+              <div
+                className="browse-chip-row"
+                role="group"
+                aria-labelledby="radio-genres-heading"
+              >
+                {radio.genres.map((genre) => {
+                  const pressed = genre.id === radio.genreId;
+                  return (
+                    <button
+                      key={genre.id}
+                      className="browse-chip"
+                      type="button"
+                      aria-pressed={pressed}
+                      onClick={() => chooseGenre(pressed ? "" : genre.id)}
+                    >
+                      {genre.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
+          {openGenre ? (
+            radio.genreStations.status === "loading" &&
+            !radio.genreStations.items.length ? (
+              <SkeletonStatus label={`Loading ${openGenre.name} stations…`}>
+                <SkeletonCardGrid count={4} />
+              </SkeletonStatus>
+            ) : (
+              <StationCard
+                section={radio.genreStations}
+                title={`${openGenre.name} Stations`}
+                onPlay={play}
+              />
+            )
+          ) : null}
           <StationCard
             section={radio.personal}
             title="Your Station"

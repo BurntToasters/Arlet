@@ -6,6 +6,7 @@ import type {
   Track,
 } from "../domain/music.ts";
 import { httpStatusOf, mapErrorToCode } from "./errors.ts";
+import { asRecord, dataArray, resultsOf } from "./response.ts";
 import {
   normalizeAlbumResource,
   normalizeArtistResource,
@@ -24,22 +25,9 @@ export interface SearchResourceGroups {
   playlists: Playlist[];
 }
 
-export interface BrowseResources {
-  songs: Track[];
-  albums: Album[];
-  playlists: Playlist[];
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object") return null;
-  return value as Record<string, unknown>;
-}
-
 function resourceData(raw: unknown, type: string): AppleMusicResource[] {
   if (Array.isArray(raw)) return raw as AppleMusicResource[];
-  const root = asRecord(raw);
-  const payload = asRecord(root?.data) ?? root;
-  const results = asRecord(payload?.results) ?? payload;
+  const results = resultsOf(raw);
   const typed = asRecord(results?.[type]);
   const data = typed?.data;
   if (Array.isArray(data)) return data as AppleMusicResource[];
@@ -61,8 +49,7 @@ function resourceData(raw: unknown, type: string): AppleMusicResource[] {
     return [];
   }
   if (Array.isArray(results?.data)) return results.data as AppleMusicResource[];
-  if (Array.isArray(root?.data)) return root.data as AppleMusicResource[];
-  return [];
+  return dataArray(raw) as AppleMusicResource[];
 }
 
 function normalizeResourceList<T>(
@@ -259,7 +246,12 @@ export function createMusicRequest(
   };
 
   return async (path, query, requestOptions) => {
-    if (path.startsWith("/v1/catalog/") && query?.l === undefined) {
+    // Apple's next-page paths can already carry `l`; never send it twice.
+    if (
+      path.startsWith("/v1/catalog/") &&
+      query?.l === undefined &&
+      !/[?&]l=/u.test(path)
+    ) {
       const tag = await resolveLanguage();
       if (tag)
         return withRetry(path, { ...(query ?? {}), l: tag }, requestOptions);
@@ -305,9 +297,10 @@ function rawMusicKitMusicRequest(
 }
 
 export function storefrontFromMeResponse(raw: unknown): string | null {
-  const root = asRecord(raw);
-  const data = root?.data;
-  const entries = Array.isArray(data) ? data : data ? [data] : [];
+  // The envelope's `data` is the body, so the entries come from dataArray.
+  const single = asRecord(raw)?.data;
+  const listed = dataArray(raw);
+  const entries = listed.length > 0 ? listed : single ? [single] : [];
   for (const entry of entries) {
     const record = asRecord(entry);
     const id = record?.id;
@@ -316,11 +309,18 @@ export function storefrontFromMeResponse(raw: unknown): string | null {
   return null;
 }
 
-export async function resolveStorefront(
+/**
+ * Fallback lookups by instance. An entry is valid only for the user token it
+ * was made with, so sign-out or a different account never reuses it.
+ */
+const storefrontFallbacks = new WeakMap<
+  object,
+  { userToken: string; storefront: Promise<string> }
+>();
+
+async function fetchStorefrontFromMe(
   instance: MusicKit.MusicKitInstance,
 ): Promise<string> {
-  const existing = String(instance.storefrontId ?? "").trim();
-  if (existing) return existing;
   const request = resolveMusicKitMusicRequest(instance);
   const fromMe = storefrontFromMeResponse(await request("/v1/me/storefront"));
   if (fromMe) return fromMe;
@@ -329,11 +329,29 @@ export async function resolveStorefront(
   );
 }
 
+export async function resolveStorefront(
+  instance: MusicKit.MusicKitInstance,
+): Promise<string> {
+  const existing = String(instance.storefrontId ?? "").trim();
+  if (existing) return existing;
+  const userToken = String(instance.musicUserToken ?? "");
+  let cached = storefrontFallbacks.get(instance);
+  if (cached?.userToken !== userToken) {
+    const lookup = fetchStorefrontFromMe(instance);
+    cached = { userToken, storefront: lookup };
+    storefrontFallbacks.set(instance, cached);
+    // A failed lookup is not kept, so the next call asks Apple again.
+    void lookup.catch(() => {
+      if (storefrontFallbacks.get(instance)?.storefront === lookup) {
+        storefrontFallbacks.delete(instance);
+      }
+    });
+  }
+  return cached.storefront;
+}
+
 export function songsFromSearchResponse(raw: unknown): CatalogSongResource[] {
-  const root = asRecord(raw);
-  const payload = asRecord(root?.data) ?? root;
-  const results = asRecord(payload?.results) ?? payload;
-  const songs = asRecord(results?.songs);
+  const songs = asRecord(resultsOf(raw)?.songs);
   const data = songs?.data;
   if (!Array.isArray(data)) return [];
   return data.filter((item): item is CatalogSongResource => {
@@ -402,33 +420,6 @@ export async function searchMusicResources(
   return limitSearchGroups(normalizeSearchGroups(raw, "library-"), limit);
 }
 
-export async function loadBrowseCharts(
-  instance: MusicKit.MusicKitInstance,
-  options: { limit?: number } = {},
-): Promise<BrowseResources> {
-  const requestedLimit = options.limit ?? 20;
-  const limit = Number.isFinite(requestedLimit)
-    ? Math.max(0, Math.floor(requestedLimit))
-    : 20;
-  const storefront = await resolveStorefront(instance);
-  const raw = await resolveMusicKitMusicRequest(instance)(
-    `/v1/catalog/${encodeURIComponent(storefront)}/charts`,
-    {
-      chart: "most-played",
-      types: "songs,albums,playlists",
-      limit,
-    },
-  );
-  const groups = normalizeSearchGroups(raw);
-  return {
-    songs: groups.songs
-      .filter((track) => track.playable !== false)
-      .slice(0, limit),
-    albums: groups.albums.slice(0, limit),
-    playlists: groups.playlists.slice(0, limit),
-  };
-}
-
 function stationUrl(resource: AppleMusicResource): string | undefined {
   const record = asRecord(resource);
   const attributes = asRecord(record?.attributes);
@@ -484,13 +475,7 @@ export function normalizeStation(
 }
 
 export function stationsFromResponse(raw: unknown): Station[] {
-  const root = asRecord(raw);
-  const data = Array.isArray(root?.data)
-    ? root.data
-    : Array.isArray(raw)
-      ? raw
-      : [];
-  return data
+  return dataArray(raw)
     .map((value) => normalizeStation(value as AppleMusicResource))
     .filter((value): value is Station => Boolean(value));
 }
