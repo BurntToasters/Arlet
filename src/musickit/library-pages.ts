@@ -138,6 +138,28 @@ function withLimit(cursor: string, limit: number | undefined): string {
   return `${cursor}${cursor.includes("?") ? "&" : "?"}limit=${limit}`;
 }
 
+/**
+ * Apple's `next` path usually carries only `offset`, so the call's query fills
+ * in the keys it lacks (such as `include`). Keys the cursor already has win.
+ */
+function withMissingQuery(cursor: string, query: Query | undefined): string {
+  const index = cursor.indexOf("?");
+  const base = index === -1 ? cursor : cursor.slice(0, index);
+  const search = index === -1 ? "" : cursor.slice(index + 1);
+  const carried = new URLSearchParams(search);
+  const missing = Object.entries(query ?? {}).filter(
+    ([key, value]) => value !== undefined && !carried.has(key),
+  );
+  if (missing.length === 0) return cursor;
+  const added = missing
+    .map(
+      ([key, value]) =>
+        `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`,
+    )
+    .join("&");
+  return `${base}?${search ? `${search}&` : ""}${added}`;
+}
+
 /** Apple's own page paths: the user's library and the catalog twin. */
 export const APPLE_PAGE_PREFIXES = ["/v1/me/", "/v1/catalog/"];
 
@@ -158,7 +180,7 @@ export function createPageReaders(request: MusicRequest) {
       : undefined;
     if (cursorValue?.trim() && !cursorPath) return { items: [] };
     const raw = cursorPath
-      ? await request(withLimit(cursorPath, limit))
+      ? await request(withLimit(withMissingQuery(cursorPath, query), limit))
       : firstQuery === undefined
         ? await request(path)
         : await request(path, firstQuery);

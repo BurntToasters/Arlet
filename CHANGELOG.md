@@ -2,7 +2,7 @@
 
 | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                                          | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
 | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.2/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.2/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.3/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.3/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -18,6 +18,14 @@
 ### ℹ️ Enjoying Arlet? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
+
+## Changes in `v0.3.0-beta.3:`
+
+- **Fix - Artwork sizes:** Cards on Home, Radio, Search, artist pages, and in your library are the same width again, with square artwork. In beta 2, each card was only as wide as its title, so artwork was tiny on short titles and huge on long ones, and the Play button sat beside the artwork instead of on it.
+- **Fix - Artist pictures:** Artists in your library and their artist pages show the artist's picture again, instead of an icon or initials.
+- **Fix - Artists without a picture:** Their placeholder icon is square again, instead of a thin strip.
+- **Fix - Latest release:** The latest release at the top of an artist page is a little wider than other cards again.
+- **Testing:** End-to-end tests now check that card artwork fills its card and is square, that cards in a row share a width, that the Play and `...` buttons sit on the artwork, and that artist pictures show in the library and on artist pages.
 
 ## Changes in `v0.3.0-beta.2:`
 

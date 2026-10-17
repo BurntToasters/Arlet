@@ -527,7 +527,8 @@ export function normalizeArtistResource(
       stringValue(attributes.name) ??
       stringValue(attributes.artistName) ??
       "Unknown Artist",
-    artwork: artworkFromUnknown(attributes.artwork),
+    artwork:
+      artworkFromUnknown(attributes.artwork) ?? catalogArtistArtwork(resource),
     resourceType: resourceType(resource) ?? "artists",
   };
   const albumCount =
@@ -544,6 +545,16 @@ export function normalizeArtistResource(
   const editorialBanner = editorialBannerOf(attributes.editorialArtwork);
   if (editorialBanner) artist.editorialBanner = editorialBanner;
   return artist;
+}
+
+/** A library artist has no artwork of its own; `include=catalog` carries its catalog twin's. */
+function catalogArtistArtwork(
+  resource: AppleMusicResource,
+): Artwork | undefined {
+  const catalog = asRecord(
+    relationValues(relationshipData(resource, "catalog"))[0],
+  );
+  return artworkFromUnknown(asRecord(catalog?.attributes)?.artwork);
 }
 
 /** Wide enough for a full-width artist banner on a high-DPI screen. */

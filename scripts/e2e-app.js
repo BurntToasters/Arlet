@@ -31,6 +31,7 @@ import { desktopEventRecorderSource, runDesktop } from "./e2e-desktop.js";
 import { runPerformance } from "./e2e-performance.js";
 import { runPolish } from "./e2e-polish.js";
 import { runDiscovery } from "./e2e-discovery.js";
+import { runArtwork } from "./e2e-artwork.js";
 import { runSessionRestore } from "./e2e-session-restore.js";
 import { sleep } from "./e2e-helpers.js";
 
@@ -1387,6 +1388,7 @@ async function run() {
         ["performance", runPerformance],
         ["polish", runPolish],
         ["discovery", runDiscovery],
+        ["artwork", runArtwork],
         // Last: it signs out at the end.
         ["session-restore", runSessionRestore],
       ]) {
@@ -1395,7 +1397,12 @@ async function run() {
           await page.evaluate(
             'document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); return true;',
           );
-          await scenario({ page, check, dataDir: dataDirs()[0] });
+          await scenario({
+            page,
+            check,
+            dataDir: dataDirs()[0],
+            artifactDir,
+          });
         } catch (error) {
           check(`${name} completes`, false, String(error?.message ?? error));
         } finally {

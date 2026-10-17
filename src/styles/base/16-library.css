@@ -57,8 +57,9 @@
   margin-bottom: 24px;
 }
 
-/* The newest release leads the artist page, a little wider than a card. */
-.library-card.artist-featured-card {
+/* The newest release leads the artist page, a little wider than a card.
+   The card-shell caps the width, so the shell is what has to widen. */
+.card-shell:has(.artist-featured-card) {
   max-width: 360px;
 }
 
@@ -257,6 +258,10 @@
 
 .library-card-art-icon {
   display: flex;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: var(--radius-sm);
   align-items: center;
   justify-content: center;
   background: var(--surface-active);

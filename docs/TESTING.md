@@ -505,6 +505,71 @@ Failure modes this pass must not have:
   old data on the next start.
 - With Debug Mode off, logging still crosses IPC for every line.
 
+## Artwork sizing
+
+`scripts/e2e-artwork.js` runs inside the native suite against the artwork
+fixture (`configure({ artworkGrid: true, artworkTemplate })` in
+`scripts/e2e-music-fixture.js`). The fixture serves short and very long titles
+in the same grid, library artists whose artwork is only on their catalog
+artist (`relationships.catalog.data[0].attributes.artwork`, served when the
+request asks `include=catalog`), one artist and one album with no artwork. The
+artwork template points every URL at the app icon, which the app already serves
+from its own origin, so every `<img>` really loads. The app takes artwork only from http(s) URLs, so a data: image never
+reaches an `<img>`. The template is needed: the seed artwork URLs never load.
+
+It visits eight views: Home, Library albums, playlists, artists and recently
+added, Radio, a search for `artwork`, and the library artist page for
+`lib-artist-art-1`. Each card is measured from its `.card-shell`: the open
+button (or static div) that holds the artwork, and the `.card-actions` overlay.
+The search top result (`.search-tile-featured`, 140 px art beside text) and the
+artist page's featured album (`.artist-featured-card`) are left out of the
+equal-width check, but their overlays are still checked against their art.
+
+Failure modes this pass must not have:
+
+- A card's open button shrinks to its title, so its artwork is narrow for a
+  short title and wide for a long one (the artwork is not the card's content
+  width).
+- Artwork is not square, so the tile height follows the title or the grid.
+- Cards in one grid row differ in width.
+- The Play and "..." overlay (`.card-actions`) sits beside the artwork, or is
+  sized to the card instead of the art.
+- Artwork renders with an image that fails to load, or an item without art shows
+  nothing where its initials belong.
+- A library artist tile with no artwork renders its icon as a wide strip instead
+  of a square.
+- A library artist's catalog artwork is ignored, so its tile has no picture
+  (`include=catalog` not requested, or the catalog artwork read from the wrong
+  path).
+- A library artist's page hero has no picture, although its catalog artist has
+  artwork.
+- An album with no artwork shows no initials, or the wrong initials.
+
+Each check's `detail` in `report.json` holds the measurements: the rects of the
+artwork, content box and overlay, the row widths, and the kind of art each card
+showed (`img`, `initials` or `icon`). The runner also writes one screenshot per
+view (`artwork-<view>.png`, named by view) into the run's artifact folder.
+
+Checks in `scripts/e2e-artwork.js`, by view. The check name is the `report.json`
+name; `<view>` is one of the eight views above:
+
+| Check                                                                     | Guards                                       |
+| ------------------------------------------------------------------------- | -------------------------------------------- |
+| `<view>: every card's artwork fills its card content width`               | button shrinks to its title                  |
+| `<view>: its cards render`                                                | fixture not reached, cards missing           |
+| `<view>: every card's artwork is square`                                  | non-square art, strips                       |
+| `<view>: cards in one grid row share a width`                             | row widths differ                            |
+| `<view>: each card's Play and More overlay sits over its artwork`         | overlay offset or sized to the card          |
+| `<view>: fixture artwork loads, and items without art show a placeholder` | image not loading, placeholder missing       |
+| `library albums: an album without art shows its initials`                 | initials missing or wrong                    |
+| `library artists: a catalog artist's image shows on its tile`             | `include=catalog` or catalog artwork ignored |
+| `library artists: an artist without art shows a square icon`              | icon rendered as a strip                     |
+| `artist page: the hero shows the catalog artist's image`                  | library artist hero without catalog artwork  |
+
+Not covered here: the real mzstatic bucket sizes (see Rendering performance),
+hover and focus states of the overlay, and lazily loaded rows far below the
+fold (the runner steps through the content area once, so lazy images load).
+
 ## UI polish and accessibility
 
 `scripts/e2e-polish.js` runs inside the native suite (before Session restore)

@@ -255,6 +255,8 @@ function installMusicKitFixture() {
     librarySize: 0,
     // Artwork URL template for responses and queue items; "" keeps seed URLs.
     artworkTemplate: "",
+    // Artwork sizing data (ARTWORK_* below); off, so other suites never see it.
+    artworkGrid: false,
     // Discovery controls (header comment); all off by default.
     delayTerms: {},
     rejectQueryKeys: [],
@@ -772,9 +774,186 @@ function installMusicKitFixture() {
   });
   const playlistRef = (id) => ({ id, type: "playlists" });
 
+  // Artwork sizing data (scripts/e2e-artwork.js; docs/TESTING.md "Artwork
+  // sizing"). Served only after configure({ artworkGrid: true }), so no other
+  // suite sees it. Titles run from one letter to very long, so a card that
+  // sized to its title would show it. Artwork URLs carry `{id}` and load only
+  // with configure({ artworkTemplate }).
+  const ARTWORK_LONG_TITLE =
+    "An Extraordinarily Long Title That Keeps Going Well Past Any Card Width";
+  const artworkAt = (id) => ({
+    url: `https://is1-ssl.mzstatic.com/image/thumb/Music/e2e/${id}/{w}x{h}bb.jpg`,
+    width: 300,
+    height: 300,
+  });
+  const artworkAlbum = (
+    id,
+    name,
+    { artwork = true, type = "library-albums" } = {},
+  ) => ({
+    id,
+    type,
+    attributes: {
+      name,
+      artistName: "Artwork Fixture",
+      trackCount: 10,
+      playParams: { id, kind: "album" },
+      ...(artwork ? { artwork: artworkAt(id) } : {}),
+    },
+  });
+  const artworkPlaylist = (
+    id,
+    name,
+    { artwork = true, type = "library-playlists" } = {},
+  ) => ({
+    id,
+    type,
+    attributes: {
+      name,
+      artistName: "Artwork Fixture",
+      canEdit: false,
+      playParams: { id, kind: "playlist" },
+      ...(artwork ? { artwork: artworkAt(id) } : {}),
+    },
+  });
+  // Library albums and playlists; the bare album has no artwork at all.
+  const ARTWORK_ALBUMS = [
+    artworkAlbum("lib-album-art-1", "Hi"),
+    artworkAlbum("lib-album-art-2", "Second Album Title"),
+    artworkAlbum("lib-album-art-3", ARTWORK_LONG_TITLE),
+    artworkAlbum("lib-album-art-4", "X"),
+    artworkAlbum("lib-album-bare", "Quiet Sleeve", { artwork: false }),
+  ];
+  const ARTWORK_PLAYLISTS = [
+    artworkPlaylist("lib-pl-art-1", "Mix"),
+    artworkPlaylist("lib-pl-art-2", "Playlist Of Medium Length"),
+    artworkPlaylist("lib-pl-art-3", ARTWORK_LONG_TITLE),
+    artworkPlaylist("lib-pl-art-4", "Q"),
+  ];
+  // Library artists have no artwork of their own. Their catalog artist does,
+  // under relationships.catalog, and only when the request asks include=catalog.
+  // catalogId null: no catalog artist, so the tile has no picture at all.
+  const ARTWORK_ARTISTS = [
+    {
+      id: "lib-artist-art-1",
+      name: "Art Artist",
+      catalogId: "cat-artist-art-1",
+    },
+    { id: "lib-artist-art-2", name: "Al", catalogId: "cat-artist-art-2" },
+    {
+      id: "lib-artist-art-3",
+      name: ARTWORK_LONG_TITLE,
+      catalogId: "cat-artist-art-3",
+    },
+    { id: "lib-artist-bare", name: "Quiet Artist", catalogId: null },
+  ];
+  const artworkLibraryArtist = (entry, include) => ({
+    id: entry.id,
+    type: "library-artists",
+    attributes: { name: entry.name },
+    ...(entry.catalogId && include.includes("catalog")
+      ? {
+          relationships: {
+            catalog: {
+              data: [
+                {
+                  id: entry.catalogId,
+                  type: "artists",
+                  attributes: {
+                    name: entry.name,
+                    artwork: artworkAt(entry.catalogId),
+                  },
+                },
+              ],
+            },
+          },
+        }
+      : {}),
+  });
+  // Home's heavy rotation: catalog albums and playlists, short and long titles.
+  const ARTWORK_HOME = [
+    artworkAlbum("home-art-1", "Hi", { type: "albums" }),
+    artworkAlbum("home-art-2", ARTWORK_LONG_TITLE, { type: "albums" }),
+    artworkPlaylist("home-art-3", "Mix", { type: "playlists" }),
+    artworkPlaylist("home-art-4", "Playlist Of Medium Length", {
+      type: "playlists",
+    }),
+  ];
+  // Radio's personal stations; the last has no URL on purpose, so its Play is disabled.
+  const ARTWORK_STATIONS = [
+    {
+      id: "ra.art-1",
+      type: "stations",
+      attributes: {
+        name: "FM",
+        url: "https://music.apple.com/us/station/art-fm/ra.art-1",
+        artwork: artworkAt("ra.art-1"),
+      },
+    },
+    {
+      id: "ra.art-2",
+      type: "stations",
+      attributes: {
+        name: ARTWORK_LONG_TITLE,
+        url: "https://music.apple.com/us/station/art-long/ra.art-2",
+        artwork: artworkAt("ra.art-2"),
+      },
+    },
+    {
+      id: "ra.art-3",
+      type: "stations",
+      attributes: { name: "Pop", artwork: artworkAt("ra.art-3") },
+    },
+  ];
+  // Search for a term containing "artwork": top result, albums, playlists, stations.
+  const ARTWORK_SEARCH = {
+    albums: ARTWORK_ALBUMS.map((item) => ({ ...item, type: "albums" })),
+    playlists: ARTWORK_PLAYLISTS.map((item) => ({
+      ...item,
+      type: "playlists",
+    })),
+    stations: ARTWORK_STATIONS,
+  };
+  // The library artist lib-artist-art-1 reads its catalog artist, cat-artist-art-1.
+  const ARTIST_ARTWORK = { "cat-artist-art-1": artworkAt("cat-artist-art-1") };
+  const ARTIST_ARTWORK_VIEWS = {
+    "full-albums": [
+      artworkAlbum("cat-album-art-1", "Hi", { type: "albums" }),
+      artworkAlbum("cat-album-art-2", ARTWORK_LONG_TITLE, { type: "albums" }),
+      artworkAlbum("cat-album-art-3", "Ok", { type: "albums" }),
+    ],
+    "similar-artists": [
+      {
+        id: "cat-similar-art-1",
+        type: "artists",
+        attributes: { name: "Al", artwork: artworkAt("cat-similar-art-1") },
+      },
+      {
+        id: "cat-similar-art-2",
+        type: "artists",
+        attributes: {
+          name: ARTWORK_LONG_TITLE,
+          artwork: artworkAt("cat-similar-art-2"),
+        },
+      },
+      {
+        id: "cat-similar-art-3",
+        type: "artists",
+        attributes: { name: "Quiet Artist" },
+      },
+    ],
+    "featured-playlists": [
+      artworkPlaylist("cat-pl-art-1", "Mix", { type: "playlists" }),
+      artworkPlaylist("cat-pl-art-2", ARTWORK_LONG_TITLE, {
+        type: "playlists",
+      }),
+    ],
+  };
+
   // Artist views by artist ID. Requested views that are absent from an
   // artist's entry answer as { data: [] }.
   const ARTIST_VIEWS = {
+    "cat-artist-art-1": ARTIST_ARTWORK_VIEWS,
     "artist-views": {
       "latest-release": [artistAlbums[29]],
       "top-songs": artistTopSongs,
@@ -818,6 +997,7 @@ function installMusicKitFixture() {
     },
   };
   const DISCOVERY_ARTIST_NAMES = {
+    "cat-artist-art-1": "Art Artist",
     "artist-views": "Discovery Artist",
     "artist-views-sparse": "Sparse Discovery Artist",
   };
@@ -1101,6 +1281,7 @@ function installMusicKitFixture() {
 
   const artistResponse = (id, params) => {
     const attributes = { name: DISCOVERY_ARTIST_NAMES[id] };
+    if (ARTIST_ARTWORK[id]) attributes.artwork = clone(ARTIST_ARTWORK[id]);
     const extend = listParam(params.extend);
     if (extend.includes("editorialNotes") && ARTIST_NOTES[id]) {
       attributes.editorialNotes = clone(ARTIST_NOTES[id]);
@@ -1560,11 +1741,88 @@ function installMusicKitFixture() {
     return {};
   };
 
+  // Artwork sizing routes; undefined unless configure({ artworkGrid: true }).
+  const artworkSearchResponse = (params) => {
+    const { offset, limit } = pagingOf(params, 10, 25);
+    const results = {};
+    if (listParam(params.with).includes("topResults")) {
+      results.top = { data: [clone(ARTWORK_SEARCH.albums[0])] };
+    }
+    const types = listParam(params.types);
+    for (const type of types.length ? types : ["albums"]) {
+      if (!Object.hasOwn(ARTWORK_SEARCH, type)) continue;
+      results[type] = pageResponse(
+        ARTWORK_SEARCH[type],
+        "/v1/catalog/us/search",
+        params,
+        offset,
+        limit,
+      );
+    }
+    return { results };
+  };
+  const artworkGridResponse = (pathname, path, call) => {
+    if (!state.artworkGrid || (call?.method ?? "GET") !== "GET") {
+      return undefined;
+    }
+    const params = requestParams(path, call);
+    // Batched `?ids=` lookups keep their own answers, as they do without the flag.
+    if (params.ids !== undefined) return undefined;
+    if (pathname === "/v1/me/library/albums") {
+      return { data: ARTWORK_ALBUMS.map(clone) };
+    }
+    if (pathname === "/v1/me/library/playlists") {
+      return { data: ARTWORK_PLAYLISTS.map(clone) };
+    }
+    if (pathname === "/v1/me/library/recently-added") {
+      return {
+        data: [
+          ...ARTWORK_ALBUMS.slice(0, 4),
+          ...ARTWORK_PLAYLISTS.slice(0, 2),
+        ].map(clone),
+      };
+    }
+    if (pathname === "/v1/me/library/artists") {
+      const include = listParam(params.include);
+      return {
+        data: ARTWORK_ARTISTS.map((entry) =>
+          artworkLibraryArtist(entry, include),
+        ),
+      };
+    }
+    const libraryArtist = pathname.match(
+      /^\/v1\/me\/library\/artists\/([^/]+)$/u,
+    );
+    if (libraryArtist) {
+      const id = decodeURIComponent(libraryArtist[1]);
+      const entry = ARTWORK_ARTISTS.find((item) => item.id === id);
+      if (!entry) return undefined;
+      return {
+        data: [artworkLibraryArtist(entry, listParam(params.include))],
+      };
+    }
+    if (pathname === "/v1/catalog/us/stations") {
+      return { data: ARTWORK_STATIONS.map(clone) };
+    }
+    if (pathname === "/v1/me/history/heavy-rotation") {
+      return { data: ARTWORK_HOME.map(clone) };
+    }
+    if (
+      pathname === "/v1/catalog/us/search" &&
+      /artwork/iu.test(String(params.term ?? ""))
+    ) {
+      return artworkSearchResponse(params);
+    }
+    return undefined;
+  };
+
   const responseFor = (path, call = { method: "GET" }) => {
     const pathname = String(path).split("?", 1)[0];
     const mutation =
       ratingResponse(pathname, call) ?? libraryResponse(pathname, call);
     if (mutation) return mutation;
+    const artwork = artworkGridResponse(pathname, path, call);
+    if (artwork !== undefined) return artwork;
     const discovered = discoveryResponse(pathname, path, call);
     if (discovered !== undefined) return discovered;
     if (pathname === "/v1/me/storefront") {
@@ -2247,6 +2505,9 @@ function installMusicKitFixture() {
       if (Object.prototype.hasOwnProperty.call(options, "artworkTemplate")) {
         state.artworkTemplate = String(options.artworkTemplate ?? "");
       }
+      if (Object.prototype.hasOwnProperty.call(options, "artworkGrid")) {
+        state.artworkGrid = options.artworkGrid === true;
+      }
       if (Object.prototype.hasOwnProperty.call(options, "queueEditDelayMs")) {
         state.queueEditDelayMs = Math.max(
           0,
@@ -2291,6 +2552,7 @@ function installMusicKitFixture() {
       state.libraryAdds = [];
       state.librarySize = 0;
       state.artworkTemplate = "";
+      state.artworkGrid = false;
       state.delayTerms = {};
       state.rejectQueryKeys = [];
       state.repeatViewCursor = false;
