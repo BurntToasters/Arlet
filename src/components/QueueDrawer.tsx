@@ -10,7 +10,11 @@ import {
 } from "lucide-preact";
 import type { JSX } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { useAppController, useAppSlices } from "../app/context.tsx";
+import {
+  useAppController,
+  useAppSelector,
+  useAppSlices,
+} from "../app/context.tsx";
 import type { Track } from "../domain/music.ts";
 import { getState, setUiState } from "../state.ts";
 import { Artwork } from "./Artwork.tsx";
@@ -53,9 +57,9 @@ function escapeClosesQueue(drawer: HTMLElement | null): boolean {
 }
 
 export function QueueDrawer(): JSX.Element | null {
-  const state = useAppSlices("playback", "ui");
+  const state = useAppSlices("playback");
   const controller = useAppController();
-  const queueOpen = state.ui.queueOpen;
+  const queueOpen = useAppSelector((store) => store.ui.queueOpen);
   // Index of the upcoming row being dragged; only same-drawer drags count.
   const dragFrom = useRef<number | undefined>(undefined);
   // The drawer stays mounted while it slides out.

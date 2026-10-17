@@ -21,7 +21,7 @@ import {
 } from "lucide-preact";
 import type { LucideIcon } from "lucide-preact";
 import type { JSX, TargetedEvent } from "preact";
-import { useAppRouter, useAppSlices } from "../app/context.tsx";
+import { useAppRouter, useAppSelector, useAppSlices } from "../app/context.tsx";
 import {
   libraryDetailKey,
   setUiState,
@@ -234,7 +234,6 @@ export function Sidebar(): JSX.Element {
     "library",
     "navigation",
     "pins",
-    "ui",
   );
   const router = useAppRouter();
   const account = state.account;
@@ -244,7 +243,7 @@ export function Sidebar(): JSX.Element {
   const drawerRef = useRef<HTMLElement>(null);
   // Only a re-render trigger; the checks below read the live breakpoint.
   const compactShell = useCompactShell();
-  const drawerOpen = state.ui.sidebarOpen;
+  const drawerOpen = useAppSelector((store) => store.ui.sidebarOpen);
   const drawerWasOpen = useRef(drawerOpen);
 
   useEffect(() => {
@@ -316,7 +315,7 @@ export function Sidebar(): JSX.Element {
 
   const navigate = (route: Route): void => {
     router.navigate(route);
-    if (state.ui.sidebarOpen) setUiState({ sidebarOpen: false });
+    if (drawerOpen) setUiState({ sidebarOpen: false });
   };
 
   const submitSearch = (event: TargetedEvent<HTMLFormElement>): void => {
@@ -433,7 +432,7 @@ export function Sidebar(): JSX.Element {
   return (
     <aside
       ref={drawerRef}
-      className={`sidebar ${state.ui.sidebarOpen ? "is-open" : ""}`.trim()}
+      className={`sidebar ${drawerOpen ? "is-open" : ""}`.trim()}
       aria-label="Main navigation"
     >
       <form className="sidebar-search" role="search" onSubmit={submitSearch}>

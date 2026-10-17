@@ -1,9 +1,6 @@
-import { httpStatusOf, mapErrorToCode } from "../musickit/errors.ts";
 import {
-  queueDescriptorsForTracks,
-  queueOptionsForTracks,
   changeToMediaAtIndex,
-  readMusicKitQueue,
+  queueOptionsForTracks,
   readPlaybackModes,
   type NormalizedRepeatMode,
   seekToTime,
@@ -16,25 +13,12 @@ import {
   toggle,
 } from "../musickit/player.ts";
 import { isSameTrack, type Station, type Track } from "../domain/music.ts";
-import { normalizeTrack } from "../musickit/normalize.ts";
 import {
-  keptStartIndex,
-  NONE_AVAILABLE_MESSAGE,
   skippedMessage,
-  unresolvedIds,
   withResolvableTracks,
 } from "../musickit/unresolved.ts";
 import { reportActionError } from "../components/action-errors.ts";
-import type { PlayTiming } from "./collection-playback.ts";
-import {
-  FIRST_BATCH_LENGTH,
-  MAX_QUEUE_LENGTH,
-  nearestTrackIndex,
-  QUEUE_REFILL_SIZE,
-  QUEUE_REFILL_THRESHOLD,
-  shuffledCopy,
-  startWindow,
-} from "./queue-window.ts";
+import { nearestTrackIndex } from "./queue-window.ts";
 import {
   editQueue,
   planClear,
@@ -49,64 +33,78 @@ import {
   getState,
   setCurrentTrack,
   setMuted,
-  setPlaybackError,
+  setPendingRestore,
   setPlaybackModes,
   setPlaybackPosition,
-  setPendingRestore,
   setPlaybackStatus,
   setQueue,
-  setQueueRest,
   setQueueSnapshot,
   setVolume,
-  subscribe,
 } from "../state.ts";
-import {
-  errorMessage,
-  materializeTracks,
-  safeErrorMessage,
-  sameTrackIds,
-  trackIds,
-  type ControllerContext,
-} from "./controller-support.ts";
+import { errorMessage, type ControllerContext } from "./controller-support.ts";
+import { createPlayRequests, createPlayTracks } from "./playback-play.ts";
+import { createQueueInsert } from "./playback-insert.ts";
+import { createQueueContinuation } from "./queue-continuation.ts";
 
-type QueueInsertMethod = "playNext" | "playLater";
+/**
+ * Mutable playback bookkeeping shared by the playback modules. One instance
+ * exists per `createPlayback`; every module reads and writes these fields
+ * through `PlaybackContext.session`, so no module keeps its own copy.
+ */
+export interface PlaybackSession {
+  // Bumped by a newer play, sign-out, or authorization. A play it supersedes
+  // must not write playback state or report errors.
+  playIntent: number;
+  // Bumped by a pause. A play still awaiting queue setup must not start audio.
+  pauseCount: number;
+  // `pauseCount` when the user last pressed play. A play pressed after the
+  // latest pause is the user's last word, so setup may still start audio.
+  playPressedAt: number;
+  readonly pauseListeners: Set<() => void>;
+  // Songs from a capped playlist not yet in the provider queue. A new
+  // generation drops a pending refill for a queue that has been replaced.
+  queueRest: Track[];
+  restGeneration: number;
+  refilling: boolean;
+  // Last song this playlist added. If the queue no longer holds it, the
+  // queue was replaced elsewhere and the rest must not be appended.
+  restAnchor: Track | undefined;
+  // Songs before the one a Play started at. MusicKit's queue begins at that
+  // song, so Previous on it steps back through these instead. Valid while
+  // the queue still starts with `historyAnchor`.
+  startHistory: Track[];
+  historyAnchor: Track | undefined;
+}
 
-/** Queue and transport commands over the MusicKit instance. */
-/** A Play that is not audible by then is not timed. */
-const PLAY_TIMING_TIMEOUT_MS = 60_000;
+/** The controller context plus the one shared playback session. */
+export type PlaybackContext = ControllerContext & {
+  readonly session: PlaybackSession;
+};
+
 /** Previous restarts the song after this many seconds, as in Apple Music. */
 const RESTART_THRESHOLD_SECONDS = 3;
-/** First batches tried when every song in one is unavailable. */
-const MAX_UNAVAILABLE_BATCHES = 4;
-/** Pause before retrying a queue setup that failed on a song lookup. */
-const SET_QUEUE_RETRY_DELAY_MS = 600;
+
 /** Two MusicKit volume levels closer than this are the same level. */
 const MUSIC_VOLUME_TOLERANCE = 0.001;
 /** Levels this app wrote recently, kept for their volume echoes. */
 const MAX_SENT_MUSIC_VOLUMES = 16;
 
-const delay = (ms: number): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, ms));
-
-/** A lookup that returned no usable body, as opposed to a real refusal. */
-function isTransientLookupFailure(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? "");
-  const status = httpStatusOf(error);
-  return (
-    /Unable to read body as JSON/iu.test(message) ||
-    status === 429 ||
-    (status !== undefined && status >= 500)
-  );
-}
-
+/** Queue and transport commands over the MusicKit instance. */
 export function createPlayback(context: ControllerContext) {
   const { requireMusic, getMusic, log } = context;
-
-  const reportPlayFailure = (label: string, error: unknown): void => {
-    const message = safeErrorMessage(error);
-    setPlaybackError(mapErrorToCode(errorMessage(error)), message);
-    log(`${label}: ${message}`);
+  const session: PlaybackSession = {
+    playIntent: 0,
+    pauseCount: 0,
+    playPressedAt: -1,
+    pauseListeners: new Set<() => void>(),
+    queueRest: [],
+    restGeneration: 0,
+    refilling: false,
+    restAnchor: undefined,
+    startHistory: [],
+    historyAnchor: undefined,
   };
+  const shared: PlaybackContext = { ...context, session };
 
   /** Levels written to MusicKit, so its volume events can be told apart. */
   const sentMusicVolumes: number[] = [];
@@ -212,514 +210,30 @@ export function createPlayback(context: ControllerContext) {
     syncPlaybackModes(instance);
   };
 
-  /**
-   * Index to select after `setQueue`, or undefined when MusicKit already sits
-   * on the chosen song. MusicKit drops unplayable songs and, with shuffle on,
-   * reorders the rest, so the chosen occurrence is located by ID.
-   */
-  const providerStartIndex = (
-    instance: MusicKit.MusicKitInstance,
-    queue: readonly Track[],
-    startIndex: number,
-  ): number | undefined => {
-    const chosen = queue[startIndex];
-    const provider = readMusicKitQueue(instance);
-    if (!provider) return startIndex;
-    const shuffled = readPlaybackModes(instance).shuffleMode === "songs";
-    const matches: number[] = [];
-    provider.items.forEach((item, index) => {
-      if (isSameTrack(normalizeTrack(item), chosen)) matches.push(index);
-    });
-    if (matches.length === 0) return startIndex;
-    // Without shuffle the order is kept, so pick the same duplicate occurrence.
-    const occurrence = queue
-      .slice(0, startIndex)
-      .filter((track) => isSameTrack(track, chosen)).length;
-    const expected = shuffled
-      ? undefined
-      : (matches[occurrence] ?? matches[matches.length - 1]);
-    const onChosen = shuffled
-      ? matches.includes(provider.index)
-      : provider.index === expected;
-    if (onChosen) return undefined;
-    return expected ?? matches[0];
-  };
-
-  // Bumped by a newer play, sign-out, or authorization. A play it supersedes
-  // must not write playback state or report errors.
-  let playIntent = 0;
-  // Bumped by a pause. A play still awaiting queue setup must not start audio.
-  let pauseCount = 0;
-  // `pauseCount` when the user last pressed play. A play pressed after the
-  // latest pause is the user's last word, so setup may still start audio.
-  let playPressedAt = -1;
-  const pauseListeners = new Set<() => void>();
+  const requests = createPlayRequests(shared);
+  const { beginPlayRequest, startAudio, reportPlayFailure } = requests;
 
   const cancelPendingPlayback = (): void => {
-    playIntent += 1;
+    session.playIntent += 1;
   };
 
   const pausePlayback = (): void => {
-    pauseCount += 1;
+    session.pauseCount += 1;
     if (getState().playback.status === "loading") setPlaybackStatus("paused");
-    for (const listener of pauseListeners) listener();
+    for (const listener of session.pauseListeners) listener();
   };
 
-  /** One play request. `current` gates state writes; `mayStart` gates audio. */
-  const beginPlayRequest = () => {
-    const intent = ++playIntent;
-    const pauses = pauseCount;
-    return {
-      current: (): boolean => intent === playIntent,
-      mayStart: (): boolean =>
-        intent === playIntent &&
-        (pauses === pauseCount || playPressedAt === pauseCount),
-    };
-  };
-
-  /**
-   * Starts audio only while the request may. A request paused during setup
-   * stays paused, even if MusicKit started playing after its selection.
-   */
-  const startAudio = async (
-    instance: MusicKit.MusicKitInstance,
-    request: ReturnType<typeof beginPlayRequest>,
-  ): Promise<void> => {
-    if (request.mayStart()) await instance.play();
-    else if (request.current()) instance.pause();
-  };
-
-  // Songs from a capped playlist not yet in the provider queue. A new
-  // generation drops a pending refill for a queue that has been replaced.
-  let queueRest: Track[] = [];
-  let restGeneration = 0;
-  let refilling = false;
-  // Last song this playlist added. If the queue no longer holds it, the
-  // queue was replaced elsewhere and the rest must not be appended.
-  let restAnchor: Track | undefined;
-  // Songs before the one a Play started at. MusicKit's queue begins at that
-  // song, so Previous on it steps back through these instead. Valid while
-  // the queue still starts with `historyAnchor`.
-  let startHistory: Track[] = [];
-  let historyAnchor: Track | undefined;
-
-  const setRest = (tracks: Track[], anchor?: Track): void => {
-    queueRest = tracks;
-    if (anchor) restAnchor = anchor;
-    if (tracks.length === 0) restAnchor = undefined;
-    setQueueRest(tracks.length);
-  };
-
-  const clearContinuation = (): void => {
-    restGeneration += 1;
-    setRest([]);
-  };
-
-  /**
-   * Logs how long a Play took from the request to audible playback, step by
-   * step, so slow starts can be diagnosed from a support report. Gives up
-   * quietly if the play is replaced or nothing plays within the timeout.
-   */
-  const logWhenAudible = (
-    request: ReturnType<typeof beginPlayRequest>,
-    startedAt: number,
-    steps: readonly string[],
-  ): void => {
-    let stop = (): void => undefined;
-    const check = (): void => {
-      if (!request.current()) {
-        stop();
-        return;
-      }
-      if (getState().playback.status !== "playing") return;
-      stop();
-      log(
-        `Play timing: audible after ${Math.round(performance.now() - startedAt)}ms (${steps.join(", ")}).`,
-      );
-    };
-    const unsubscribe = subscribe(check);
-    const timer = setTimeout(() => stop(), PLAY_TIMING_TIMEOUT_MS);
-    stop = () => {
-      unsubscribe();
-      clearTimeout(timer);
-    };
-    check();
-  };
-
-  const playTracks = async (
-    requestedTracks: readonly Track[],
-    requestedStart = 0,
-    timing?: PlayTiming,
-  ): Promise<number | undefined> => {
-    const startedAt = timing?.startedAt ?? performance.now();
-    const steps = [...(timing?.steps ?? [])];
-    let stepStartedAt = performance.now();
-    const step = (name: string): void => {
-      const now = performance.now();
-      steps.push(`${name} ${Math.round(now - stepStartedAt)}ms`);
-      stepStartedAt = now;
-    };
-    const instance = requireMusic();
-    if (requestedTracks.length === 0) throw new Error("Queue is empty");
-    if (
-      !Number.isInteger(requestedStart) ||
-      requestedStart < 0 ||
-      requestedStart >= requestedTracks.length
-    ) {
-      throw new Error("The selected song is unavailable.");
-    }
-    const shuffled = readPlaybackModes(instance).shuffleMode === "songs";
-    const split = startWindow(requestedTracks, requestedStart, shuffled);
-    let batch = split.batch;
-    let rest = split.rest;
-    clearContinuation();
-    const generation = restGeneration;
-    const request = beginPlayRequest();
-    if (rest.length) {
-      log(
-        `Queued ${batch.length} of ${requestedTracks.length} songs; the rest load as the queue plays.`,
-      );
-    }
-    clearPlaybackError();
-    let batchStart = split.startIndex;
-    setQueue([...batch], batchStart);
-    // The previous song's position would otherwise show until MusicKit's
-    // first time event, and Previous would read it as past the restart point.
-    setPlaybackPosition(0, (batch[batchStart]?.durationMs ?? 0) / 1000);
-    setPlaybackStatus("loading");
-    try {
-      // MusicKit's queue starts at the chosen song, so it never prepares a
-      // different item first. A batch with no playable song moves on to the
-      // next one rather than failing a Play that later songs could satisfy.
-      let resolved: Awaited<ReturnType<typeof withResolvableTracks>>;
-      let usedDetails = false;
-      const skippedBefore: Track[] = [];
-      for (let attempt = 1; ; attempt += 1) {
-        try {
-          resolved = await withResolvableTracks(batch, async (entries) => {
-            const queued = entries.map((entry) => entry.track);
-            const startWith = keptStartIndex(entries, batchStart);
-            const options = { ...queueOptionsForTracks(queued), startWith };
-            // Song details skip MusicKit's lookup; IDs are the fallback.
-            const detailed = queueDescriptorsForTracks(queued);
-            if (detailed) {
-              try {
-                await instance.setQueue({ ...detailed, startWith });
-                usedDetails = true;
-                return;
-              } catch (error) {
-                // Named unavailable songs go to the skip logic as with IDs.
-                if (!request.current() || unresolvedIds(error)) throw error;
-                log(
-                  `Queue setup with song details failed; using IDs: ${errorMessage(error)}`,
-                );
-              }
-            }
-            usedDetails = false;
-            try {
-              await instance.setQueue(options);
-            } catch (error) {
-              // One of MusicKit's song lookups can fail with an empty or
-              // HTML body (Apple throttling); try once more.
-              if (!isTransientLookupFailure(error) || !request.current()) {
-                throw error;
-              }
-              log(`Queue setup failed once; retrying: ${errorMessage(error)}`);
-              await delay(SET_QUEUE_RETRY_DELAY_MS);
-              // A newer Play during the pause owns MusicKit's queue now.
-              if (!request.current()) throw error;
-              await instance.setQueue(options);
-            }
-          });
-          break;
-        } catch (error) {
-          const unavailable =
-            error instanceof Error && error.message === NONE_AVAILABLE_MESSAGE;
-          if (
-            !unavailable ||
-            rest.length === 0 ||
-            attempt >= MAX_UNAVAILABLE_BATCHES ||
-            !request.current()
-          ) {
-            throw error;
-          }
-          skippedBefore.push(...batch);
-          batch = rest.slice(0, FIRST_BATCH_LENGTH);
-          rest = rest.slice(FIRST_BATCH_LENGTH);
-          batchStart = 0;
-          if (request.current()) setQueue([...batch], 0);
-        }
-      }
-      step(`setQueue (${batch.length} songs${usedDetails ? ", details" : ""})`);
-      let queue = resolved.entries.map((entry) => entry.track);
-      let start = keptStartIndex(resolved.entries, batchStart);
-      const skipped = [...skippedBefore, ...resolved.skipped];
-      if (skipped.length) {
-        log(`Skipped ${skipped.length} unavailable songs.`);
-        if (request.current()) {
-          setQueue(queue, start);
-          const message = skippedMessage(skipped.length);
-          if (message) reportActionError(new Error(message));
-        }
-      }
-      if (request.current()) {
-        startHistory = split.history;
-        historyAnchor = queue[start];
-      }
-      // Normally undefined: MusicKit already sits on the chosen song. Kept
-      // as a safety net for a runtime that reorders or drops items, and shows
-      // as a "select" step in the timing log when it is needed.
-      const index = providerStartIndex(instance, queue, start);
-      if (index !== undefined && request.current()) {
-        const selected = await changeToMediaAtIndex(instance, index);
-        if (!selected) {
-          throw new Error(
-            "Selecting a song in the MusicKit queue is not available in this runtime.",
-          );
-        }
-        step("select");
-      }
-      // The rest of the playlist is still recorded below for a paused queue.
-      let retriedById = false;
-      try {
-        await startAudio(instance, request);
-      } catch (error) {
-        // MusicKit took the song details but could not start them: queue the
-        // same songs by ID once, which makes it look them up first.
-        if (!usedDetails || !request.current()) throw error;
-        log(
-          `Playback from song details failed; retrying by ID: ${errorMessage(error)}`,
-        );
-        usedDetails = false;
-        retriedById = true;
-        // By ID MusicKit looks the songs up, so one it cannot resolve is
-        // dropped (or retried by its library ID) as on the first setup.
-        const retried = await withResolvableTracks(queue, async (entries) => {
-          await instance.setQueue({
-            ...queueOptionsForTracks(entries.map((entry) => entry.track)),
-            startWith: keptStartIndex(entries, start),
-          });
-        });
-        const retriedStart = keptStartIndex(retried.entries, start);
-        queue = retried.entries.map((entry) => entry.track);
-        start = retriedStart;
-        if (retried.skipped.length) {
-          log(`Skipped ${retried.skipped.length} unavailable songs.`);
-          if (request.current()) {
-            setQueue(queue, start);
-            const message = skippedMessage(retried.skipped.length);
-            if (message) reportActionError(new Error(message));
-          }
-        }
-        if (request.current()) historyAnchor = queue[start];
-        await startAudio(instance, request);
-      }
-      step(retriedById ? "play() after ID retry" : "play()");
-      if (generation === restGeneration) {
-        setRest(rest, queue.at(-1));
-        // The first batch is under the refill threshold; append the next
-        // songs now rather than on MusicKit's next event.
-        maybeRefillQueue();
-      }
-      logWhenAudible(request, startedAt, steps);
-      // Identifies this Play's queue for later pages (`appendContinuation`);
-      // undefined once a newer Play replaced it.
-      return request.current() && generation === restGeneration
-        ? generation
-        : undefined;
-    } catch (error) {
-      // A superseded or signed-out play reports nothing.
-      if (!request.current()) return undefined;
-      reportPlayFailure("Play failed", error);
-      throw error;
-    }
-  };
-
-  /**
-   * Play Next / Play Later. The local snapshot is captured before crossing
-   * the provider boundary: a queue event can replace app state while the
-   * call is awaiting, so a post-await read would lose the insertion index
-   * when MusicKit does not expose its queue yet. Resolves to the songs
-   * actually inserted; `quiet` logs skipped songs instead of showing a toast.
-   */
-  const insertTracks = async (
-    method: QueueInsertMethod,
-    tracks: readonly Track[] | readonly string[],
-    options: { quiet?: boolean; isCurrent?: () => boolean } = {},
-  ): Promise<Track[]> => {
-    const ids = trackIds(tracks);
-    if (ids.length === 0) throw new Error("At least one track is required.");
-    const allTracks = materializeTracks(tracks);
-    // Same request limit as playTracks; the first songs are kept in order.
-    const requestedTracks = allTracks.slice(0, MAX_QUEUE_LENGTH);
-    if (requestedTracks.length < allTracks.length) {
-      log(
-        `Added the first ${requestedTracks.length} of ${allTracks.length} songs to stay within Apple's request limits.`,
-      );
-    }
-    const currentQueue = getState().playback.queue;
-    const currentIndex = getState().playback.queueIndex;
-    if (currentQueue.length === 0) {
-      await playTracks(requestedTracks);
-      return requestedTracks;
-    }
-    const beforeQueue = [...currentQueue];
-    const snapshotIndex = Math.max(
-      0,
-      Math.min(currentIndex, beforeQueue.length - 1),
-    );
-    // A restored queue has no MusicKit queue until Play, so only the saved
-    // snapshot changes. Provider calls would otherwise hit an empty queue.
-    const restoring = getState().playback.pendingRestore !== undefined;
-    const instance = restoring
-      ? undefined
-      : (requireMusic() as unknown as Record<string, unknown>);
-    const insert = instance?.[method];
-    if (instance && typeof insert !== "function") {
-      throw new Error(
-        method === "playNext"
-          ? "Play Next is not available in this MusicKit runtime."
-          : "Play Later is not available in this MusicKit runtime.",
-      );
-    }
-    const byId = typeof tracks[0] === "string";
-    // One unavailable song would otherwise reject the whole insertion.
-    const { entries, skipped } = await withResolvableTracks(
-      requestedTracks,
-      async (attempt) => {
-        if (!instance || typeof insert !== "function") return;
-        // A refill for a queue that was replaced must not reach the provider.
-        if (options.isCurrent?.() === false) return;
-        const run = (queueOptions: MusicKit.QueueOptions): Promise<void> =>
-          (insert as (options: MusicKit.QueueOptions) => Promise<void>).call(
-            instance,
-            queueOptions,
-          );
-        const attemptTracks = attempt.map((entry) => entry.track);
-        // Song details skip MusicKit's lookup (one request per 16 songs).
-        const detailed = byId
-          ? undefined
-          : queueDescriptorsForTracks(attemptTracks);
-        if (detailed) {
-          try {
-            await run(detailed);
-            return;
-          } catch (error) {
-            if (unresolvedIds(error) || options.isCurrent?.() === false) {
-              throw error;
-            }
-            log(
-              `Adding songs by details failed; using IDs: ${errorMessage(error)}`,
-            );
-          }
-        }
-        await run(
-          byId
-            ? { songs: attemptTracks.map((track) => track.id) }
-            : queueOptionsForTracks(attemptTracks),
-        );
-      },
-    );
-    if (options.isCurrent?.() === false) return [];
-    const normalizedTracks = entries.map((entry) => entry.track);
-    if (skipped.length) {
-      log(`Skipped ${skipped.length} unavailable songs.`);
-      const message = skippedMessage(skipped.length);
-      if (message && !options.quiet) reportActionError(new Error(message));
-    }
-    const expectedQueue = [...beforeQueue];
-    if (method === "playNext") {
-      expectedQueue.splice(snapshotIndex + 1, 0, ...normalizedTracks);
-    } else {
-      expectedQueue.push(...normalizedTracks);
-    }
-    if (!instance) {
-      setQueue(expectedQueue, snapshotIndex);
-      return normalizedTracks;
-    }
-    // A replaced queue or a moved selection happened during the await. It is
-    // newer than this insertion, so the captured snapshot must not overwrite
-    // it. Checked before the provider sync, which may read a stale queue.
-    const latest = getState().playback;
-    if (
-      !sameTrackIds(latest.queue, beforeQueue) ||
-      latest.queueIndex !== currentIndex
-    ) {
-      return normalizedTracks;
-    }
-    const synced = syncMusicKitQueue(
-      instance as unknown as MusicKit.MusicKitInstance,
-    );
-    // MusicKit can acknowledge the operation before publishing its updated
-    // queue. Keep the provider snapshot when it contains the requested
-    // mutation; otherwise use the captured local snapshot deterministically
-    // until queueItemsDidChange reports the authoritative queue.
-    if (synced && sameTrackIds(getState().playback.queue, expectedQueue)) {
-      return normalizedTracks;
-    }
-    setQueueSnapshot(expectedQueue, snapshotIndex);
-    return normalizedTracks;
-  };
-
-  /**
-   * Appends the next songs of a capped playlist once fewer than
-   * QUEUE_REFILL_THRESHOLD upcoming songs remain. Runs once at a time; a new
-   * play or `Clear` drops a refill that is still in flight.
-   */
-  const maybeRefillQueue = (): void => {
-    if (refilling || queueRest.length === 0) return;
-    const { queue, queueIndex } = getState().playback;
-    if (queue.length === 0) return;
-    if (!queue.some((track) => isSameTrack(track, restAnchor))) {
-      log("Queue was replaced; dropping the rest of the previous playlist.");
-      clearContinuation();
-      return;
-    }
-    if (queue.length - queueIndex - 1 >= QUEUE_REFILL_THRESHOLD) return;
-    const generation = restGeneration;
-    const chunk = queueRest.slice(0, QUEUE_REFILL_SIZE);
-    const instance = getMusic();
-    const shuffled =
-      instance !== undefined &&
-      instance !== null &&
-      readPlaybackModes(instance).shuffleMode === "songs";
-    refilling = true;
-    let inserted: Track[] = [];
-    // A background refill never toasts; the user did not start it.
-    void insertTracks("playLater", shuffled ? shuffledCopy(chunk) : chunk, {
-      quiet: true,
-      isCurrent: () => generation === restGeneration,
-    })
-      .then((tracks) => {
-        inserted = tracks;
-      })
-      .catch((error: unknown) => {
-        log(`Queue refill failed: ${errorMessage(error)}`);
-      })
-      .finally(() => {
-        refilling = false;
-        // The chunk is consumed even on failure so a bad page cannot loop.
-        if (generation === restGeneration) {
-          setRest(queueRest.slice(chunk.length), inserted.at(-1));
-        }
-      });
-  };
-
-  /**
-   * Appends songs that finished loading after their Play started (the later
-   * pages of a playlist). `token` is `continuationToken()` from right after
-   * that Play; a newer queue makes it stale and the songs are dropped.
-   */
-  const appendContinuation = (
-    token: number,
-    tracks: readonly Track[],
-  ): void => {
-    if (token !== restGeneration || tracks.length === 0) return;
-    const anchor = restAnchor ?? getState().playback.queue.at(-1);
-    if (!anchor) return;
-    setRest([...queueRest, ...tracks], anchor);
-    maybeRefillQueue();
-  };
+  // Continuation refills go through `insert`, which is declared below; the
+  // lookup happens only when a refill runs, after both exist.
+  const continuation = createQueueContinuation(shared, {
+    insertTracks: (method, tracks, options) =>
+      insert.insertTracks(method, tracks, options),
+  });
+  const { clearContinuation, maybeRefillQueue, appendContinuation } =
+    continuation;
+  const { playTracks } = createPlayTracks(shared, continuation, requests);
+  const insert = createQueueInsert(shared, { playTracks });
+  const { insertTracks } = insert;
 
   return {
     applyPlaybackVolume,
@@ -730,7 +244,7 @@ export function createPlayback(context: ControllerContext) {
     clearContinuation,
     appendContinuation,
     /** Identifies the current queue for `appendContinuation`. */
-    continuationToken: (): number => restGeneration,
+    continuationToken: continuation.continuationToken,
 
     /**
      * The whole queue as the user sees it: the songs before the one a Play
@@ -741,13 +255,13 @@ export function createPlayback(context: ControllerContext) {
       const { queue, queueIndex, pendingRestore } = getState().playback;
       if (pendingRestore) return { tracks: [...queue], index: queueIndex };
       const history =
-        queue[0] !== undefined && isSameTrack(queue[0], historyAnchor)
-          ? startHistory
+        queue[0] !== undefined && isSameTrack(queue[0], session.historyAnchor)
+          ? session.startHistory
           : [];
       const rest =
-        queueRest.length > 0 &&
-        queue.some((track) => isSameTrack(track, restAnchor))
-          ? queueRest
+        session.queueRest.length > 0 &&
+        queue.some((track) => isSameTrack(track, session.restAnchor))
+          ? session.queueRest
           : [];
       return {
         tracks: [...history, ...queue, ...rest],
@@ -935,7 +449,7 @@ export function createPlayback(context: ControllerContext) {
         if (instance.playbackState === MusicKit.PlaybackStates.playing) {
           pausePlayback();
         } else {
-          playPressedAt = pauseCount;
+          session.playPressedAt = session.pauseCount;
         }
         await toggle(instance);
       } catch (error) {
@@ -946,7 +460,7 @@ export function createPlayback(context: ControllerContext) {
 
     async play(): Promise<void> {
       const instance = requireMusic();
-      playPressedAt = pauseCount;
+      session.playPressedAt = session.pauseCount;
       await instance.play();
     },
 
@@ -961,12 +475,12 @@ export function createPlayback(context: ControllerContext) {
      * Returns a function that removes the listener.
      */
     onPause(listener: () => void): () => void {
-      pauseListeners.add(listener);
-      return () => pauseListeners.delete(listener);
+      session.pauseListeners.add(listener);
+      return () => session.pauseListeners.delete(listener);
     },
 
     /** Changes with every play request; tells a caller its play was replaced. */
-    playIntent: (): number => playIntent,
+    playIntent: (): number => session.playIntent,
 
     /** Supersedes a play still awaiting queue setup (sign-out, authorization). */
     cancelPendingPlayback,
@@ -1014,11 +528,11 @@ export function createPlayback(context: ControllerContext) {
           queueIndex === 0 &&
           positionSeconds < RESTART_THRESHOLD_SECONDS &&
           queue[0] !== undefined &&
-          isSameTrack(queue[0], historyAnchor);
-        if (onStartSong && startHistory.length > 0) {
-          const history = startHistory;
+          isSameTrack(queue[0], session.historyAnchor);
+        if (onStartSong && session.startHistory.length > 0) {
+          const history = session.startHistory;
           await playTracks(
-            [...history, ...queue, ...queueRest],
+            [...history, ...queue, ...session.queueRest],
             history.length - 1,
           );
           return;

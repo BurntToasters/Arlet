@@ -63,8 +63,130 @@ export function safeNextPath(
     return undefined;
   }
   if (url.origin !== APPLE_ORIGIN) return undefined;
-  if (!allowedPrefixes.some((prefix) => url.pathname.startsWith(prefix))) {
-    return undefined;
+  // The raw and normalized paths must both match, so `..` or `%2e` segments
+  // cannot move a path that looked allowed into another area of the API.
+  const rawPath = next.split(/[?#]/, 1)[0] ?? next;
+  const allowed = allowedPrefixes.some(
+    (prefix) => url.pathname.startsWith(prefix) && rawPath.startsWith(prefix),
+  );
+  if (!allowed) return undefined;
+  return `${url.pathname}${url.search}`;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/**
+ * The first resource array found by walking known wrapper keys, up to a fixed
+ * depth. Prefer `dataArray` for Apple's standard shapes. Use this walker when
+ * the wrapper varies, such as SDK envelopes or library responses.
+ */
+export function findResourceArray(
+  value: unknown,
+  depth = 0,
+): unknown[] | undefined {
+  if (depth > 8) return undefined;
+  if (Array.isArray(value)) return value;
+  const record = asRecord(value);
+  if (!record) return undefined;
+
+  // Standard Apple response shape and common SDK envelope shape.
+  if (Array.isArray(record.data)) return record.data;
+  for (const key of [
+    "data",
+    "results",
+    "resources",
+    "items",
+    "songs",
+    "albums",
+    "artists",
+    "playlists",
+    "tracks",
+    "library-songs",
+    "library-albums",
+    "library-artists",
+    "library-playlists",
+    "library-music-videos",
+  ]) {
+    const found = findResourceArray(record[key], depth + 1);
+    if (found) return found;
   }
-  return next;
+  return undefined;
+}
+
+/**
+ * The first `next` cursor found by walking known wrapper keys, up to a fixed
+ * depth. Pass the result to `safeNextPath`; it is not validated here.
+ */
+export function findNextValue(value: unknown, depth = 0): string | undefined {
+  if (depth > 8 || Array.isArray(value)) return undefined;
+  const record = asRecord(value);
+  if (!record) return undefined;
+  const next = nonEmptyString(record.next);
+  if (next) return next;
+  const links = asRecord(record.links);
+  const linkNext = nonEmptyString(links?.next);
+  if (linkNext) return linkNext;
+  for (const key of [
+    "data",
+    "results",
+    "resources",
+    "items",
+    "meta",
+    "songs",
+    "albums",
+    "artists",
+    "playlists",
+    "tracks",
+    "library-playlists",
+    "library-songs",
+  ]) {
+    const found = findNextValue(record[key], depth + 1);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+/**
+ * The first non-negative finite `total` found by walking known wrapper keys,
+ * up to a fixed depth. A `meta.total` counts too.
+ */
+export function findTotal(value: unknown, depth = 0): number | undefined {
+  if (depth > 8 || Array.isArray(value)) return undefined;
+  const record = asRecord(value);
+  if (!record) return undefined;
+  const directTotal = record.total;
+  if (
+    typeof directTotal === "number" &&
+    Number.isFinite(directTotal) &&
+    directTotal >= 0
+  ) {
+    return directTotal;
+  }
+  const meta = asRecord(record.meta);
+  if (
+    typeof meta?.total === "number" &&
+    Number.isFinite(meta.total) &&
+    meta.total >= 0
+  ) {
+    return meta.total;
+  }
+  for (const key of [
+    "data",
+    "results",
+    "resources",
+    "items",
+    "songs",
+    "albums",
+    "artists",
+    "playlists",
+    "tracks",
+    "library-playlists",
+    "library-songs",
+  ]) {
+    const found = findTotal(record[key], depth + 1);
+    if (found !== undefined) return found;
+  }
+  return undefined;
 }

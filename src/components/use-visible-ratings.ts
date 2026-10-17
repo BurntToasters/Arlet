@@ -40,6 +40,34 @@ function queueRating(target: RatingTarget, key: string): void {
   flushTimer = window.setTimeout(flushWaiting, BATCH_DELAY_MS);
 }
 
+type VisibleListener = () => void;
+
+// One observer serves every rating row instead of one per row. The margin is
+// the same for all rows, and the default viewport root clips rows that sit
+// inside a scroll container, so a single observer covers each scroll root.
+const visibleListeners = new Map<Element, VisibleListener>();
+let sharedVisibleObserver: IntersectionObserver | undefined;
+
+function observeVisible(
+  element: Element,
+  listener: VisibleListener,
+): () => void {
+  sharedVisibleObserver ??= new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) visibleListeners.get(entry.target)?.();
+      }
+    },
+    { rootMargin: VIEW_MARGIN },
+  );
+  visibleListeners.set(element, listener);
+  sharedVisibleObserver.observe(element);
+  return () => {
+    sharedVisibleObserver?.unobserve(element);
+    visibleListeners.delete(element);
+  };
+}
+
 /**
  * Queues a rating lookup for a row once it nears the viewport. Lookups run
  * only for a signed-in, online app. Attach the returned ref to the row element.
@@ -66,16 +94,9 @@ export function useVisibleRatingLookup<T extends HTMLElement>(
       queue();
       return undefined;
     }
-    // Stays connected, so a row that scrolls back into view is queued again.
+    // Stays observed, so a row that scrolls back into view is queued again.
     // Ids already stored or in flight are skipped, so this costs little.
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) queue();
-      },
-      { rootMargin: VIEW_MARGIN },
-    );
-    observer.observe(element);
-    return () => observer.disconnect();
+    return observeVisible(element, queue);
   }, [online, key]);
   return ref;
 }

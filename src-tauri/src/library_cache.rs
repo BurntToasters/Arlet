@@ -140,6 +140,10 @@ fn is_corruption(error: &rusqlite::Error) -> bool {
 /// Cache commands are async and off the UI thread, so the wait is harmless.
 const WRITE_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// Reads have their own connection, so a short wait is enough for the rare
+/// WAL recovery or checkpoint race; a longer one would only stall a page.
+const READ_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 fn open_and_migrate(path: &std::path::Path) -> Result<Connection, OpenError> {
     let sqlite = |error: rusqlite::Error| OpenError {
         disposable: is_corruption(&error),
@@ -639,10 +643,15 @@ pub fn clear(conn: &mut Connection, scope: &str) -> Result<(), String> {
 }
 
 /// Lazily opened connection in the local app data dir; a cache in the former
-/// roaming location is moved there on first open.
+/// roaming location is moved there on first open. Writes use `connection`;
+/// reads use `reader`, so a write waiting on the busy timeout does not block them.
 #[derive(Default)]
 pub struct LibraryCacheState {
     connection: std::sync::Mutex<Option<Connection>>,
+    reader: std::sync::Mutex<Option<Connection>>,
+    /// Set once `connection` has opened and migrated, so reads can skip the
+    /// write mutex until then.
+    ready: std::sync::atomic::AtomicBool,
     /// Set once the deferred VACUUM check is queued, so it runs once per launch.
     compaction_queued: std::sync::atomic::AtomicBool,
 }
@@ -670,7 +679,15 @@ fn with_conn<T>(
         if let Ok(legacy_dir) = app.path().app_config_dir() {
             move_legacy_cache(&legacy_dir.join(DATABASE_FILE), &path);
         }
+        // A reader must never outlive the file it was opened on.
+        *state
+            .reader
+            .lock()
+            .map_err(|_| "Library cache lock poisoned".to_string())? = None;
         *guard = Some(open_at(&path)?);
+        state
+            .ready
+            .store(true, std::sync::atomic::Ordering::Release);
     }
     let result = run(guard.as_mut().expect("connection opened above"));
     if result.is_ok()
@@ -685,6 +702,41 @@ fn with_conn<T>(
     result
 }
 
+/// Read-only connection that starts after the writer has migrated the file.
+/// WAL lets it read the last commit while a writer waits or holds the lock.
+fn open_read_only(path: &std::path::Path) -> Result<Connection, String> {
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(sql_error)?;
+    conn.busy_timeout(READ_BUSY_TIMEOUT).map_err(sql_error)?;
+    conn.pragma_update(None, "query_only", true)
+        .map_err(sql_error)?;
+    Ok(conn)
+}
+
+/// Runs a read on the reader connection inside one transaction, so a section
+/// read cannot mix pages from before and after a concurrent write.
+fn with_read_conn<T>(
+    app: &tauri::AppHandle,
+    run: impl FnOnce(&Connection) -> Result<T, String>,
+) -> Result<T, String> {
+    use tauri::Manager;
+    let state = app.state::<LibraryCacheState>();
+    if !state.ready.load(std::sync::atomic::Ordering::Acquire) {
+        // The first command opens and migrates the file on the write path.
+        with_conn(app, |_| Ok(()))?;
+    }
+    let mut guard = state
+        .reader
+        .lock()
+        .map_err(|_| "Library cache lock poisoned".to_string())?;
+    if guard.is_none() {
+        *guard = Some(open_read_only(&database_path(app)?)?);
+    }
+    let conn = guard.as_ref().expect("reader opened above");
+    let tx = conn.unchecked_transaction().map_err(sql_error)?;
+    run(&tx)
+}
+
 #[tauri::command(async)]
 pub fn library_cache_read_page(
     app: tauri::AppHandle,
@@ -692,7 +744,7 @@ pub fn library_cache_read_page(
     section: String,
     cursor: Option<String>,
 ) -> Result<Option<CachedPageView>, String> {
-    with_conn(&app, |conn| {
+    with_read_conn(&app, |conn| {
         read_page(conn, &scope, &section, cursor.as_deref())
     })
 }
@@ -703,7 +755,7 @@ pub fn library_cache_read_section(
     scope: String,
     section: String,
 ) -> Result<Option<CachedPageView>, String> {
-    with_conn(&app, |conn| read_section(conn, &scope, &section))
+    with_read_conn(&app, |conn| read_section(conn, &scope, &section))
 }
 
 #[tauri::command(async)]
@@ -735,7 +787,7 @@ pub fn library_cache_get_meta(
     app: tauri::AppHandle,
     scope: String,
 ) -> Result<Option<CacheMeta>, String> {
-    with_conn(&app, |conn| get_meta(conn, &scope))
+    with_read_conn(&app, |conn| get_meta(conn, &scope))
 }
 
 #[tauri::command(async)]
@@ -988,6 +1040,37 @@ mod tests {
         let conn = open_at(&corrupt).unwrap();
         assert!(read_section(&conn, "s", "songs").unwrap().is_none());
         drop(conn);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Failure modes: a read on the reader connection waits for or fails
+    // behind an open write transaction; the reader shows uncommitted rows;
+    // the reader connection can write.
+    #[test]
+    fn read_succeeds_while_write_transaction_is_open() {
+        let dir = scoped_dir("reader");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("arlet-library.db");
+        let mut writer = open_at(&path).unwrap();
+        write_page(
+            &mut writer,
+            "s",
+            "songs",
+            &page(None, songs("a", 3), None, 1),
+        )
+        .unwrap();
+        let open = writer
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        open.execute("DELETE FROM music_pages", []).unwrap();
+        let reader = open_read_only(&path).unwrap();
+        let read = read_section(&reader, "s", "songs").unwrap().unwrap();
+        assert_eq!(read_ids(&read.items), ["a-0", "a-1", "a-2"]);
+        assert!(reader.execute("DELETE FROM music_pages", []).is_err());
+        drop(open);
+        drop(reader);
+        drop(writer);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

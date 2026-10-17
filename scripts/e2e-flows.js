@@ -111,10 +111,28 @@ async function addToPlaylist({ page, check }) {
   await fixtureCall(page, "reset");
   await page.evaluate(`location.hash = "#/home"; return true;`);
   const opened = await clickMenuItem(page, "song-a", "add-to-playlist");
+  // The picker lists playlists only after its library load answers (the
+  // fixture delays it 800 ms, and a refresh left by an earlier scenario can
+  // run alongside it), so wait for the rendered option, not a fixed pause.
+  const pickerTimeoutMs = 20000;
+  const dialogShown = await waitFor(
+    page,
+    `document.querySelector(".playlist-dialog-backdrop")`,
+    pickerTimeoutMs,
+  );
   const listed = await waitFor(
     page,
     `[...document.querySelectorAll(".playlist-dialog-option")].some((node) => node.textContent.includes("Fixture Playlist"))`,
+    pickerTimeoutMs,
   );
+  const picker = await page.evaluate(`
+    return {
+      options: [...document.querySelectorAll(".playlist-dialog-option")].map((node) => node.textContent),
+      feedback: document.querySelector(".playlist-dialog-feedback")?.textContent ?? null,
+      playlistRequests: ${FIXTURE}.snapshot().requests
+        .filter((request) => request.path.includes("/v1/me/library/playlists"))
+        .map((request) => ({ method: request.method, path: request.path, error: request.error })),
+    };`);
   const since = (await fixtureCall(page, "snapshot")).requests.length;
   await page.evaluate(`
     [...document.querySelectorAll(".playlist-dialog-option")]
@@ -136,7 +154,7 @@ async function addToPlaylist({ page, check }) {
       listed &&
       closed &&
       JSON.stringify(added?.body ?? "").includes("song-a"),
-    { opened, listed, closed, added },
+    { opened, dialogShown, listed, closed, added, picker },
   );
 }
 

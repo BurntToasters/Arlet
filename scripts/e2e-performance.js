@@ -39,6 +39,16 @@ const METRICS = [
 // Ceilings. null records only; a number makes its check fail above it.
 const LIBRARY_CARD_MAX = 600; // mounted cards in one library grid
 const UP_NEXT_ROW_MAX = 120; // mounted Up Next rows
+// Live elements (document.getElementsByTagName("*")) while a grid is scrolled.
+// One card is 16 elements: the shell, the open button, the artwork box with
+// its img (or initials), the copy block (3), the actions box, the Play button
+// with its icon (2), and the "..." button with its icon (4). Measured native
+// run: album grid max 3,452 elements (top 1,852, back to top 645); artist grid
+// max 2,852. 5,000 is about 1.45x the album max, so a regrowth of the kind that
+// stayed unseen before (CDP Nodes 9,154 with uncollected detached nodes) fails.
+const GRID_NODES_MAX = 5000;
+// Elements a grid may keep after scrolling to the end and back to the top.
+const GRID_LEAK_MARGIN = 50;
 
 // Records the img src of 42 px thumbnails and the hero as they are set.
 // Artwork removes the img when its host fails to load, so reading the DOM
@@ -163,6 +173,18 @@ async function runCheck(check, name, body) {
   }
 }
 
+/**
+ * Live elements, which the grid's own markup decides. CDP's Nodes also counts
+ * text nodes and detached nodes, so it is read only after a collection.
+ */
+const liveElements = (page) =>
+  page.evaluate("return document.getElementsByTagName('*').length;");
+
+/** Collects garbage so detached nodes do not inflate the Nodes metric. */
+async function collectGarbage(page) {
+  await page.send("HeapProfiler.collectGarbage").catch(() => undefined);
+}
+
 const sectionCards = (label) =>
   `document.querySelectorAll('section[aria-label="${label}"] .library-card').length`;
 
@@ -198,6 +220,11 @@ async function scrollLibrary(page, section, label) {
   const loadedNow = () => page.evaluate(`return ${libraryLoaded(path)};`);
   let maxCards = await sampleCards();
   let { loaded: items } = await loadedNow();
+  // The top of the grid is the baseline for the leak check below.
+  await sleep(SETTLE_MS);
+  await collectGarbage(page);
+  const topElements = await liveElements(page);
+  let maxElements = topElements;
   let steps = 0;
   let reachedEnd = false;
   while (steps < LIBRARY_MAX_STEPS) {
@@ -221,13 +248,27 @@ async function scrollLibrary(page, section, label) {
     await sleep(100);
     ({ loaded: items } = await loadedNow());
     maxCards = Math.max(maxCards, await sampleCards());
+    maxElements = Math.max(maxElements, await liveElements(page));
     if (!advanced) break;
   }
   const finalCards = await sampleCards();
   const totals = await loadedNow();
+  maxElements = Math.max(maxElements, await liveElements(page));
+  // Back at the top the window is the one the first sample saw, so any
+  // element left behind by the rows that scrolled out shows up here.
+  await page.evaluate(`
+    const scroller = document.querySelector('.content-scroll');
+    if (scroller) scroller.scrollTop = 0;
+    return true;`);
+  await sleep(SETTLE_MS);
+  await collectGarbage(page);
+  const backToTopElements = await liveElements(page);
   return {
     maxCards: Math.max(maxCards, finalCards),
     finalCards,
+    maxElements,
+    topElements,
+    backToTopElements,
     steps,
     reachedEnd,
     loaded: totals.loaded,
@@ -374,9 +415,16 @@ export async function runPerformance({ page, check, dataDir }) {
         );
         const within =
           LIBRARY_CARD_MAX === null || scroll.maxCards <= LIBRARY_CARD_MAX;
+        const nodesWithin =
+          GRID_NODES_MAX === null || scroll.maxElements <= GRID_NODES_MAX;
+        // Growth only: an end state smaller than the top is not a leak.
+        const leakFree =
+          scroll.backToTopElements - scroll.topElements <= GRID_LEAK_MARGIN;
         return {
           passed:
             within &&
+            nodesWithin &&
+            leakFree &&
             scroll.maxCards > 0 &&
             scroll.reachedEnd &&
             scroll.loaded === LIBRARY_SIZE,
@@ -384,6 +432,9 @@ export async function runPerformance({ page, check, dataDir }) {
             librarySize: LIBRARY_SIZE,
             expectedLoaded: LIBRARY_SIZE,
             ceiling: LIBRARY_CARD_MAX,
+            nodeCeiling: GRID_NODES_MAX,
+            leakMargin: GRID_LEAK_MARGIN,
+            leakGrowth: scroll.backToTopElements - scroll.topElements,
             ...scroll,
           },
         };

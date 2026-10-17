@@ -1,4 +1,4 @@
-import { asRecord } from "./response.ts";
+import { asRecord, responseBody } from "./response.ts";
 import type {
   Album,
   Artist,
@@ -139,11 +139,13 @@ function resourceWithRelationships(value: unknown): {
   resource: AppleMusicResource;
   included: unknown[];
 } {
-  const outer = asRecord(value);
   // MusicKit v3 wraps the JSON body as `{ request, response, data }`.
-  const body = asRecord(outer?.data);
+  // A resource with its own `id` is the data itself, not an envelope.
+  const body = responseBody(value);
   const root =
-    body && typeof body.id !== "string" && "data" in body ? body : outer;
+    body && typeof body.id !== "string" && "data" in body
+      ? body
+      : asRecord(value);
   const data = root?.data;
   const firstData = Array.isArray(data) ? data[0] : data;
   const candidate = asRecord(firstData);

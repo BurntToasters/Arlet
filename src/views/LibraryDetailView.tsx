@@ -511,7 +511,7 @@ export function LibraryDetailView({
   id: string;
   source?: DetailSource;
 }): JSX.Element {
-  const state = useAppSlices("auth", "initialization", "library", "ui");
+  const state = useAppSlices("auth", "initialization", "library");
   const controller = useAppController();
   const sourceDetail =
     source === "catalog" ? readDetail(state, kind, `catalog:${id}`) : undefined;
@@ -681,7 +681,7 @@ export function LibraryDetailView({
         source: playbackSource,
       }),
     );
-  const pending = state.ui.pendingCollection;
+  const pending = useAppSelector((store) => store.ui.pendingCollection);
   const collectionBusy =
     kind !== "artist" && pending?.kind === kind && pending.id === id;
 

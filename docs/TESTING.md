@@ -390,7 +390,9 @@ closing the window quits.
 - A Play leaves no timing line in `arlet.log`, so a slow start reported by
   a user cannot be broken down into page loads, queue setup, and play.
 - Add to playlist sends the song to the wrong playlist, or the dialog stays
-  open after a successful add.
+  open after a successful add. The picker lists no playlist in time (a slow
+  library load): the check waits up to 20 seconds for the option and reports
+  the dialog, its feedback text, and the playlist requests in `detail`.
 - New playlist drops the typed name or the selected song, or a late reply
   closes a dialog opened after it.
 - The copied diagnostics report is empty, lacks the app version, or contains
@@ -433,7 +435,8 @@ volume drag, a large library, Up Next, and artwork sizes. Every number is
 written to the check `detail` and lands in `report.json`.
 
 The metrics are relative. A report records numbers from one machine and one
-run. Two ceilings are set; a check fails when its count is above one:
+run. Three ceilings and one leak check are set; a check fails when its count
+is above its ceiling:
 
 - `LIBRARY_CARD_MAX` (600): `.library-card` elements mounted in one library
   grid. The grid is virtualized, so this measures the viewport window, not the
@@ -441,8 +444,26 @@ run. Two ceilings are set; a check fails when its count is above one:
   reach the end (no `.library-load-more`) and the fixture to have answered all
   5000 items, counted by distinct id. Each step scrolls `.content-scroll` to
   its bottom and samples the mounted card count.
+- `GRID_NODES_MAX` (5000): live elements (`getElementsByTagName("*")`) in the
+  page, the largest value sampled while the album and artist grids scroll. A
+  card is 16 elements (shell, open button, artwork box and img, copy block,
+  actions box, Play button and icon, "..." button and icon). Measured in a
+  native run: album grid max 3,452 elements (top 1,852, back to top 645);
+  artist grid max 2,852. 5000 is about 1.45 times the album max. After the
+  album scroll, CDP `Nodes` fell from 9,154 to 4,003 once garbage was
+  collected, so the earlier growth was uncollected detached nodes, not live DOM.
+- Leak check (`GRID_LEAK_MARGIN`, 50): after the scroll reaches the end, the
+  scroller goes back to `scrollTop = 0`. The live element count there must not
+  exceed the count at the top by more than 50. Growth only; a smaller count is
+  not a leak. Both counts are read after `HeapProfiler.collectGarbage`, so a
+  detached subtree still held by JavaScript shows up as growth.
 - `UP_NEXT_ROW_MAX` (120): `.now-playing-queue > li` rows that are not
   `aria-hidden`. The virtual spacer rows are not counted.
+
+CDP `Nodes` is still in each detail, but it also counts text nodes and detached
+nodes that have not been collected, so it is a context figure, not a ceiling.
+The grid detail records `topElements`, `maxElements`, `backToTopElements`,
+`leakGrowth`, `nodeCeiling`, `leakMargin` and `maxCards` for each library.
 
 The volume drag is checked on disk, not by counting IPC calls. Tauri defines
 `__TAURI_INTERNALS__.invoke` as non-writable, so the save is observed through

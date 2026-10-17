@@ -66,7 +66,8 @@ export function liveSubtitle(
 }
 
 export function PlayerBar(): JSX.Element {
-  const state = useAppSlices("initialization", "playback", "ui");
+  const state = useAppSlices("initialization", "playback");
+  const queueOpen = useAppSelector((store) => store.ui.queueOpen);
   const controller = useAppController();
   const router = useAppRouter();
   const playback = state.playback;
@@ -322,8 +323,8 @@ export function PlayerBar(): JSX.Element {
         <IconButton
           icon={ListMusic}
           label="Toggle Playing Next"
-          pressed={state.ui.queueOpen}
-          className={state.ui.queueOpen ? "is-active" : ""}
+          pressed={queueOpen}
+          className={queueOpen ? "is-active" : ""}
           onClick={controller.toggleQueue}
         />
       </div>

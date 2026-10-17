@@ -78,14 +78,14 @@ function useDialogPresence(open: boolean): {
 /** Full-window Now Playing view. Mounted while open and through its exit. */
 export function NowPlaying(): JSX.Element | null {
   // Only `ui` decides mounting; playback ticks re-render the dialog alone.
-  const { ui } = useAppSlices("ui");
-  const { rendered, closing } = useDialogPresence(ui.nowPlayingOpen);
+  const nowPlayingOpen = useAppSelector((store) => store.ui.nowPlayingOpen);
+  const { rendered, closing } = useDialogPresence(nowPlayingOpen);
   if (!rendered) return null;
   return <NowPlayingDialog closing={closing} />;
 }
 
 function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
-  const state = useAppSlices("initialization", "playback", "ui");
+  const state = useAppSlices("initialization", "playback");
   const controller = useAppController();
   const router = useAppRouter();
   const dialogRef = useRef<HTMLDivElement>(null);

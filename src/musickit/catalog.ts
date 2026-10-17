@@ -27,7 +27,6 @@ export interface SearchResourceGroups {
 
 function resourceData(raw: unknown, type: string): AppleMusicResource[] {
   if (Array.isArray(raw)) return raw as AppleMusicResource[];
-  const root = asRecord(raw);
   const results = resultsOf(raw);
   const typed = asRecord(results?.[type]);
   const data = typed?.data;
@@ -50,8 +49,7 @@ function resourceData(raw: unknown, type: string): AppleMusicResource[] {
     return [];
   }
   if (Array.isArray(results?.data)) return results.data as AppleMusicResource[];
-  if (Array.isArray(root?.data)) return root.data as AppleMusicResource[];
-  return [];
+  return dataArray(raw) as AppleMusicResource[];
 }
 
 function normalizeResourceList<T>(

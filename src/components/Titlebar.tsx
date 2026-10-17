@@ -20,6 +20,7 @@ import appIconUrl from "../assets/app-icon.png";
 import {
   useAppController,
   useAppRouter,
+  useAppSelector,
   useAppSlices,
 } from "../app/context.tsx";
 import { setUiState, type RuntimeAppState } from "../state.ts";
@@ -63,8 +64,9 @@ export function Titlebar(): JSX.Element {
     "initialization",
     "library",
     "navigation",
-    "ui",
   );
+  const sidebarOpen = useAppSelector((store) => store.ui.sidebarOpen);
+  const diagnosticsOpen = useAppSelector((store) => store.ui.diagnosticsOpen);
   const controller = useAppController();
   const router = useAppRouter();
   const maximizeButton = useRef<HTMLButtonElement>(null);
@@ -233,7 +235,7 @@ export function Titlebar(): JSX.Element {
         className="mobile-menu-button icon-button"
         type="button"
         aria-label="Open navigation"
-        onClick={() => setUiState({ sidebarOpen: !state.ui.sidebarOpen })}
+        onClick={() => setUiState({ sidebarOpen: !sidebarOpen })}
         data-no-drag
       >
         <Menu aria-hidden="true" size={18} strokeWidth={1.9} />
@@ -377,10 +379,10 @@ export function Titlebar(): JSX.Element {
 
       {showDiagnostics ? (
         <button
-          className={`titlebar-debug icon-button ${state.ui.diagnosticsOpen ? "is-active" : ""}`.trim()}
+          className={`titlebar-debug icon-button ${diagnosticsOpen ? "is-active" : ""}`.trim()}
           type="button"
           aria-label="Toggle developer diagnostics"
-          aria-pressed={state.ui.diagnosticsOpen}
+          aria-pressed={diagnosticsOpen}
           onClick={controller.toggleDiagnostics}
           data-no-drag
         >
