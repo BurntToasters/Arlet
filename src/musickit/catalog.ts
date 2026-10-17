@@ -6,6 +6,7 @@ import type {
   Track,
 } from "../domain/music.ts";
 import { httpStatusOf, mapErrorToCode } from "./errors.ts";
+import { asRecord, dataArray, resultsOf } from "./response.ts";
 import {
   normalizeAlbumResource,
   normalizeArtistResource,
@@ -24,16 +25,10 @@ export interface SearchResourceGroups {
   playlists: Playlist[];
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object") return null;
-  return value as Record<string, unknown>;
-}
-
 function resourceData(raw: unknown, type: string): AppleMusicResource[] {
   if (Array.isArray(raw)) return raw as AppleMusicResource[];
   const root = asRecord(raw);
-  const payload = asRecord(root?.data) ?? root;
-  const results = asRecord(payload?.results) ?? payload;
+  const results = resultsOf(raw);
   const typed = asRecord(results?.[type]);
   const data = typed?.data;
   if (Array.isArray(data)) return data as AppleMusicResource[];
@@ -304,9 +299,10 @@ function rawMusicKitMusicRequest(
 }
 
 export function storefrontFromMeResponse(raw: unknown): string | null {
-  const root = asRecord(raw);
-  const data = root?.data;
-  const entries = Array.isArray(data) ? data : data ? [data] : [];
+  // The envelope's `data` is the body, so the entries come from dataArray.
+  const single = asRecord(raw)?.data;
+  const listed = dataArray(raw);
+  const entries = listed.length > 0 ? listed : single ? [single] : [];
   for (const entry of entries) {
     const record = asRecord(entry);
     const id = record?.id;
@@ -357,10 +353,7 @@ export async function resolveStorefront(
 }
 
 export function songsFromSearchResponse(raw: unknown): CatalogSongResource[] {
-  const root = asRecord(raw);
-  const payload = asRecord(root?.data) ?? root;
-  const results = asRecord(payload?.results) ?? payload;
-  const songs = asRecord(results?.songs);
+  const songs = asRecord(resultsOf(raw)?.songs);
   const data = songs?.data;
   if (!Array.isArray(data)) return [];
   return data.filter((item): item is CatalogSongResource => {
@@ -483,21 +476,8 @@ export function normalizeStation(
   };
 }
 
-/**
- * The `data` array of a response, whichever shape the caller holds: the plain
- * body `{ data: [...] }`, the `api.music` envelope `{ data: { data: [...] } }`,
- * or a bare array. Anything else is an empty list.
- */
-export function responseDataArray(raw: unknown): unknown[] {
-  const outer = asRecord(raw)?.data;
-  if (Array.isArray(outer)) return outer;
-  const body = asRecord(outer)?.data;
-  if (Array.isArray(body)) return body;
-  return Array.isArray(raw) ? raw : [];
-}
-
 export function stationsFromResponse(raw: unknown): Station[] {
-  return responseDataArray(raw)
+  return dataArray(raw)
     .map((value) => normalizeStation(value as AppleMusicResource))
     .filter((value): value is Station => Boolean(value));
 }

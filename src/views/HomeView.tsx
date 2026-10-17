@@ -204,7 +204,7 @@ function StationCardView({ station }: { station: Station }): JSX.Element {
     artwork: station.artwork,
   };
   const play = (): void => {
-    void Promise.resolve(controller.playStation?.(station)).catch(
+    void Promise.resolve(controller.playStation(station)).catch(
       reportActionError,
     );
   };
@@ -295,12 +295,7 @@ function DiscoveryCardView({
             ? undefined
             : () =>
                 void Promise.resolve(
-                  controller.playCollection?.(
-                    card.kind,
-                    card.id,
-                    card.source,
-                    0,
-                  ),
+                  controller.playCollection(card.kind, card.id, card.source, 0),
                 ).catch(reportActionError)
         }
       />

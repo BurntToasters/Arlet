@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { JSX } from "preact";
 import { AlertCircle } from "lucide-preact";
 import type { Route } from "../routing/router.ts";
@@ -6,18 +6,67 @@ import { serializeRoute } from "../routing/router.ts";
 import { HomeView } from "./HomeView.tsx";
 import { PlaceholderView } from "./PlaceholderView.tsx";
 import { SearchView } from "./SearchView.tsx";
-import { SettingsView } from "./SettingsView.tsx";
 import { LibraryView } from "./LibraryView.tsx";
 import { LibraryDetailView } from "./LibraryDetailView.tsx";
-import { BrowseView } from "./BrowseView.tsx";
-import { RadioView } from "./RadioView.tsx";
-import { CuratorView } from "./CuratorView.tsx";
 import { useOptionalAppController } from "../app/context.tsx";
 import { safeErrorMessage } from "../app/controller-support.ts";
 import { ErrorBoundary } from "../components/ErrorBoundary.tsx";
+import { lazyView } from "../components/lazy.tsx";
+import {
+  SkeletonCardGrid,
+  SkeletonRows,
+  SkeletonStatus,
+} from "../components/Skeleton.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 
 type DetailSource = "library" | "catalog";
+
+// Rarely opened surfaces load their chunk on first visit, keeping the entry
+// bundle small. Each keeps its skeleton while loading and its error boundary.
+const SettingsRoute = lazyView(
+  () => import("./SettingsView.tsx").then((module) => module.SettingsView),
+  {
+    name: "Settings",
+    loading: () => (
+      <SkeletonStatus label="Loading Settings…">
+        <SkeletonRows count={6} />
+      </SkeletonStatus>
+    ),
+  },
+);
+const CuratorRoute = lazyView(
+  () => import("./CuratorView.tsx").then((module) => module.CuratorView),
+  {
+    name: "Curator",
+    loading: () => (
+      <SkeletonStatus label="Loading curator…">
+        <SkeletonCardGrid count={6} />
+      </SkeletonStatus>
+    ),
+  },
+);
+const BrowseRoute = lazyView(
+  () => import("./BrowseView.tsx").then((module) => module.BrowseView),
+  {
+    name: "Browse",
+    loading: () => (
+      <SkeletonStatus label="Loading Browse…">
+        <SkeletonRows count={6} />
+      </SkeletonStatus>
+    ),
+  },
+);
+const RadioRoute = lazyView(
+  () => import("./RadioView.tsx").then((module) => module.RadioView),
+  {
+    name: "Radio",
+    loading: () => (
+      <SkeletonStatus label="Loading Radio…">
+        <SkeletonCardGrid count={6} />
+      </SkeletonStatus>
+    ),
+  },
+);
 
 function routeSource(route: Route): DetailSource | undefined {
   const source = (route as Route & { source?: unknown }).source;
@@ -29,13 +78,12 @@ export function RouteView({ route }: { route: Route }): JSX.Element {
   const controller = useOptionalAppController();
   const hasAppProvider = Boolean(controller);
   const hasMounted = useRef(false);
+  const focusPending = useRef(false);
+  const [loadedCount, setLoadedCount] = useState(0);
   const routeKey = serializeRoute(route);
+  const onViewReady = (): void => setLoadedCount((count) => count + 1);
 
-  useEffect(() => {
-    if (!hasMounted.current) {
-      hasMounted.current = true;
-      return;
-    }
+  const focusPage = (): void => {
     // A shortcut such as Ctrl+K may already have focused a field on the new page.
     const active = document.activeElement;
     if (
@@ -52,7 +100,22 @@ export function RouteView({ route }: { route: Route }): JSX.Element {
       page.current?.querySelector<HTMLElement>(".empty-state h2") ??
       page.current;
     target?.focus();
+  };
+
+  useEffect(() => {
+    if (!hasMounted.current) {
+      hasMounted.current = true;
+      return;
+    }
+    focusPending.current = true;
+    focusPage();
   }, [routeKey]);
+
+  // A lazy view renders after the navigation focus, so its h1 is focused once
+  // it loads. Initial load never sets focusPending, so startup keeps focus.
+  useEffect(() => {
+    if (focusPending.current && loadedCount > 0) focusPage();
+  }, [loadedCount]);
 
   const view = (() => {
     switch (route.kind) {
@@ -60,7 +123,7 @@ export function RouteView({ route }: { route: Route }): JSX.Element {
         return <HomeView />;
       case "browse":
         return hasAppProvider ? (
-          <BrowseView />
+          <BrowseRoute onReady={onViewReady} />
         ) : (
           <PlaceholderView route={route} />
         );
@@ -68,22 +131,28 @@ export function RouteView({ route }: { route: Route }): JSX.Element {
         // Keep legacy direct callers renderable outside AppProvider while
         // sending old URLs through the replacement Browse experience.
         return hasAppProvider ? (
-          <BrowseView />
+          <BrowseRoute onReady={onViewReady} />
         ) : (
           <PlaceholderView route={route} />
         );
       case "radio":
         return hasAppProvider ? (
-          <RadioView />
+          <RadioRoute onReady={onViewReady} />
         ) : (
           <PlaceholderView route={route} />
         );
       case "search":
         return <SearchView />;
       case "curator":
-        return <CuratorView id={route.id} kind={route.curatorKind} />;
+        return (
+          <CuratorRoute
+            id={route.id}
+            kind={route.curatorKind}
+            onReady={onViewReady}
+          />
+        );
       case "settings":
-        return <SettingsView />;
+        return <SettingsRoute onReady={onViewReady} />;
       case "library":
         return <LibraryView section={route.section} />;
       case "album":

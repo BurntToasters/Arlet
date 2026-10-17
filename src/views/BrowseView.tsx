@@ -96,7 +96,7 @@ function Card({
             ? undefined
             : () =>
                 void Promise.resolve(
-                  controller.playCollection?.(kind, item.id, "catalog", 0),
+                  controller.playCollection(kind, item.id, "catalog", 0),
                 ).catch(reportActionError)
         }
       />
@@ -218,7 +218,7 @@ export function BrowseView(): JSX.Element {
   const expandedHeading = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
     if (authorized && !pending && !loadingRef.current)
-      void Promise.resolve(controller.loadBrowse?.()).catch(() => undefined);
+      void Promise.resolve(controller.loadBrowse()).catch(() => undefined);
   }, [authorized, pending, idle, controller]);
   useEffect(() => {
     if (expanded) expandedHeading.current?.focus();
@@ -265,7 +265,7 @@ export function BrowseView(): JSX.Element {
             type="button"
             onClick={() =>
               void Promise.resolve(
-                controller.loadBrowse?.({ refresh: true }),
+                controller.loadBrowse({ refresh: true }),
               ).catch(() => undefined)
             }
           >
@@ -278,7 +278,7 @@ export function BrowseView(): JSX.Element {
 
   const chooseGenre = (genreId: string): void => {
     setExpanded(undefined);
-    void Promise.resolve(controller.loadBrowse?.({ genreId })).catch(
+    void Promise.resolve(controller.loadBrowse({ genreId })).catch(
       () => undefined,
     );
   };
@@ -367,7 +367,7 @@ export function BrowseView(): JSX.Element {
               type="button"
               onClick={() =>
                 void Promise.resolve(
-                  controller.loadMoreBrowseShelf?.(kind),
+                  controller.loadMoreBrowseShelf(kind),
                 ).catch(() => undefined)
               }
             >
@@ -398,7 +398,7 @@ export function BrowseView(): JSX.Element {
           disabled={loading}
           onClick={() =>
             void Promise.resolve(
-              controller.loadBrowse?.({ refresh: true }),
+              controller.loadBrowse({ refresh: true }),
             ).catch(() => undefined)
           }
         >

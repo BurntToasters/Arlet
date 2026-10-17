@@ -1,3 +1,4 @@
+import { asRecord, resultsOf } from "./response.ts";
 import type {
   Album,
   Artist,
@@ -93,20 +94,6 @@ export interface CatalogSearchResult {
   /** Raw Apple item count per group; a full page means more may follow. */
   counts: Record<SearchGroupKind, number>;
   top?: SearchItem;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  return value as Record<string, unknown>;
-}
-
-/** MusicKit wraps the body in `data`; bare bodies are accepted too. */
-function resultsOf(raw: unknown): Record<string, unknown> | undefined {
-  const root = asRecord(raw);
-  const payload = asRecord(root?.data) ?? root;
-  return asRecord(payload?.results) ?? payload;
 }
 
 function resourcesAt(

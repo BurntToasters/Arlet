@@ -69,7 +69,7 @@ export function AlbumCard({
             ? undefined
             : () =>
                 runCardAction(() =>
-                  controller.playCollection?.("album", album.id, source, 0),
+                  controller.playCollection("album", album.id, source, 0),
                 )
         }
       />

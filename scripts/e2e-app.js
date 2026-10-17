@@ -485,6 +485,65 @@ async function settle(page, command, args) {
   );
 }
 
+// Run folders are named by the stamp written in run() (ISO time with ':' and
+// '.' replaced by '-'), so only names of that exact shape are ever pruned.
+const RUN_STAMP_PATTERN = /^\d{4}(?:-\d{2}){2}T(?:\d{2}-){2}\d{2}-\d{3}Z$/u;
+const DEFAULT_KEEP_RUNS = 20;
+
+function keepRunCount() {
+  const raw = String(process.env.ARLET_E2E_KEEP_RUNS ?? "").trim();
+  if (raw === "") return DEFAULT_KEEP_RUNS;
+  if (!/^\d+$/u.test(raw)) {
+    console.warn(
+      `[e2e-app] ignoring ARLET_E2E_KEEP_RUNS=${raw}; using ${DEFAULT_KEEP_RUNS}`,
+    );
+    return DEFAULT_KEEP_RUNS;
+  }
+  return Number(raw);
+}
+
+// Deletes old run folders directly under e2e-artifacts/, keeping the newest
+// `keep` (the current run included). Symlinks, junctions, files, and folders
+// with other names are never touched. Failures are logged, never thrown.
+function pruneOldRuns(artifactsRoot, currentStamp, keep) {
+  if (keep === 0) return;
+  try {
+    const runs = [];
+    for (const name of fs.readdirSync(artifactsRoot)) {
+      if (!RUN_STAMP_PATTERN.test(name) || name === currentStamp) continue;
+      const entry = path.join(artifactsRoot, name);
+      const info = fs.lstatSync(entry);
+      if (info.isSymbolicLink() || !info.isDirectory()) continue;
+      runs.push(name);
+    }
+    // Fixed-width ISO stamps sort chronologically, so newest comes last.
+    runs.sort();
+    // The current run already occupies one of the `keep` slots.
+    const stale = runs.slice(0, Math.max(0, runs.length - (keep - 1)));
+    let pruned = 0;
+    for (const name of stale) {
+      try {
+        fs.rmSync(path.join(artifactsRoot, name), {
+          recursive: true,
+          force: true,
+        });
+        pruned += 1;
+      } catch (error) {
+        console.warn(
+          `[e2e-app] could not prune ${name}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    console.log(
+      `[e2e-app] pruned ${pruned} old run folder(s), keeping ${keep}`,
+    );
+  } catch (error) {
+    console.warn(
+      `[e2e-app] run pruning skipped: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 async function run() {
   if (process.platform !== "win32") fail("Windows only");
   // Windows OpenSSH sessions are elevated and have no interactive desktop;
@@ -1590,6 +1649,7 @@ async function run() {
     `${JSON.stringify(report, null, 2)}\n`,
   );
   console.log(`[e2e-app] artifact: ${path.relative(root, artifactDir)}`);
+  pruneOldRuns(path.join(root, "e2e-artifacts"), stamp, keepRunCount());
   if (!report.passed) fail("one or more checks failed");
 }
 

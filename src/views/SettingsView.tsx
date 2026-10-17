@@ -1,4 +1,5 @@
 import {
+  AlertCircle,
   Bug,
   Check,
   ClipboardCopy,
@@ -28,7 +29,8 @@ import {
   useAppSlices,
 } from "../app/context.tsx";
 import { SHORTCUT_HELP } from "../app/shortcuts.ts";
-import { LicensesDialog } from "../components/LicensesDialog.tsx";
+import { lazyView } from "../components/lazy.tsx";
+import { EmptyState } from "./EmptyState.tsx";
 import { ResetSettingsDialog } from "../components/ResetSettingsDialog.tsx";
 import {
   createTauriEnvironmentAdapter,
@@ -46,6 +48,78 @@ import { openAboutLink } from "../platform/support.ts";
 
 const PROJECT_URL = "https://github.com/BurntToasters/Arlet";
 const LICENSE_URL = `${PROJECT_URL}/blob/main/LICENSE`;
+
+interface LicensesDialogProps {
+  onClose: () => void;
+}
+
+// The licenses list is large and opened rarely, so its dialog is a separate
+// chunk. Loading and failure keep the dialog shell so Close still works.
+const LicensesDialogView = lazyView<LicensesDialogProps>(
+  () =>
+    import("../components/LicensesDialog.tsx").then(
+      (module) => module.LicensesDialog,
+    ),
+  {
+    name: "Licenses",
+    loading: ({ onClose }) => (
+      <div
+        className="playlist-dialog-backdrop"
+        role="presentation"
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget) onClose();
+        }}
+      >
+        <section
+          className="playlist-dialog licenses-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-busy="true"
+          aria-label="Open-source licenses"
+        >
+          <p className="licenses-intro" role="status">
+            Loading licenses…
+          </p>
+        </section>
+      </div>
+    ),
+    failed: (retry, { onClose }) => (
+      <div className="playlist-dialog-backdrop" role="presentation">
+        <section
+          className="playlist-dialog licenses-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Open-source licenses"
+        >
+          <EmptyState
+            compact
+            icon={AlertCircle}
+            title="Licenses couldn't be shown"
+            description="The license list didn't load. Try again, or close this dialog."
+            action={
+              <>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={retry}
+                >
+                  Try again
+                </button>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={onClose}
+                >
+                  Close
+                </button>
+              </>
+            }
+          />
+        </section>
+      </div>
+    ),
+  },
+);
 
 function releaseNotesUrl(version: string): string {
   return `${PROJECT_URL}/releases/tag/v${version}`;
@@ -96,31 +170,6 @@ function initializationCopy(status: RuntimeAppState["initialization"]): string {
   }
 }
 
-interface AccountSummaryLike {
-  displayName?: string;
-  name?: string;
-  storefront?: string;
-}
-
-function readAccountSummary(
-  state: Pick<RuntimeAppState, "account">,
-): AccountSummaryLike | undefined {
-  const value = (state as unknown as { account?: unknown }).account;
-  if (!value || typeof value !== "object") return undefined;
-  const candidate = value as Record<string, unknown>;
-  return {
-    displayName:
-      typeof candidate.displayName === "string"
-        ? candidate.displayName
-        : undefined,
-    name: typeof candidate.name === "string" ? candidate.name : undefined,
-    storefront:
-      typeof candidate.storefront === "string"
-        ? candidate.storefront
-        : undefined,
-  };
-}
-
 export function SettingsView(): JSX.Element {
   const state = useAppSlices(
     "account",
@@ -138,7 +187,7 @@ export function SettingsView(): JSX.Element {
   const settings = state.settings;
   const authorized = state.auth.status === "authorized";
   const authorizationPending = state.auth.pending === true;
-  const account = readAccountSummary(state);
+  const account = state.account;
   const [licensesOpen, setLicensesOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   // undefined while loading, null when app info is unavailable (browser dev).
@@ -170,7 +219,7 @@ export function SettingsView(): JSX.Element {
     return () => window.clearTimeout(timer);
   }, [reportCopied]);
   const copyReport = (): void => {
-    void Promise.resolve(controller.copyDiagnosticsReport?.())
+    void Promise.resolve(controller.copyDiagnosticsReport())
       .then(() => setReportCopied(true))
       .catch(reportActionError);
   };
@@ -226,14 +275,12 @@ export function SettingsView(): JSX.Element {
             <div className="account-card-copy">
               <strong>
                 {authorized
-                  ? (account?.displayName ??
-                    account?.name ??
-                    "Apple Music connected")
+                  ? "Apple Music connected"
                   : "Apple Music not connected"}
               </strong>
               <span>
                 {initializationCopy(state.initialization)}
-                {authorized && account?.storefront
+                {authorized && account.storefront
                   ? ` · ${account.storefront} storefront`
                   : ""}
               </span>
@@ -413,7 +460,7 @@ export function SettingsView(): JSX.Element {
                   checked={settings.autoplay}
                   onChange={(event) =>
                     void Promise.resolve(
-                      controller.setAutoplay?.(event.currentTarget.checked),
+                      controller.setAutoplay(event.currentTarget.checked),
                     ).catch(reportActionError)
                   }
                 />
@@ -503,7 +550,7 @@ export function SettingsView(): JSX.Element {
                 checked={settings.trayIcon}
                 onChange={(event) =>
                   void Promise.resolve(
-                    controller.setTrayIcon?.(event.currentTarget.checked),
+                    controller.setTrayIcon(event.currentTarget.checked),
                   ).catch(reportActionError)
                 }
               />
@@ -715,7 +762,7 @@ export function SettingsView(): JSX.Element {
                 checked={settings.debugMode}
                 onChange={(event) =>
                   void Promise.resolve(
-                    controller.setDebugMode?.(event.currentTarget.checked),
+                    controller.setDebugMode(event.currentTarget.checked),
                   ).catch(reportActionError)
                 }
               />
@@ -760,7 +807,7 @@ export function SettingsView(): JSX.Element {
         ) : null}
       </div>
       {licensesOpen ? (
-        <LicensesDialog onClose={() => setLicensesOpen(false)} />
+        <LicensesDialogView onClose={() => setLicensesOpen(false)} />
       ) : null}
       {resetOpen ? (
         <ResetSettingsDialog

@@ -22,7 +22,6 @@ import {
   useAppRouter,
   useAppSlices,
 } from "../app/context.tsx";
-import type { AppController } from "../app/controller.ts";
 import { setUiState, type RuntimeAppState } from "../state.ts";
 import {
   closeWindow,
@@ -35,81 +34,16 @@ import {
 } from "../platform/window.ts";
 import { IconButton } from "./IconButton.tsx";
 
-interface AccountSummaryLike {
-  displayName?: string;
-  name?: string;
-  storefront?: string;
-  lastRefreshAt?: number | string;
-}
-
-interface CollectionSummaryLike {
-  lastUpdatedAt?: number | string;
-  source?: string;
-}
-
-interface ExtendedState {
-  account?: unknown;
-  library?: unknown;
-}
-
-interface ExtendedController {
-  refreshCurrentData?: () => Promise<unknown>;
-  refreshCurrentView?: () => Promise<unknown>;
-  refreshLibrarySection?: (section: string) => Promise<unknown>;
-}
-
-function readAccountSummary(
-  state: Pick<RuntimeAppState, "account">,
-): AccountSummaryLike | undefined {
-  const value = (state as unknown as ExtendedState).account;
-  if (!value || typeof value !== "object") return undefined;
-  const candidate = value as Record<string, unknown>;
-  return {
-    displayName:
-      typeof candidate.displayName === "string"
-        ? candidate.displayName
-        : undefined,
-    name: typeof candidate.name === "string" ? candidate.name : undefined,
-    storefront:
-      typeof candidate.storefront === "string"
-        ? candidate.storefront
-        : undefined,
-    lastRefreshAt:
-      typeof candidate.lastRefreshAt === "number" ||
-      typeof candidate.lastRefreshAt === "string"
-        ? candidate.lastRefreshAt
-        : undefined,
-  };
-}
-
 function readLastRefresh(
   state: Pick<RuntimeAppState, "account" | "library">,
 ): number | undefined {
-  const account = readAccountSummary(state);
-  const accountRefresh = account?.lastRefreshAt;
-  if (accountRefresh !== undefined) {
-    const parsed =
-      typeof accountRefresh === "number"
-        ? accountRefresh
-        : Date.parse(accountRefresh);
-    if (Number.isFinite(parsed)) return parsed;
+  const accountRefresh = state.account.lastRefreshAt;
+  if (accountRefresh !== undefined && Number.isFinite(accountRefresh)) {
+    return accountRefresh;
   }
-  const candidate = (state as unknown as ExtendedState).library;
-  if (!candidate || typeof candidate !== "object") return undefined;
-  const library = candidate as Record<string, unknown>;
-  const collections =
-    library.collections && typeof library.collections === "object"
-      ? (library.collections as Record<string, unknown>)
-      : library;
-  const timestamps = Object.values(collections)
-    .filter((value): value is CollectionSummaryLike => {
-      return Boolean(value && typeof value === "object");
-    })
-    .map((value) => value.lastUpdatedAt)
-    .filter((value): value is number | string => value !== undefined)
-    .map((value) =>
-      typeof value === "number" ? value : Date.parse(String(value)),
-    )
+  const timestamps = Object.values(state.library.collections)
+    .map((collection) => collection.lastUpdatedAt)
+    .filter((value): value is number => value !== undefined)
     .filter((value) => Number.isFinite(value));
   return timestamps.length ? Math.max(...timestamps) : undefined;
 }
@@ -139,9 +73,8 @@ export function Titlebar(): JSX.Element {
   const [maximized, setMaximized] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const showDiagnostics = import.meta.env.DEV;
-  const account = readAccountSummary(state);
+  const account = state.account;
   const lastRefresh = readLastRefresh(state);
-  const extendedController = controller as AppController & ExtendedController;
 
   useEffect(() => {
     let active = true;
@@ -276,17 +209,7 @@ export function Titlebar(): JSX.Element {
   };
 
   const refreshCurrentView = (): void => {
-    const librarySection =
-      state.navigation.kind === "library"
-        ? state.navigation.section
-        : undefined;
-    const action =
-      extendedController.refreshCurrentData ??
-      extendedController.refreshCurrentView ??
-      (librarySection !== undefined && extendedController.refreshLibrarySection
-        ? () => extendedController.refreshLibrarySection!(librarySection)
-        : undefined);
-    runStatusAction(action);
+    runStatusAction(() => controller.refreshCurrentData());
   };
 
   const statusLabel =
@@ -297,8 +220,7 @@ export function Titlebar(): JSX.Element {
       : state.initialization.status === "error"
         ? "Offline"
         : "Starting";
-  const signedInLabel =
-    account?.displayName ?? account?.name ?? "Apple Music account";
+  const signedInLabel = "Apple Music account";
 
   return (
     <header
@@ -372,7 +294,7 @@ export function Titlebar(): JSX.Element {
               </strong>
               <small>
                 {state.auth.status === "authorized"
-                  ? account?.storefront
+                  ? account.storefront
                     ? `${account.storefront} storefront`
                     : "Connected for this session"
                   : state.initialization.status === "error"

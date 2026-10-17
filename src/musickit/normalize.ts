@@ -1,3 +1,4 @@
+import { asRecord } from "./response.ts";
 import type {
   Album,
   Artist,
@@ -43,13 +44,6 @@ export interface AppleMusicResource {
 }
 
 type UnknownRecord = Record<string, unknown>;
-
-function asRecord(value: unknown): UnknownRecord | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  return value as UnknownRecord;
-}
 
 function stringValue(...values: unknown[]): string | undefined {
   for (const value of values) {

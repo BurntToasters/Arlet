@@ -174,9 +174,16 @@ pub fn get_developer_token() -> Result<String, String> {
 /// web content that can invoke it cannot pick a different URL.
 pub const SUPPORT_URL: &str = "https://rosie.run/support";
 
+/// Runs ShellExecuteW on a blocking task, so a slow shell never freezes the UI.
+async fn open_url_off_ui_thread(url: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || open_in_default_browser(&url))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
-pub fn open_support_page() -> Result<(), String> {
-    open_in_default_browser(SUPPORT_URL)
+pub async fn open_support_page() -> Result<(), String> {
+    open_url_off_ui_thread(SUPPORT_URL.to_string()).await
 }
 
 /// Links the Settings › About section can open. The webview sends only one of
@@ -218,8 +225,8 @@ pub fn about_link_url(link: AboutLink, version: &str) -> Result<String, String> 
 }
 
 #[tauri::command]
-pub fn open_about_link(link: AboutLink) -> Result<(), String> {
-    open_in_default_browser(&about_link_url(link, APP_VERSION)?)
+pub async fn open_about_link(link: AboutLink) -> Result<(), String> {
+    open_url_off_ui_thread(about_link_url(link, APP_VERSION)?).await
 }
 
 #[cfg(windows)]

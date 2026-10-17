@@ -1,3 +1,6 @@
+import { asRecord } from "../musickit/response.ts";
+
+export { asRecord };
 import { normalizeLibraryItems } from "../musickit/normalize.ts";
 import type { AppleMusicLibraryClient } from "../musickit/library.ts";
 import type { CachedPage } from "../library/cache.ts";
@@ -33,12 +36,6 @@ export function safeErrorMessage(error: unknown): string {
 
 export function timestamp(now: () => number): string {
   return new Date(now()).toISOString();
-}
-
-export function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object"
-    ? (value as Record<string, unknown>)
-    : undefined;
 }
 
 function asItems(value: unknown): unknown[] {

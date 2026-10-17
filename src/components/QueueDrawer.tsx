@@ -316,7 +316,7 @@ export function QueueDrawer(): JSX.Element | null {
                 requestPlaylistDialog(
                   "create",
                   // The whole playlist, including songs still to be added.
-                  controller.fullQueue?.() ?? queue,
+                  controller.fullQueue() ?? queue,
                   event.currentTarget,
                 )
               }

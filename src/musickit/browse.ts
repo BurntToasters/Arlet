@@ -1,10 +1,10 @@
 import type { Album, Playlist, Station, Track } from "../domain/music.ts";
 import {
-  responseDataArray,
   resolveMusicKitMusicRequest,
   resolveStorefront,
   stationsFromResponse,
 } from "./catalog.ts";
+import { asRecord, dataArray, resultsOf, safeNextPath } from "./response.ts";
 import {
   normalizeAlbumResource,
   normalizePlaylistResource,
@@ -46,18 +46,6 @@ export type BrowseShelfResult =
   | ({ kind: "cityCharts" } & BrowseShelfPage<Playlist>)
   | ({ kind: "dailyCharts" } & BrowseShelfPage<Playlist>);
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  return value as Record<string, unknown>;
-}
-
-/** Apple's results object, with or without the MusicKit `data` wrapper. */
-function resultsOf(raw: unknown): Record<string, unknown> {
-  const root = asRecord(raw);
-  const payload = asRecord(root?.data) ?? root;
-  return asRecord(payload?.results) ?? payload ?? {};
-}
-
 const isMostPlayed = (chart: unknown): boolean =>
   chart === undefined || chart === "most-played";
 
@@ -79,7 +67,7 @@ function shelfFrom<T>(
     .map(asRecord)
     .filter(
       (entry): entry is Record<string, unknown> =>
-        entry !== null && keepChart(entry.chart),
+        entry !== undefined && keepChart(entry.chart),
     );
   const items = selected
     .flatMap((entry) =>
@@ -98,7 +86,7 @@ const playableTrack = (resource: AppleMusicResource): Track | undefined => {
 };
 
 function parseCharts(raw: unknown, limit: number): BrowseCharts {
-  const results = resultsOf(raw);
+  const results = resultsOf(raw) ?? {};
   return {
     songs: shelfFrom(results, "songs", playableTrack, isMostPlayed, limit),
     albums: shelfFrom(
@@ -171,11 +159,12 @@ export async function loadBrowseShelfPage(
 ): Promise<BrowseShelfResult> {
   const storefront = await resolveStorefront(instance);
   const prefix = `/v1/catalog/${encodeURIComponent(storefront)}/charts`;
-  if (!next.startsWith(prefix)) {
+  const cursor = safeNextPath(next, [prefix]);
+  if (!cursor) {
     throw new Error("Apple Music returned an unexpected chart page.");
   }
-  const raw = await resolveMusicKitMusicRequest(instance)(next);
-  const results = resultsOf(raw);
+  const raw = await resolveMusicKitMusicRequest(instance)(cursor);
+  const results = resultsOf(raw) ?? {};
   switch (kind) {
     case "songs":
       return {
@@ -221,7 +210,7 @@ export async function loadBrowseShelfPage(
 }
 
 function genresFrom(raw: unknown): BrowseGenre[] {
-  const data = responseDataArray(raw);
+  const data = dataArray(raw);
   const seen = new Set<string>();
   const genres: BrowseGenre[] = [];
   for (const value of data) {

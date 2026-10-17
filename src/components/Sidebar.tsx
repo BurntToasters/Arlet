@@ -107,31 +107,6 @@ function sameRoute(left: Route, right: Route): boolean {
   return true;
 }
 
-interface AccountSummaryLike {
-  displayName?: string;
-  name?: string;
-  storefront?: string;
-}
-
-function readAccountSummary(
-  state: Pick<RuntimeAppState, "account">,
-): AccountSummaryLike | undefined {
-  const value = (state as unknown as { account?: unknown }).account;
-  if (!value || typeof value !== "object") return undefined;
-  const candidate = value as Record<string, unknown>;
-  return {
-    displayName:
-      typeof candidate.displayName === "string"
-        ? candidate.displayName
-        : undefined,
-    name: typeof candidate.name === "string" ? candidate.name : undefined,
-    storefront:
-      typeof candidate.storefront === "string"
-        ? candidate.storefront
-        : undefined,
-  };
-}
-
 function displayNameOf(value: unknown): string | undefined {
   if (!value || typeof value !== "object") return undefined;
   const record = value as Record<string, unknown>;
@@ -262,7 +237,7 @@ export function Sidebar(): JSX.Element {
     "ui",
   );
   const router = useAppRouter();
-  const account = readAccountSummary(state);
+  const account = state.account;
   const [query, setQuery] = useState(
     state.navigation.kind === "search" ? state.navigation.query : "",
   );
@@ -535,13 +510,11 @@ export function Sidebar(): JSX.Element {
           </span>
           <span className="account-copy">
             <strong>
-              {state.auth.status === "authorized"
-                ? (account?.displayName ?? account?.name ?? "Apple Music")
-                : "Sign in"}
+              {state.auth.status === "authorized" ? "Apple Music" : "Sign in"}
             </strong>
             <small>
               {state.auth.status === "authorized"
-                ? account?.storefront
+                ? account.storefront
                   ? `${account.storefront} · Connected`
                   : "Connected"
                 : "Connect account"}

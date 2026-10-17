@@ -26,7 +26,6 @@ import {
 } from "../app/context.tsx";
 import { safeErrorMessage } from "../app/controller-support.ts";
 import type { AppController } from "../app/controller.ts";
-import type { CollectionPlayOptions } from "../app/collection-playback.ts";
 import {
   isLibraryTarget,
   ratingKeyOf,
@@ -76,44 +75,6 @@ import {
 
 type DetailKind = "album" | "artist" | "playlist";
 type DetailSource = "library" | "catalog";
-
-interface DetailController {
-  loadAlbum?: (
-    id: string,
-    source?: DetailSource,
-    options?: { refresh?: boolean },
-  ) => Promise<unknown>;
-  loadArtist?: (
-    id: string,
-    source?: DetailSource,
-    options?: { refresh?: boolean },
-  ) => Promise<unknown>;
-  loadPlaylist?: (
-    id: string,
-    source?: DetailSource,
-    options?: { refresh?: boolean },
-  ) => Promise<unknown>;
-  playAlbum?: (
-    id: string,
-    source?: DetailSource,
-    startIndex?: number,
-    trackId?: string,
-  ) => Promise<void>;
-  playPlaylist?: (
-    id: string,
-    source?: DetailSource,
-    startIndex?: number,
-    trackId?: string,
-  ) => Promise<void>;
-  playCollection?: (
-    kind: "playlist" | "album",
-    id: string,
-    source?: DetailSource,
-    startIndex?: number,
-    options?: CollectionPlayOptions,
-  ) => Promise<void>;
-  refreshCurrentData?: () => Promise<unknown>;
-}
 
 /** Background loads; their views render the error state. */
 function run(action: () => Promise<unknown> | undefined): void {
@@ -552,7 +513,6 @@ export function LibraryDetailView({
 }): JSX.Element {
   const state = useAppSlices("auth", "initialization", "library", "ui");
   const controller = useAppController();
-  const extendedController = controller as AppController & DetailController;
   const sourceDetail =
     source === "catalog" ? readDetail(state, kind, `catalog:${id}`) : undefined;
   const detail =
@@ -608,17 +568,17 @@ export function LibraryDetailView({
     if (!authorized && !offline) return;
     const loader =
       kind === "album"
-        ? extendedController.loadAlbum
+        ? controller.loadAlbum
         : kind === "artist"
-          ? extendedController.loadArtist
-          : extendedController.loadPlaylist;
+          ? controller.loadArtist
+          : controller.loadPlaylist;
     callLoader(loader, id, source);
   }, [
     authorized,
     offline,
-    extendedController.loadAlbum,
-    extendedController.loadArtist,
-    extendedController.loadPlaylist,
+    controller.loadAlbum,
+    controller.loadArtist,
+    controller.loadPlaylist,
     id,
     kind,
     source,
@@ -640,34 +600,17 @@ export function LibraryDetailView({
     trackId?: string,
   ): Promise<void> | undefined => {
     const shown = shownTracks();
-    if (
-      (kind === "playlist" || kind === "album") &&
-      shown &&
-      extendedController.playCollection
-    ) {
-      return extendedController.playCollection(
-        kind,
-        id,
-        playbackSource,
-        startIndex,
-        { trackId, shown },
-      );
-    }
-    if (kind === "playlist" && extendedController.playPlaylist) {
-      return extendedController.playPlaylist(
-        id,
-        playbackSource,
-        startIndex,
+    if ((kind === "playlist" || kind === "album") && shown) {
+      return controller.playCollection(kind, id, playbackSource, startIndex, {
         trackId,
-      );
+        shown,
+      });
     }
-    if (kind === "album" && extendedController.playAlbum) {
-      return extendedController.playAlbum(
-        id,
-        playbackSource,
-        startIndex,
-        trackId,
-      );
+    if (kind === "playlist") {
+      return controller.playPlaylist(id, playbackSource, startIndex, trackId);
+    }
+    if (kind === "album") {
+      return controller.playAlbum(id, playbackSource, startIndex, trackId);
     }
     const tracks = resources
       .map(toTrack)
@@ -682,9 +625,9 @@ export function LibraryDetailView({
     if (resources.length) act(() => playCollection(0));
   };
   const shuffleAll = (): void => {
-    if (kind === "artist" || !extendedController.playCollection) return;
+    if (kind === "artist") return;
     act(() =>
-      extendedController.playCollection?.(kind, id, playbackSource, 0, {
+      controller.playCollection(kind, id, playbackSource, 0, {
         shuffle: true,
         shown: shownTracks(),
       }),
@@ -788,10 +731,10 @@ export function LibraryDetailView({
             onClick={() => {
               const loader =
                 kind === "album"
-                  ? extendedController.loadAlbum
+                  ? controller.loadAlbum
                   : kind === "artist"
-                    ? extendedController.loadArtist
-                    : extendedController.loadPlaylist;
+                    ? controller.loadArtist
+                    : controller.loadPlaylist;
               callLoader(loader, id, source, { refresh: true });
             }}
           >
@@ -894,9 +837,7 @@ export function LibraryDetailView({
                 Play all
               </button>
             ) : null}
-            {!isArtist &&
-            resources.length &&
-            extendedController.playCollection ? (
+            {!isArtist && resources.length ? (
               <button
                 className="secondary-button"
                 type="button"
@@ -954,10 +895,10 @@ export function LibraryDetailView({
               onClick={() => {
                 const loader =
                   kind === "album"
-                    ? extendedController.loadAlbum
+                    ? controller.loadAlbum
                     : kind === "artist"
-                      ? extendedController.loadArtist
-                      : extendedController.loadPlaylist;
+                      ? controller.loadArtist
+                      : controller.loadPlaylist;
                 callLoader(loader, id, source, { refresh: true });
               }}
             >

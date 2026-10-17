@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import {
   useAppController,
   useAppRouter,
+  useAppSelector,
   useAppSlices,
 } from "../app/context.tsx";
 import { ratingKeyOf, trackRatingTarget } from "../app/ratings.ts";
@@ -84,7 +85,7 @@ export function NowPlaying(): JSX.Element | null {
 }
 
 function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
-  const state = useAppSlices("initialization", "playback", "ratings", "ui");
+  const state = useAppSlices("initialization", "playback", "ui");
   const controller = useAppController();
   const router = useAppRouter();
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -99,7 +100,10 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
     state.initialization.status === "ready" && Boolean(current);
   const loveTarget = current ? trackRatingTarget(current) : undefined;
   const loveKey = loveTarget ? ratingKeyOf(loveTarget) : undefined;
-  const rating = loveKey !== undefined ? state.ratings[loveKey] : undefined;
+  // Only the playing track's rating, so other ratings do not re-render the dialog.
+  const rating = useAppSelector((store) =>
+    loveKey !== undefined ? store.ratings[loveKey] : undefined,
+  );
   const loved = rating === 1;
   const disliked = rating === -1;
   const shuffling = playback.shuffleMode === "songs";
@@ -358,11 +362,8 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
                     pressed={shuffling}
                     className={shuffling ? "is-active" : ""}
                     onClick={() =>
-                      run(
-                        () =>
-                          controller.setShuffleMode?.(
-                            shuffling ? "off" : "songs",
-                          ) ?? Promise.resolve(),
+                      run(() =>
+                        controller.setShuffleMode(shuffling ? "off" : "songs"),
                       )
                     }
                   />
@@ -373,12 +374,7 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
                     label={`Repeat ${playback.repeatMode ?? "off"}`}
                     pressed={repeating}
                     className={repeating ? "is-active" : ""}
-                    onClick={() =>
-                      run(
-                        () =>
-                          controller.cycleRepeatMode?.() ?? Promise.resolve(),
-                      )
-                    }
+                    onClick={() => run(() => controller.cycleRepeatMode())}
                   />
                 ) : null}
               </div>

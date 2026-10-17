@@ -1,3 +1,4 @@
+import { asRecord } from "./response.ts";
 import { useEffect, useState } from "preact/hooks";
 
 export interface LiveMetadata {
@@ -53,12 +54,6 @@ function readText(value: unknown): string {
     .replace(/\s+/gu, " ")
     .trim();
   return Array.from(cleaned).slice(0, MAX_LIVE_TEXT_LENGTH).join("");
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
 }
 
 /**

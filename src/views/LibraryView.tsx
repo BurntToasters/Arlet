@@ -20,7 +20,6 @@ import {
 } from "../app/context.tsx";
 import { nearestTrackIndex } from "../app/queue-window.ts";
 import type { RuntimeAppState } from "../state.ts";
-import type { AppController } from "../app/controller.ts";
 import { Artwork } from "../components/Artwork.tsx";
 import { SongRow } from "../components/SongRow.tsx";
 import { CardActions, CardShell } from "../components/CardActions.tsx";
@@ -88,26 +87,8 @@ interface DetailLike extends CollectionLike {
 
 interface LibraryModelLike {
   collections?: Record<string, unknown>;
-  details?: Record<string, unknown>;
+  details?: object;
   [key: string]: unknown;
-}
-
-interface LibraryController {
-  loadLibrarySection?: (
-    section: LibrarySection,
-    options?: { refresh?: boolean; cursor?: string },
-  ) => Promise<unknown>;
-  loadMoreLibrarySection?: (
-    section: LibrarySection,
-    cursor?: string,
-  ) => Promise<unknown>;
-  refreshLibrarySection?: (section: LibrarySection) => Promise<unknown>;
-  loadAlbum?: (id: string) => Promise<unknown>;
-  loadArtist?: (id: string) => Promise<unknown>;
-  loadPlaylist?: (id: string) => Promise<unknown>;
-  loadPlaylistFolder?: (id?: string) => Promise<unknown>;
-  playNextTracks?: (tracks: readonly Track[]) => Promise<void>;
-  playLaterTracks?: (tracks: readonly Track[]) => Promise<void>;
 }
 
 const SECTION_COPY: Record<
@@ -333,8 +314,7 @@ function trackFromResource(
 function readLibrary(
   state: Pick<RuntimeAppState, "library">,
 ): LibraryModelLike {
-  const value = (state as unknown as { library?: unknown }).library;
-  return objectValue(value) ?? {};
+  return { ...state.library };
 }
 
 export function readCollection(
@@ -546,7 +526,7 @@ function ResourceCard({
           collectionKind && resource.playable !== false
             ? () =>
                 act(() =>
-                  appController.playCollection?.(
+                  appController.playCollection(
                     collectionKind,
                     resource.id,
                     "library",
@@ -728,7 +708,6 @@ export function LibraryView({
   const controller = useAppController();
   const router = useAppRouter();
   const loadMoreTrigger = useRef<HTMLButtonElement>(null);
-  const extendedController = controller as AppController & LibraryController;
   const copy = SECTION_COPY[section];
   const collection = readCollection(state, section);
   const authorized =
@@ -768,25 +747,20 @@ export function LibraryView({
   }, [resources, section]);
 
   useEffect(() => {
-    if (!canView || !extendedController.loadLibrarySection) return;
-    run(() => extendedController.loadLibrarySection?.(section));
-    if (section === "playlists" && extendedController.loadPlaylistFolder) {
-      run(() => extendedController.loadPlaylistFolder?.());
+    if (!canView) return;
+    run(() => controller.loadLibrarySection(section));
+    if (section === "playlists") {
+      run(() => controller.loadPlaylistFolder());
     }
-  }, [canView, extendedController, section]);
+  }, [canView, controller, section]);
 
   const retry = (): void => {
-    if (extendedController.refreshLibrarySection)
-      run(() => extendedController.refreshLibrarySection?.(section));
-    else if (extendedController.loadLibrarySection)
-      run(() =>
-        extendedController.loadLibrarySection?.(section, { refresh: true }),
-      );
+    run(() => controller.refreshLibrarySection(section));
   };
   const loadMore = (): void => {
-    if (collection.next && extendedController.loadMoreLibrarySection) {
+    if (collection.next) {
       run(() =>
-        extendedController.loadMoreLibrarySection?.(
+        controller.loadMoreLibrarySection(
           section,
           collection.next ?? undefined,
         ),
@@ -917,7 +891,7 @@ export function LibraryView({
                     index={index}
                     onPlay={playTrack}
                     onPlayNext={(track) =>
-                      act(() => controller.playNextTracks?.([track]))
+                      act(() => controller.playNextTracks([track]))
                     }
                     disabled={!authorized}
                   />

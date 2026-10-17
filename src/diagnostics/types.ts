@@ -43,7 +43,6 @@ export interface DiagnosticsAppSnapshot {
   readonly observedHosts?: readonly string[];
   readonly failures?: readonly string[];
   readonly checklist?: Readonly<Record<string, boolean>>;
-  readonly consecutiveQueueReady?: boolean;
 }
 
 export interface DiagnosticsDrawerController {
@@ -55,7 +54,6 @@ export interface DiagnosticsDrawerController {
   onToggleChecklist?: (id: string, checked: boolean) => void | Promise<void>;
   onResetChecklist?: () => void | Promise<void>;
   onOpenMusicDiagnostic?: () => void | Promise<void>;
-  onQueueConsecutive?: () => void | Promise<void>;
   getLogDirectory?: () => string | null | Promise<string | null>;
 }
 

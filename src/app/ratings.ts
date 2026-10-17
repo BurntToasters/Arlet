@@ -18,7 +18,13 @@ import {
   type Track,
 } from "../domain/music.ts";
 import { httpStatusOf } from "../musickit/errors.ts";
-import { clearRatings, getState, ratingKey, setRating } from "../state.ts";
+import {
+  clearRatings,
+  getState,
+  ratingKey,
+  setRating,
+  setRatings,
+} from "../state.ts";
 import {
   safeErrorMessage,
   type ControllerContext,
@@ -326,6 +332,7 @@ export function createRatings(
       // Apple answers 404 when the items have no rating.
       values = new Map();
     }
+    const entries: [string, RatingValue][] = [];
     for (const target of batch) {
       const key = ratingKey(type, target.id);
       // Same guards as a single lookup: no newer change and no unsettled write.
@@ -338,8 +345,10 @@ export function createRatings(
       }
       const value = values.get(target.id) ?? 0;
       settled.set(key, value);
-      setRating(key, value);
+      entries.push([key, value]);
     }
+    // One store update for the whole batch, not one per id.
+    setRatings(entries);
   };
 
   const loadRatings = async (

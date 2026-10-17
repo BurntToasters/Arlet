@@ -1,8 +1,7 @@
+import { asRecord } from "./response.ts";
 import { idSource, isSameTrack, type Track } from "../domain/music.ts";
 import { normalizeTrack } from "./normalize.ts";
 import { getState, setCurrentTrack, setQueue } from "../state.ts";
-
-export const CONSECUTIVE_TRACK_TARGET = 20;
 
 export interface QueueSnapshot {
   items: MusicKit.MediaItem[];
@@ -171,12 +170,6 @@ export function setRepeatMode(
   } catch {
     return false;
   }
-}
-
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
 }
 
 function mediaItems(value: unknown): MusicKit.MediaItem[] | undefined {

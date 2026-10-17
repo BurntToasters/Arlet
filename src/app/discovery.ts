@@ -27,6 +27,7 @@ import {
   type SearchPage,
 } from "../musickit/search.ts";
 import type { Track } from "../domain/music.ts";
+import { safeNextPath } from "../musickit/response.ts";
 import {
   getState,
   resetDiscoveryState,
@@ -129,9 +130,16 @@ function appendPage(
   }
 }
 
-/** Paging for a freshly loaded shelf: idle, with Apple's cursor if one came. */
+/** Apple cursors this app may follow; anything else ends the paging. */
+const CATALOG_NEXT_PREFIXES = ["/v1/catalog/"] as const;
+
+/**
+ * Paging for a freshly loaded shelf: idle, with Apple's cursor if one came and
+ * it points inside the catalog. An invalid cursor leaves the shelf with no more pages.
+ */
 function shelfPaging(page: { next?: string }): BrowseShelfPaging {
-  return { status: "idle", ...(page.next ? { next: page.next } : {}) };
+  const next = safeNextPath(page.next, CATALOG_NEXT_PREFIXES);
+  return { status: "idle", ...(next ? { next } : {}) };
 }
 
 function pagingFromCharts(charts: BrowseCharts): BrowseState["paging"] {
@@ -377,7 +385,17 @@ export function createDiscovery(
     const paging = getState().browse.paging[kind];
     if (!paging?.next || paging.status === "loading") return;
     const requestId = browseRequestId;
-    const next = paging.next;
+    // Re-checked where the cursor is followed; an invalid one ends the shelf.
+    const next = safeNextPath(paging.next, CATALOG_NEXT_PREFIXES);
+    if (!next) {
+      setBrowseState({
+        paging: {
+          ...getState().browse.paging,
+          [kind]: { status: "idle" },
+        },
+      });
+      return;
+    }
     const setPaging = (patch: BrowseShelfPaging): void => {
       setBrowseState({
         paging: { ...getState().browse.paging, [kind]: patch },
@@ -568,8 +586,14 @@ export function createDiscovery(
       });
       return;
     }
+    // Rows from the previous term stay up as stale while this one loads; the
+    // loading status is what marks them stale in the view.
     setSearchState({
-      suggestions: { term: trimmed, status: "loading", items: [] },
+      suggestions: {
+        term: trimmed,
+        status: "loading",
+        items: current.suggestions.items,
+      },
     });
     try {
       const items = await loadSearchSuggestions(requireMusic(), trimmed);

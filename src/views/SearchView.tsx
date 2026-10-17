@@ -267,12 +267,7 @@ function ResourceCard({
           collectionKind && playable && canPlay
             ? () =>
                 void Promise.resolve(
-                  controller.playCollection?.(
-                    collectionKind,
-                    item.id,
-                    source,
-                    0,
-                  ),
+                  controller.playCollection(collectionKind, item.id, source, 0),
                 ).catch(reportActionError)
             : undefined
         }
@@ -343,17 +338,12 @@ export function SearchView(): JSX.Element {
           ? undefined
           : () =>
               void Promise.resolve(
-                controller.playCollection?.(
-                  "album",
-                  item.album.id,
-                  "catalog",
-                  0,
-                ),
+                controller.playCollection("album", item.album.id, "catalog", 0),
               ).catch(reportActionError);
       case "playlists":
         return () =>
           void Promise.resolve(
-            controller.playCollection?.(
+            controller.playCollection(
               "playlist",
               item.playlist.id,
               "catalog",
@@ -363,9 +353,9 @@ export function SearchView(): JSX.Element {
       case "stations":
         return item.station.url
           ? () =>
-              void Promise.resolve(
-                controller.playStation?.(item.station),
-              ).catch(reportActionError)
+              void Promise.resolve(controller.playStation(item.station)).catch(
+                reportActionError,
+              )
           : undefined;
       case "artists":
       case "curators":
@@ -423,9 +413,10 @@ export function SearchView(): JSX.Element {
     });
   } else if (
     suggesting &&
-    state.search.suggestions.term === trimmedTerm &&
-    state.search.suggestions.status === "success"
+    (state.search.suggestions.status === "success" ||
+      state.search.suggestions.status === "loading")
   ) {
+    // Rows for an earlier term stay up until the new reply lands; see stale.
     state.search.suggestions.items.forEach((suggestion, index) => {
       const id = `search-option-${index}`;
       if (suggestion.kind === "term") {
@@ -445,6 +436,12 @@ export function SearchView(): JSX.Element {
       });
     });
   }
+  // Rows are stale while a reply is pending or the term has moved on.
+  const suggestionsStale =
+    suggesting &&
+    trimmedTerm !== "" &&
+    (state.search.suggestions.status === "loading" ||
+      state.search.suggestions.term !== trimmedTerm);
   const popupVisible = popupOpen && popupOptions.length > 0;
   const activeOption = popupVisible ? popupOptions[activeIndex] : undefined;
 
@@ -486,6 +483,11 @@ export function SearchView(): JSX.Element {
     setActiveIndex(-1);
   }, [state.search.suggestions]);
 
+  // Switching source drops the catalog rows and cancels any request in flight.
+  useEffect(() => {
+    void controller.suggestSearch("");
+  }, [source, controller]);
+
   useEffect(
     () => () => {
       if (suggestTimer.current !== undefined) {
@@ -513,7 +515,7 @@ export function SearchView(): JSX.Element {
   };
 
   const selectSource = (next: "catalog" | "library"): void => {
-    controller.setSearchSource?.(next);
+    controller.setSearchSource(next);
   };
 
   // Arrow keys, Home and End move and activate a tab, as in the tabs pattern.
@@ -656,7 +658,7 @@ export function SearchView(): JSX.Element {
                 canPlay && station.url
                   ? () =>
                       void Promise.resolve(
-                        controller.playStation?.(station),
+                        controller.playStation(station),
                       ).catch(reportActionError)
                   : undefined;
               return (
@@ -841,6 +843,7 @@ export function SearchView(): JSX.Element {
           open={popupVisible}
           options={popupOptions}
           activeIndex={activeIndex}
+          stale={suggestionsStale}
           onSelect={(index) => popupOptions[index]?.run()}
           onRemoveRecent={(recent) => removeRecentSearch(recent)}
           onClearRecent={

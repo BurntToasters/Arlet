@@ -14,6 +14,7 @@ import type {
   searchCatalogSongs,
 } from "../musickit/catalog.ts";
 import type { BrowseShelfKind, loadBrowseCharts } from "../musickit/browse.ts";
+import { safeNextPath } from "../musickit/response.ts";
 import { registerMusicKitEvents } from "../musickit/events.ts";
 import type { SearchGroupKind } from "../musickit/search.ts";
 import {
@@ -25,11 +26,7 @@ import {
   type PlaylistCuratorRef,
 } from "../musickit/curators.ts";
 import type { CuratorKind } from "../routing/router.ts";
-import {
-  CONSECUTIVE_TRACK_TARGET,
-  setAutoplayEnabled,
-  syncMusicKitQueue,
-} from "../musickit/player.ts";
+import { syncMusicKitQueue } from "../musickit/player.ts";
 import {
   createStationResolver,
   type StationTarget,
@@ -56,41 +53,22 @@ import {
   setSleepTimer,
   setUpdateState,
   setUiState,
-  setWindowEffectState,
   subscribePlaybackPosition,
-  type AppSettings,
   type LibraryEntity,
   type LibrarySection,
   type ThemePreference,
   type UpdateChannel,
   type WindowEffectPreference,
 } from "../state.ts";
-import {
-  applyWindowEffect,
-  darkModeForTheme,
-  loadSettings as loadPersistedSettings,
-  resetSettings as resetPersistedSettings,
-  saveSettings as savePersistedSettings,
-  watchSystemTheme,
-  type InvokeFunction,
-} from "./settings.ts";
-import {
-  MAX_PINS,
-  deletePins as deletePersistedPins,
-  loadPins as loadPersistedPins,
-  savePins as savePersistedPins,
-} from "./pins.ts";
+import type { InvokeFunction } from "./settings.ts";
 import type {
   MusicSource,
-  PinnedPlaylist,
-  Playlist,
   RatingValue,
   Station,
   Track,
 } from "../domain/music.ts";
 import { isSameTrack } from "../domain/music.ts";
 import type { DiagnosticsStore } from "../diagnostics/store.ts";
-import { setNativeLogDebugMode } from "../diagnostics/native.ts";
 import { createSupportReport } from "../diagnostics/support-report.ts";
 import type { GateEnvironment } from "../phase0/gate-session.ts";
 import { redactSensitive, registerSensitiveValue } from "../platform/redact.ts";
@@ -124,6 +102,8 @@ import {
   type CreatePlaylistRequest,
 } from "./playlist-editing.ts";
 import { createPlaybackSession } from "./playback-session.ts";
+import { createControllerPins } from "./controller-pins.ts";
+import { createControllerSettings } from "./controller-settings.ts";
 import {
   createTrackNavigationResolver,
   type TrackNavigation,
@@ -131,7 +111,6 @@ import {
 
 export type { DetailLoadOptions } from "./library-loader.ts";
 
-const VOLUME_SAVE_DELAY_MS = 300;
 /** A clipboard write still pending after this is reported as failed. */
 const CLIPBOARD_WRITE_TIMEOUT_MS = 5_000;
 /** Longest wait for the queue save before an update installs (as tray.rs). */
@@ -172,16 +151,16 @@ export interface AppController {
   ): Promise<void>;
   refreshLibrarySection(section: LibrarySection): Promise<void>;
   loadHome(options?: { refresh?: boolean }): Promise<void>;
-  loadBrowse?(options?: { refresh?: boolean; genreId?: string }): Promise<void>;
-  loadMoreBrowseShelf?(kind: BrowseShelfKind): Promise<void>;
-  loadRadio?(options?: { refresh?: boolean }): Promise<void>;
-  loadRadioGenre?(genreId: string): Promise<void>;
+  loadBrowse(options?: { refresh?: boolean; genreId?: string }): Promise<void>;
+  loadMoreBrowseShelf(kind: BrowseShelfKind): Promise<void>;
+  loadRadio(options?: { refresh?: boolean }): Promise<void>;
+  loadRadioGenre(genreId: string): Promise<void>;
   loadCurator(id: string, kind: CuratorKind): Promise<CuratorPage>;
   loadMoreCuratorPlaylists(next: string): Promise<CuratorPlaylistsPage>;
   loadPlaylistCurator(
     playlistId: string,
   ): Promise<PlaylistCuratorRef | undefined>;
-  playStation?(station: Station): Promise<void>;
+  playStation(station: Station): Promise<void>;
   loadAlbum(
     id: string,
     source?: MusicSource,
@@ -237,7 +216,7 @@ export interface AppController {
   suggestSearch(term: string): Promise<void>;
   /** Appends the next "See all" page of one catalog group. */
   loadMoreSearch(kind: SearchGroupKind): Promise<void>;
-  setSearchSource?(source: "catalog" | "library"): void;
+  setSearchSource(source: "catalog" | "library"): void;
   playFromSearch(index: number): Promise<void>;
   playTracks(tracks: readonly Track[], startIndex?: number): Promise<void>;
   /** Plays the tracks in shuffled order. */
@@ -256,7 +235,7 @@ export interface AppController {
     source: MusicSource,
     catalogId?: string,
   ): Promise<Track[]>;
-  playCollection?(
+  playCollection(
     kind: "playlist" | "album",
     id: string,
     source?: MusicSource,
@@ -264,33 +243,32 @@ export interface AppController {
     options?: CollectionPlayOptions,
   ): Promise<void>;
   /** `trackId` is the song at `startIndex` when the user picked it. */
-  playPlaylist?(
+  playPlaylist(
     id: string,
     source?: MusicSource,
     startIndex?: number,
     trackId?: string,
   ): Promise<void>;
-  playAlbum?(
+  playAlbum(
     id: string,
     source?: MusicSource,
     startIndex?: number,
     trackId?: string,
   ): Promise<void>;
-  resolveTrackNavigation?(track: Track): Promise<TrackNavigation>;
-  playConsecutive(): Promise<void>;
+  resolveTrackNavigation(track: Track): Promise<TrackNavigation>;
   /** Saves the queue position and pending settings before Arlet quits. */
-  prepareToQuit?(): Promise<void>;
+  prepareToQuit(): Promise<void>;
   /** Every queued song, including the rest of a long playlist still to come. */
-  fullQueue?(): Track[];
+  fullQueue(): Track[];
   togglePlayback(): Promise<void>;
-  play?(): Promise<void>;
-  pause?(): Promise<void>;
-  setShuffleMode?(mode: "off" | "songs"): Promise<void>;
-  cycleRepeatMode?(): Promise<void>;
-  setRepeatMode?(mode: "off" | "all" | "one"): Promise<void>;
+  play(): Promise<void>;
+  pause(): Promise<void>;
+  setShuffleMode(mode: "off" | "songs"): Promise<void>;
+  cycleRepeatMode(): Promise<void>;
+  setRepeatMode(mode: "off" | "all" | "one"): Promise<void>;
   /** Pauses when the timer ends; in-memory only, cleared on sign-out. */
-  startSleepTimer?(option: SleepTimerOption): void;
-  cancelSleepTimer?(): void;
+  startSleepTimer(option: SleepTimerOption): void;
+  cancelSleepTimer(): void;
   previous(): Promise<void>;
   next(): Promise<void>;
   seek(seconds: number): Promise<void>;
@@ -303,10 +281,10 @@ export interface AppController {
   setWindowEffect(preference: WindowEffectPreference): Promise<void>;
   setAutoCheckUpdates(enabled: boolean): Promise<void>;
   /** Rejects when the runtime has no writable autoplay; saves only on success. */
-  setAutoplay?(enabled: boolean): Promise<void>;
-  setTrayIcon?(enabled: boolean): Promise<void>;
+  setAutoplay(enabled: boolean): Promise<void>;
+  setTrayIcon(enabled: boolean): Promise<void>;
   /** Saving it switches the native log file on or off at once. */
-  setDebugMode?(enabled: boolean): Promise<void>;
+  setDebugMode(enabled: boolean): Promise<void>;
   /** Turning this off deletes the saved queue. */
   setRestoreSession(enabled: boolean): Promise<void>;
   setUpdateChannel(channel: UpdateChannel): Promise<void>;
@@ -320,12 +298,11 @@ export interface AppController {
   openMusicDiagnostic(): Promise<string>;
   setDiagnosticsEnvironment(environment: GateEnvironment): void;
   /** Copies a redacted support report for bug reports (release builds). */
-  copyDiagnosticsReport?(): Promise<void>;
+  copyDiagnosticsReport(): Promise<void>;
   /** Copies plain text through the same writer and timeout as the report. */
-  copyText?(text: string): Promise<void>;
+  copyText(text: string): Promise<void>;
   log(message: string): void;
   dispose(): void;
-  readonly consecutiveTrackTarget: number;
 }
 
 export type { CreatePlaylistRequest } from "./playlist-editing.ts";
@@ -371,12 +348,8 @@ export function createAppController(
   const createLibraryClient =
     dependencies.createLibraryClient ?? createAppleMusicLibraryClient;
   let music: MusicKit.MusicKitInstance | null = null;
-  let volumeSaveQueue: Promise<void> = Promise.resolve();
-  let volumeSaveTimer: ReturnType<typeof setTimeout> | undefined;
-  let volumeSaveWaiters: Array<() => void> = [];
   let restoreAuthProbe: (() => void) | undefined;
   let stopMusicKitEvents: (() => void) | undefined;
-  let stopThemeWatcher: (() => void) | undefined;
 
   const log = (message: string): void => {
     const line = redactSensitive(`[${timestamp(now)}] ${message}`);
@@ -411,6 +384,10 @@ export function createAppController(
   const playback = createPlayback(context);
   const ratings = createRatings(context);
   const playlists = createPlaylistEditing(context, library);
+  const pinning = createControllerPins(context, {
+    invokeFn,
+    libraryClient: () => library.client(),
+  });
   const trackNavigation = createTrackNavigationResolver(requireMusic);
   const { requireLibrary, ensureLibraryCache, clearLibraryCache } = library;
   const collections = createCollectionPlayback({
@@ -465,37 +442,15 @@ export function createAppController(
       now,
     });
 
-  const applyCurrentEffect = async (): Promise<void> => {
-    const settings = getState().settings;
-    const dark = darkModeForTheme(settings.theme);
-    const result = await applyWindowEffect(
-      settings.windowEffect,
-      dark,
-      invokeFn,
-    );
-    setWindowEffectState(result);
-    if (result.fallbackReason) {
-      log(`Window effect fallback: ${result.fallbackReason}`);
-    }
-  };
-
-  /**
-   * Every settings save goes through one queue and reads the settings when it
-   * runs, so an older snapshot can never land after a newer one.
-   */
-  const queueSettingsSave = (): Promise<void> => {
-    volumeSaveQueue = volumeSaveQueue
-      .then(() => savePersistedSettings(getState().settings, invokeFn))
-      .catch((error: unknown) => {
-        log(`Settings save failed: ${errorMessage(error)}`);
-      });
-    return volumeSaveQueue;
-  };
-
-  const persistSettings = async (settings: AppSettings): Promise<void> => {
-    setSettings(settings);
-    await queueSettingsSave();
-  };
+  const preferences = createControllerSettings(context, {
+    invokeFn,
+    playback,
+    playbackSession,
+    configureUpdater: (settings) => {
+      updater.configure(settings);
+    },
+    loadPins: () => pinning.reload(),
+  });
 
   const autoSkip = createAutoSkip({
     readPlayback: () => getState().playback,
@@ -519,33 +474,6 @@ export function createAppController(
   const stopSleepTimerPositions = subscribePlaybackPosition(() =>
     sleepTimer.observe(getState().playback),
   );
-
-  /** Pushes the saved autoplay preference to MusicKit once it is available. */
-  const applyAutoplaySetting = (instance: MusicKit.MusicKitInstance): void => {
-    playback.syncPlaybackModes(instance);
-    if (!getState().playback.modeCapabilities?.autoplay) return;
-    if (!setAutoplayEnabled(instance, getState().settings.autoplay)) {
-      log("Autoplay setting could not be applied in this MusicKit runtime.");
-    }
-    playback.syncPlaybackModes(instance);
-  };
-
-  /**
-   * Saves the latest settings once a volume drag settles. During a drag the
-   * live level is only in `playback.volume`, so it is copied into settings here.
-   */
-  const flushVolumeSave = (): void => {
-    volumeSaveTimer = undefined;
-    const waiters = volumeSaveWaiters;
-    volumeSaveWaiters = [];
-    const { volume } = getState().playback;
-    if (getState().settings.volume !== volume) {
-      setSettings({ ...getState().settings, volume });
-    }
-    void queueSettingsSave().then(() => {
-      for (const resolve of waiters) resolve();
-    });
-  };
 
   /** Bumped on sign-in and sign-out; work started earlier must not land. */
   let accountGeneration = 0;
@@ -578,11 +506,7 @@ export function createAppController(
     await clearLibraryCache();
     // Pins are local and not tied to an Apple ID; the next account to
     // sign in on this PC must not see them.
-    try {
-      await deletePersistedPins(invokeFn);
-    } catch (error) {
-      log(`Pinned playlists clear failed: ${safeErrorMessage(error)}`);
-    }
+    await pinning.clearStored();
     await playbackSession.clear();
     // Recent searches belong to the signed-in account, so sign-out (and a
     // revoked session) is what clears them; sign-in does not.
@@ -631,121 +555,6 @@ export function createAppController(
     if (isAuthorized(instance)) return;
     if (getState().auth.status !== "authorized") return;
     void endSessionFromMusicKit(instance);
-  };
-
-  const persistPins = async (
-    pins: readonly PinnedPlaylist[],
-  ): Promise<void> => {
-    try {
-      await savePersistedPins(pins, invokeFn);
-    } catch (error) {
-      log(`Pinned playlists save failed: ${safeErrorMessage(error)}`);
-    }
-  };
-
-  const reloadPins = async (): Promise<void> => {
-    setPins(await loadPersistedPins(invokeFn));
-    void resolvePinDetails();
-  };
-
-  let resolvingPins = false;
-  // A request that arrives mid-run (a new pin) runs once more afterwards.
-  let resolvePinsAgain = false;
-  /**
-   * Saves each pin's name and artwork, so the sidebar can show a pinned
-   * playlist that is not in the loaded playlist list. Uses the loaded list
-   * when it has the playlist (also picking up renames) and asks Apple for the
-   * rest. Runs once at a time; needs a signed-in library.
-   */
-  const resolvePinDetails = async (): Promise<void> => {
-    if (resolvingPins) {
-      resolvePinsAgain = true;
-      return;
-    }
-    const client = library.client();
-    if (!client || getState().auth.status !== "authorized") return;
-    resolvingPins = true;
-    try {
-      const listed = getState().library.collections.playlists.items;
-      const pins = getState().pins;
-      const knownOf = (pin: PinnedPlaylist) =>
-        listed.find((item) => item.id === pin.id) as
-          { name?: unknown; artwork?: { url?: unknown } } | undefined;
-      // Pins that neither the list nor the saved pin can name. One batched
-      // request per source covers them; any pin it misses is looked up alone.
-      const needsLookup = pins.filter(
-        (pin) => !knownOf(pin)?.name && !pin.name,
-      );
-      const batched = new Map<string, Playlist>();
-      const batchSources = [...new Set(needsLookup.map((pin) => pin.source))];
-      await Promise.all(
-        batchSources.map(async (source) => {
-          const ids = needsLookup
-            .filter((pin) => pin.source === source)
-            .map((pin) => pin.id);
-          try {
-            for (const playlist of await client.getPlaylistsByIds(
-              ids,
-              source,
-            )) {
-              batched.set(playlist.id, playlist);
-            }
-          } catch (error) {
-            log(`Pinned playlist batch failed: ${safeErrorMessage(error)}`);
-          }
-        }),
-      );
-      const updates = new Map<
-        string,
-        Pick<PinnedPlaylist, "name" | "artworkUrl">
-      >();
-      for (const pin of pins) {
-        const known = knownOf(pin);
-        let name = typeof known?.name === "string" ? known.name : undefined;
-        let artworkUrl =
-          typeof known?.artwork?.url === "string"
-            ? known.artwork.url
-            : undefined;
-        if (!name && !pin.name) {
-          const found = batched.get(pin.id);
-          if (found) {
-            name = found.name;
-            artworkUrl = found.artwork?.url;
-          } else {
-            try {
-              const playlist = await client.getPlaylist(pin.id, pin.source);
-              name = playlist?.name;
-              artworkUrl = playlist?.artwork?.url;
-            } catch (error) {
-              log(`Pinned playlist lookup failed: ${safeErrorMessage(error)}`);
-            }
-          }
-        }
-        if (
-          (name && name !== pin.name) ||
-          (artworkUrl && artworkUrl !== pin.artworkUrl)
-        ) {
-          updates.set(pin.id, {
-            name: name ?? pin.name,
-            artworkUrl: artworkUrl ?? pin.artworkUrl,
-          });
-        }
-      }
-      if (updates.size === 0) return;
-      // Pins may have changed during the lookups; apply to the latest list.
-      const next = getState().pins.map((pin) => {
-        const update = updates.get(pin.id);
-        return update ? { ...pin, ...update } : pin;
-      });
-      setPins(next);
-      await persistPins(next);
-    } finally {
-      resolvingPins = false;
-      if (resolvePinsAgain) {
-        resolvePinsAgain = false;
-        void resolvePinDetails();
-      }
-    }
   };
 
   const syncPlaybackDiagnostics = (): void => {
@@ -821,18 +630,14 @@ export function createAppController(
             onMusicVolumeChange: (volume) => {
               if (!playback.reflectMusicVolume(volume)) return;
               // Saved on the same debounce as a drag, so it survives a restart.
-              if (volumeSaveTimer !== undefined) clearTimeout(volumeSaveTimer);
-              volumeSaveTimer = setTimeout(
-                flushVolumeSave,
-                VOLUME_SAVE_DELAY_MS,
-              );
+              preferences.scheduleVolumeSave();
             },
           },
         );
         playback.syncPlaybackModes(instance);
       }
       syncMusicKitQueue(instance);
-      applyAutoplaySetting(instance);
+      preferences.applyAutoplaySetting(instance);
       restoreAuthProbe = installAuthPopupProbe(log);
       setInitializationState({ status: "ready" });
       log("MusicKit initialized successfully.");
@@ -853,7 +658,7 @@ export function createAppController(
         await cachePromise;
         if (storefront) setAccountSummary({ storefront });
         log("Already authorized from previous session.");
-        void resolvePinDetails();
+        void pinning.resolveDetails();
       }
       // Not awaited: a restored queue must never hold up the update check.
       playbackSession.tryRestore();
@@ -878,31 +683,10 @@ export function createAppController(
   const controller: AppController = {
     initialize: initializeController,
 
-    async loadSettings(): Promise<void> {
-      const settings = await loadPersistedSettings(invokeFn);
-      setSettings(settings);
-      setNativeLogDebugMode(settings.debugMode);
-      playbackSession.markSettingsLoaded();
-      playback.applyPlaybackVolume(settings.volume);
-      if (music) applyAutoplaySetting(music);
-      updater.configure(settings);
-      const effectPromise = applyCurrentEffect();
-      const pinsPromise = reloadPins();
-      stopThemeWatcher?.();
-      stopThemeWatcher = watchSystemTheme((dark) => {
-        if (getState().settings.theme === "system") {
-          void applyWindowEffect(
-            getState().settings.windowEffect,
-            dark,
-            invokeFn,
-          ).then(setWindowEffectState);
-        }
-      });
-      await Promise.all([effectPromise, pinsPromise]);
-    },
+    loadSettings: preferences.loadSettings,
 
     async loadPins(): Promise<void> {
-      await reloadPins();
+      await pinning.reload();
     },
 
     async authorize(): Promise<void> {
@@ -939,7 +723,7 @@ export function createAppController(
             `Library API unavailable after authorization: ${safeErrorMessage(error)}`,
           );
         }
-        await Promise.all([ensureLibraryCache(), reloadPins()]);
+        await Promise.all([ensureLibraryCache(), pinning.reload()]);
         const storefront = String(instance.storefrontId ?? "").trim();
         if (storefront) setAccountSummary({ storefront, connectedAt: now() });
         log("Authorization successful.");
@@ -952,22 +736,7 @@ export function createAppController(
       }
     },
 
-    async resetSettingsAndRestart(): Promise<void> {
-      // A debounced volume save would write the old settings back after the
-      // reset, so drop it and let any save already running finish first.
-      if (volumeSaveTimer !== undefined) {
-        clearTimeout(volumeSaveTimer);
-        volumeSaveTimer = undefined;
-      }
-      const waiters = volumeSaveWaiters;
-      volumeSaveWaiters = [];
-      for (const resolve of waiters) resolve();
-      await volumeSaveQueue;
-      // The restart exits without the quit handshake; save the queue first.
-      await playbackSession.saveNow().catch(() => undefined);
-      log("Resetting settings to defaults and restarting.");
-      await resetPersistedSettings(invokeFn);
-    },
+    resetSettingsAndRestart: preferences.resetSettingsAndRestart,
 
     async signOut(): Promise<void> {
       accountTransitions += 1;
@@ -995,9 +764,24 @@ export function createAppController(
       }
     },
 
-    loadLibrarySection: library.loadLibrarySection,
+    // An invalid cursor is treated as no more pages, so nothing is requested.
+    loadLibrarySection: (section, options) => {
+      if (options?.cursor === undefined) {
+        return library.loadLibrarySection(section, options);
+      }
+      const cursor = safeNextPath(options.cursor, ["/v1/me/"]);
+      return cursor
+        ? library.loadLibrarySection(section, { ...options, cursor })
+        : Promise.resolve();
+    },
 
-    loadMoreLibrarySection: library.loadMoreLibrarySection,
+    loadMoreLibrarySection: (section, cursor) => {
+      if (cursor === undefined) return library.loadMoreLibrarySection(section);
+      const next = safeNextPath(cursor, ["/v1/me/"]);
+      return next
+        ? library.loadMoreLibrarySection(section, next)
+        : Promise.resolve();
+    },
 
     refreshLibrarySection: library.refreshLibrarySection,
 
@@ -1011,8 +795,12 @@ export function createAppController(
 
     loadRadioGenre: discovery.loadRadioGenre,
     loadCurator: (id, kind) => loadCuratorPage(requireMusic(), id, kind),
-    loadMoreCuratorPlaylists: (next) =>
-      loadCuratorPlaylistsPage(requireMusic(), next),
+    loadMoreCuratorPlaylists: (next) => {
+      const cursor = safeNextPath(next, ["/v1/catalog/"]);
+      return cursor
+        ? loadCuratorPlaylistsPage(requireMusic(), cursor)
+        : Promise.resolve({ playlists: [] });
+    },
     loadPlaylistCurator: (playlistId) =>
       loadPlaylistCurator(requireMusic(), playlistId),
 
@@ -1041,28 +829,9 @@ export function createAppController(
 
     loadPlaylistFolder: library.loadPlaylistFolder,
 
-    async togglePin(
-      id: string,
-      source: MusicSource = "library",
-    ): Promise<void> {
-      const trimmed = id.trim();
-      if (!trimmed) return;
-      const current = getState().pins;
-      const next = current.some((pin) => pin.id === trimmed)
-        ? current.filter((pin) => pin.id !== trimmed)
-        : [...current, { id: trimmed, source }].slice(0, MAX_PINS);
-      setPins(next);
-      await persistPins(next);
-      void resolvePinDetails();
-    },
+    togglePin: pinning.togglePin,
 
-    async unpin(id: string): Promise<void> {
-      const current = getState().pins;
-      if (!current.some((pin) => pin.id === id)) return;
-      const next = current.filter((pin) => pin.id !== id);
-      setPins(next);
-      await persistPins(next);
-    },
+    unpin: pinning.unpin,
 
     isPinned(id: string): boolean {
       return getState().pins.some((pin) => pin.id === id);
@@ -1240,22 +1009,11 @@ export function createAppController(
 
     async prepareToQuit(): Promise<void> {
       // A volume change still waiting on its debounce is saved too.
-      if (volumeSaveTimer !== undefined) {
-        clearTimeout(volumeSaveTimer);
-        flushVolumeSave();
-      }
-      await Promise.allSettled([playbackSession.saveNow(), volumeSaveQueue]);
-    },
-
-    async playConsecutive(): Promise<void> {
-      const lastTracks = discovery.lastSearchTracks();
-      const tracks = lastTracks.length ? lastTracks : getState().search.results;
-      if (tracks.length < CONSECUTIVE_TRACK_TARGET) {
-        throw new Error(
-          `Need at least ${CONSECUTIVE_TRACK_TARGET} search results.`,
-        );
-      }
-      await playTracks(tracks.slice(0, CONSECUTIVE_TRACK_TARGET));
+      preferences.flushPendingVolume();
+      await Promise.allSettled([
+        playbackSession.saveNow(),
+        preferences.saveQueue(),
+      ]);
     },
 
     async togglePlayback(): Promise<void> {
@@ -1306,58 +1064,19 @@ export function createAppController(
         .catch(() => undefined);
     },
 
-    async setVolume(volume: number): Promise<void> {
-      // Slider input fires many times a second. The audio and `playback.volume`
-      // follow each one without touching settings, which are written once the
-      // drag settles.
-      playback.applyPlaybackVolume(volume);
-      if (volumeSaveTimer !== undefined) clearTimeout(volumeSaveTimer);
-      volumeSaveTimer = setTimeout(flushVolumeSave, VOLUME_SAVE_DELAY_MS);
-      await new Promise<void>((resolve) => volumeSaveWaiters.push(resolve));
-    },
+    setVolume: preferences.setVolume,
 
-    async setTheme(theme: ThemePreference): Promise<void> {
-      await persistSettings({ ...getState().settings, theme });
-      await applyCurrentEffect();
-    },
+    setTheme: preferences.setTheme,
 
-    async setWindowEffect(preference: WindowEffectPreference): Promise<void> {
-      await persistSettings({
-        ...getState().settings,
-        windowEffect: preference,
-      });
-      await applyCurrentEffect();
-    },
+    setWindowEffect: preferences.setWindowEffect,
 
-    async setAutoCheckUpdates(enabled: boolean): Promise<void> {
-      const settings: AppSettings = {
-        ...getState().settings,
-        autoCheckUpdates: enabled,
-      };
-      setSettings(settings);
-      updater.configure(settings);
-      await persistSettings(settings);
-    },
+    setAutoCheckUpdates: preferences.setAutoCheckUpdates,
 
-    async setAutoplay(enabled: boolean): Promise<void> {
-      const instance = requireMusic();
-      if (!setAutoplayEnabled(instance, enabled)) {
-        playback.syncPlaybackModes(instance);
-        throw new Error("Autoplay is not available in this MusicKit runtime.");
-      }
-      playback.syncPlaybackModes(instance);
-      await persistSettings({ ...getState().settings, autoplay: enabled });
-    },
+    setAutoplay: preferences.setAutoplay,
 
-    async setTrayIcon(enabled: boolean): Promise<void> {
-      await persistSettings({ ...getState().settings, trayIcon: enabled });
-    },
+    setTrayIcon: preferences.setTrayIcon,
 
-    async setDebugMode(enabled: boolean): Promise<void> {
-      await persistSettings({ ...getState().settings, debugMode: enabled });
-      setNativeLogDebugMode(enabled);
-      log(enabled ? "Debug Mode turned on." : "Debug Mode turned off.");
-    },
+    setDebugMode: preferences.setDebugMode,
 
     startSleepTimer(option: SleepTimerOption): void {
       sleepTimer.start(option);
@@ -1372,23 +1091,9 @@ export function createAppController(
       sleepTimer.cancel();
     },
 
-    async setRestoreSession(enabled: boolean): Promise<void> {
-      await persistSettings({
-        ...getState().settings,
-        restoreSession: enabled,
-      });
-      if (!enabled) await playbackSession.clear();
-    },
+    setRestoreSession: preferences.setRestoreSession,
 
-    async setUpdateChannel(channel: UpdateChannel): Promise<void> {
-      const settings: AppSettings = {
-        ...getState().settings,
-        updateChannel: channel,
-      };
-      setSettings(settings);
-      updater.configure(settings);
-      await persistSettings(settings);
-    },
+    setUpdateChannel: preferences.setUpdateChannel,
 
     startupUpdateCheck(): Promise<void> {
       return updater.startupCheck();
@@ -1406,7 +1111,7 @@ export function createAppController(
       // The Windows installer exits Arlet at once, without the quit
       // handshake; save the queue and settings first, briefly.
       await Promise.race([
-        controller.prepareToQuit?.(),
+        controller.prepareToQuit(),
         new Promise<void>((resolve) =>
           setTimeout(resolve, QUIT_SAVE_TIMEOUT_MS),
         ),
@@ -1472,20 +1177,14 @@ export function createAppController(
       stopSleepTimerPositions();
       sleepTimer.cancel();
       trackNavigation.clear();
-      if (volumeSaveTimer !== undefined) {
-        clearTimeout(volumeSaveTimer);
-        flushVolumeSave();
-      }
+      preferences.flushPendingVolume();
       stopMusicKitEvents?.();
       stopMusicKitEvents = undefined;
       restoreAuthProbe?.();
       restoreAuthProbe = undefined;
-      stopThemeWatcher?.();
-      stopThemeWatcher = undefined;
+      preferences.stopThemeWatching();
       updater.dispose();
     },
-
-    consecutiveTrackTarget: CONSECUTIVE_TRACK_TARGET,
   };
 
   // The settings defaults are intentionally stable if load is delayed/fails.

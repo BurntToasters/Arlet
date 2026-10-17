@@ -28,16 +28,12 @@ import {
   X,
 } from "lucide-preact";
 import type { LucideIcon } from "lucide-preact";
-import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
+import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { useAppRouter } from "../app/context.tsx";
-import {
-  isLibraryTarget,
-  ratingResourceType,
-  type RatingTarget,
-} from "../app/ratings.ts";
-import type { RatingValue, Track, MusicSource } from "../domain/music.ts";
+import type { AppController } from "../app/controller.ts";
+import { isLibraryTarget, ratingResourceType } from "../app/ratings.ts";
+import type { Track } from "../domain/music.ts";
 import type { TrackNavigation } from "../musickit/song-navigation.ts";
-import type { CollectionPlayOptions } from "../app/collection-playback.ts";
 import type { Route } from "../routing/router.ts";
 import { getState, ratingKey } from "../state.ts";
 import { requestPlaylistDialog } from "./playlist-events.ts";
@@ -46,8 +42,6 @@ import {
   reportNotice,
   reportQueueEdit,
 } from "./action-errors.ts";
-import type { QueueEditTier } from "../musickit/queue-edit.ts";
-import type { StationTarget } from "../musickit/stations.ts";
 import { nameArtistLinks } from "./artist-links.ts";
 import {
   ratingTargetOf,
@@ -84,55 +78,6 @@ const COPYABLE_KINDS: ReadonlySet<ContextKind> = new Set<ContextKind>([
   "artist",
   "playlist",
 ]);
-
-export interface AppControllerWithContext extends Record<string, unknown> {
-  playTracks?: (tracks: readonly Track[], startIndex?: number) => Promise<void>;
-  playAlbum?: (
-    id: string,
-    source?: MusicSource,
-    startIndex?: number,
-    trackId?: string,
-  ) => Promise<void>;
-  playPlaylist?: (
-    id: string,
-    source?: MusicSource,
-    startIndex?: number,
-    trackId?: string,
-  ) => Promise<void>;
-  playCollection?: (
-    kind: "playlist" | "album",
-    id: string,
-    source?: MusicSource,
-    startIndex?: number,
-    options?: CollectionPlayOptions,
-  ) => Promise<void>;
-  playNextTracks?: (tracks: readonly Track[]) => Promise<void>;
-  playLaterTracks?: (tracks: readonly Track[]) => Promise<void>;
-  refreshCurrentData?: () => Promise<void>;
-  refreshCurrentView?: () => Promise<void>;
-  createPlaylist?: (...args: unknown[]) => Promise<unknown>;
-  createPlaylistFolder?: (name: string) => Promise<unknown>;
-  addTracksToPlaylist?: (
-    playlistId: string,
-    tracks: readonly Track[],
-  ) => Promise<unknown>;
-  isPinned?: (id: string) => boolean;
-  togglePin?: (id: string, source?: "library" | "catalog") => Promise<void>;
-  unpin?: (id: string) => Promise<void>;
-  resolveTrackNavigation?: (track: Track) => Promise<TrackNavigation>;
-  removeQueueItem?: (index: number, trackId?: string) => Promise<QueueEditTier>;
-  startStation?: (target: StationTarget) => Promise<void>;
-  queueCollection?: (
-    kind: "playlist" | "album",
-    id: string,
-    source: MusicSource,
-    where: "next" | "later",
-  ) => Promise<void>;
-  rate?: (target: RatingTarget, value: RatingValue) => Promise<void>;
-  loadRating?: (target: RatingTarget) => Promise<void>;
-  addToLibrary?: (target: RatingTarget) => Promise<void>;
-  copyText?: (text: string) => Promise<void>;
-}
 
 function executeCommand(command: "cut" | "copy" | "paste" | "selectAll"): void {
   try {
@@ -193,7 +138,7 @@ export function buildItems({
   restoreFocus,
   restoreTarget,
 }: {
-  controller: AppControllerWithContext;
+  controller: AppController;
   router: ReturnType<typeof useAppRouter>;
   target: ContextTarget;
   track?: Track;
@@ -231,9 +176,7 @@ export function buildItems({
       shortcut: "Ctrl+R",
       icon: RefreshCw,
       action: run(() => {
-        const refresh =
-          controller.refreshCurrentData ?? controller.refreshCurrentView;
-        if (refresh) void refresh().catch(() => undefined);
+        void controller.refreshCurrentData().catch(() => undefined);
       }),
     },
   ];
@@ -260,8 +203,8 @@ export function buildItems({
         action: run(() => {
           restoreFocus();
           const text = window.getSelection()?.toString();
-          const copy = controller.copyText ?? writeText;
-          if (text) void copy(text).catch(() => executeCommand("copy"));
+          if (text)
+            void controller.copyText(text).catch(() => executeCommand("copy"));
           else executeCommand("copy");
         }),
       },
@@ -338,9 +281,7 @@ export function buildItems({
         label: "Play next",
         icon: SkipForward,
         action: run(() => {
-          const playNext = controller.playNextTracks;
-          if (playNext) void playNext([track]).catch(reportActionError);
-          else void statefulPlay(controller, track).catch(reportActionError);
+          void controller.playNextTracks([track]).catch(reportActionError);
         }),
       },
       {
@@ -348,19 +289,16 @@ export function buildItems({
         label: "Play later",
         icon: Forward,
         action: run(() => {
-          const playLater = controller.playLaterTracks;
-          if (playLater) void playLater([track]).catch(reportActionError);
-          else void statefulPlay(controller, track).catch(reportActionError);
+          void controller.playLaterTracks([track]).catch(reportActionError);
         }),
       },
       {
         id: "start-station",
         label: "Start Station",
         icon: Radio,
-        disabled: !controller.startStation,
         action: run(() => {
           void controller
-            .startStation?.({
+            .startStation({
               kind: "song",
               id: track.id,
               catalogId: track.catalogId,
@@ -372,24 +310,19 @@ export function buildItems({
         id: "add-to-playlist",
         label: "Add to playlist…",
         icon: ListPlus,
-        disabled: !controller.addTracksToPlaylist,
         action: run(() => {
-          if (controller.addTracksToPlaylist)
-            requestPlaylistDialog("picker", [track], restoreTarget);
+          requestPlaylistDialog("picker", [track], restoreTarget);
         }),
       },
     );
-    const removeQueueItem = controller.removeQueueItem;
     const queueIndex = target.queueIndex;
     if (queueIndex !== undefined) {
       playbackItems.push({
         id: "remove-from-queue",
         label: "Remove from queue",
         icon: X,
-        disabled: !removeQueueItem,
         action: run(() => {
-          if (removeQueueItem)
-            reportQueueEdit(removeQueueItem(queueIndex, track.id));
+          reportQueueEdit(controller.removeQueueItem(queueIndex, track.id));
         }),
       });
     }
@@ -456,7 +389,7 @@ export function buildItems({
       run(() => {
         const current =
           getState().ratings[ratingKey(ratingType, ratingTarget.id)];
-        void controller.rate?.(ratingTarget, current === value ? 0 : value);
+        void controller.rate(ratingTarget, current === value ? 0 : value);
       });
     libraryItems.push(
       {
@@ -478,7 +411,7 @@ export function buildItems({
         label: "Add to Library",
         icon: LibraryBig,
         action: run(() => {
-          void controller.addToLibrary?.(ratingTarget);
+          void controller.addToLibrary(ratingTarget);
         }),
       });
     }
@@ -499,26 +432,21 @@ export function buildItems({
       : target.route?.kind === "playlist"
         ? target.route.id
         : undefined;
-  if (playlistId && (controller.togglePin ?? controller.unpin)) {
+  if (playlistId) {
     const source =
       target.source ??
       (target.route?.kind === "playlist" ? target.route.source : undefined) ??
       "library";
-    const pinned =
-      typeof controller.isPinned === "function"
-        ? controller.isPinned(playlistId)
-        : false;
+    const pinned = controller.isPinned(playlistId);
     goToItems.push({
       id: pinned ? "unpin-playlist" : "pin-playlist",
       label: pinned ? "Unpin playlist" : "Pin playlist",
       icon: pinned ? PinOff : Pin,
-      disabled: pinned ? !controller.unpin : !controller.togglePin,
       action: run(() => {
-        if (pinned)
-          void controller.unpin?.(playlistId).catch(reportActionError);
+        if (pinned) void controller.unpin(playlistId).catch(reportActionError);
         else
           void controller
-            .togglePin?.(playlistId, source)
+            .togglePin(playlistId, source)
             .catch(reportActionError);
       }),
     });
@@ -532,12 +460,8 @@ export function buildItems({
       icon: Link,
       action: run(() => {
         // Through the controller, so a busy clipboard times out into the error toast.
-        const copyText = controller.copyText;
-        if (!copyText) {
-          reportActionError("Could not copy the link.");
-          return;
-        }
-        void copyText(catalogUrl)
+        void controller
+          .copyText(catalogUrl)
           .then(() => reportNotice("Link copied."))
           .catch(() => reportActionError("Could not copy the link."));
       }),
@@ -558,34 +482,29 @@ export function buildItems({
         id: "play-now",
         label: "Play now",
         icon: Play,
-        disabled: !controller.playCollection,
         action: run(() => {
-          if (controller.playCollection)
-            void controller
-              .playCollection(kind, collectionId, source, 0)
-              .catch(reportActionError);
+          void controller
+            .playCollection(kind, collectionId, source, 0)
+            .catch(reportActionError);
         }),
       },
       {
         id: "shuffle-collection",
         label: "Shuffle",
         icon: Shuffle,
-        disabled: !controller.playCollection,
         action: run(() => {
-          if (controller.playCollection)
-            void controller
-              .playCollection(kind, collectionId, source, 0, { shuffle: true })
-              .catch(reportActionError);
+          void controller
+            .playCollection(kind, collectionId, source, 0, { shuffle: true })
+            .catch(reportActionError);
         }),
       },
       {
         id: "play-next-collection",
         label: "Play next",
         icon: SkipForward,
-        disabled: !controller.queueCollection,
         action: run(() => {
           void controller
-            .queueCollection?.(kind, collectionId, source, "next")
+            .queueCollection(kind, collectionId, source, "next")
             .catch(reportActionError);
         }),
       },
@@ -593,10 +512,9 @@ export function buildItems({
         id: "play-later-collection",
         label: "Play later",
         icon: Forward,
-        disabled: !controller.queueCollection,
         action: run(() => {
           void controller
-            .queueCollection?.(kind, collectionId, source, "later")
+            .queueCollection(kind, collectionId, source, "later")
             .catch(reportActionError);
         }),
       },
@@ -609,10 +527,9 @@ export function buildItems({
       id: "start-station",
       label: "Start Station",
       icon: Radio,
-      disabled: !controller.startStation,
       action: run(() => {
         void controller
-          .startStation?.({
+          .startStation({
             kind: "artist",
             id: artistId,
             catalogId: target.catalogId,
@@ -629,17 +546,14 @@ export function buildItems({
         id: "new-playlist",
         label: "New playlist",
         icon: Plus,
-        disabled: !controller.createPlaylist,
         action: run(() => {
-          if (controller.createPlaylist)
-            requestPlaylistDialog("create", [], restoreTarget);
+          requestPlaylistDialog("create", [], restoreTarget);
         }),
       },
       {
         id: "new-folder",
         label: "New playlist folder",
         icon: FolderPlus,
-        disabled: !controller.createPlaylistFolder,
         action: run(() => requestPlaylistDialog("folder")),
       },
     );
@@ -673,9 +587,8 @@ export function buildItems({
 }
 
 async function statefulPlay(
-  controller: AppControllerWithContext,
+  controller: AppController,
   track: Track,
 ): Promise<void> {
-  const playTracks = controller.playTracks;
-  if (typeof playTracks === "function") await playTracks([track]);
+  await controller.playTracks([track]);
 }

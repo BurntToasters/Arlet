@@ -213,7 +213,7 @@ function PlaylistCard({ playlist }: { playlist: ResourceLike }): JSX.Element {
         title={playlist.title}
         onPlay={() =>
           runCardAction(() =>
-            controller.playCollection?.("playlist", playlist.id, source, 0),
+            controller.playCollection("playlist", playlist.id, source, 0),
           )
         }
       />

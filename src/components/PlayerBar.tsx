@@ -4,6 +4,7 @@ import { useEffect, useState } from "preact/hooks";
 import {
   useAppController,
   useAppRouter,
+  useAppSelector,
   useAppSlices,
 } from "../app/context.tsx";
 import { safeErrorMessage } from "../app/controller-support.ts";
@@ -65,7 +66,7 @@ export function liveSubtitle(
 }
 
 export function PlayerBar(): JSX.Element {
-  const state = useAppSlices("initialization", "playback", "ratings", "ui");
+  const state = useAppSlices("initialization", "playback", "ui");
   const controller = useAppController();
   const router = useAppRouter();
   const playback = state.playback;
@@ -76,7 +77,10 @@ export function PlayerBar(): JSX.Element {
     state.initialization.status === "ready" && Boolean(current);
   const loveTarget = current ? trackRatingTarget(current) : undefined;
   const loveKey = loveTarget ? ratingKeyOf(loveTarget) : undefined;
-  const loved = loveKey !== undefined && state.ratings[loveKey] === 1;
+  // Only the playing track's rating, so other ratings do not re-render the bar.
+  const loved = useAppSelector(
+    (store) => loveKey !== undefined && store.ratings[loveKey] === 1,
+  );
   const live = useLiveMetadata();
   const liveText = current?.isLive
     ? liveSubtitle(live, current.title)
@@ -287,7 +291,7 @@ export function PlayerBar(): JSX.Element {
             className={playback.shuffleMode === "songs" ? "is-active" : ""}
             onClick={() =>
               void Promise.resolve(
-                controller.setShuffleMode?.(
+                controller.setShuffleMode(
                   playback.shuffleMode === "songs" ? "off" : "songs",
                 ),
               ).catch(reportActionError)
@@ -301,7 +305,7 @@ export function PlayerBar(): JSX.Element {
             pressed={playback.repeatMode !== "off"}
             className={playback.repeatMode !== "off" ? "is-active" : ""}
             onClick={() =>
-              void Promise.resolve(controller.cycleRepeatMode?.()).catch(
+              void Promise.resolve(controller.cycleRepeatMode()).catch(
                 reportActionError,
               )
             }

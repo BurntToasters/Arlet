@@ -2,10 +2,24 @@ import { Download, RefreshCw } from "lucide-preact";
 import { useEffect, useRef } from "preact/hooks";
 import type { JSX } from "preact";
 import { useAppController, useAppSlices } from "../app/context.tsx";
-import { ReleaseNotes } from "./ReleaseNotes.tsx";
+import { lazyView } from "./lazy.tsx";
 
 const FOCUSABLE_SELECTOR =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+// Release notes are only parsed when the modal shows them, so the Markdown
+// renderer stays out of the entry bundle. The modal itself stays in the entry.
+const ReleaseNotesView = lazyView(
+  () => import("./ReleaseNotes.tsx").then((module) => module.ReleaseNotes),
+  {
+    name: "Release notes",
+    loading: () => (
+      <p className="update-modal-notes-loading" role="status">
+        Loading release notes…
+      </p>
+    ),
+  },
+);
 
 /**
  * The updater downloads in the background, then asks only when the signed
@@ -109,7 +123,7 @@ export function UpdateReadyModal(): JSX.Element | null {
             role="region"
             aria-label="Release notes"
           >
-            <ReleaseNotes markdown={state.updates.releaseNotes} />
+            <ReleaseNotesView markdown={state.updates.releaseNotes} />
           </div>
         ) : null}
         {state.updates.error ? (

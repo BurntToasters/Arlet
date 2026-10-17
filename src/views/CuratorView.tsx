@@ -89,7 +89,7 @@ function CuratorPlaylistCard({
         title={playlist.name}
         onPlay={() =>
           void Promise.resolve(
-            controller.playCollection?.("playlist", playlist.id, "catalog", 0),
+            controller.playCollection("playlist", playlist.id, "catalog", 0),
           ).catch(reportActionError)
         }
       />

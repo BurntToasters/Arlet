@@ -92,6 +92,11 @@
 .search-suggestions[hidden] {
   display: none;
 }
+/* Rows from an earlier term are dimmed until the new reply replaces them. */
+.search-suggestions.is-stale .search-suggestions-list {
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
 .search-suggestions-heading {
   margin: 4px 8px 6px;
   color: var(--text-faint);

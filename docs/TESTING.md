@@ -27,6 +27,13 @@ running Arlet first; the app is single-instance. `--skip-build` reuses the
 last E2E binary. `npm run test:all -- --require-clean-proof` (every release
 proof) runs this suite on Windows, so no release is recorded without it.
 
+After each run, older `e2e-artifacts/<timestamp>` folders are pruned so only
+the newest 20 (the current run included) remain. Set `ARLET_E2E_KEEP_RUNS` to
+change that count; `0` keeps every folder. Only direct children whose names
+match the script's timestamp format are deleted, never symlinks or junctions,
+files, the current run, or other folders such as `audit-*`. The number pruned
+is logged, and a pruning failure is logged as a warning without failing the run.
+
 Failure modes it covers:
 
 1. A release build cannot embed the token, or serves the runtime env instead.

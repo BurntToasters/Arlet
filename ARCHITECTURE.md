@@ -23,20 +23,23 @@ frontend (src/, TS)  ──invoke()──▶  Rust commands (src-tauri/src/)
 `main.rs` is glue only (state registration, builder, command registry). Logic is
 split into focused modules:
 
-| Module                | Responsibility                                                |
-| --------------------- | ------------------------------------------------------------- |
-| `commands.rs`         | App information (registry build lookup) and token serving     |
-| `token_policy.rs`     | Developer-token validation shared with `build.rs` embedding   |
-| `library_cache.rs`    | SQLite library cache behind fixed commands; schema migrations |
-| `webview_recovery.rs` | Reloads/restarts after WebView2 process failures              |
-| `pins.rs`             | Validated local playlist pins next to settings                |
-| `windows_media.rs`    | System Media Transport Controls session and timeline          |
-| `music_diagnostic.rs` | Unprivileged `music.apple.com` webview (Phase 0 DRM probe)    |
-| `auth_popup.rs`       | Main-window creation and Apple auth popup allowlist           |
-| `settings.rs`         | Settings load/save/reset with backup and startup parsing      |
-| `logging.rs`          | Opt-in (Debug Mode) rolling log with redaction; crash lines   |
-| `window_fx.rs`        | Windows Acrylic/Mica effects with Solid fallback              |
-| `window_snap.rs`      | Native Windows Snap Layout maximize-button overlay            |
+| Module                | Responsibility                                                                                                                |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `commands.rs`         | App information, token serving, and the async `open_support_page` / `open_about_link` commands (URLs fixed in Rust)           |
+| `token_policy.rs`     | Developer-token validation shared with `build.rs` embedding                                                                   |
+| `library_cache.rs`    | SQLite library cache behind fixed commands: WAL, immediate write transactions, schema migrations, deferred VACUUM when sparse |
+| `playback_session.rs` | Local-only queue snapshot with a size cap, restored paused after restart                                                      |
+| `webview_recovery.rs` | Reloads/restarts after WebView2 process failures                                                                              |
+| `pins.rs`             | Validated local playlist pins next to settings                                                                                |
+| `windows_media.rs`    | System Media Transport Controls session and timeline                                                                          |
+| `music_diagnostic.rs` | Unprivileged `music.apple.com` webview (Phase 0 DRM probe)                                                                    |
+| `auth_popup.rs`       | Main-window creation and Apple auth popup allowlist                                                                           |
+| `settings.rs`         | Settings load/save/reset with backup and startup parsing                                                                      |
+| `window_state.rs`     | Main window size, position, and maximized state                                                                               |
+| `tray.rs`             | System tray: playback commands, Show, and Quit                                                                                |
+| `logging.rs`          | Opt-in (Debug Mode) rolling log with redaction; crash lines                                                                   |
+| `window_fx.rs`        | Windows Acrylic/Mica effects with Solid fallback                                                                              |
+| `window_snap.rs`      | Native Windows Snap Layout maximize-button overlay                                                                            |
 
 ## Frontend (`src/`)
 
@@ -58,34 +61,68 @@ position use `usePlaybackPosition()`. Keep the playback slice out of shell-level
 subscriptions, and keep the volume drag's per-input change to `playback.volume`
 with settings persisted once the drag settles.
 
+Views are route-level code split: `views/RouteView.tsx` loads Settings, Curator,
+Browse, and Radio on demand through `components/lazy.tsx` (`lazyView`). Each
+shows its skeleton while the chunk loads and an EmptyState with retry if it
+fails. `UpdateReadyModal` loads `ReleaseNotes` the same way. Routes are hash
+based; a curator page is `#/curator/{id}?kind=apple|curator`, where `apple`
+reads an Apple editorial curator and `curator` reads a curator.
+
 ### Module layout
 
-| Path                        | Responsibility                                                         |
-| --------------------------- | ---------------------------------------------------------------------- |
-| `main.tsx`                  | Preact mount, router/store/controller creation, boot                   |
-| `app/App.tsx`               | Shell composition and development diagnostics wiring                   |
-| `app/context.tsx`           | Preact contexts and application-state subscription                     |
-| `app/controller.ts`         | Composition root: MusicKit lifecycle, auth, settings, pins             |
-| `app/library-loader.ts`     | Library, Home, and detail loading; cache-first, offline read-only mode |
-| `app/discovery.ts`          | Browse charts, radio shelves, catalog/library search                   |
-| `app/playlist-editing.ts`   | Search, create, and add to library playlists                           |
-| `app/playback.ts`           | Queue and transport commands over MusicKit                             |
-| `app/controller-support.ts` | Shared response normalizers and error helpers                          |
-| `library/cache.ts`          | Client for the Rust library-cache commands (memory cache in tests)     |
-| `app-init.ts`               | Native environment, settings, and diagnostics startup                  |
-| `state.ts`                  | Explicit renderable application state and subscriptions                |
-| `domain/`                   | Internal `Track`, `Album`, and `PlaybackState` types                   |
-| `components/`               | Titlebar, sidebar, player, queue, artwork, and diagnostics UI          |
-| `views/`                    | Home, search, settings, route, and placeholder views                   |
-| `routing/router.ts`         | Hash routes and browser-history navigation                             |
-| `musickit/`                 | MusicKit bootstrap, auth, catalog, normalization, events, player       |
-| `musickit/token.ts`         | Native token provider (env in debug, embedded in release)              |
-| `musickit/preview.ts`       | Preview/full-track classification helper                               |
-| `musickit/errors.ts`        | Map failures to typed `AppErrorCode` values                            |
-| `diagnostics/`              | Sanitized bounded store, native adapter, lifecycle/network hooks       |
-| `platform/`                 | Native window/settings bridges and sensitive-value redaction           |
-| `phase0/`                   | Feasibility checklist, network capture, lifecycle probes, reports      |
-| `styles/`                   | `tokens.css` plus `base.css`, an ordered index of `styles/base/*`      |
+| Path                                                                                | Responsibility                                                                                                                   |
+| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `main.tsx`                                                                          | Preact mount, router/store/controller creation, boot                                                                             |
+| `state.ts`                                                                          | Explicit renderable application state, subscriptions, and reset helpers                                                          |
+| `state-types.ts`                                                                    | State types, including Browse, Radio, and Search paging (`SearchPagingState`); re-exported by `state.ts`                         |
+| `app/App.tsx`                                                                       | Shell composition and development diagnostics wiring                                                                             |
+| `app/MediaSessionSync.tsx`                                                          | Mirrors playback into the Windows media session                                                                                  |
+| `app/DevDiagnostics.tsx`                                                            | Development diagnostics drawer; subscribes only while it is open                                                                 |
+| `app/context.tsx`                                                                   | Preact contexts and application-state subscription                                                                               |
+| `app-init.ts`                                                                       | Native environment, settings, and diagnostics startup                                                                            |
+| `app/controller.ts`                                                                 | Composition root: MusicKit lifecycle, auth, and wiring of the `controller-*` modules                                             |
+| `app/controller-support.ts`                                                         | Shared response normalizers and error helpers                                                                                    |
+| `app/controller-settings.ts`                                                        | Settings persistence, the debounced volume save, and settings setters                                                            |
+| `app/controller-pins.ts`                                                            | Pinned playlists: local persistence, name/artwork resolution, and toggling                                                       |
+| `app/library-cache-coordinator.ts`                                                  | Account-scoped library cache reads and writes for the controller                                                                 |
+| `app/library-loader.ts`                                                             | Library, Home, and detail loading; cache-first, offline read-only mode                                                           |
+| `app/discovery.ts`                                                                  | Browse charts, genres and shelf paging, radio genres and stations, catalog and library search, suggestions, and "See all" paging |
+| `app/ratings.ts`                                                                    | Rating requests and rating state, batched for the rows on screen                                                                 |
+| `app/playback.ts`                                                                   | Queue and transport commands over MusicKit                                                                                       |
+| `app/playback-session.ts`                                                           | Saves and restores the queue snapshot through the Rust session command                                                           |
+| `app/collection-playback.ts`                                                        | Shared start rules for albums, playlists, and song lists (start index, shuffle, Play timing)                                     |
+| `app/playlist-editing.ts`                                                           | Search, create, and add to library playlists                                                                                     |
+| `app/sleep-timer.ts`, `app/shortcuts.ts`, `app/auto-skip.ts`, `app/queue-window.ts` | Sleep timer, keyboard shortcut actions, skipping songs that fail on their own, and the first-batch queue window used by Play     |
+| `library/cache.ts`                                                                  | Client for the Rust library-cache commands (memory cache in tests); scope is the current account                                 |
+| `components/`                                                                       | Titlebar, sidebar, player, queue, artwork, and diagnostics UI                                                                    |
+| `components/lazy.tsx`                                                               | `lazyView`: loads a route surface on demand, with loading and failed states                                                      |
+| `components/VirtualGrid.tsx`                                                        | Virtualized card grid for the Library view                                                                                       |
+| `components/VirtualList.tsx`                                                        | Virtualized song lists; lists at or below a small size render in full                                                            |
+| `components/CardActions.tsx`                                                        | Card shell with the card's "..." action button and context-menu attributes                                                       |
+| `components/Skeleton.tsx`                                                           | Labelled loading regions and shape placeholders                                                                                  |
+| `components/SearchSuggestions.tsx`, `components/SearchCards.tsx`                    | Search suggestion listbox and result tiles                                                                                       |
+| `components/VolumeControl.tsx`                                                      | Volume slider with spoken values                                                                                                 |
+| `components/context-target.ts`, `components/context-menu-items.ts`                  | Context-menu targets and the menu item model (items, separators, keyboard skipping)                                              |
+| `components/use-visible-ratings.ts`                                                 | Collects rating ids of mounted rows and requests them in one batch                                                               |
+| `components/window-fullscreen.ts`                                                   | Reads the main window's fullscreen state; reports false when unknown                                                             |
+| `views/`                                                                            | Home, search, settings, route, and placeholder views                                                                             |
+| `views/CuratorView.tsx`                                                             | Curator and Apple curator pages, with playlist groups and paged playlists                                                        |
+| `views/ArtistShelves.tsx`, `views/AlbumShelves.tsx`                                 | Artist pages (Top Songs, albums) and album shelves                                                                               |
+| `views/detail-meta.ts`, `views/detail-context.ts`                                   | Detail header facts (runtime, year, disc groups) and library or catalog origin                                                   |
+| `routing/router.ts`                                                                 | Hash routes (including `#/curator/{id}?kind=`) and browser-history navigation                                                    |
+| `musickit/`                                                                         | MusicKit bootstrap, auth, catalog, normalization, events, player                                                                 |
+| `musickit/search.ts`                                                                | Catalog search: result groups in display order, page sizes, suggestions                                                          |
+| `musickit/browse.ts`                                                                | Charts, shelves, and genres for Browse and Radio (page size `BROWSE_PAGE_LIMIT`)                                                 |
+| `musickit/curators.ts`                                                              | Curator and Apple curator pages, titled playlist groups, and playlist curator references                                         |
+| `musickit/live-metadata.ts`                                                         | Live radio text and metadata, length-capped so a stream cannot fill the UI                                                       |
+| `musickit/response.ts`                                                              | Shared readers for Apple response bodies, and `safeNextPath` for validating next-page paths                                      |
+| `musickit/token.ts`                                                                 | Native token provider (env in debug, embedded in release)                                                                        |
+| `musickit/preview.ts`                                                               | Preview/full-track classification helper                                                                                         |
+| `musickit/errors.ts`                                                                | Map failures to typed `AppErrorCode` values                                                                                      |
+| `diagnostics/`                                                                      | Sanitized bounded store, native adapter, lifecycle/network hooks                                                                 |
+| `platform/`                                                                         | Native window/settings bridges and sensitive-value redaction                                                                     |
+| `phase0/`                                                                           | Feasibility checklist, network capture, lifecycle probes, reports                                                                |
+| `styles/`                                                                           | `tokens.css` plus `base.css`, an ordered index of `styles/base/*`                                                                |
 
 ### Apple Music Integration
 
@@ -108,6 +145,8 @@ release builds serve the token `build.rs` validated and embedded.
   changelog parser, updater manifests, signer pinning, and release rules.
 - Backend: `cargo test`; unit tests live beside each module, including command
   validation and Windows-targeted code paths where practical.
+- Native E2E artifacts: each run writes to its own folder under `e2e-artifacts/`,
+  and `scripts/e2e-app.js` keeps only the newest run folders.
 - Full gate: `node scripts/test-all.js` (typecheck, lint, format, script
   tests, cargo fmt, Clippy `-D warnings`, cargo test, and the offline build smoke).
 - Native E2E: `npm run test:e2e:app` (Windows) builds a release binary and

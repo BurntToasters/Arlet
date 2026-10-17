@@ -17,7 +17,6 @@ export function diagnosticsController(
     onOpenMusicDiagnostic: async () => {
       await controller.openMusicDiagnostic();
     },
-    onQueueConsecutive: () => controller.playConsecutive(),
   };
 }
 
@@ -27,7 +26,7 @@ function DiagnosticsPanel({
 }: {
   diagnosticsStore?: DiagnosticsStore;
 }): JSX.Element {
-  const state = useAppSlices("diagnostics", "search", "tracksPlayed");
+  const state = useAppSlices("diagnostics", "tracksPlayed");
   const playbackStatus = useAppSelector((store) => store.playback.status);
   const controller = useAppController();
   const drawerController = useMemo(
@@ -44,8 +43,6 @@ function DiagnosticsPanel({
         playbackStatus,
         failures: state.diagnostics.failures,
         sessionStartedAt: new Date(state.diagnostics.sessionStartedAt),
-        consecutiveQueueReady:
-          state.search.results.length >= controller.consecutiveTrackTarget,
       }}
       controller={drawerController}
     />

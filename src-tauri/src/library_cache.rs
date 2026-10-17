@@ -105,7 +105,9 @@ pub fn migrate(conn: &mut Connection) -> Result<(), String> {
             "Library cache schema {version} is newer than this build ({SCHEMA_VERSION})"
         ));
     }
-    let tx = conn.transaction().map_err(sql_error)?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(sql_error)?;
     if version < 1 {
         tx.execute_batch(SCHEMA_V1).map_err(sql_error)?;
     }
@@ -131,14 +133,20 @@ fn is_corruption(error: &rusqlite::Error) -> bool {
     )
 }
 
+/// How long a cache write waits for the deferred VACUUM, which holds the write
+/// lock for its whole run. Waiting is preferred over holding the app's
+/// connection mutex: that would also block reads and the first command, while
+/// a busy timeout leaves the lock free for readers and only delays writers.
+/// Cache commands are async and off the UI thread, so the wait is harmless.
+const WRITE_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 fn open_and_migrate(path: &std::path::Path) -> Result<Connection, OpenError> {
     let sqlite = |error: rusqlite::Error| OpenError {
         disposable: is_corruption(&error),
         message: sql_error(error),
     };
     let mut conn = Connection::open(path).map_err(sqlite)?;
-    conn.busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(sqlite)?;
+    conn.busy_timeout(WRITE_BUSY_TIMEOUT).map_err(sqlite)?;
     tune_journal(&conn);
     let version: i64 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
@@ -441,7 +449,9 @@ pub fn write_page(
             page.items.len()
         ));
     }
-    let tx = conn.transaction().map_err(sql_error)?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(sql_error)?;
     tx.prepare_cached(
         "INSERT INTO music_pages(scope, section, cursor, next_cursor, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?5)
@@ -548,7 +558,9 @@ fn delete_orphans(
 pub fn clear_section(conn: &mut Connection, scope: &str, section: &str) -> Result<(), String> {
     check_key("scope", scope)?;
     check_key("section", section)?;
-    let tx = conn.transaction().map_err(sql_error)?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(sql_error)?;
     let previous = linked_resources(
         &tx,
         "SELECT DISTINCT resource_type, resource_id FROM music_page_items
@@ -609,7 +621,9 @@ pub fn get_meta(conn: &Connection, scope: &str) -> Result<Option<CacheMeta>, Str
 
 pub fn clear(conn: &mut Connection, scope: &str) -> Result<(), String> {
     check_key("scope", scope)?;
-    let tx = conn.transaction().map_err(sql_error)?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(sql_error)?;
     for table in [
         "music_page_items",
         "music_pages",

@@ -152,9 +152,7 @@ function AppLayout({
   useEffect(() => {
     let active = true;
     let stop: (() => void) | undefined;
-    void listenBeforeQuit(
-      () => controller.prepareToQuit?.() ?? Promise.resolve(),
-    )
+    void listenBeforeQuit(() => controller.prepareToQuit())
       .then((unlisten) => {
         if (active) stop = unlisten;
         else unlisten();
@@ -171,9 +169,9 @@ function AppLayout({
     let stop: (() => void) | undefined;
     void listenWindowsMediaControls((control) => {
       if (control === "play")
-        void Promise.resolve(controller.play?.()).catch(() => undefined);
+        void Promise.resolve(controller.play()).catch(() => undefined);
       else if (control === "pause")
-        void Promise.resolve(controller.pause?.()).catch(() => undefined);
+        void Promise.resolve(controller.pause()).catch(() => undefined);
       else if (control === "next")
         void controller.next().catch(() => undefined);
       else void controller.previous().catch(() => undefined);
@@ -221,14 +219,14 @@ function AppLayout({
       listenWindowsMediaShuffle((enabled) => {
         if (!ready()) return;
         void Promise.resolve(
-          controller.setShuffleMode?.(enabled ? "songs" : "off"),
+          controller.setShuffleMode(enabled ? "songs" : "off"),
         ).catch(() => undefined);
       }),
     );
     track(
       listenWindowsMediaRepeat((mode) => {
         if (!ready()) return;
-        void Promise.resolve(controller.setRepeatMode?.(mode)).catch(
+        void Promise.resolve(controller.setRepeatMode(mode)).catch(
           () => undefined,
         );
       }),

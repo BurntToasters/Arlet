@@ -1,3 +1,4 @@
+import { asRecord, dataArray, responseBody, safeNextPath } from "./response.ts";
 import type { Artwork, Playlist } from "../domain/music.ts";
 import type { CuratorKind } from "../routing/router.ts";
 import {
@@ -53,27 +54,12 @@ interface CatalogContext {
   storefront: string;
 }
 
-function asRecord(value: unknown): UnknownRecord | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  return value as UnknownRecord;
-}
-
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-/** The body, past MusicKit's `{ data: body }` envelope when there is one. */
-function bodyOf(raw: unknown): UnknownRecord | undefined {
-  const outer = asRecord(raw);
-  const inner = asRecord(outer?.data);
-  return inner && "data" in inner ? inner : outer;
-}
-
 function resourcesOf(raw: unknown): AppleMusicResource[] {
-  const data = bodyOf(raw)?.data;
-  return Array.isArray(data) ? (data as AppleMusicResource[]) : [];
+  return dataArray(raw) as AppleMusicResource[];
 }
 
 /** Resource references in a relationship, with or without attributes. */
@@ -221,7 +207,9 @@ export async function loadCuratorPage(
       playlists: playlistsFor(group.refs, playlists),
     })),
     playlists: groupBlocks.length ? [] : playlistsFor(flatRefs, playlists),
-    next: groupBlocks.length ? undefined : stringValue(flat?.next),
+    next: groupBlocks.length
+      ? undefined
+      : safeNextPath(flat?.next, ["/v1/catalog/"]),
   };
 }
 
@@ -230,16 +218,17 @@ export async function loadCuratorPlaylistsPage(
   instance: MusicKit.MusicKitInstance,
   next: string,
 ): Promise<CuratorPlaylistsPage> {
-  if (!next.startsWith("/v1/catalog/")) {
+  const cursor = safeNextPath(next, ["/v1/catalog/"]);
+  if (!cursor) {
     throw new Error("Apple Music returned an unexpected page link.");
   }
   const context = await catalogContext(instance);
-  const raw = await context.request(next);
+  const raw = await context.request(cursor);
   const refs = resourcesOf(raw);
   const playlists = await resolvePlaylists(context, refs);
   return {
     playlists: playlistsFor(refs, playlists),
-    next: stringValue(bodyOf(raw)?.next),
+    next: safeNextPath(responseBody(raw)?.next, ["/v1/catalog/"]),
   };
 }
 

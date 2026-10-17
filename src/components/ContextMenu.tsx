@@ -22,7 +22,6 @@ import {
 import {
   buildItems,
   isSeparator,
-  type AppControllerWithContext,
   type MenuEntry,
   type MenuItem,
 } from "./context-menu-items.ts";
@@ -86,7 +85,6 @@ export function ContextMenu(): JSX.Element | null {
   const anchorRef = useRef<
     { element: HTMLElement; top: number; left: number } | undefined
   >(undefined);
-  const extendedController = controller as unknown as AppControllerWithContext;
 
   useEffect(() => {
     const showMenu = (
@@ -126,7 +124,7 @@ export function ContextMenu(): JSX.Element | null {
       const restoreFocus = (): void => restoreFocusRef.current?.focus();
       const makeItems = (navigation?: TrackNavigation): MenuEntry[] =>
         buildItems({
-          controller: extendedController,
+          controller,
           router,
           target,
           track,
@@ -149,8 +147,8 @@ export function ContextMenu(): JSX.Element | null {
       });
       setPosition({ x, y });
       let resolvedNavigation: TrackNavigation | undefined;
-      if (track && extendedController.resolveTrackNavigation) {
-        void extendedController
+      if (track) {
+        void controller
           .resolveTrackNavigation(track)
           .then((navigation) => {
             if (menuRequestRef.current !== requestId) return;
@@ -170,8 +168,8 @@ export function ContextMenu(): JSX.Element | null {
           });
       }
       // Rebuild once the rating is known so Love/Dislike labels are current.
-      if (ratingTarget && extendedController.loadRating) {
-        void extendedController.loadRating(ratingTarget).then(() => {
+      if (ratingTarget) {
+        void controller.loadRating(ratingTarget).then(() => {
           if (menuRequestRef.current !== requestId) return;
           setMenu((current) =>
             current?.requestId === requestId
@@ -217,7 +215,7 @@ export function ContextMenu(): JSX.Element | null {
       window.removeEventListener("contextmenu", onContextMenu);
       window.removeEventListener(CONTEXT_MENU_REQUEST, onRequest);
     };
-  }, [controller, extendedController, router]);
+  }, [controller, router]);
 
   // Keyed on the request, not the menu: items refresh as lookups finish and
   // must not re-register listeners or move focus.

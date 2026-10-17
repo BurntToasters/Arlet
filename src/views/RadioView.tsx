@@ -124,7 +124,7 @@ export function RadioView(): JSX.Element {
   loadingRef.current = loading;
   useEffect(() => {
     if (authorized && !pending && !loadingRef.current) {
-      void Promise.resolve(controller.loadRadio?.()).catch(() => undefined);
+      void Promise.resolve(controller.loadRadio()).catch(() => undefined);
     }
   }, [authorized, pending, idle, controller]);
 
@@ -163,7 +163,7 @@ export function RadioView(): JSX.Element {
             type="button"
             onClick={() =>
               void Promise.resolve(
-                controller.loadRadio?.({ refresh: true }),
+                controller.loadRadio({ refresh: true }),
               ).catch(() => undefined)
             }
           >
@@ -183,14 +183,14 @@ export function RadioView(): JSX.Element {
   const openGenre = radio.genres.find((genre) => genre.id === radio.genreId);
   // Selecting the open genre again closes it.
   const chooseGenre = (genreId: string): void => {
-    void Promise.resolve(controller.loadRadioGenre?.(genreId)).catch(
+    void Promise.resolve(controller.loadRadioGenre(genreId)).catch(
       () => undefined,
     );
   };
   const play = (id: string): void => {
     const station = stations.find((item) => item.id === id);
     if (station) {
-      void Promise.resolve(controller.playStation?.(station)).catch(
+      void Promise.resolve(controller.playStation(station)).catch(
         reportActionError,
       );
     }
@@ -209,9 +209,9 @@ export function RadioView(): JSX.Element {
           aria-label="Refresh Radio"
           disabled={loading}
           onClick={() =>
-            void Promise.resolve(
-              controller.loadRadio?.({ refresh: true }),
-            ).catch(() => undefined)
+            void Promise.resolve(controller.loadRadio({ refresh: true })).catch(
+              () => undefined,
+            )
           }
         >
           <RefreshCw size={16} className={loading ? "spin" : ""} />

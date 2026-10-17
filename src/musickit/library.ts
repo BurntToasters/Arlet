@@ -1,8 +1,8 @@
+import { asRecord, dataArray, safeNextPath } from "./response.ts";
 import {
   normalizeStation,
   resolveMusicKitMusicRequest,
   resolveStorefront,
-  responseDataArray,
 } from "./catalog.ts";
 import {
   normalizeAlbumResource,
@@ -285,13 +285,6 @@ export type MusicRequest = (
   options?: RequestOptions,
 ) => Promise<unknown>;
 
-function asRecord(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return undefined;
-  }
-  return value as Record<string, unknown>;
-}
-
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
@@ -466,7 +459,7 @@ function totalValue(value: unknown, depth = 0): number | undefined {
 
 function withPageMetadata<T>(items: T[], raw: unknown): Page<T> {
   const page: Page<T> = { items };
-  const next = nextValue(raw);
+  const next = safeNextPath(nextValue(raw), APPLE_PAGE_PREFIXES);
   if (next) page.next = next;
   const total = totalValue(raw);
   if (total !== undefined) page.total = total;
@@ -638,7 +631,7 @@ export function normalizeRecommendationGroups(
   // MusicKit resolves to an envelope around Apple's body; accept either shape.
   const envelope = asRecord(raw);
   const body = asRecord(envelope?.data) ?? envelope;
-  const data = responseDataArray(raw);
+  const data = dataArray(raw);
   const included = Array.isArray(body?.included) ? body.included : [];
   const includedByKey = new Map<string, unknown>();
   for (const resource of included) {
@@ -731,6 +724,9 @@ function withLimit(cursor: string, limit: number | undefined): string {
   return `${cursor}${cursor.includes("?") ? "&" : "?"}limit=${limit}`;
 }
 
+/** Apple's own page paths: the user's library and the catalog twin. */
+const APPLE_PAGE_PREFIXES = ["/v1/me/", "/v1/catalog/"];
+
 const FOLDER_REQUEST_CONCURRENCY = 4;
 
 /** Runs at most `limit` tasks at once, the rest in call order. */
@@ -771,8 +767,13 @@ export function createAppleMusicLibraryClient(
     const limit = typeof cursor === "object" ? cursor.limit : undefined;
     const firstQuery =
       limit === undefined ? query : { ...(query ?? {}), limit };
-    const raw = cursorValue?.trim()
-      ? await request(withLimit(cursorValue, limit))
+    // A cursor Apple did not hand out as a safe path ends the list here.
+    const cursorPath = cursorValue?.trim()
+      ? safeNextPath(cursorValue, APPLE_PAGE_PREFIXES)
+      : undefined;
+    if (cursorValue?.trim() && !cursorPath) return { items: [] };
+    const raw = cursorPath
+      ? await request(withLimit(cursorPath, limit))
       : firstQuery === undefined
         ? await request(path)
         : await request(path, firstQuery);
@@ -897,7 +898,7 @@ export function createAppleMusicLibraryClient(
         ? {
             items:
               viewItems(resource, "full-albums", normalizeAlbumResource) ?? [],
-            next: fullAlbums.next,
+            next: safeNextPath(fullAlbums.next, APPLE_PAGE_PREFIXES),
           }
         : undefined,
     };
@@ -971,7 +972,7 @@ export function createAppleMusicLibraryClient(
         }),
       );
       for (const child of pageChildren) if (child) children.push(child);
-      cursor = nextValue(raw);
+      cursor = safeNextPath(nextValue(raw), APPLE_PAGE_PREFIXES);
       // A repeated or endless cursor must not hang the folder tree.
       if (cursor && seenCursors.has(cursor)) break;
       if (cursor) seenCursors.add(cursor);
