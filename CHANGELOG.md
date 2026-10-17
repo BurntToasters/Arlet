@@ -2,7 +2,7 @@
 
 | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                                          | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
 | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.3/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.3/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.2/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.2/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -19,7 +19,7 @@
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
 
-## Changes in `v0.3.0-beta.3:`
+## Changes in `v0.3.0-beta.2:`
 
 - **Improvement - Faster rendering:** Long lists, such as the library grid, the Up Next queue, and long song lists, only draw the rows you can see, so they stay smooth with large libraries. Playback progress no longer redraws the whole window.
 - **Improvement - Sized artwork:** Artwork is requested at the size it's shown, so small covers download less and large ones stay sharp.
@@ -45,9 +45,6 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 - **Fix - Saving the library cache:** A cache save that is interrupted no longer leaves half-written data behind.
 - **Fix - Opening links:** Links from Settings open in your browser without freezing the window.
 - **Testing:** End-to-end tests now check that long lists draw only what's visible, that artwork is sized to its place, that ratings are requested together, that the lazy views load on first use, that the artist and album shelves, search suggestions, `See all`, Browse charts and genres, Radio genres, and curator pages work, that Apple Music sign-out, volume, and song length changes are followed, that card actions, skeletons, Now Playing, success messages, and the About links behave, that paging rejects links outside Apple Music, and that old test run folders are cleaned up.
-
-## Changes in `v0.3.0-beta.2:`
-
 - **Fix - Quitting:** Quitting Arlet while a song plays, from the tray or by closing the window with the tray off, now saves where you were. Before, up to the last 30 seconds could be lost.
 - **Fix - Playing Next:** Moving a song up or down moves the song you picked, even if the queue changed a moment before.
 - **Improvement - Faster starts:** Songs that are only in your library (such as uploads) now start as quickly as other songs. If Apple Music can't start a song from the details Arlet sends, Arlet retries the usual way once instead of showing an error.
