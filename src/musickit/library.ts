@@ -158,7 +158,7 @@ export function createAppleMusicLibraryClient(
       getPage(
         "/v1/me/library/artists",
         cursor,
-        undefined,
+        { include: "catalog" },
         normalizeArtistResource,
       ),
     getPlaylists: (cursor) =>

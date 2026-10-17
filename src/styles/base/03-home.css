@@ -242,6 +242,10 @@
 
 .home-discovery-art-icon {
   display: flex;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+  border-radius: var(--radius-sm);
   align-items: center;
   justify-content: center;
   background: var(--surface-active);

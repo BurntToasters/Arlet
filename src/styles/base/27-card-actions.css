@@ -5,6 +5,11 @@
   max-width: 320px;
 }
 
+/* The card fills the wrapper; a button would otherwise shrink to its title. */
+.card-shell > :first-child {
+  width: 100%;
+}
+
 /* Sits exactly over the artwork: card padding 9px plus 1px border. */
 .card-actions {
   position: absolute;

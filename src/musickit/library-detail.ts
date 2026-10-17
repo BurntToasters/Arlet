@@ -368,6 +368,7 @@ export function createDetailMethods(
       return {
         item: {
           ...library,
+          artwork: library.artwork ?? catalog.item?.artwork,
           editorialNotes: catalog.item?.editorialNotes,
           editorialBanner: catalog.item?.editorialBanner,
           shelves: catalog.item?.shelves,
