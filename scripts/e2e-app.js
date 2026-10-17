@@ -40,6 +40,22 @@ const IDENTIFIER = "run.rosie.arlet";
 const TARGET_DIR = path.join(root, "src-tauri", "target", "e2e");
 const EXE = path.join(TARGET_DIR, "release", "arlet.exe");
 const DEBUG_PORT = 9333;
+// TEMP_WEBVIEW2_LOCKOUT_WORKAROUND: TEMPORARY UPSTREAM WORKAROUND, REMOVE when fixed.
+// Cause: a fresh WebView2 environment can generate a failed Windows interactive
+// logon (Event 4625); repeated launches increment the bad-password counter and
+// can lock the account. The app is not trying passwords. Disabling the Chromium
+// feature below is the workaround (Windows only).
+// Tracking: MicrosoftEdge/WebView2Feedback #5722, Chromium #562403601.
+// REMOVE only after the fixed stable WebView2 runtime is installed and several
+// fresh-profile launches log no matching Event 4625 (Logon Type 2, Advapi,
+// 0xC000006D/0xC000006A, msedgewebview2.exe) and the E2E passes without it.
+// Chromium runs the probe when either feature is enabled
+// (chrome_autofill_client.cc).
+// Cleanup: delete this const and its use in buildWebView2Args only.
+const TEMP_WEBVIEW2_LOCKOUT_WORKAROUND = [
+  "AutofillAiWalletPrivatePasses",
+  "AutofillAmbientAutofill",
+];
 const RUNTIME_ENV_TOKEN = "runtime-env-token-must-be-ignored";
 // Mirrors RELEASE_ORIGIN in src-tauri/src/token_policy.rs.
 const RELEASE_ORIGIN = "http://tauri.localhost";
@@ -47,6 +63,49 @@ const USER_TOKEN = "AqmL0f7xY2/Zp+Q9wR3kT8vN1bC4dE6gH5jK7mP0sU2yW==";
 
 function fail(message) {
   throw new Error(`[e2e-app] ${message}`);
+}
+
+// Builds WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS from the developer's value plus
+// extra switches. Feature lists are merged into one switch each so no list
+// silently replaces another; other switches are kept once, first-seen order.
+function buildWebView2Args(...extraSwitches) {
+  const tokens = [
+    ...(process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS ?? "").split(/\s+/),
+    ...extraSwitches,
+  ];
+  const ordered = [];
+  const featureLists = new Map();
+  const addFeatures = (prefix, names) => {
+    if (!featureLists.has(prefix)) {
+      featureLists.set(prefix, []);
+      ordered.push(prefix);
+    }
+    const list = featureLists.get(prefix);
+    for (const name of names) {
+      const feature = name.trim();
+      if (feature && !list.includes(feature)) list.push(feature);
+    }
+  };
+  for (const token of tokens) {
+    if (!token) continue;
+    const match = /^(--(?:disable|enable)-features=)(.*)$/.exec(token);
+    if (match) {
+      addFeatures(match[1], match[2].split(","));
+    } else if (!ordered.includes(token)) {
+      ordered.push(token);
+    }
+  }
+  if (process.platform === "win32") {
+    addFeatures("--disable-features=", TEMP_WEBVIEW2_LOCKOUT_WORKAROUND);
+  }
+  return ordered
+    .filter((item) => !featureLists.has(item) || featureLists.get(item).length)
+    .map((item) =>
+      featureLists.has(item)
+        ? `${item}${featureLists.get(item).join(",")}`
+        : item,
+    )
+    .join(" ");
 }
 
 function syntheticToken() {
@@ -609,7 +668,9 @@ async function run() {
       env: {
         ...process.env,
         MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN,
-        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${DEBUG_PORT}`,
+        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: buildWebView2Args(
+          `--remote-debugging-port=${DEBUG_PORT}`,
+        ),
       },
       stdio: "ignore",
     });
@@ -1447,8 +1508,17 @@ async function run() {
       10_000,
     );
     const aliveAfterClose = processAlive(appPid);
+    // The first instance owns the debug port; the handoff relaunch must not
+    // ask for it again.
+    const relaunchWebView2Args = buildWebView2Args();
     const relaunch = spawn(EXE, [], {
-      env: { ...process.env, MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN },
+      env: {
+        ...process.env,
+        MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN,
+        ...(relaunchWebView2Args && {
+          WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: relaunchWebView2Args,
+        }),
+      },
       stdio: "ignore",
     });
     await new Promise((resolve) => {
