@@ -6,7 +6,6 @@ import {
   Disc3,
   FolderPlus,
   Forward,
-  Heart,
   LibraryBig,
   Link,
   ListPlus,
@@ -23,6 +22,7 @@ import {
   Shuffle,
   SkipForward,
   SquareStack,
+  Star,
   ThumbsDown,
   UserRound,
   X,
@@ -393,9 +393,9 @@ export function buildItems({
       });
     libraryItems.push(
       {
-        id: "love",
-        label: liked === 1 ? "Unlove" : "Love",
-        icon: Heart,
+        id: "favorite",
+        label: liked === 1 ? "Undo Favorite" : "Favorite",
+        icon: Star,
         action: toggle(1),
       },
       {

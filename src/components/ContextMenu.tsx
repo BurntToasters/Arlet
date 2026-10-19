@@ -167,7 +167,7 @@ export function ContextMenu(): JSX.Element | null {
             );
           });
       }
-      // Rebuild once the rating is known so Love/Dislike labels are current.
+      // Rebuild once the rating is known so Favorite/Dislike labels are current.
       if (ratingTarget) {
         void controller.loadRating(ratingTarget).then(() => {
           if (menuRequestRef.current !== requestId) return;
@@ -220,7 +220,7 @@ export function ContextMenu(): JSX.Element | null {
   // Keyed on the request, not the menu: items refresh as lookups finish and
   // must not re-register listeners or move focus.
   const openRequestId = menu?.requestId;
-  // The Love/Dislike labels read the store, so the open menu is rebuilt when
+  // The Favorite/Dislike labels read the store, so the open menu is rebuilt when
   // the target's rating lands or changes, not only when the menu opens.
   const menuRatingKey = menu?.ratingKey;
   const liveRating = useAppSelector((state) =>

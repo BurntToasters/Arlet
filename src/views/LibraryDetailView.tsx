@@ -2,7 +2,6 @@ import {
   AlertCircle,
   ChevronDown,
   Disc3,
-  Heart,
   LibraryBig,
   ListMusic,
   LoaderCircle,
@@ -13,6 +12,7 @@ import {
   Radio,
   RefreshCw,
   Shuffle,
+  Star,
   UserRound,
 } from "lucide-preact";
 import type { LucideIcon } from "lucide-preact";
@@ -234,7 +234,7 @@ function ratingTargetFor(kind: "album" | "playlist", id: string): RatingTarget {
   return { type: kind === "album" ? "albums" : "playlists", id };
 }
 
-/** Love, Add to Library, Pin and "…" for an album or playlist header. */
+/** Favorite, Add to Library, Pin and "…" for an album or playlist header. */
 function DetailHeroActions({
   kind,
   id,
@@ -253,7 +253,7 @@ function DetailHeroActions({
 }): JSX.Element {
   const ratingTarget = ratingTargetFor(kind, id);
   const key = ratingKeyOf(ratingTarget);
-  const loved = useAppSelector(
+  const favorite = useAppSelector(
     (state) => key !== undefined && state.ratings[key] === 1,
   );
   const pinned = useAppSelector((state) =>
@@ -264,7 +264,7 @@ function DetailHeroActions({
   useEffect(() => {
     if (online) run(() => controller.loadRating(ratingTargetFor(kind, id)));
   }, [online, controller, kind, id]);
-  const toggleLove = (): void => {
+  const toggleFavorite = (): void => {
     if (key === undefined) return;
     // Toggle against the value at click time, as the context menu does.
     const current = getState().ratings[key];
@@ -281,16 +281,16 @@ function DetailHeroActions({
       <button
         className="secondary-button"
         type="button"
-        aria-pressed={loved}
+        aria-pressed={favorite}
         disabled={!online}
-        onClick={toggleLove}
+        onClick={toggleFavorite}
       >
-        <Heart
+        <Star
           aria-hidden="true"
           size={16}
-          fill={loved ? "currentColor" : "none"}
+          fill={favorite ? "currentColor" : "none"}
         />{" "}
-        Love
+        Favorite
       </button>
       {canAddToLibrary ? (
         <button

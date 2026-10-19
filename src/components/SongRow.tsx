@@ -1,4 +1,4 @@
-import { Heart, MoreHorizontal, Play, SkipForward } from "lucide-preact";
+import { MoreHorizontal, Play, SkipForward, Star } from "lucide-preact";
 import type { JSX } from "preact";
 import { useAppSelector } from "../app/context.tsx";
 import { ratingKeyOf, trackRatingTarget } from "../app/ratings.ts";
@@ -56,7 +56,7 @@ export function SongRow({
   const ratingTarget = trackRatingTarget(track);
   const ratingKey = ratingKeyOf(ratingTarget);
   // Each row watches only its own rating, so a change re-renders one row.
-  const loved = useAppSelector(
+  const favorite = useAppSelector(
     (state) => ratingKey !== undefined && state.ratings[ratingKey] === 1,
   );
   const lookupRef = useVisibleRatingLookup<HTMLLIElement>(ratingTarget);
@@ -64,7 +64,7 @@ export function SongRow({
     discTrackNumbers && track.trackNumber ? track.trackNumber : index + 1;
   // The play button's label replaces its content, so the badges are spoken here.
   const extras = [
-    ...(loved ? ["loved"] : []),
+    ...(favorite ? ["favorite"] : []),
     ...(track.explicit ? ["explicit"] : []),
   ];
   const playFlags = [
@@ -129,9 +129,9 @@ export function SongRow({
           <span className={copyClassName}>
             <strong title={track.title}>
               {track.title}
-              {loved ? (
-                <Heart
-                  className="song-row-loved"
+              {favorite ? (
+                <Star
+                  className="song-row-favorite"
                   aria-hidden="true"
                   size={12}
                   fill="currentColor"

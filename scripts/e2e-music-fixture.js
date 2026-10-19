@@ -75,6 +75,14 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  *     in snapshot().authorizeHeld until releaseAuthorize() (returns how many
  *     it released) lets it finish through the normal path. reset() releases
  *     any held call too.
+ *
+ * API object (docs/TESTING.md "Audit fixes"): like MusicKit, every sign-in,
+ *   sign-out and authorizationStatusDidChange replaces instance.api with a
+ *   new object and records { type: "apiReset", generation }. A replaced
+ *   object still answers catalog paths, but rejects /v1/me with a bare "403"
+ *   MKError (ACCESS_DENIED), as the old token it carries would; those
+ *   requests are recorded with staleApi: true. snapshot().apiGeneration is
+ *   the current generation.
  */
 
 function installMusicKitFixture() {
@@ -2163,7 +2171,8 @@ function installMusicKitFixture() {
       String(path).split("?", 1)[0].startsWith("/v1/me")
     ) {
       const status = state.rejectMeStatus;
-      const error = new Error(`Fixture user token rejected (${status})`);
+      // MusicKit's message for a refused request is the bare status.
+      const error = new Error(String(status));
       error.errorCode = "ACCESS_DENIED";
       error.reason = "ACCESS_DENIED";
       error.status = status;
@@ -2181,6 +2190,42 @@ function installMusicKitFixture() {
       response: { ok: true, status: response === undefined ? 204 : 200 },
       data: clone(response),
     };
+  };
+
+  // MusicKit rebuilds its API object, and the user token in its headers, on
+  // every authorization change; a caller holding the old one sends that token.
+  let apiGeneration = 0;
+  const createApi = (generation) => {
+    const music = async (path, query, options) => {
+      const pathText = String(path);
+      if (
+        generation !== apiGeneration &&
+        pathText.split("?", 1)[0].startsWith("/v1/me")
+      ) {
+        state.requests.push({
+          path: pathText,
+          method: String(options?.method ?? "GET").toUpperCase(),
+          query: query ? clone(query) : undefined,
+          staleApi: true,
+          status: 403,
+          error: "403",
+          startedAt: Date.now(),
+        });
+        const error = new Error("403");
+        error.errorCode = "ACCESS_DENIED";
+        error.reason = "ACCESS_DENIED";
+        error.status = 403;
+        error.data = { status: 403 };
+        throw error;
+      }
+      return musicRequest(path, query, options);
+    };
+    return { music, v3: { music } };
+  };
+  const resetApi = () => {
+    apiGeneration += 1;
+    instance.api = createApi(apiGeneration);
+    state.transitions.push({ type: "apiReset", generation: apiGeneration });
   };
 
   const selectIndex = async (index, transitionType = "selectIndex") => {
@@ -2326,7 +2371,7 @@ function installMusicKitFixture() {
     autoplayEnabled: true,
     playbackState: STOPPED,
     player,
-    api: { music: musicRequest, v3: { music: musicRequest } },
+    api: createApi(0),
     get queueItems() {
       return state.queue;
     },
@@ -2384,11 +2429,13 @@ function installMusicKitFixture() {
       if (!held) state.transitions.push({ type: "authorize", popup: true });
       state.rejectMeStatus = 0;
       this.isAuthorized = true;
+      resetApi();
       return this.musicUserToken;
     },
     async unauthorize() {
       this.isAuthorized = false;
       state.transitions.push({ type: "unauthorize" });
+      resetApi();
       emit(events.authorizationStatusDidChange, {});
     },
     async setQueue(options) {
@@ -2856,6 +2903,7 @@ function installMusicKitFixture() {
         type: "authorizationStatus",
         authorized: instance.isAuthorized,
       });
+      resetApi();
       emit(events.authorizationStatusDidChange, {});
       return instance.isAuthorized;
     },
@@ -2923,6 +2971,7 @@ function installMusicKitFixture() {
         },
         volume: player.volume,
         authorized: instance.isAuthorized === true,
+        apiGeneration,
         authorizeHeld: state.authorizeReleases.length,
         configure: state.configureOptions
           ? clone(state.configureOptions)

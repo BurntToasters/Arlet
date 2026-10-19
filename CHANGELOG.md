@@ -2,7 +2,7 @@
 
 | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                                          | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
 | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.4/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.4/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.5/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.5/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -18,6 +18,13 @@
 ### ℹ️ Enjoying Arlet? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
+
+## Changes in `v0.3.0-beta.5:`
+
+- **Fix - Signing back in:** After signing out and back in, your library, Home, and other personal pages load right away. Before, they kept failing with `403` until Arlet was restarted, because Arlet kept sending requests with the sign-in from before. A refused request now explains what to do instead of showing a bare `403`.
+- **Fix - Expired sign-in check:** Errors that arrive while a sign-in is still finishing are now checked once it's done, so an expired sign-in shows its banner instead of leaving the app saying `Connected`.
+- **UI - Favorites:** "Love" is now "Favorite" with a star, matching Apple Music. Favorited items show "Undo Favorite", and favorited songs show up in your Favorite Songs playlist in Apple Music.
+- **Testing:** End-to-end tests now sign out and back in without a restart and check that library requests use the new sign-in and that a refused request never shows a bare `403`. The test version of Apple Music now replaces its connection on every sign-in, like the real one, so this can't come back unnoticed. The Favorite checks use the new wording.
 
 ## Changes in `v0.3.0-beta.4:`
 

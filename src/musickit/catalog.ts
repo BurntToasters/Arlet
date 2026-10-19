@@ -169,7 +169,16 @@ export function createMusicRequest(
   instance: MusicKit.MusicKitInstance,
   options: MusicRequestOptions = {},
 ): MusicKitMusicRequest {
-  const raw = rawMusicKitMusicRequest(instance);
+  // Looked up per call: MusicKit replaces its API object, and the user token
+  // in its headers, on every sign-in and sign-out.
+  const raw: MusicKitMusicRequest = (path, query, requestOptions) => {
+    const music = rawMusicKitMusicRequest(instance);
+    return requestOptions !== undefined
+      ? music(path, query, requestOptions)
+      : query !== undefined
+        ? music(path, query)
+        : music(path);
+  };
   const sleep =
     options.sleep ??
     ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -191,12 +200,7 @@ export function createMusicRequest(
     requestOptions?: Record<string, unknown>,
   ): Promise<unknown> => {
     const method = String(requestOptions?.method ?? "GET").toUpperCase();
-    const call = (): Promise<unknown> =>
-      requestOptions !== undefined
-        ? raw(path, query, requestOptions)
-        : query !== undefined
-          ? raw(path, query)
-          : raw(path);
+    const call = (): Promise<unknown> => raw(path, query, requestOptions);
     for (let attempt = 0; ; attempt += 1) {
       try {
         return await call();
@@ -261,16 +265,37 @@ export function createMusicRequest(
 
   return async (path, query, requestOptions) => {
     const guard = userTokenGuards.get(instance);
-    if (!guard || !isUserPath(path))
-      return request(path, query, requestOptions);
-    if (guard.blocked()) throw new Error(SESSION_EXPIRED_MESSAGE);
+    const userPath = isUserPath(path);
+    if (guard && userPath && guard.blocked()) {
+      throw new Error(SESSION_EXPIRED_MESSAGE);
+    }
     try {
       return await request(path, query, requestOptions);
     } catch (error) {
-      guard.onRejected(error, path);
-      throw error;
+      if (guard && userPath) guard.onRejected(error, path);
+      throw readableRefusal(error, userPath);
     }
   };
+}
+
+/**
+ * MusicKit reports a refused request as its bare status ("403"). The status
+ * and reason stay on the error; only the message the views show is replaced.
+ */
+function readableRefusal(error: unknown, userPath: boolean): unknown {
+  const status = httpStatusOf(error);
+  if (status !== 401 && status !== 403) return error;
+  if (!(error instanceof Error) || !/^\s*\d*\s*$/u.test(error.message)) {
+    return error;
+  }
+  try {
+    error.message = userPath
+      ? "Apple Music didn't accept your sign-in. Sign in again from Settings."
+      : "Apple Music refused the request. Try again later.";
+  } catch {
+    // A read-only message keeps the original text.
+  }
+  return error;
 }
 
 export const SESSION_EXPIRED_MESSAGE =
