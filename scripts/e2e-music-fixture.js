@@ -83,6 +83,16 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  *   MKError (ACCESS_DENIED), as the old token it carries would; those
  *   requests are recorded with staleApi: true. snapshot().apiGeneration is
  *   the current generation.
+ *
+ * Library view (scripts/e2e-library-view.js): configure({ librarySize }) also
+ *   gives each album a dateAdded cycling through 37 days, with none on every
+ *   7th item. Every 5th album is contentRating "explicit". Album titles
+ *   "Écho" (i % 50 = 4) and "echo" (i % 50 = 9) tie under base collation.
+ *   configure({ libraryView: true }) pages 120 library songs (titles, album
+ *   and artist names, dateAdded, contentRating on some), serves six playlists
+ *   (two named "Sunday Drive") and a "Road Trip" folder holding two of them.
+ *   configure({ ratings: { "library-albums:<id>": 1 } }) replaces the rating
+ *   map; reset() clears it and libraryView.
  */
 
 function installMusicKitFixture() {
@@ -286,6 +296,8 @@ function installMusicKitFixture() {
     libraryAdds: [],
     // Generated library albums and artists; 0 keeps the seed data only.
     librarySize: 0,
+    // Library songs, playlists and the playlist folder (header comment).
+    libraryView: false,
     // Artwork URL template for responses and queue items; "" keeps seed URLs.
     artworkTemplate: "",
     // Artwork sizing data (ARTWORK_* below); off, so other suites never see it.
@@ -1718,24 +1730,115 @@ function installMusicKitFixture() {
   const LIBRARY_PAGE_SIZE = 25;
   // Apple caps a library page at 100 items.
   const LIBRARY_MAX_PAGE_SIZE = 100;
+  const DAY_MS = 86_400_000;
+  // Cycles through 37 days, so many items tie; every 7th item has no dateAdded.
+  const dateAddedFor = (index) =>
+    index % 7 === 6
+      ? undefined
+      : new Date(
+          Date.UTC(2024, 0, 1) + ((index * 17) % 37) * DAY_MS,
+        ).toISOString();
+  // "Écho" and "echo" tie under base collation; their order is Apple order.
+  const libraryAlbumName = (index) => {
+    if (index % 50 === 4) return "Écho";
+    if (index % 50 === 9) return "echo";
+    return `Library Album ${index + 1}`;
+  };
   const libraryItem = (type, index) => {
     const id = `lib-${type}-${String(index).padStart(5, "0")}`;
     const album = type === "library-albums";
+    const dateAdded = dateAddedFor(index);
     return {
       id,
       type,
       attributes: {
-        name: album
-          ? `Library Album ${index + 1}`
-          : `Library Artist ${index + 1}`,
+        name: album ? libraryAlbumName(index) : `Library Artist ${index + 1}`,
         artistName: `Library Artist ${(index % 50) + 1}`,
         ...(album ? { trackCount: 10 } : {}),
+        ...(album && index % 5 === 0 ? { contentRating: "explicit" } : {}),
+        ...(dateAdded ? { dateAdded } : {}),
         artwork: {
           url: `https://is1-ssl.mzstatic.com/image/thumb/Music/e2e/${id}/{w}x{h}bb.jpg`,
           width: 300,
           height: 300,
         },
       },
+    };
+  };
+  // configure({ libraryView: true }) data. Songs page 100 then 20; Apple's
+  // flat playlist list is in this order, and the folder holds lv-pl-01 and -06.
+  const LIBRARY_SONG_COUNT = 120;
+  const LIBRARY_SONG_ALBUMS = [
+    "Harbor Lights",
+    "Night Cargo",
+    "Paper Moons",
+    "Quiet Engine",
+    "Glass Orchard",
+    "Lantern Road",
+  ];
+  const LIBRARY_SONG_ARTISTS = [
+    "Mira Vale",
+    "Kenji Holt",
+    "Ada Ruiz",
+    "Tom Ostrander",
+  ];
+  const librarySong = (index) => {
+    const item = track(
+      `lv-song-${String(index).padStart(5, "0")}`,
+      index % 40 === 7 ? `Écho Song ${index + 1}` : `Song ${index + 1}`,
+      LIBRARY_SONG_ALBUMS[index % LIBRARY_SONG_ALBUMS.length],
+    );
+    item.attributes.artistName =
+      LIBRARY_SONG_ARTISTS[index % LIBRARY_SONG_ARTISTS.length];
+    const dateAdded = dateAddedFor(index);
+    if (dateAdded) item.attributes.dateAdded = dateAdded;
+    if (index % 4 === 0) item.attributes.contentRating = "explicit";
+    if (index % 4 === 1) item.attributes.contentRating = "clean";
+    return item;
+  };
+  const LIBRARY_VIEW_FOLDER_ID = "lv-folder-road";
+  const libraryViewFolder = {
+    id: LIBRARY_VIEW_FOLDER_ID,
+    type: "library-playlist-folders",
+    attributes: { name: "Road Trip" },
+  };
+  const libraryViewPlaylists = [
+    ["lv-pl-01", "Sunday Drive", "2024-02-10T00:00:00.000Z"],
+    ["lv-pl-02", "Afterglow", "2024-05-01T00:00:00.000Z"],
+    ["lv-pl-03", "Sunday Drive", undefined],
+    ["lv-pl-04", "Sunday Drive", "2024-03-01T00:00:00.000Z"],
+    ["lv-pl-05", "Études Mix", "2024-04-01T00:00:00.000Z"],
+    ["lv-pl-06", "Bravo Hits", "2024-06-01T00:00:00.000Z"],
+  ].map(([id, name, dateAdded]) => ({
+    id,
+    type: "library-playlists",
+    attributes: {
+      name,
+      artistName: "Arlet E2E",
+      trackCount: 2,
+      canEdit: true,
+      ...(dateAdded ? { dateAdded } : {}),
+    },
+  }));
+  const libraryViewFolderMembers = ["lv-pl-01", "lv-pl-06"];
+  // Pages a generated list the way Apple does: `next` carries the offset.
+  const pagedLibraryItems = (path, call, total, makeItem) => {
+    const [pathname] = String(path).split("?");
+    const params = requestParams(path, call);
+    const offset = Math.max(0, Math.floor(Number(params.offset ?? 0))) || 0;
+    const requested = Math.floor(Number(params.limit ?? LIBRARY_MAX_PAGE_SIZE));
+    const limit =
+      Number.isFinite(requested) && requested > 0
+        ? Math.min(requested, LIBRARY_MAX_PAGE_SIZE)
+        : LIBRARY_MAX_PAGE_SIZE;
+    const end = Math.min(total, offset + limit);
+    return {
+      data: Array.from({ length: Math.max(0, end - offset) }, (_, index) =>
+        makeItem(offset + index),
+      ),
+      ...(end < total
+        ? { next: `${pathname}?offset=${end}&limit=${limit}` }
+        : {}),
     };
   };
   const secondPlaylistPage =
@@ -1894,7 +1997,9 @@ function installMusicKitFixture() {
     if (BATCH_PLAYLIST_PATHS.has(pathname) && call.query?.ids !== undefined) {
       const playlists = pathname.startsWith("/v1/catalog/")
         ? [catalogPlaylist, polishPlaylist]
-        : [playlist, bigPlaylist];
+        : state.libraryView
+          ? libraryViewPlaylists
+          : [playlist, bigPlaylist];
       const ids = String(call.query.ids).split(",").filter(Boolean);
       // Ids come back in the order asked for; unknown ids are skipped.
       return {
@@ -2052,6 +2157,18 @@ function installMusicKitFixture() {
       });
     }
     if (/\/playlist-folders(?:\/[^/]+)?\/children$/u.test(pathname)) {
+      if (state.libraryView) {
+        if (pathname.includes("/fixture-playlists-root/")) {
+          return { data: [clone(libraryViewFolder)] };
+        }
+        if (pathname.includes(`/${LIBRARY_VIEW_FOLDER_ID}/`)) {
+          return {
+            data: libraryViewPlaylists
+              .filter((item) => libraryViewFolderMembers.includes(item.id))
+              .map(clone),
+          };
+        }
+      }
       return { data: [] };
     }
     if (pathname === "/v1/me/library/playlist-folders") {
@@ -2066,7 +2183,8 @@ function installMusicKitFixture() {
       };
     }
     if (pathname === "/v1/me/library/playlists") {
-      return itemResponse(playlist);
+      if (!state.libraryView) return itemResponse(playlist);
+      return { data: libraryViewPlaylists.map(clone) };
     }
     // Paged like Apple: `next` carries the offset and limit for the next call.
     const libraryKind = {
@@ -2099,6 +2217,11 @@ function installMusicKitFixture() {
       };
     }
     if (pathname === "/v1/me/library/songs") {
+      if (state.libraryView) {
+        return pagedLibraryItems(path, call, LIBRARY_SONG_COUNT, (index) =>
+          clone(librarySong(index)),
+        );
+      }
       return { data: Object.values(navResources).map(clone) };
     }
     if (pathname === "/v1/catalog/us/search") {
@@ -2634,6 +2757,18 @@ function installMusicKitFixture() {
           Math.floor(Number(options.librarySize)) || 0,
         );
       }
+      if (Object.prototype.hasOwnProperty.call(options, "libraryView")) {
+        state.libraryView = options.libraryView === true;
+      }
+      if (Object.prototype.hasOwnProperty.call(options, "ratings")) {
+        // Replaces the whole map; keys are `${type}:${id}`, values 1 or -1.
+        state.ratings = Object.fromEntries(
+          Object.entries(options.ratings ?? {}).map(([key, value]) => [
+            String(key),
+            Number(value),
+          ]),
+        );
+      }
       if (Object.prototype.hasOwnProperty.call(options, "artworkTemplate")) {
         state.artworkTemplate = String(options.artworkTemplate ?? "");
       }
@@ -2692,6 +2827,7 @@ function installMusicKitFixture() {
       state.ratings = {};
       state.libraryAdds = [];
       state.librarySize = 0;
+      state.libraryView = false;
       state.artworkTemplate = "";
       state.artworkGrid = false;
       state.delayTerms = {};

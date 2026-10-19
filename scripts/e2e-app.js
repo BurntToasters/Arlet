@@ -20,6 +20,7 @@ import { MUSIC_FIXTURE_SEED, musicFixtureSource } from "./e2e-music-fixture.js";
 import { runLibraryActions } from "./e2e-library-actions.js";
 import { runPlaylistPlayback } from "./e2e-playlist-playback.js";
 import { runFlows } from "./e2e-flows.js";
+import { runLibraryView } from "./e2e-library-view.js";
 import { runSongNavigation } from "./e2e-song-navigation.js";
 import { runTransport } from "./e2e-transport.js";
 import { runQueueEdit } from "./e2e-queue-edit.js";
@@ -1492,6 +1493,7 @@ async function run() {
         ["layout", runLayout],
         ["desktop", runDesktop],
         ["flows", runFlows],
+        ["library-view", runLibraryView],
         ["performance", runPerformance],
         ["polish", runPolish],
         ["discovery", runDiscovery],

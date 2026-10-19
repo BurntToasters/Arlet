@@ -9,6 +9,7 @@ import {
   ListMusic,
   Music2,
   RefreshCw,
+  SearchX,
   UserRound,
 } from "lucide-preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
@@ -16,14 +17,32 @@ import type { JSX } from "preact";
 import {
   useAppController,
   useAppRouter,
+  useAppSelector,
   useAppSlices,
 } from "../app/context.tsx";
 import { nearestTrackIndex } from "../app/queue-window.ts";
+import {
+  ratingKeyOf,
+  requestRatings,
+  type RatingTarget,
+} from "../app/ratings.ts";
 import type { RuntimeAppState } from "../state.ts";
 import { Artwork } from "../components/Artwork.tsx";
+import { LibraryToolbar } from "../components/LibraryToolbar.tsx";
 import { SongRow } from "../components/SongRow.tsx";
 import { CardActions, CardShell } from "../components/CardActions.tsx";
 import { EmptyState } from "./EmptyState.tsx";
+import {
+  isActive,
+  libraryViewCapabilities,
+  loadViewOptions,
+  matchesContent,
+  matchesText,
+  saveViewOptions,
+  sortItems,
+  type LibrarySort,
+  type LibraryViewOptions,
+} from "../library/view-options.ts";
 import type { Track } from "../domain/music.ts";
 import { normalizeTrackNavigation } from "../musickit/normalize.ts";
 import type { LibrarySection } from "../routing/router.ts";
@@ -57,6 +76,8 @@ export interface ResourceLike {
   catalogId?: string;
   /** Albums: `YYYY-MM-DD` (or `YYYY`) from Apple. */
   releaseDate?: string;
+  /** When the item joined the library, as an ISO time. */
+  dateAdded?: string;
   playable?: boolean;
   addable?: boolean;
   parentId?: string;
@@ -262,6 +283,7 @@ function convertResource(value: unknown): ResourceLike | undefined {
     trackNumber: positionValue(raw.trackNumber, attributes.trackNumber),
     catalogId: stringValue(raw.catalogId, attributes.catalogId),
     releaseDate: stringValue(raw.releaseDate, attributes.releaseDate),
+    dateAdded: stringValue(raw.dateAdded, attributes.dateAdded),
     playable: typeof raw.playable === "boolean" ? raw.playable : undefined,
     addable: typeof raw.addable === "boolean" ? raw.addable : undefined,
     parentId: stringValue(
@@ -434,6 +456,56 @@ function act(action: () => Promise<unknown> | undefined): void {
   void Promise.resolve(action()).catch(reportActionError);
 }
 
+interface LibraryViewState {
+  options: LibraryViewOptions;
+  text: string;
+}
+
+function initialViewState(section: LibrarySection): LibraryViewState {
+  return { options: loadViewOptions(section), text: "" };
+}
+
+function ratingTargetOf(
+  resource: ResourceLike,
+  section: LibrarySection,
+): RatingTarget {
+  return { type: resource.type ?? `library-${section}`, id: resource.id };
+}
+
+function ratingKeyFor(
+  resource: ResourceLike,
+  section: LibrarySection,
+): string | undefined {
+  return ratingKeyOf(ratingTargetOf(resource, section));
+}
+
+/**
+ * Items that pass the text, content and favorites controls, in sort order.
+ * Folders pass through; PlaylistTree hides the ones with nothing to show.
+ */
+function arrangeResources(
+  resources: readonly ResourceLike[],
+  section: LibrarySection,
+  options: LibraryViewOptions,
+  text: string,
+  ratings: RuntimeAppState["ratings"],
+): ResourceLike[] {
+  // Unknown ratings count as not favorite; the view waits for them first.
+  const isFavorite = (resource: ResourceLike): boolean => {
+    const key = ratingKeyFor(resource, section);
+    return key !== undefined && ratings[key] === 1;
+  };
+  const folders = resources.filter((resource) => resource.isFolder);
+  const items = resources.filter(
+    (resource) =>
+      !resource.isFolder &&
+      matchesText(resource, text) &&
+      matchesContent(resource, options.content) &&
+      (!options.favorites || isFavorite(resource)),
+  );
+  return [...folders, ...sortItems(items, options.sort)];
+}
+
 export function LibraryTrackRow({
   resource,
   index,
@@ -543,15 +615,32 @@ function ResourceCard({
 function PlaylistTree({
   resources,
   router,
+  sort,
+  filtered,
 }: {
   resources: ResourceLike[];
   router: ReturnType<typeof useAppRouter>;
+  sort: LibrarySort;
+  /** A text or favorites filter is on, so folders with no match are hidden. */
+  filtered: boolean;
 }): JSX.Element {
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const folders = resources.filter((resource) => resource.isFolder);
   const playlists = resources.filter((resource) => !resource.isFolder);
   const childrenOf = (parentId?: string): ResourceLike[] =>
     resources.filter((resource) => resource.parentId === parentId);
+  // Folders sort by title only for title sorts; otherwise they keep their order.
+  const orderFolders = (list: ResourceLike[]): ResourceLike[] =>
+    sort === "title-asc" || sort === "title-desc"
+      ? sortItems(list, sort)
+      : list;
+  // Only matching playlists are in `resources`, so a folder shows when one sits below it.
+  const hasShownContent = (folder: ResourceLike): boolean =>
+    childrenOf(folder.id).some(
+      (child) => !child.isFolder || hasShownContent(child),
+    );
+  const shownFolders = (list: ResourceLike[]): ResourceLike[] =>
+    orderFolders(filtered ? list.filter(hasShownContent) : list);
   const renderPlaylist = (playlist: ResourceLike): JSX.Element => (
     <ResourceCard
       key={playlist.id}
@@ -565,8 +654,8 @@ function PlaylistTree({
     const nestedPlaylists = childrenOf(folder.id).filter(
       (child) => !child.isFolder,
     );
-    const nestedFolders = childrenOf(folder.id).filter(
-      (child) => child.isFolder,
+    const nestedFolders = shownFolders(
+      childrenOf(folder.id).filter((child) => child.isFolder),
     );
     return (
       <div
@@ -600,10 +689,12 @@ function PlaylistTree({
       </div>
     );
   };
-  const rootFolders = folders.filter(
-    (folder) =>
-      !folder.parentId ||
-      !folders.some((candidate) => candidate.id === folder.parentId),
+  const rootFolders = shownFolders(
+    folders.filter(
+      (folder) =>
+        !folder.parentId ||
+        !folders.some((candidate) => candidate.id === folder.parentId),
+    ),
   );
   const rootPlaylists = playlists.filter(
     (playlist) =>
@@ -708,13 +799,26 @@ export function LibraryView({
   const controller = useAppController();
   const router = useAppRouter();
   const loadMoreTrigger = useRef<HTMLButtonElement>(null);
+  // Toolbar state per section, for this session. Sections that have no
+  // toolbar read the defaults.
+  const [viewStates, setViewStates] = useState<
+    Partial<Record<LibrarySection, LibraryViewState>>
+  >({});
+  const ratings = useAppSelector((store) => store.ratings);
   const copy = SECTION_COPY[section];
+  const capabilities = libraryViewCapabilities(section);
+  const view = useMemo(
+    () => viewStates[section] ?? initialViewState(section),
+    [viewStates, section],
+  );
+  const { options, text } = view;
   const collection = readCollection(state, section);
   const authorized =
     state.auth.status === "authorized" &&
     state.initialization.status === "ready";
   const offline = state.library.offline;
   const canView = authorized || offline;
+  const canAutoLoad = authorized && !offline;
   const folderItems =
     section === "playlists" ? readPlaylistFolderItems(state) : NO_ITEMS;
   // Rebuilt only when the stored items change; converted items are cached,
@@ -730,11 +834,55 @@ export function LibraryView({
       return true;
     });
   }, [collection.items, folderItems]);
+  const controlsActive = capabilities !== undefined && isActive(options, text);
+  const favoritesOn = controlsActive && options.favorites;
+  // The list in the order and subset the controls show. With no control
+  // active, it is the stored order, as before the toolbar.
+  const visibleResources = useMemo(
+    () =>
+      controlsActive
+        ? arrangeResources(resources, section, options, text, ratings)
+        : resources,
+    [controlsActive, resources, section, options, text, ratings],
+  );
+  const visibleCount = visibleResources.filter(
+    (resource) => !resource.isFolder,
+  ).length;
+  const totalCount = resources.filter((resource) => !resource.isFolder).length;
+  const favoritesPending =
+    favoritesOn &&
+    canAutoLoad &&
+    resources.some((resource) => {
+      const key = resource.isFolder
+        ? undefined
+        : ratingKeyFor(resource, section);
+      return key !== undefined && ratings[key] === undefined;
+    });
+  const loadingAll =
+    controlsActive &&
+    canAutoLoad &&
+    Boolean(collection.next) &&
+    collection.status === "loading";
+  const noMatches =
+    controlsActive &&
+    totalCount > 0 &&
+    visibleCount === 0 &&
+    !loadingAll &&
+    !favoritesPending;
+  const status = loadingAll
+    ? `Loading full library… ${collection.items.length} loaded`
+    : favoritesPending
+      ? "Checking favorites…"
+      : undefined;
+
   const { recentCards, trackResources } = useMemo(() => {
     if (section !== "recent") {
-      return { recentCards: [] as ResourceLike[], trackResources: resources };
+      return {
+        recentCards: [] as ResourceLike[],
+        trackResources: visibleResources,
+      };
     }
-    const cards = resources.filter((resource) =>
+    const cards = visibleResources.filter((resource) =>
       ["album", "artist", "playlist"].some((kind) =>
         resource.type?.includes(kind),
       ),
@@ -742,9 +890,11 @@ export function LibraryView({
     const cardSet = new Set(cards);
     return {
       recentCards: cards,
-      trackResources: resources.filter((resource) => !cardSet.has(resource)),
+      trackResources: visibleResources.filter(
+        (resource) => !cardSet.has(resource),
+      ),
     };
-  }, [resources, section]);
+  }, [visibleResources, section]);
 
   useEffect(() => {
     if (!canView) return;
@@ -753,6 +903,57 @@ export function LibraryView({
       run(() => controller.loadPlaylistFolder());
     }
   }, [canView, controller, section]);
+
+  useEffect(() => {
+    // Filters and sorts need every page. After an error the loading stops, and
+    // Load more or Refresh retries.
+    if (
+      !controlsActive ||
+      !canAutoLoad ||
+      !collection.next ||
+      collection.status === "loading" ||
+      collection.error
+    ) {
+      return;
+    }
+    run(() => controller.loadAllLibrarySection(section));
+  }, [
+    controlsActive,
+    canAutoLoad,
+    collection.next,
+    collection.status,
+    collection.error,
+    controller,
+    section,
+  ]);
+
+  useEffect(() => {
+    if (!favoritesOn || !canAutoLoad) return;
+    const targets = resources
+      .filter((resource) => !resource.isFolder)
+      .map((resource) => ratingTargetOf(resource, section));
+    if (targets.length) run(() => requestRatings(targets));
+  }, [favoritesOn, canAutoLoad, resources, section]);
+
+  const patchView = (patch: Partial<LibraryViewState>): void => {
+    setViewStates((current) => ({
+      ...current,
+      [section]: {
+        ...(current[section] ?? initialViewState(section)),
+        ...patch,
+      },
+    }));
+  };
+  // Options are saved here; text is session-only.
+  const changeOptions = (next: LibraryViewOptions): void => {
+    saveViewOptions(section, next);
+    patchView({ options: next });
+  };
+  // Clears text, favorites and content. The sort stays.
+  const clearFilters = (): void => {
+    changeOptions({ ...options, favorites: false, content: "all" });
+    patchView({ text: "" });
+  };
 
   const retry = (): void => {
     run(() => controller.refreshLibrarySection(section));
@@ -776,6 +977,8 @@ export function LibraryView({
     if (
       !target ||
       !authorized ||
+      // Load more is hidden while a control is active; every page loads anyway.
+      controlsActive ||
       !collection.next ||
       collection.status === "loading" ||
       // After a failed page load the trigger is still visible; observing
@@ -797,6 +1000,7 @@ export function LibraryView({
     return () => observer.disconnect();
   }, [
     authorized,
+    controlsActive,
     collection.next,
     collection.status,
     collection.error,
@@ -851,6 +1055,24 @@ export function LibraryView({
         </div>
       </div>
 
+      {capabilities && canView ? (
+        <LibraryToolbar
+          key={section}
+          title={copy.title}
+          nameSort={section === "artists"}
+          capabilities={capabilities}
+          options={options}
+          text={text}
+          favoritesDisabled={!canAutoLoad}
+          status={status}
+          count={
+            controlsActive ? `${visibleCount} of ${totalCount}` : undefined
+          }
+          onOptionsChange={changeOptions}
+          onTextChange={(next) => patchView({ text: next })}
+        />
+      ) : null}
+
       {offline ? <OfflineBanner /> : null}
       {!canView ? (
         <EmptyState
@@ -878,6 +1100,24 @@ export function LibraryView({
             section={section}
             onRetry={retry}
           />
+          {noMatches ? (
+            <EmptyState
+              icon={SearchX}
+              title="No matches"
+              description="Nothing in this section matches the current filters."
+              compact
+              action={
+                <button
+                  className="secondary-button"
+                  type="button"
+                  data-library-clear
+                  onClick={clearFilters}
+                >
+                  Clear filters
+                </button>
+              }
+            />
+          ) : null}
           {trackResources.length &&
           !["artists", "albums", "playlists"].includes(section) ? (
             <section className="library-list-panel" aria-label={copy.title}>
@@ -921,11 +1161,11 @@ export function LibraryView({
               })}
             </section>
           ) : null}
-          {resources.length && section === "albums" ? (
+          {visibleResources.length && section === "albums" ? (
             <section aria-label="Albums">
               <VirtualGrid
                 className="library-card-grid"
-                items={resources}
+                items={visibleResources}
                 getKey={(resource) => resource.id}
                 renderItem={(resource) => (
                   <ResourceCard
@@ -939,11 +1179,11 @@ export function LibraryView({
               />
             </section>
           ) : null}
-          {resources.length && section === "artists" ? (
+          {visibleResources.length && section === "artists" ? (
             <section aria-label="Artists">
               <VirtualGrid
                 className="library-card-grid"
-                items={resources}
+                items={visibleResources}
                 getKey={(resource) => resource.id}
                 renderItem={(resource) => (
                   <ResourceCard
@@ -957,15 +1197,20 @@ export function LibraryView({
               />
             </section>
           ) : null}
-          {resources.length && section === "playlists" ? (
-            <PlaylistTree resources={resources} router={router} />
+          {visibleResources.length && section === "playlists" ? (
+            <PlaylistTree
+              resources={visibleResources}
+              router={router}
+              sort={options.sort}
+              filtered={favoritesOn || text.trim().length > 0}
+            />
           ) : null}
           {collection.error && collection.items.length ? (
             <p className="library-stale-note" role="status">
               Showing saved data. Refresh failed: {collection.error}
             </p>
           ) : null}
-          {collection.next ? (
+          {collection.next && !controlsActive ? (
             <button
               ref={loadMoreTrigger}
               className="secondary-button library-load-more"

@@ -46,6 +46,12 @@ import {
  */
 const MAX_DETAIL_ITEMS = 9_999;
 
+/**
+ * Most pages one load-all call fetches. Apple pages are large, so this only
+ * stops a cursor that never ends.
+ */
+const MAX_LOAD_ALL_PAGES = 500;
+
 const OFFLINE_MESSAGE =
   "You're offline. Reconnect to load the latest from Apple Music.";
 
@@ -164,6 +170,11 @@ export function createLibraryLoader(
   const refreshingSections = new Set<LibrarySection>();
   const refreshedSections = new Set<LibrarySection>();
   const libraryRequests = new Map<LibrarySection, number>();
+  /** Load-all calls in flight; a new account generation starts its own. */
+  const loadingAllSections = new Map<
+    LibrarySection,
+    { generation: number; load: Promise<void> }
+  >();
   const detailRequests = new Map<string, number>();
   let homeRequestId = 0;
   const clearLibraryCache = (): Promise<void> =>
@@ -577,6 +588,45 @@ export function createLibraryLoader(
       log(`Library page load failed (${section}): ${message}`);
       throw error;
     }
+  };
+
+  /**
+   * Fetches every remaining page so client-side sort and filter see the whole
+   * list. Pages run one at a time because each cursor comes from the page
+   * before it. An unchanged `next` means loadMore skipped the page (a refresh
+   * is replacing the list), so stop instead of asking for the same page again.
+   */
+  const loadAllLibraryPages = async (
+    section: LibrarySection,
+    generation: number,
+  ): Promise<void> => {
+    for (let pages = 0; pages < MAX_LOAD_ALL_PAGES; pages += 1) {
+      const next = getState().library.collections[section].next;
+      if (!next || !isAccountGenerationCurrent(generation) || isOffline()) {
+        return;
+      }
+      try {
+        await loadMoreLibrarySection(section, undefined, generation);
+      } catch {
+        // loadMoreLibrarySection already recorded the error in the collection.
+        return;
+      }
+      if (getState().library.collections[section].next === next) return;
+    }
+  };
+
+  const loadAllLibrarySection = (section: LibrarySection): Promise<void> => {
+    const generation = cache.currentGeneration();
+    const inFlight = loadingAllSections.get(section);
+    if (inFlight?.generation === generation) return inFlight.load;
+    // `finally` runs after this assignment, so the entry is always stored first.
+    const load = loadAllLibraryPages(section, generation).finally(() => {
+      if (loadingAllSections.get(section)?.load === load) {
+        loadingAllSections.delete(section);
+      }
+    });
+    loadingAllSections.set(section, { generation, load });
+    return load;
   };
 
   /** The one album-track path: the client builds it, for every caller. */
@@ -1141,6 +1191,7 @@ export function createLibraryLoader(
     clearLibraryCache,
     loadLibrarySection,
     loadMoreLibrarySection,
+    loadAllLibrarySection,
     refreshLibrarySection,
     loadHome,
     loadDetail,

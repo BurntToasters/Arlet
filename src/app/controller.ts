@@ -183,6 +183,7 @@ export interface AppController {
     section: LibrarySection,
     cursor?: string,
   ): Promise<void>;
+  loadAllLibrarySection(section: LibrarySection): Promise<void>;
   refreshLibrarySection(section: LibrarySection): Promise<void>;
   loadHome(options?: { refresh?: boolean }): Promise<void>;
   loadBrowse(options?: { refresh?: boolean; genreId?: string }): Promise<void>;
@@ -803,6 +804,8 @@ export function createAppController(
         ? library.loadMoreLibrarySection(section, next)
         : Promise.resolve();
     },
+
+    loadAllLibrarySection: library.loadAllLibrarySection,
 
     refreshLibrarySection: library.refreshLibrarySection,
 

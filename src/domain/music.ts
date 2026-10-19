@@ -97,6 +97,8 @@ export interface Track {
   discNumber?: number;
   /** Position on its disc, from Apple. */
   trackNumber?: number;
+  /** ISO date-time from Apple `attributes.dateAdded`, library items only. */
+  dateAdded?: string;
 }
 
 export interface Album {
@@ -105,6 +107,8 @@ export interface Album {
   artistName: string;
   /** `YYYY-MM-DD` (or `YYYY`) from Apple, when known. */
   releaseDate?: string;
+  /** ISO date-time from Apple `attributes.dateAdded`, library items only. */
+  dateAdded?: string;
   artwork?: Artwork;
   trackCount?: number;
   resourceType?: MusicResourceType;
@@ -116,6 +120,8 @@ export interface Album {
   recordLabel?: string;
   copyright?: string;
   genreNames?: string[];
+  /** From Apple `contentRating`; absent when Apple reports neither rating. */
+  explicit?: boolean;
   isSingle?: boolean;
   isCompilation?: boolean;
   /** Apple Music web link from Apple; the context menu validates it on use. */
@@ -175,6 +181,8 @@ export interface Playlist {
   parentId?: MusicId;
   /** Apple's curator for a catalog playlist. */
   curatorName?: string;
+  /** ISO date-time from Apple `attributes.dateAdded`, library items only. */
+  dateAdded?: string;
   /** Apple Music web link from Apple; the context menu validates it on use. */
   catalogUrl?: string;
 }

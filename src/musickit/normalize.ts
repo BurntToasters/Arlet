@@ -58,6 +58,12 @@ function positiveNumber(value: unknown): number | undefined {
     : undefined;
 }
 
+/** Apple's `dateAdded` when it is a date string that `Date.parse` accepts. */
+function dateAddedOf(value: unknown): string | undefined {
+  const date = stringValue(value);
+  return date && Number.isFinite(Date.parse(date)) ? date : undefined;
+}
+
 function resourceId(resource: AppleMusicResource): string | undefined {
   return stringValue(asRecord(resource)?.id);
 }
@@ -502,6 +508,8 @@ function normalizeResourceTrack(
   };
   const explicit = stringValue(attributes.contentRating);
   if (explicit) track.explicit = explicit.toLowerCase() === "explicit";
+  const dateAdded = dateAddedOf(attributes.dateAdded);
+  if (dateAdded) track.dateAdded = dateAdded;
   const discNumber = positiveInteger(attributes.discNumber);
   if (discNumber) track.discNumber = discNumber;
   const trackNumber = positiveInteger(attributes.trackNumber);
@@ -613,6 +621,11 @@ export function normalizeAlbumResource(
   if (releaseDate && /^\d{4}/u.test(releaseDate)) {
     album.releaseDate = releaseDate;
   }
+  const dateAdded = dateAddedOf(attributes.dateAdded);
+  if (dateAdded) album.dateAdded = dateAdded;
+  const contentRating = stringValue(attributes.contentRating)?.toLowerCase();
+  if (contentRating === "explicit") album.explicit = true;
+  if (contentRating === "clean") album.explicit = false;
   const playable =
     typeof attributes.playable === "boolean"
       ? attributes.playable
@@ -737,6 +750,8 @@ export function normalizePlaylistResource(
   }
   if (typeof attributes.isPublic === "boolean")
     playlist.isPublic = attributes.isPublic;
+  const dateAdded = dateAddedOf(attributes.dateAdded);
+  if (dateAdded) playlist.dateAdded = dateAdded;
   const catalogUrl = catalogUrlOf(attributes);
   if (catalogUrl) playlist.catalogUrl = catalogUrl;
   return playlist;
