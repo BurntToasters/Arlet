@@ -214,10 +214,18 @@ export function Titlebar(): JSX.Element {
     runStatusAction(() => controller.refreshCurrentData());
   };
 
+  const sessionExpired =
+    state.auth.status === "authorized" && state.auth.sessionExpired === true;
+  const cancelSignIn = (): void => {
+    setStatusOpen(false);
+    controller.cancelSignIn();
+  };
   const statusLabel =
     state.initialization.status === "ready"
       ? state.auth.status === "authorized"
-        ? "Connected"
+        ? sessionExpired
+          ? "Sign in needed"
+          : "Connected"
         : "Ready"
       : state.initialization.status === "error"
         ? "Offline"
@@ -291,17 +299,21 @@ export function Titlebar(): JSX.Element {
               <span className="eyebrow">Apple Music</span>
               <strong>
                 {state.auth.status === "authorized"
-                  ? signedInLabel
+                  ? sessionExpired
+                    ? "Sign-in expired"
+                    : signedInLabel
                   : "Not signed in"}
               </strong>
               <small>
-                {state.auth.status === "authorized"
-                  ? account.storefront
-                    ? `${account.storefront} storefront`
-                    : "Connected for this session"
-                  : state.initialization.status === "error"
-                    ? "MusicKit is offline"
-                    : "Sign in to sync your library"}
+                {sessionExpired
+                  ? "Sign in again to keep listening"
+                  : state.auth.status === "authorized"
+                    ? account.storefront
+                      ? `${account.storefront} storefront`
+                      : "Connected for this session"
+                    : state.initialization.status === "error"
+                      ? "MusicKit is offline"
+                      : "Sign in to sync your library"}
               </small>
             </div>
             <div className="connection-popover-meta">
@@ -329,7 +341,7 @@ export function Titlebar(): JSX.Element {
                 type="button"
                 role="menuitem"
                 onClick={refreshCurrentView}
-                disabled={state.auth.status !== "authorized"}
+                disabled={state.auth.status !== "authorized" || sessionExpired}
               >
                 <RefreshCw aria-hidden="true" size={15} strokeWidth={1.8} />
                 Refresh current view
@@ -345,6 +357,30 @@ export function Titlebar(): JSX.Element {
                 <Settings aria-hidden="true" size={15} strokeWidth={1.8} />
                 Open Settings
               </button>
+              {sessionExpired ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={state.auth.pending === true}
+                  onClick={() => runStatusAction(controller.reauthorize)}
+                >
+                  <LogIn aria-hidden="true" size={15} strokeWidth={1.8} />
+                  {state.auth.pending === true
+                    ? "Signing in…"
+                    : "Sign in again"}
+                </button>
+              ) : null}
+              {sessionExpired && state.auth.pending === true ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-action="cancel-sign-in"
+                  onClick={cancelSignIn}
+                >
+                  <X aria-hidden="true" size={15} strokeWidth={1.8} />
+                  Cancel
+                </button>
+              ) : null}
               {state.auth.status === "authorized" ? (
                 <button
                   type="button"
@@ -370,6 +406,18 @@ export function Titlebar(): JSX.Element {
                     : "Sign in / Retry"}
                 </button>
               )}
+              {state.auth.status !== "authorized" &&
+              state.auth.pending === true ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  data-action="cancel-sign-in"
+                  onClick={cancelSignIn}
+                >
+                  <X aria-hidden="true" size={15} strokeWidth={1.8} />
+                  Cancel
+                </button>
+              ) : null}
             </div>
           </div>
         ) : null}

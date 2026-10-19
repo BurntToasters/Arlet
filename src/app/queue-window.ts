@@ -70,25 +70,37 @@ export function shuffledCopy<T>(items: readonly T[]): T[] {
   return result;
 }
 
+/** Options for one Play. */
+export interface PlayOptions {
+  /**
+   * Resumes a parked queue in its saved order, even with shuffle on. Songs
+   * before the chosen one are history only, never upcoming.
+   */
+  keepOrder?: boolean;
+}
+
 /**
  * Splits a Play into Arlet-side history, MusicKit's first batch (the chosen
  * song first), and the rest. Shuffled, the chosen song leads a random order
- * of the whole list, so shuffle still draws from every song.
+ * of the whole list, so shuffle still draws from every song. With `keepOrder`
+ * the split is always the in-order one.
  */
 export function startWindow(
   tracks: readonly Track[],
   startIndex: number,
   shuffled: boolean,
+  options: PlayOptions = {},
 ): StartWindow {
   const chosen = tracks[startIndex];
   if (!chosen) return { history: [], batch: [], startIndex: 0, rest: [] };
+  const shuffle = shuffled && !options.keepOrder;
   // A short list goes to MusicKit whole and in order: MusicKit shuffles it
   // with the chosen song first (`startWith`), and turning shuffle off then
   // restores the playlist order.
-  if (shuffled && tracks.length <= SHUFFLE_IN_ORDER_LIMIT) {
+  if (shuffle && tracks.length <= SHUFFLE_IN_ORDER_LIMIT) {
     return { history: [], batch: [...tracks], startIndex, rest: [] };
   }
-  if (shuffled) {
+  if (shuffle) {
     const others = shuffledCopy(
       tracks.filter((_, index) => index !== startIndex),
     );

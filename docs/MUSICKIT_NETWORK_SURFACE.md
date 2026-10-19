@@ -69,3 +69,9 @@ or remove tracks from playlists, so Arlet does not offer those actions.
 - The Phase 0 diagnostic webview loads `https://music.apple.com/` in a separate
   unprivileged window. That origin is not granted Tauri IPC. MusicKit JS in the
   main window still uses the table above.
+- Sign-in expiry probe: when a request or playback error suggests the user
+  token was rejected, Arlet sends one `GET /v1/me/storefront` (cooldown 30 s,
+  one at a time). Only a 401 or 403 marks the sign-in expired; `/v1/me`
+  requests then stop until the user signs in again.
+- The 1-minute stream handoff sends the DRM lease `stop` through MusicKit's
+  own `stop()`. Arlet makes no separate lease request.

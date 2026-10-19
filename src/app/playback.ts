@@ -74,6 +74,8 @@ export interface PlaybackSession {
   // the queue still starts with `historyAnchor`.
   startHistory: Track[];
   historyAnchor: Track | undefined;
+  // The station the latest play started, so a handoff can restart it.
+  station: Station | undefined;
 }
 
 /** The controller context plus the one shared playback session. */
@@ -103,6 +105,7 @@ export function createPlayback(context: ControllerContext) {
     restAnchor: undefined,
     startHistory: [],
     historyAnchor: undefined,
+    station: undefined,
   };
   const shared: PlaybackContext = { ...context, session };
 
@@ -269,6 +272,9 @@ export function createPlayback(context: ControllerContext) {
       };
     },
 
+    /** The station playing now, or undefined when songs are playing. */
+    currentStation: (): Station | undefined => session.station,
+
     async playStation(station: Station): Promise<void> {
       const url = station.url?.trim();
       const id = station.id.trim();
@@ -276,6 +282,7 @@ export function createPlayback(context: ControllerContext) {
       const instance = requireMusic();
       clearContinuation();
       const request = beginPlayRequest();
+      session.station = station;
       clearPlaybackError();
       setPlaybackStatus("loading");
       try {
@@ -310,7 +317,7 @@ export function createPlayback(context: ControllerContext) {
           throw new Error("Queue item is unavailable.");
         }
         // Builds the provider queue from the saved snapshot at the chosen song.
-        await playTracks(saved, index);
+        await playTracks(saved, index, undefined, { keepOrder: true });
         return;
       }
       syncMusicKitQueue(instance);
@@ -465,9 +472,9 @@ export function createPlayback(context: ControllerContext) {
     },
 
     async pause(): Promise<void> {
-      const instance = requireMusic();
+      // A parked or signed-out session has no player to pause.
       pausePlayback();
-      instance.pause();
+      getMusic()?.pause();
     },
 
     /**
@@ -519,7 +526,9 @@ export function createPlayback(context: ControllerContext) {
         const { pendingRestore, queue, queueIndex, positionSeconds } =
           getState().playback;
         if (pendingRestore && queue.length > 0) {
-          await playTracks(queue, Math.max(0, queueIndex - 1));
+          await playTracks(queue, Math.max(0, queueIndex - 1), undefined, {
+            keepOrder: true,
+          });
           return;
         }
         // On the song a Play started at, step back into the songs before
@@ -550,7 +559,9 @@ export function createPlayback(context: ControllerContext) {
         if (pendingRestore && queue.length > 0) {
           // Past the last song there is nothing to skip to, as in MusicKit.
           if (queueIndex + 1 < queue.length) {
-            await playTracks(queue, queueIndex + 1);
+            await playTracks(queue, queueIndex + 1, undefined, {
+              keepOrder: true,
+            });
           }
           return;
         }
@@ -565,6 +576,8 @@ export function createPlayback(context: ControllerContext) {
       if (!Number.isFinite(seconds)) return;
       const safeSeconds = Math.max(0, seconds);
       const { pendingRestore, durationSeconds } = getState().playback;
+      // A parked station restarts on Play, so it has no position to move to.
+      if (pendingRestore?.station) return;
       if (pendingRestore) {
         // Nothing is loaded yet; resume starts from the new position.
         setPendingRestore({ ...pendingRestore, positionSeconds: safeSeconds });

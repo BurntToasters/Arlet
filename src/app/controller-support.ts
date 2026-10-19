@@ -19,6 +19,8 @@ export interface ControllerContext {
   getMusic(): MusicKit.MusicKitInstance | null;
   now(): number;
   log(message: string): void;
+  /** Reports a failure that may mean the Apple sign-in expired. */
+  suspectSession?(error: unknown, path?: string): void;
 }
 
 export type LibraryMethod = (...args: unknown[]) => Promise<unknown>;

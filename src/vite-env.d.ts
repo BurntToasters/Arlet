@@ -12,6 +12,7 @@ declare namespace MusicKit {
       name: string;
       build: string;
     };
+    suppressErrorDialog?: boolean;
   }
 
   interface MusicKitInstance {

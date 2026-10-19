@@ -62,6 +62,8 @@ export type AuthState =
       status: "authorized";
       /** True while the MusicKit authorization popup is in flight. */
       pending?: boolean;
+      /** The Apple sign-in was rejected; local data is kept until re-auth. */
+      sessionExpired?: boolean;
       /** Source-compatibility index for older Phase 0 report fixtures. */
       [key: string]: unknown;
     };

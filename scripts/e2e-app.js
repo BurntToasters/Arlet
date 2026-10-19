@@ -32,6 +32,8 @@ import { runPerformance } from "./e2e-performance.js";
 import { runPolish } from "./e2e-polish.js";
 import { runDiscovery } from "./e2e-discovery.js";
 import { runArtwork } from "./e2e-artwork.js";
+import { runAccountSession } from "./e2e-account-session.js";
+import { runAuditFixes } from "./e2e-audit-fixes.js";
 import { runSessionRestore } from "./e2e-session-restore.js";
 import { sleep } from "./e2e-helpers.js";
 
@@ -59,6 +61,17 @@ const TEMP_WEBVIEW2_LOCKOUT_WORKAROUND = [
 const RUNTIME_ENV_TOKEN = "runtime-env-token-must-be-ignored";
 // Mirrors RELEASE_ORIGIN in src-tauri/src/token_policy.rs.
 const RELEASE_ORIGIN = "http://tauri.localhost";
+// Apple's live MusicKit script. Each marker group lists alternatives; one must
+// appear in the script text (docs/TESTING.md "Audit fixes", item 3).
+const MUSICKIT_LIVE_SCRIPT_URL =
+  "https://js-cdn.music.apple.com/musickit/v3/musickit.js";
+const LIVE_SCRIPT_MARKERS = [
+  ["suppressErrorDialog"],
+  ["MKDialog"],
+  ['"lease-action"'],
+  ["stopLicenseSession", "_license.stop"],
+  ["userTokenIsValid"],
+];
 const USER_TOKEN = "AqmL0f7xY2/Zp+Q9wR3kT8vN1bC4dE6gH5jK7mP0sU2yW==";
 
 function fail(message) {
@@ -788,6 +801,39 @@ async function run() {
       );
     }
 
+    // Canary for the internals Arlet's error and sign-in handling read from
+    // Apple's script text (docs/TESTING.md "Audit fixes", item 3). Each entry
+    // lists alternatives; one must appear in the live script. The weekly
+    // musickit-canary workflow runs this.
+    const liveScript = await fetch(MUSICKIT_LIVE_SCRIPT_URL, {
+      signal: AbortSignal.timeout(30_000),
+    })
+      .then(async (response) => ({
+        ok: response.ok,
+        text: response.ok ? await response.text() : "",
+        status: response.status,
+      }))
+      .catch((error) => ({
+        ok: false,
+        text: "",
+        error: String(error?.message ?? error).slice(0, 200),
+      }));
+    const missingMarkers = LIVE_SCRIPT_MARKERS.filter(
+      (alternatives) =>
+        !alternatives.some((marker) => liveScript.text.includes(marker)),
+    ).map((alternatives) => alternatives.join(" or "));
+    check(
+      "live MusicKit script keeps the markers Arlet's error and sign-in code reads",
+      liveScript.ok && missingMarkers.length === 0,
+      {
+        url: MUSICKIT_LIVE_SCRIPT_URL,
+        bytes: liveScript.text.length,
+        status: liveScript.status,
+        error: liveScript.error,
+        missingMarkers,
+      },
+    );
+
     if (realToken) {
       const catalog = await page.evaluate(`
         const deadline = Date.now() + 30000;
@@ -1450,6 +1496,8 @@ async function run() {
         ["polish", runPolish],
         ["discovery", runDiscovery],
         ["artwork", runArtwork],
+        ["audit-fixes", runAuditFixes],
+        ["account-session", runAccountSession],
         // Last: it signs out at the end.
         ["session-restore", runSessionRestore],
       ]) {

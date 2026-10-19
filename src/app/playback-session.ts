@@ -1,5 +1,5 @@
 import * as z from "zod/mini";
-import type { Track } from "../domain/music.ts";
+import type { Station, Track } from "../domain/music.ts";
 import {
   deletePlaybackSessionPayload,
   loadPlaybackSessionPayload,
@@ -16,6 +16,7 @@ import {
   subscribePlaybackPosition,
 } from "../state.ts";
 import { safeErrorMessage } from "./controller-support.ts";
+import type { PlayOptions } from "./queue-window.ts";
 
 export const MAX_SESSION_ITEMS = 500;
 /** Must match MAX_SESSION_BYTES in src-tauri/src/playback_session.rs. */
@@ -254,8 +255,16 @@ export interface PlaybackSessionDependencies {
   invokeFn?: InvokeFunction;
   now?: () => number;
   log: (message: string) => void;
-  playTracks: (tracks: readonly Track[], startIndex: number) => Promise<void>;
+  playTracks: (
+    tracks: readonly Track[],
+    startIndex: number,
+    options?: PlayOptions,
+  ) => Promise<void>;
   seek: (seconds: number) => Promise<void>;
+  /** Restarts a station that was playing when the stream was handed back. */
+  playStation?: (station: Station) => Promise<void>;
+  /** Awaited before a resume, e.g. a handoff's `stop()` still in flight. */
+  beforeResume?: () => Promise<void>;
   /**
    * Changes with every play request. When it moved during the restored play,
    * a newer play replaced it and the saved position must not be applied.
@@ -287,6 +296,24 @@ export interface PlaybackSession {
   clear(): Promise<void>;
   /** Saves now and resolves once the write finished (before quitting). */
   saveNow(): Promise<void>;
+}
+
+/**
+ * Shows a queue as paused with nothing loaded in MusicKit. Play starts it
+ * through `resumePendingRestore`. Used for a restored file and for a handoff.
+ */
+export function parkQueue(
+  snapshot: PlaybackSessionSnapshot & { released?: true; station?: Station },
+): void {
+  setQueueSnapshot(snapshot.tracks, snapshot.index, false);
+  setPlaybackStatus("paused");
+  setPlaybackPosition(snapshot.positionSeconds, snapshot.durationSeconds);
+  setPendingRestore({
+    positionSeconds: snapshot.positionSeconds,
+    savedAt: snapshot.savedAt,
+    ...(snapshot.released ? { released: true } : {}),
+    ...(snapshot.station ? { station: snapshot.station } : {}),
+  });
 }
 
 /**
@@ -433,13 +460,7 @@ export function createPlaybackSession(
     const playback = getState().playback;
     if (playback.queue.length > 0 || playback.current !== undefined) return;
     if (["loading", "playing", "paused"].includes(playback.status)) return;
-    setQueueSnapshot(snapshot.tracks, snapshot.index, false);
-    setPlaybackStatus("paused");
-    setPlaybackPosition(snapshot.positionSeconds, snapshot.durationSeconds);
-    setPendingRestore({
-      positionSeconds: snapshot.positionSeconds,
-      savedAt: snapshot.savedAt,
-    });
+    parkQueue(snapshot);
     dependencies.log(
       `Restored ${snapshot.tracks.length} queued tracks, paused. Press play to resume.`,
     );
@@ -498,9 +519,17 @@ export function createPlaybackSession(
     const { playback } = getState();
     const pending = playback.pendingRestore;
     try {
+      await dependencies.beforeResume?.();
+      if (pending?.station && dependencies.playStation) {
+        // A station has no fixed songs or position to return to.
+        await dependencies.playStation(pending.station);
+        return;
+      }
+      // A parked queue keeps its saved order, so played songs never return.
       const played = dependencies.playTracks(
         playback.queue,
         playback.queueIndex,
+        { keepOrder: true },
       );
       // playTracks registers its request before its first await.
       const intent = dependencies.playIntent?.();

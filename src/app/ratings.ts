@@ -69,6 +69,30 @@ export function ratingKeyOf(target: RatingTarget): string | undefined {
   return type ? ratingKey(type, target.id) : undefined;
 }
 
+/** Most entries kept per ratings cache for the session. */
+const RATINGS_CACHE_LIMIT = 2000;
+
+interface BoundedCache {
+  readonly size: number;
+  keys(): IterableIterator<string>;
+  delete(key: string): boolean;
+}
+
+/**
+ * Evicts the oldest entries past the cap. Entries in flight and `keep` are
+ * skipped, so a pending write or lookup is never dropped.
+ */
+function trimCache(
+  cache: BoundedCache,
+  keep: string,
+  isBusy: (key: string) => boolean,
+): void {
+  for (const key of cache.keys()) {
+    if (cache.size <= RATINGS_CACHE_LIMIT) return;
+    if (key !== keep && !isBusy(key)) cache.delete(key);
+  }
+}
+
 // Apple's ratings endpoint takes up to 100 ids in one request.
 const RATING_BATCH_IDS = 100;
 // Set by createRatings, the one ratings owner the app builds.
@@ -128,6 +152,16 @@ export function createRatings(
   let playingKey: string | undefined;
   let accountGeneration = 0;
 
+  // A key with a write or lookup in flight is never evicted from the caches.
+  const isBusy = (key: string): boolean =>
+    inFlight.has(key) || lookups.has(key) || tails.has(key);
+  // Writes the entry as the newest, so a re-set key is not evicted first.
+  const remember = <V>(map: Map<string, V>, key: string, value: V): void => {
+    map.delete(key);
+    map.set(key, value);
+    trimCache(map, key, isBusy);
+  };
+
   const request = (): MusicRequest =>
     resolveMusicKitMusicRequest(context.requireMusic()) as MusicRequest;
 
@@ -171,7 +205,7 @@ export function createRatings(
       ) {
         return false;
       }
-      settled.set(key, value);
+      remember(settled, key, value);
       setRating(key, value);
       return true;
     };
@@ -219,9 +253,11 @@ export function createRatings(
     }
     const key = ratingKey(type, target.id);
     const generation = (generations.get(key) ?? 0) + 1;
-    generations.set(key, generation);
+    remember(generations, key, generation);
     // With no write in flight, the displayed value is the server's value.
-    if (!inFlight.has(key)) settled.set(key, getState().ratings[key] ?? 0);
+    if (!inFlight.has(key)) {
+      remember(settled, key, getState().ratings[key] ?? 0);
+    }
     setRating(key, value);
     inFlight.set(key, (inFlight.get(key) ?? 0) + 1);
     const write = (tails.get(key) ?? Promise.resolve()).then(async () => {
@@ -233,7 +269,7 @@ export function createRatings(
           await putRating(request(), type, target.id, value);
         }
         if (accountGeneration === accountAtStart) {
-          settled.set(key, value);
+          remember(settled, key, value);
         }
       } catch (error) {
         if (
@@ -289,7 +325,9 @@ export function createRatings(
         ids[kind] = [target.id];
         await addToLibraryRequest(request(), ids);
         if (accountGeneration !== accountAtStart) return undefined;
+        added.delete(flight);
         added.add(flight);
+        trimCache(added, flight, (key) => adding.has(key));
         reportNotice("Added to your library.");
         return kind;
       } finally {
@@ -344,7 +382,7 @@ export function createRatings(
         continue;
       }
       const value = values.get(target.id) ?? 0;
-      settled.set(key, value);
+      remember(settled, key, value);
       entries.push([key, value]);
     }
     // One store update for the whole batch, not one per id.

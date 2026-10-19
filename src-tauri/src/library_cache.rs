@@ -44,6 +44,8 @@ pub const SCHEMA_VERSION: i64 = 2;
 /// Apple pages hold a few hundred items; this bounds a hostile write.
 pub const MAX_PAGE_ITEMS: usize = 10_000;
 pub const MAX_KEY_LENGTH: usize = 2048;
+/// Serialized item data for one page; a hostile write cannot fill the disk.
+pub const MAX_PAGE_BYTES: usize = 16 * 1024 * 1024;
 pub const DATABASE_FILE: &str = "arlet-library.db";
 
 /// Version 1 matches the tables the former SQL plugin created, so an
@@ -447,6 +449,9 @@ pub fn write_page(
     check_key("section", section)?;
     let cursor = page.cursor.as_deref().unwrap_or("");
     check_key("cursor", cursor)?;
+    if let Some(next) = page.next.as_deref() {
+        check_key("next cursor", next)?;
+    }
     if page.items.len() > MAX_PAGE_ITEMS {
         return Err(format!(
             "Library cache page has {} items (max {MAX_PAGE_ITEMS})",
@@ -498,19 +503,23 @@ pub fn write_page(
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )
             .map_err(sql_error)?;
+        let mut payload_bytes = 0usize;
         for (position, item) in page.items.iter().enumerate() {
             let kind = resource_type(item);
+            check_key("item type", &kind)?;
             // Id-less items get a slot-scoped key so they cannot collide.
             let id =
                 resource_id(item).unwrap_or_else(|| format!("slot:{section}:{cursor}:{position}"));
+            check_key("item id", &id)?;
+            let payload = item.to_string();
+            payload_bytes = payload_bytes.saturating_add(payload.len());
+            if payload_bytes > MAX_PAGE_BYTES {
+                return Err(format!(
+                    "Library cache page exceeds {MAX_PAGE_BYTES} bytes of item data"
+                ));
+            }
             upsert
-                .execute(rusqlite::params![
-                    scope,
-                    kind,
-                    id,
-                    item.to_string(),
-                    page.updated_at
-                ])
+                .execute(rusqlite::params![scope, kind, id, payload, page.updated_at])
                 .map_err(sql_error)?;
             link.execute(rusqlite::params![
                 scope,
@@ -585,6 +594,9 @@ pub fn clear_section(conn: &mut Connection, scope: &str, section: &str) -> Resul
 
 pub fn set_meta(conn: &Connection, meta: &CacheMeta) -> Result<(), String> {
     check_key("scope", &meta.scope)?;
+    if let Some(storefront) = meta.storefront.as_deref() {
+        check_key("storefront", storefront)?;
+    }
     conn.prepare_cached(
         "INSERT INTO cache_meta(scope, storefront, last_refresh_at) VALUES (?1, ?2, ?3)
          ON CONFLICT(scope) DO UPDATE SET
@@ -1084,5 +1096,34 @@ mod tests {
         let long = "k".repeat(MAX_KEY_LENGTH + 1);
         assert!(write_page(&mut conn, &long, "songs", &page(None, vec![], None, 1)).is_err());
         assert!(read_section(&conn, "s", &long).is_err());
+        let long_next = page(None, vec![], Some(long.as_str()), 1);
+        assert!(write_page(&mut conn, "s", "songs", &long_next).is_err());
+        let long_storefront = CacheMeta {
+            scope: "s".into(),
+            storefront: Some(long.clone()),
+            last_refresh_at: None,
+        };
+        assert!(set_meta(&conn, &long_storefront).is_err());
+    }
+
+    // Failure mode: an item id or type of unbounded length is stored and
+    // indexed, or a page of large items is written past the byte cap.
+    #[test]
+    fn rejects_oversized_item_fields_and_bytes() {
+        let mut conn = memory();
+        let long_id = json!({ "id": "i".repeat(MAX_KEY_LENGTH + 1), "type": "songs" });
+        let long_id_page = page(None, vec![long_id], None, 1);
+        assert!(write_page(&mut conn, "s", "songs", &long_id_page).is_err());
+        let long_type = json!({ "id": "a", "type": "t".repeat(MAX_KEY_LENGTH + 1) });
+        let long_type_page = page(None, vec![long_type], None, 1);
+        assert!(write_page(&mut conn, "s", "songs", &long_type_page).is_err());
+        let blob = "b".repeat(MAX_PAGE_BYTES / 2 + 1);
+        let heavy = vec![
+            json!({ "id": "a", "type": "songs", "blob": blob.clone() }),
+            json!({ "id": "b", "type": "songs", "blob": blob }),
+        ];
+        assert!(write_page(&mut conn, "s", "songs", &page(None, heavy, None, 1)).is_err());
+        // A failed write leaves nothing behind.
+        assert!(read_section(&conn, "s", "songs").unwrap().is_none());
     }
 }

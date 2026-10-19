@@ -245,7 +245,7 @@ export function createMusicRequest(
     return language;
   };
 
-  return async (path, query, requestOptions) => {
+  const request: MusicKitMusicRequest = async (path, query, requestOptions) => {
     // Apple's next-page paths can already carry `l`; never send it twice.
     if (
       path.startsWith("/v1/catalog/") &&
@@ -258,6 +258,48 @@ export function createMusicRequest(
     }
     return withRetry(path, query, requestOptions);
   };
+
+  return async (path, query, requestOptions) => {
+    const guard = userTokenGuards.get(instance);
+    if (!guard || !isUserPath(path))
+      return request(path, query, requestOptions);
+    if (guard.blocked()) throw new Error(SESSION_EXPIRED_MESSAGE);
+    try {
+      return await request(path, query, requestOptions);
+    } catch (error) {
+      guard.onRejected(error, path);
+      throw error;
+    }
+  };
+}
+
+export const SESSION_EXPIRED_MESSAGE =
+  "Your Apple Music sign-in expired. Sign in again to load your library.";
+
+export interface UserTokenGuard {
+  /** True while the sign-in is known expired; `/v1/me` calls then fail at once. */
+  blocked(): boolean;
+  /** A `/v1/me` request failed. The caller decides whether the token is dead. */
+  onRejected(error: unknown, path: string): void;
+}
+
+const userTokenGuards = new WeakMap<object, UserTokenGuard>();
+
+const isUserPath = (path: string): boolean => /^\/v1\/me(?:[/?]|$)/u.test(path);
+
+export function setUserTokenGuard(
+  instance: MusicKit.MusicKitInstance,
+  guard: UserTokenGuard | undefined,
+): void {
+  if (guard) userTokenGuards.set(instance, guard);
+  else userTokenGuards.delete(instance);
+}
+
+/** Cheapest user-scoped call; sent without the guard to test the token. */
+export function probeUserToken(
+  instance: MusicKit.MusicKitInstance,
+): Promise<unknown> {
+  return rawMusicKitMusicRequest(instance)("/v1/me/storefront");
 }
 
 const musicRequests = new WeakMap<object, MusicKitMusicRequest>();
