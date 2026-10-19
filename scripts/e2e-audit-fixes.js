@@ -767,6 +767,14 @@ async function reauthFailures(page, check, dataDir) {
  */
 async function lostToken(page, check, dataDir) {
   await openHash(page, "#/home");
+  // The sign-in that ended the previous check may still run its follow-up
+  // probe; let it finish so it is not counted against this check.
+  await sleep(1000);
+  await waitFor(
+    page,
+    `${FIXTURE}.snapshot().requests.every((request) => String(request.path).split("?", 1)[0] !== "/v1/me/storefront" || request.completedAt || request.error)`,
+    10_000,
+  );
   const at = await mark(page);
   const logBefore = logCount(dataDir, TOKEN_LINE);
   await fixtureCall(page, "configure", [{ rejectMeStatus: 403 }]);
@@ -797,6 +805,134 @@ async function lostToken(page, check, dataDir) {
   await fixtureCall(page, "configure", [{ rejectMeStatus: 0 }]);
   await clickNoticeSignIn(page);
   await noticeGone(page, 15_000);
+}
+
+// Must match readableRefusal and SESSION_EXPIRED_MESSAGE in src/musickit/catalog.ts.
+const READABLE_REFUSAL =
+  "Apple Music didn't accept your sign-in. Sign in again from Settings.";
+const EXPIRED_TEXT =
+  "Your Apple Music sign-in expired. Sign in again to load your library.";
+
+/** Clicks a Settings button by its exact text. */
+function clickSettingsButton(page, text) {
+  return page.evaluate(`
+    const button = [...document.querySelectorAll("button")]
+      .find((node) => node.textContent.trim() === ${q(text)});
+    button?.click();
+    return Boolean(button);`);
+}
+
+/** True when some element's own text is exactly the bare status code. */
+function bareStatusShown(page, status) {
+  return page.evaluate(`
+    return [...document.querySelectorAll("body *")].some((node) =>
+      node.children.length === 0 && node.textContent.trim() === ${q(String(status))});`);
+}
+
+/**
+ * Signing out and back in without a restart: MusicKit replaces its API object
+ * (the fixture does too), so library requests must use the new one. Before the
+ * fix they kept the old object and its dead token, and every /v1/me request
+ * failed with a bare "403" while the titlebar said Connected. Then a refused
+ * library request must show readable text, never the bare status.
+ */
+async function signOutThenIn(page, check) {
+  await openHash(
+    page,
+    "#/settings",
+    `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign out")`,
+    15_000,
+  );
+  const generationBefore = (await snapshot(page)).apiGeneration;
+  await clickSettingsButton(page, "Sign out");
+  const signedOut = await waitFor(
+    page,
+    `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign in")`,
+    15_000,
+  );
+  await clickSettingsButton(page, "Sign in");
+  const signedIn = await waitFor(
+    page,
+    `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign out")`,
+    15_000,
+  );
+  await openHash(page, "#/home");
+  const at = await mark(page);
+  await page.evaluate(
+    `document.querySelector(${q(STATUS)})?.click(); return true;`,
+  );
+  await waitFor(page, `Boolean(document.querySelector(".connection-popover"))`);
+  await page.evaluate(`
+    [...document.querySelectorAll(".connection-popover [role=menuitem]")]
+      .find((node) => node.textContent.trim() === "Refresh current view")?.click();
+    return true;`);
+  const loaded = await waitFor(
+    page,
+    `${FIXTURE}.snapshot().requests.slice(${at.requests}).some((request) => String(request.path).startsWith("/v1/me") && request.completedAt)`,
+    15_000,
+  );
+  await sleep(500);
+  const trace = await snapshot(page);
+  const meRequests = trace.requests
+    .slice(at.requests)
+    .filter((request) => String(request.path).startsWith("/v1/me"));
+  const stale = meRequests.filter((request) => request.staleApi).length;
+  const failed = meRequests.filter((request) => request.error).length;
+  const bare = await bareStatusShown(page, 403);
+  const banner = await page.evaluate(
+    `return Boolean(document.querySelector(${q(NOTICE)}));`,
+  );
+  check(
+    "after Sign out and Sign in without a restart, library requests use the new sign-in",
+    signedOut &&
+      signedIn &&
+      loaded &&
+      trace.apiGeneration > generationBefore &&
+      stale === 0 &&
+      failed === 0 &&
+      !bare &&
+      !banner,
+    {
+      signedOut,
+      signedIn,
+      loaded,
+      generationBefore,
+      generationAfter: trace.apiGeneration,
+      meRequests: meRequests.length,
+      stale,
+      failed,
+      bare,
+      banner,
+    },
+  );
+
+  // A refused library request shows readable text, not the bare "403".
+  await fixtureCall(page, "configure", [{ rejectMeStatus: 403 }]);
+  await page.evaluate(
+    `document.querySelector(${q(STATUS)})?.click(); return true;`,
+  );
+  await waitFor(page, `Boolean(document.querySelector(".connection-popover"))`);
+  await page.evaluate(`
+    [...document.querySelectorAll(".connection-popover [role=menuitem]")]
+      .find((node) => node.textContent.trim() === "Refresh current view")?.click();
+    return true;`);
+  // The banner depends on the probe cooldown; the readable card text does not.
+  const readable = await waitFor(
+    page,
+    `document.body.innerText.includes(${q(READABLE_REFUSAL)}) || document.body.innerText.includes(${q(EXPIRED_TEXT)})`,
+    10_000,
+  );
+  const bareAfter = await bareStatusShown(page, 403);
+  check(
+    "a refused library request shows readable text, never a bare 403",
+    readable && !bareAfter,
+    { readable, bareAfter },
+  );
+  await fixtureCall(page, "configure", [{ rejectMeStatus: 0 }]);
+  if (await noticeShown(page, 1000)) {
+    await clickNoticeSignIn(page);
+    await noticeGone(page, 15_000);
+  }
 }
 
 /**
@@ -968,6 +1104,7 @@ export async function runAuditFixes({ page, check, dataDir, artifactDir }) {
       reauthFailures(page, check, dataDir),
     );
     await group(check, "lost token", () => lostToken(page, check, dataDir));
+    await group(check, "sign out then in", () => signOutThenIn(page, check));
     await group(check, "parked queue order", () =>
       parkedQueueOrder(page, check),
     );

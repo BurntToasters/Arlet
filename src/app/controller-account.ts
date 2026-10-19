@@ -292,6 +292,7 @@ export function createControllerAccount(
       if (authorizationStarted && signInAttempt === attempt) {
         signInAttempt = undefined;
         setAuthPending(false);
+        void sessionHealth.afterTransition();
       }
     }
   };

@@ -87,8 +87,8 @@ const TOAST_SELECTOR = {
 const toastHas = (kind, text) =>
   `[...document.querySelectorAll(${q(TOAST_SELECTOR[kind])} + " .action-toast-message")].some((node) => node.textContent.includes(${q(text)}))`;
 
-// Love is the header button whose text is exactly "Love".
-const HERO_LOVE = `[...document.querySelectorAll("section.library-detail-hero .library-detail-actions button")].find((node) => node.textContent.trim() === "Love")`;
+// Favorite is the header button whose text is exactly "Favorite".
+const HERO_FAVORITE = `[...document.querySelectorAll("section.library-detail-hero .library-detail-actions button")].find((node) => node.textContent.trim() === "Favorite")`;
 const HERO_PIN = `[...document.querySelectorAll("section.library-detail-hero .library-detail-actions button")].find((node) => ["Pin", "Unpin"].includes(node.textContent.trim()))`;
 const MORE_STATE = `const toggle = document.querySelector("button.library-detail-more-toggle"); const panel = document.getElementById("library-detail-more-panel"); return { expanded: toggle?.getAttribute("aria-expanded") ?? null, controls: toggle?.getAttribute("aria-controls") ?? null, hidden: panel ? panel.hidden : null };`;
 const NOTES_STATE = `const node = document.querySelector("p.library-detail-notes"); return { text: node?.textContent ?? null, elements: node ? node.children.length : null, unsafeNodes: document.querySelectorAll("main .library-detail-notes :is(i, b, br, img, script)").length, scriptsInMain: document.querySelectorAll("main script").length, flag: window.__ARLET_POLISH_XSS__ === true, facts: [...document.querySelectorAll("dl.library-detail-facts > *")].map((item) => item.textContent) };`;
@@ -309,27 +309,27 @@ async function discs(page, check) {
   );
 }
 
-async function love(page, check) {
+async function favorite(page, check) {
   const ready = await waitFor(
     page,
-    `Boolean((${HERO_LOVE})?.hasAttribute("aria-pressed"))`,
+    `Boolean((${HERO_FAVORITE})?.hasAttribute("aria-pressed"))`,
     8000,
   );
   const pressedStart = await page.evaluate(
-    `return (${HERO_LOVE})?.getAttribute("aria-pressed") ?? null;`,
+    `return (${HERO_FAVORITE})?.getAttribute("aria-pressed") ?? null;`,
   );
   const writesStart = writesTo(await snapshot(page), ALBUM.ratingPath).length;
-  await page.evaluate(`(${HERO_LOVE})?.click(); return true;`);
+  await page.evaluate(`(${HERO_FAVORITE})?.click(); return true;`);
   const pressedOn = await waitFor(
     page,
-    `(${HERO_LOVE})?.getAttribute("aria-pressed") === "true"`,
+    `(${HERO_FAVORITE})?.getAttribute("aria-pressed") === "true"`,
     4000,
   );
   await sleep(300);
-  await page.evaluate(`(${HERO_LOVE})?.click(); return true;`);
+  await page.evaluate(`(${HERO_FAVORITE})?.click(); return true;`);
   const pressedOff = await waitFor(
     page,
-    `(${HERO_LOVE})?.getAttribute("aria-pressed") === "false"`,
+    `(${HERO_FAVORITE})?.getAttribute("aria-pressed") === "false"`,
     4000,
   );
   await sleep(300);
@@ -338,7 +338,7 @@ async function love(page, check) {
   );
   const methods = writes.map((request) => request.method);
   check(
-    "header Love toggles once per click, sending one PUT then one DELETE",
+    "header Favorite toggles once per click, sending one PUT then one DELETE",
     ready &&
       pressedStart === "false" &&
       pressedOn &&
@@ -365,7 +365,7 @@ async function albumDetail(page, check) {
   );
   await moreToggle(page, check);
   await discs(page, check);
-  await love(page, check);
+  await favorite(page, check);
 }
 
 async function albumMenu(page, check) {
@@ -649,7 +649,7 @@ async function nowPlaying(page, check) {
     `return [...document.querySelectorAll(".now-playing button")].map((node) => node.getAttribute("aria-label")).filter(Boolean);`,
   );
   const required = [
-    /^(Love|Unlove)$/u,
+    /^(Favorite|Undo Favorite)$/u,
     /^(Dislike|Remove dislike)$/u,
     /^Toggle shuffle$/u,
     /^Repeat (off|songs|one)$/u,
@@ -812,10 +812,10 @@ async function errorToast(page, check) {
     );
     await waitFor(
       page,
-      `Boolean((${HERO_LOVE})?.hasAttribute("aria-pressed"))`,
+      `Boolean((${HERO_FAVORITE})?.hasAttribute("aria-pressed"))`,
       8000,
     );
-    await page.evaluate(`(${HERO_LOVE})?.click(); return true;`);
+    await page.evaluate(`(${HERO_FAVORITE})?.click(); return true;`);
     const error = await waitFor(
       page,
       toastHas("error", "Fixture request rejected"),
@@ -825,10 +825,10 @@ async function errorToast(page, check) {
       `return ${toastHas("success", "Fixture request rejected")};`,
     );
     const pressed = await page.evaluate(
-      `return (${HERO_LOVE})?.getAttribute("aria-pressed") ?? null;`,
+      `return (${HERO_FAVORITE})?.getAttribute("aria-pressed") ?? null;`,
     );
     check(
-      "a rejected rating shows the error style and rolls Love back",
+      "a rejected rating shows the error style and rolls Favorite back",
       error && successStyled === false && pressed === "false",
       { error, successStyled, pressed },
     );

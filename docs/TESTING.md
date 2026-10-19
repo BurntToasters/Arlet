@@ -263,7 +263,7 @@ are not playable. Failure scenarios:
   Artist 2" instead of the song's artist text.
 - Add to Library gives no confirmation and the item does not appear in
   Library until a manual refresh.
-- An optimistic Love stays set after the request fails.
+- An optimistic Favorite stays set after the request fails.
 - Fast repeated clicks race and leave the wrong final rating.
 - A late rating response is shown for a newer track.
 - Add to Library duplicates an item or calls the wrong endpoint.
@@ -648,12 +648,12 @@ Failure modes this pass must not have:
 
 Album and playlist headers:
 
-- A header button (Add to Library, Love, Pin/Unpin, "…") acts on the wrong
+- A header button (Add to Library, Favorite, Pin/Unpin, "…") acts on the wrong
   item, such as the first track or the previously opened album.
-- A header button does not reflect state: Love's `aria-pressed`, the Pin or
+- A header button does not reflect state: Favorite's `aria-pressed`, the Pin or
   Unpin label, or Add to Library's done state is stale after the library or
   ratings change.
-- Love sends two requests for one click, or none.
+- Favorite sends two requests for one click, or none.
 - "…" opens the context menu for another item, or without the album's
   reference, so "Go to album" is missing.
 - Editorial notes render HTML or run script. The fixture's notes contain
@@ -675,7 +675,7 @@ Album and playlist headers:
 
 Now Playing:
 
-- Love or Dislike writes a rating for another song, the wrong value, or drops
+- Favorite or Dislike writes a rating for another song, the wrong value, or drops
   a fast second click.
 - Shuffle and repeat buttons disagree with the fixture's modes in the
   snapshot (`modes.shuffle`, `modes.repeat`).
@@ -720,7 +720,7 @@ Keyboard and later items:
 
 - A keyboard-only user cannot reach a card's "…" (not focusable, or hidden
   until hover).
-- A loved heart on a song row shows for an unloved song, or for the wrong row.
+- A favorite star on a song row shows for an unfavorited song, or for the wrong row.
 - QueueDrawer leaves focus on removed or hidden content after Esc.
 - Search tabs ignore Arrow keys, or move focus without moving `aria-selected`.
 - The explicit badge has no accessible name, or its name is only "explicit".
@@ -744,7 +744,7 @@ check name is the `report.json` name):
 | the Disc 2 Play was given the whole album from the page: no track pages fetched                                                           | album re-fetched before Play                                                |
 | Previous from Disc 2 track 1 plays Disc 1 track 2 (the album's earlier songs are kept)                                                    | earlier songs dropped from Previous history                                 |
 | a single-disc album shows no Disc heading                                                                                                 | single-disc "Disc 1" heading                                                |
-| header Love toggles once per click, sending one PUT then one DELETE                                                                       | Love sends two requests or none; aria-pressed                               |
+| header Favorite toggles once per click, sending one PUT then one DELETE                                                                   | Favorite sends two requests or none; aria-pressed                           |
 | More actions opens the album menu and its target is the album                                                                             | "..." acts on the wrong item                                                |
 | context menu has no leading, trailing or double separators                                                                                | separators doubled, leading or trailing                                     |
 | ArrowDown visits each menu item once, wraps, and never lands on a separator                                                               | separators reachable by arrow keys                                          |
@@ -769,7 +769,7 @@ check name is the `report.json` name):
 | reduced motion: closing Now Playing unmounts within 400 ms                                                                                | exit transition with reduced motion                                         |
 | opening Playing Next moves focus to its heading                                                                                           | queue drawer focus                                                          |
 | Escape closes Playing Next and returns focus to its toggle                                                                                | queue drawer focus after Esc                                                |
-| a rejected rating shows the error style and rolls Love back                                                                               | error styled as success; rollback                                           |
+| a rejected rating shows the error style and rolls Favorite back                                                                           | error styled as success; rollback                                           |
 | radio first load shows a labelled role=status skeleton, removed once data renders                                                         | skeleton stuck or unlabelled                                                |
 | a failed first load ends the skeleton instead of keeping it                                                                               | skeleton on a failed load                                                   |
 | Ctrl+R refresh keeps album cards on screen and shows no skeleton                                                                          | refresh replaces data with a skeleton                                       |
@@ -1020,6 +1020,22 @@ and `parked queue order`). The rest are code-reviewed:
   these by hand on a release build: a newer release replaces a downloaded one,
   a same-version check keeps "ready", and a failed check keeps Install.
 
+Stale sign-in after Sign out and Sign in (found after a real password change).
+MusicKit replaces its API object, which carries the user token, on every
+sign-in and sign-out. The fixture now does the same, and its replaced object
+rejects `/v1/me` with a bare `403`, as the old token would. Driven by the check
+`sign out then in`. Failure modes:
+
+- The request wrapper keeps the API object from before the sign-in, so every
+  library request sends the dead token and fails with `403` until a restart,
+  while the titlebar says "Connected".
+- The expiry check probes with a fresh API object, passes, and so never shows
+  the banner while the real requests keep failing.
+- A suspect error that arrives while a sign-in is still finishing is dropped
+  and never checked again. It is now kept, and checked once the sign-in
+  settles, with the probe cooldown reset.
+- A refused request shows the bare status `403` instead of readable text.
+
 ## Release-only evidence
 
 The following checks require a Windows release environment and are kept out of
@@ -1067,7 +1083,7 @@ the deterministic smoke gate:
     (`setQueue` `startWith`), and the shuffle button reflects `shuffleMode`.
   - Queue remove, move, and clear use `Queue.splice` without restarting audio.
   - A library-only (uploaded) song plays from the `songs` descriptor.
-  - Love, Dislike, clear, and Add to Library reach Apple (check the Music app).
+  - Favorite, Dislike, clear, and Add to Library reach Apple (check the Music app).
   - Autoplay continues after the queue ends when enabled.
   - `Start Station` for a catalog song, a library song, and an artist; Top
     Songs for a library artist.

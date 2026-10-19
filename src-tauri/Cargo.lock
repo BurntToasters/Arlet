@@ -79,7 +79,7 @@ dependencies = [
 
 [[package]]
 name = "arlet"
-version = "0.3.0-beta.4"
+version = "0.3.0-beta.5"
 dependencies = [
  "minisign-verify 0.2.5",
  "raw-window-handle",

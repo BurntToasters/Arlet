@@ -259,7 +259,7 @@ export interface PendingPlaybackRestore {
 export type SleepTimerState =
   { mode: "minutes"; endsAt: number } | { mode: "endOfTrack" };
 
-/** Apple rating: 1 loved, -1 disliked, 0 none. */
+/** Apple rating: 1 favorite, -1 disliked, 0 none. */
 export type RatingValue = 1 | -1 | 0;
 
 /**

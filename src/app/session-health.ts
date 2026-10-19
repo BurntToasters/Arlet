@@ -30,6 +30,11 @@ export interface SessionHealth {
   /** Flags an error that may mean an expired sign-in, then verifies once. */
   suspect(error: unknown, path?: string): void;
   verify(): Promise<void>;
+  /**
+   * Runs the check a sign-in in progress deferred. Errors from requests sent
+   * while it finished would otherwise never be looked at again.
+   */
+  afterTransition(): Promise<void>;
 }
 
 /**
@@ -42,10 +47,16 @@ export function createSessionHealth(
 ): SessionHealth {
   let inFlight: Promise<void> | undefined;
   let lastProbeAt = Number.NEGATIVE_INFINITY;
+  /** A suspect error arrived while a sign-in was still in progress. */
+  let deferred = false;
 
   const verify = (): Promise<void> => {
     if (inFlight) return inFlight;
-    if (!dependencies.active()) return Promise.resolve();
+    if (!dependencies.active()) {
+      deferred = true;
+      return Promise.resolve();
+    }
+    deferred = false;
     if (!dependencies.musicKitAuthorized()) {
       // MusicKit already dropped the token, so no probe can succeed.
       dependencies.onExpired("MusicKit no longer holds a user token");
@@ -90,5 +101,12 @@ export function createSessionHealth(
       if (suspicious) void verify();
     },
     verify,
+    afterTransition(): Promise<void> {
+      if (!deferred) return Promise.resolve();
+      // The deferred errors came from the new sign-in; an older probe's
+      // cooldown must not hide them.
+      lastProbeAt = Number.NEGATIVE_INFINITY;
+      return verify();
+    },
   };
 }

@@ -414,7 +414,7 @@
   margin-top: 16px;
 }
 
-/* Pressed Love reads as active, like the player's toggle buttons. */
+/* Pressed Favorite reads as active, like the player's toggle buttons. */
 .library-detail-actions .secondary-button[aria-pressed="true"] {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong));
   background: var(--surface-active);

@@ -7,8 +7,8 @@ const CATALOG_SONG = "catalog-song";
 const LIBRARY_SONG_PATH = `/v1/me/ratings/library-songs/${LIBRARY_SONG}`;
 const CATALOG_SONG_PATH = `/v1/me/ratings/songs/${CATALOG_SONG}`;
 
-// The now-playing heart is the only Love/Unlove button in the player bar.
-const HEART = `[...document.querySelectorAll('.player-bar button')].find((button) => ['Love', 'Unlove'].includes(button.getAttribute('aria-label')))`;
+// The now-playing star is the only Favorite/Undo Favorite button in the player bar.
+const FAVORITE_BUTTON = `[...document.querySelectorAll('.player-bar button')].find((button) => ['Favorite', 'Undo Favorite'].includes(button.getAttribute('aria-label')))`;
 
 const waitFor = (page, expression, timeoutMs = 10_000) =>
   pollFor(page, expression, timeoutMs, 100);
@@ -23,8 +23,8 @@ function mutationsAt(requests, path) {
   );
 }
 
-function heartIs(label, pressed) {
-  return `(${HEART})?.getAttribute('aria-label') === '${label}' && (${HEART})?.getAttribute('aria-pressed') === '${pressed}'`;
+function favoriteIs(label, pressed) {
+  return `(${FAVORITE_BUTTON})?.getAttribute('aria-label') === '${label}' && (${FAVORITE_BUTTON})?.getAttribute('aria-pressed') === '${pressed}'`;
 }
 
 function toastIncludes(text) {
@@ -37,7 +37,7 @@ async function openMenu(page, id) {
   );
   return waitFor(
     page,
-    `document.querySelector('.context-menu [data-menu-item="love"]')`,
+    `document.querySelector('.context-menu [data-menu-item="favorite"]')`,
   );
 }
 
@@ -59,7 +59,7 @@ function clickMenu(page, item) {
   );
 }
 
-/** Love, Dislike, Add to Library, and rollback against the injected MusicKit fixture. */
+/** Favorite, Dislike, Add to Library, and rollback against the injected MusicKit fixture. */
 export async function runLibraryActions({ page, check }) {
   await page.evaluate(`
     const fixture = window.__ARLET_E2E_MUSIC__;
@@ -71,7 +71,7 @@ export async function runLibraryActions({ page, check }) {
     page,
     `window.__ARLET_E2E_MUSIC__.snapshot().requests.some((r) => r.method === "GET" && r.path === "/v1/me/ratings/library-songs")`,
   );
-  const heartReady = await waitFor(page, heartIs("Love", "false"));
+  const favoriteReady = await waitFor(page, favoriteIs("Favorite", "false"));
   const loaded = await snapshot(page);
   const loadRequest = loaded.requests.find(
     (request) => request.path === "/v1/me/ratings/library-songs",
@@ -79,25 +79,25 @@ export async function runLibraryActions({ page, check }) {
   check(
     "now-playing track loads its rating from the library-songs path",
     ratingLoaded &&
-      heartReady &&
+      favoriteReady &&
       loadRequest?.method === "GET" &&
       loadRequest.query?.ids === LIBRARY_SONG,
     { requests: loaded.requests },
   );
 
-  await page.evaluate(`${HEART}?.click(); return true;`);
-  const loved = await waitFor(page, heartIs("Unlove", "true"));
+  await page.evaluate(`${FAVORITE_BUTTON}?.click(); return true;`);
+  const favorited = await waitFor(page, favoriteIs("Undo Favorite", "true"));
 
   const libraryMenuOpen = await openMenu(page, LIBRARY_SONG);
   const libraryMenu = {
-    love: await menuLabel(page, "love"),
+    favorite: await menuLabel(page, "favorite"),
     dislike: await menuLabel(page, "dislike"),
     addToLibrary: await menuHas(page, "add-to-library"),
   };
   check(
-    "library song menu shows Unlove and Dislike but no Add to Library",
+    "library song menu shows Undo Favorite and Dislike but no Add to Library",
     libraryMenuOpen &&
-      libraryMenu.love === "Unlove" &&
+      libraryMenu.favorite === "Undo Favorite" &&
       libraryMenu.dislike === "Dislike" &&
       libraryMenu.addToLibrary === false,
     libraryMenu,
@@ -107,13 +107,13 @@ export async function runLibraryActions({ page, check }) {
   await openMenu(page, LIBRARY_SONG);
   const dislikeLabel = await menuLabel(page, "dislike");
   await clickMenu(page, "dislike");
-  const cleared = await waitFor(page, heartIs("Love", "false"));
+  const cleared = await waitFor(page, favoriteIs("Favorite", "false"));
 
   const afterClear = await snapshot(page);
   const songMutations = mutationsAt(afterClear.requests, LIBRARY_SONG_PATH);
   check(
-    "Love, Dislike, then clear send PUT, PUT, DELETE to library-songs and never to songs",
-    loved &&
+    "Favorite, Dislike, then clear send PUT, PUT, DELETE to library-songs and never to songs",
+    favorited &&
       dislikeLabel === "Remove dislike" &&
       cleared &&
       JSON.stringify(songMutations.map((r) => r.method)) ===
@@ -134,17 +134,17 @@ export async function runLibraryActions({ page, check }) {
   );
 
   await openMenu(page, CATALOG_SONG);
-  const catalogMenuLove = await menuLabel(page, "love");
+  const catalogMenuFavorite = await menuLabel(page, "favorite");
   const catalogAddVisible = await menuHas(page, "add-to-library");
-  await clickMenu(page, "love");
-  const catalogLoved = await waitFor(
+  await clickMenu(page, "favorite");
+  const catalogFavorited = await waitFor(
     page,
     `window.__ARLET_E2E_MUSIC__.snapshot().requests.some((r) => r.method === "PUT" && r.path === "${CATALOG_SONG_PATH}")`,
   );
   check(
-    "catalog song Love sends PUT to the plain songs path",
-    catalogMenuLove === "Love" && catalogAddVisible && catalogLoved,
-    { menuLove: catalogMenuLove, addVisible: catalogAddVisible },
+    "catalog song Favorite sends PUT to the plain songs path",
+    catalogMenuFavorite === "Favorite" && catalogAddVisible && catalogFavorited,
+    { menuFavorite: catalogMenuFavorite, addVisible: catalogAddVisible },
   );
 
   await openMenu(page, CATALOG_SONG);
@@ -176,13 +176,13 @@ export async function runLibraryActions({ page, check }) {
     CATALOG_SONG_PATH,
   ).length;
   await openMenu(page, CATALOG_SONG);
-  await clickMenu(page, "love");
+  await clickMenu(page, "favorite");
   const catalogToast = await waitFor(
     page,
     toastIncludes(`Fixture request rejected: ${CATALOG_SONG_PATH}`),
   );
   await openMenu(page, CATALOG_SONG);
-  const rolledBackLabel = await menuLabel(page, "love");
+  const rolledBackLabel = await menuLabel(page, "favorite");
   const afterCatalogReject = await snapshot(page);
   const catalogSent = mutationsAt(
     afterCatalogReject.requests,
@@ -191,7 +191,7 @@ export async function runLibraryActions({ page, check }) {
   check(
     "rejected catalog rating rolls back, reports a toast, and is not retried",
     catalogToast &&
-      rolledBackLabel === "Unlove" &&
+      rolledBackLabel === "Undo Favorite" &&
       catalogSent.length === 1 &&
       catalogSent[0].method === "DELETE",
     {
@@ -200,7 +200,7 @@ export async function runLibraryActions({ page, check }) {
     },
   );
 
-  const heartBefore = mutationsAt(
+  const favoriteBefore = mutationsAt(
     (await snapshot(page)).requests,
     LIBRARY_SONG_PATH,
   ).length;
@@ -208,24 +208,27 @@ export async function runLibraryActions({ page, check }) {
     window.__ARLET_E2E_MUSIC__.configure({ rejectPaths: ["${LIBRARY_SONG_PATH}"] });
     return true;
   `);
-  await page.evaluate(`${HEART}?.click(); return true;`);
-  const heartToast = await waitFor(
+  await page.evaluate(`${FAVORITE_BUTTON}?.click(); return true;`);
+  const favoriteToast = await waitFor(
     page,
     toastIncludes(`Fixture request rejected: ${LIBRARY_SONG_PATH}`),
   );
-  const heartRolledBack = await waitFor(page, heartIs("Love", "false"));
-  const afterHeartReject = await snapshot(page);
-  const heartSent = mutationsAt(
-    afterHeartReject.requests,
+  const favoriteRolledBack = await waitFor(
+    page,
+    favoriteIs("Favorite", "false"),
+  );
+  const afterFavoriteReject = await snapshot(page);
+  const favoriteSent = mutationsAt(
+    afterFavoriteReject.requests,
     LIBRARY_SONG_PATH,
-  ).slice(heartBefore);
+  ).slice(favoriteBefore);
   check(
-    "rejected heart Love rolls back the toggle and sends one PUT",
-    heartToast &&
-      heartRolledBack &&
-      heartSent.length === 1 &&
-      heartSent[0].method === "PUT",
-    { sent: heartSent.map((r) => ({ method: r.method, error: r.error })) },
+    "rejected Favorite button rolls back the toggle and sends one PUT",
+    favoriteToast &&
+      favoriteRolledBack &&
+      favoriteSent.length === 1 &&
+      favoriteSent[0].method === "PUT",
+    { sent: favoriteSent.map((r) => ({ method: r.method, error: r.error })) },
   );
 
   await page.evaluate(`

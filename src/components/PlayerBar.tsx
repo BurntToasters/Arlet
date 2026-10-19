@@ -1,4 +1,4 @@
-import { CircleAlert, Heart, ListMusic, Repeat, Shuffle } from "lucide-preact";
+import { CircleAlert, ListMusic, Repeat, Shuffle, Star } from "lucide-preact";
 import type { JSX } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import {
@@ -76,11 +76,11 @@ export function PlayerBar(): JSX.Element {
   const loading = playback.status === "loading";
   const canControl =
     state.initialization.status === "ready" && Boolean(current);
-  const loveTarget = current ? trackRatingTarget(current) : undefined;
-  const loveKey = loveTarget ? ratingKeyOf(loveTarget) : undefined;
+  const favoriteTarget = current ? trackRatingTarget(current) : undefined;
+  const favoriteKey = favoriteTarget ? ratingKeyOf(favoriteTarget) : undefined;
   // Only the playing track's rating, so other ratings do not re-render the bar.
-  const loved = useAppSelector(
-    (store) => loveKey !== undefined && store.ratings[loveKey] === 1,
+  const favorite = useAppSelector(
+    (store) => favoriteKey !== undefined && store.ratings[favoriteKey] === 1,
   );
   const live = useLiveMetadata();
   const liveText = current?.isLive
@@ -250,14 +250,14 @@ export function PlayerBar(): JSX.Element {
             )}
           </div>
         </div>
-        {loveKey && loveTarget ? (
+        {favoriteKey && favoriteTarget ? (
           <IconButton
-            icon={Heart}
-            label={loved ? "Unlove" : "Love"}
-            pressed={loved}
+            icon={Star}
+            label={favorite ? "Undo Favorite" : "Favorite"}
+            pressed={favorite}
             disabled={!canControl}
             onClick={() =>
-              run(() => controller.rate(loveTarget, loved ? 0 : 1))
+              run(() => controller.rate(favoriteTarget, favorite ? 0 : 1))
             }
           />
         ) : null}

@@ -1,10 +1,10 @@
 import {
-  Heart,
   Maximize,
   Minimize,
   Radio,
   Repeat,
   Shuffle,
+  Star,
   ThumbsDown,
   X,
 } from "lucide-preact";
@@ -98,13 +98,13 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
   const loading = playback.status === "loading";
   const canControl =
     state.initialization.status === "ready" && Boolean(current);
-  const loveTarget = current ? trackRatingTarget(current) : undefined;
-  const loveKey = loveTarget ? ratingKeyOf(loveTarget) : undefined;
+  const favoriteTarget = current ? trackRatingTarget(current) : undefined;
+  const favoriteKey = favoriteTarget ? ratingKeyOf(favoriteTarget) : undefined;
   // Only the playing track's rating, so other ratings do not re-render the dialog.
   const rating = useAppSelector((store) =>
-    loveKey !== undefined ? store.ratings[loveKey] : undefined,
+    favoriteKey !== undefined ? store.ratings[favoriteKey] : undefined,
   );
-  const loved = rating === 1;
+  const favorite = rating === 1;
   const disliked = rating === -1;
   const shuffling = playback.shuffleMode === "songs";
   const repeating = playback.repeatMode !== "off";
@@ -329,15 +329,17 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
             />
             <div className="now-playing-actions">
               <div className="now-playing-group">
-                {loveKey && loveTarget ? (
+                {favoriteKey && favoriteTarget ? (
                   <>
                     <IconButton
-                      icon={Heart}
-                      label={loved ? "Unlove" : "Love"}
-                      pressed={loved}
+                      icon={Star}
+                      label={favorite ? "Undo Favorite" : "Favorite"}
+                      pressed={favorite}
                       disabled={!canControl}
                       onClick={() =>
-                        run(() => controller.rate(loveTarget, loved ? 0 : 1))
+                        run(() =>
+                          controller.rate(favoriteTarget, favorite ? 0 : 1),
+                        )
                       }
                     />
                     <IconButton
@@ -347,7 +349,7 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
                       disabled={!canControl}
                       onClick={() =>
                         run(() =>
-                          controller.rate(loveTarget, disliked ? 0 : -1),
+                          controller.rate(favoriteTarget, disliked ? 0 : -1),
                         )
                       }
                     />
