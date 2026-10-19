@@ -351,6 +351,53 @@ closing the window quits.
   button that fails forever; the token notice never appears because the
   expiry is only known after MusicKit started.
 
+## Stream handoff and sign-in expiry
+
+- Paused or errored playback keeps the DRM lease past 1 minute: MusicKit
+  `stop()` is never called, so a phone playing the same account is paused
+  with "More than one device is trying to play music".
+- The handoff changes what the user sees: the queue, current song, or
+  position changes, the status becomes "stopped" or "Nothing playing", or
+  MusicKit's own stop and now-playing echoes overwrite the parked queue.
+- Play after a handoff restarts at 0:00, plays a different song, or loses
+  the rest of a long playlist. A station resumes as loose songs.
+- A pause shorter than 1 minute is handed back anyway, or playing audio is
+  ever stopped.
+- Play pressed while the handoff's `stop()` is still in flight starts on a
+  stopping player.
+- MusicKit's own error dialog (a raw `MEDIA_LICENSE` and similar) still
+  appears, or a raw reason code reaches the player bar or a toast.
+- A rejected user token (403 or 401 on `/v1/me`, `AUTHORIZATION_ERROR`,
+  `TOKEN_EXPIRED`, or `MEDIA_LICENSE` with a dead token) leaves the UI
+  saying "Connected".
+- A single forbidden resource, a network failure, or a `MEDIA_LICENSE` with
+  a healthy token is treated as an expired sign-in. That would be a false
+  positive.
+- Expiry verification hammers Apple: more than one probe per cooldown, or
+  `/v1/me` requests keep going out while expired.
+- An expired sign-in deletes the library cache, pins, saved queue, or
+  recents.
+- "Sign in again" reuses the stale token and never opens the sign-in window.
+  Or the `authorizationStatusDidChange` caused by its own `unauthorize()` is
+  treated as a revocation.
+- Closing the sign-in window leaves Arlet half signed in (banner gone,
+  MusicKit unauthorized).
+- "Sign out" from the expired state does not run the full local sign-out.
+
+`scripts/e2e-account-session.js` drives these against the MusicKit fixture
+(`stop` and `unauthorize` transitions, `configure({ rejectMeStatus: 403 })`
+and `configure({ rejectAuthorize: true })`, and the configure options in
+`snapshot().configure`). The 60 s handoff delay is shortened by mapping
+`setTimeout` delay 60000 to a few hundred ms, installed only once playback is
+audible and removed before Play. The 30 s probe cooldown cannot be shortened
+from the page, so the suite reloads first and waits out the remainder before
+the one check that needs a second probe. It leaves the app signed in and
+healthy. Its artifacts under `e2e-artifacts/<timestamp>/`: the `account
+session` and handoff/expiry checks in `report.json`,
+`screenshot-account-session.png` (end state), `screenshot-account-session-expired.png`
+(the banner), and `account-session-trace.json` (every fixture request and
+transition, including the single `/v1/me/storefront` probe).
+
 ## Radio and artist pages
 
 - Start Station on a library song with no catalog ID, or an artist with none,
@@ -867,6 +914,112 @@ MusicKit events (fixture controls in the header):
 - External sign-out leaves recent searches or the signed-in UI in place. [external
   sign-out runs local cleanup and shows the signed-out UI]
 
+## Audit fixes
+
+Native-only and code-reviewed (no E2E):
+
+- Item 1, pause on system suspend and on default output change
+  (`src-tauri/src/system_events.rs`): the failure modes are listed in the
+  module doc comment, and the pure decision logic has Rust unit tests. The
+  event wiring is code-reviewed. The manual checks are under "Release-only
+  evidence".
+- Item 4, native command hardening (`docs/SECURITY.md`): code-reviewed. Every
+  `#[tauri::command]` input cap and enum check in `src-tauri/src/` is reviewed.
+
+Failure modes:
+
+- Idle playback cap (item 2): playback that has run 4 h with no pointer,
+  key, wheel, transport, queue, tray, or SMTC command is not paused. A pause
+  fires during active use. The pause shows no "Paused after 4 hours without
+  activity." notice. Two timers run, so the pause fires twice. The timer keeps
+  running while paused or not playing.
+- Cancel a stuck sign-in (item 5): Cancel leaves `auth.pending` set. An
+  abandoned `authorize()` that later resolves leaves Arlet signed out. Its
+  rejection shows an error instead of being ignored. A new sign-in click during
+  an abandoned attempt does nothing. Cancel is missing from the titlebar
+  connection menu, the Settings account card, or the session-expired notice.
+- Offline recovery (item 6): a reload happens after an init failure that was
+  not a network error, or after an expired developer token. A reload happens
+  more than once within 30 s. A reload happens when init never failed. The
+  offline banner's Reconnect disappears.
+- Clipboard copy (item 7): a stalled plugin call blocks past 2 s without
+  falling back to `navigator.clipboard`. The fallback is skipped after a plugin
+  error. "Clipboard is busy" shows while either path succeeded. Neither path
+  logs its result.
+- Ratings caches (item 10): `settled`, `generations`, or `added` grows past
+  2000 entries. Eviction drops an in-flight entry, so a request repeats or a
+  result is lost. A re-added key is not treated as the newest entry.
+- Notice stacking (item 11): the session-expired and token-expiry notices
+  overlap, or one is hidden while the other shows. The container takes space
+  when neither notice is showing. Either notice overflows at phone width.
+- Parked station seek (item 12): `seek` on a parked station moves the shown
+  position or the resumed track. The scrubber stays enabled for a parked
+  station. Seek is dropped on a normal queue.
+
+E2E suite (`scripts/e2e-audit-fixes.js`, run after "artwork" in the native
+run): idle cap and activity re-arm (6 s stand-in for 4 h, with the keydown at
+2 s and reads at 7 s), a `windows-media-control` "pause" event, the
+`online` event with healthy MusicKit (no reload), the diagnostics copy
+answering within 6 s with "Copied" or the busy error (the logged path is
+recorded when readable), cancel of a stuck sign-in from the notice, titlebar
+and Settings (a held `configure({ hangAuthorize: true })` call is released
+later and must still sign in; a new attempt during an abandoned one starts
+fresh; a later expiry is detected), the notice stack container, and a parked
+station's disabled scrubber and dropped seek; a manual "Sign in again" that is
+cancelled or rejected, and a token MusicKit drops silently (second audit item
+1); and a parked queue resumed with shuffle on, which keeps its saved order
+(item 2). The suite ends signed in and
+healthy. Artifacts under `e2e-artifacts/<timestamp>/`: the `audit fixes`
+checks in `report.json`, `screenshot-audit-fixes-idle.png`,
+`screenshot-audit-fixes-sign-in-pending.png`,
+`screenshot-audit-fixes-expired.png`, and `audit-fixes-trace.json`.
+
+The live MusicKit script check (item 3, `e2e-app.js`) fetches
+`js-cdn.music.apple.com/musickit/v3/musickit.js` and fails with the list of
+missing markers in its detail.
+
+Code-reviewed, no E2E:
+
+- Ratings caches (item 10): `settled`, `generations`, and `added` are capped
+  at 2000 with oldest-first eviction that skips in-flight entries. Reaching
+  2000 distinct lookups in one session is not practical in the fixture.
+- Offline auto-reload (item 6): the reload only follows a failed MusicKit init
+  that is not an expired token. Forcing a real init failure needs the fixture
+  removed before startup, which the suite does not do. The suite checks only
+  that a healthy init does not reload.
+- Token-expiry notice in the stack (item 11): `developerTokenExpiresAt` comes
+  from the embedded developer token in a release build, and the suite cannot
+  change it. The suite checks only the `.notice-stack` container.
+
+Second audit (spec items 1 to 5). Items 1 and 2 are driven by the native
+suite (`scripts/e2e-audit-fixes.js`, checks `re-auth failures`, `lost token`
+and `parked queue order`). The rest are code-reviewed:
+
+- Failed manual re-auth (item 1): a cancelled "Sign in again" on a healthy
+  session expires it when MusicKit is unauthorized, and does not when MusicKit
+  holds a token again. A rejected or closed attempt expires it, logs the reason,
+  and the notice signs in again. An abandoned attempt that completes later clears
+  the notice. A token MusicKit drops without an event expires the session with
+  no `/v1/me/storefront` probe. Failure modes: a closed, cancelled, or rejected
+  re-auth leaves "Connected" with no token; a healthy session is probed while
+  MusicKit reports it unauthorized; an account transition blocks the expiry.
+- Parked queue order (item 2): Next, Previous, and Play on a parked queue, with
+  shuffle on, each queue only the songs from the target index on, in saved
+  order, and Play then seeks to the saved position. Previous steps back into
+  history without queueing it. Restore from disk runs the same
+  `resumeRestoredQueue` path, but a restart is not driven here.
+- Lid close on Modern Standby (item 3): native-only. The decision logic (pause
+  once on entering "lid closed and display off"; ignore the registration seed)
+  is unit-tested in `src-tauri/src/system_events.rs`, and the wiring is
+  code-reviewed. The desktop check is under "Release-only evidence".
+- Newer release replaces a pending update (item 4), and a failed periodic check
+  keeps a ready update (item 5), in `src/updater.ts`: code-reviewed, not driven.
+  Reaching the updater needs the live release feed, and a pending update needs
+  a signed installer downloaded from it. The E2E build does not stub that feed,
+  and a fake feed would bypass the signed-updater check the flow keeps. Check
+  these by hand on a release build: a newer release replaces a downloaded one,
+  a same-version check keeps "ready", and a failed check keeps Install.
+
 ## Release-only evidence
 
 The following checks require a Windows release environment and are kept out of
@@ -893,6 +1046,18 @@ the deterministic smoke gate:
   or hides the window, and turning `Show tray icon` off removes the icon. The
   E2E harness covers closing with the tray on and off, the setting toggle, and
   the second launch only.
+- Lid close (second audit item 3), on a Modern Standby laptop with Apple Music
+  playing: close the lid with the display off and no external monitor. Arlet
+  pauses once, and the stream is released after about 1 min. Docked with the
+  lid closed and an external display on, or the display timing out with the
+  lid open, does not pause.
+- Suspend and output change (item 1), on a real Windows desktop with Apple
+  Music signed in and a second device on the same account:
+  - Sleep or hibernate the PC while playing. Arlet is paused on resume, and
+    the stream is released after about 1 min so the second device can play.
+  - Unplug the headphones or disconnect Bluetooth while playing. Arlet pauses
+    once. A default output change while paused does nothing.
+  - Lock the screen while playing. Playback continues, by design.
 - `End of track` pauses at the next item change, so a brief bleed of the next
   song may be audible on MusicKit before the pause lands. Listen for it on
   protected and unprotected tracks.

@@ -1,15 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import {
-  authorize,
-  installAuthPopupProbe,
-  isAuthorized,
-  unauthorize,
-} from "../musickit/auth.ts";
+import { installAuthPopupProbe, isAuthorized } from "../musickit/auth.ts";
 import { initializeMusicKit } from "../musickit/bootstrap.ts";
 import { developerTokenExpiry } from "../musickit/token.ts";
-import type {
-  loadRadioStations,
+import {
+  setUserTokenGuard,
+  type loadRadioStations,
   searchMusicResources,
   searchCatalogSongs,
 } from "../musickit/catalog.ts";
@@ -33,7 +29,11 @@ import {
 } from "../musickit/stations.ts";
 import { createSleepTimer, type SleepTimerOption } from "./sleep-timer.ts";
 import { createAutoSkip } from "./auto-skip.ts";
-import { reportActionError } from "../components/action-errors.ts";
+import {
+  reportActionError,
+  reportNotice,
+} from "../components/action-errors.ts";
+import { createIdleGuard } from "./idle-guard.ts";
 import { normalizeTrack } from "../musickit/normalize.ts";
 import { classifyPlaybackKind } from "../musickit/preview.ts";
 import {
@@ -41,14 +41,11 @@ import {
   clearRecentSearches,
   DEFAULT_SETTINGS,
   getState,
-  resetState,
   setAccountSummary,
   setAuthState,
-  setAuthPending,
   setCurrentTrack,
   setDeveloperTokenExpiry,
   setInitializationState,
-  setPins,
   setSettings,
   setSleepTimer,
   setUpdateState,
@@ -102,6 +99,12 @@ import {
   type CreatePlaylistRequest,
 } from "./playlist-editing.ts";
 import { createPlaybackSession } from "./playback-session.ts";
+import type { PlayOptions } from "./queue-window.ts";
+import { createStreamRelease } from "./stream-release.ts";
+import {
+  createControllerAccount,
+  isSessionExpired,
+} from "./controller-account.ts";
 import { createControllerPins } from "./controller-pins.ts";
 import { createControllerSettings } from "./controller-settings.ts";
 import {
@@ -111,8 +114,35 @@ import {
 
 export type { DetailLoadOptions } from "./library-loader.ts";
 
-/** A clipboard write still pending after this is reported as failed. */
-const CLIPBOARD_WRITE_TIMEOUT_MS = 5_000;
+/** A clipboard write still pending after this falls through to the next path. */
+const CLIPBOARD_PLUGIN_TIMEOUT_MS = 2_000;
+const CLIPBOARD_BROWSER_TIMEOUT_MS = 2_000;
+/** Commands that count as user activity for the unattended playback cap. */
+const ACTIVITY_COMMANDS = [
+  "togglePlayback",
+  "play",
+  "pause",
+  "next",
+  "previous",
+  "seek",
+  "seekBy",
+  "setShuffleMode",
+  "cycleRepeatMode",
+  "setRepeatMode",
+  "playCollection",
+  "playPlaylist",
+  "playAlbum",
+  "playStation",
+  "startStation",
+  "playNextTracks",
+  "playLaterTracks",
+  "playQueueItem",
+  "removeQueueItem",
+  "moveQueueItem",
+  "clearUpNext",
+  "playTracksShuffled",
+  "queueCollection",
+] as const;
 /** Longest wait for the queue save before an update installs (as tray.rs). */
 const QUIT_SAVE_TIMEOUT_MS = 1_500;
 
@@ -138,6 +168,10 @@ export interface AppController {
   loadSettings(): Promise<void>;
   loadPins(): Promise<void>;
   authorize(): Promise<void>;
+  /** Signs in again after the Apple sign-in expired; local data is kept. */
+  reauthorize(): Promise<void>;
+  /** Clears a stuck sign-in at once; a late Apple success still signs in. */
+  cancelSignIn(): void;
   signOut(): Promise<void>;
   /** Restores default settings and restarts Arlet; sign-in and pins stay. */
   resetSettingsAndRestart(): Promise<void>;
@@ -307,30 +341,101 @@ export interface AppController {
 
 export type { CreatePlaylistRequest } from "./playlist-editing.ts";
 
+/** Reloads at most this often when the connection returns after a failed init. */
+const ONLINE_RELOAD_DEBOUNCE_MS = 30_000;
+
 /**
- * Writes to the clipboard. Another app holding the clipboard can leave the
- * write pending with no error, so a write still pending after the timeout
- * fails with `busyMessage` instead of never settling.
+ * Reloads the app when the window comes back online, so a MusicKit init that
+ * failed for a network reason retries. Returns a function that stops listening.
  */
-async function writeClipboardWithTimeout(
-  write: (text: string) => Promise<void>,
-  text: string,
-  busyMessage: string,
+function reloadWhenOnline(
+  now: () => number,
+  log: (message: string) => void,
+): () => void {
+  let lastReload: number | undefined;
+  const onOnline = (): void => {
+    const at = now();
+    if (
+      lastReload !== undefined &&
+      at - lastReload < ONLINE_RELOAD_DEBOUNCE_MS
+    ) {
+      return;
+    }
+    lastReload = at;
+    log("Connection restored. Reloading to retry Apple Music.");
+    window.location.reload();
+  };
+  window.addEventListener("online", onOnline);
+  return () => window.removeEventListener("online", onOnline);
+}
+
+/** Rejects with `message` if `pending` has not settled after `ms`. */
+async function withClipboardTimeout(
+  pending: Promise<void>,
+  ms: number,
+  message: string,
 ): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
-      write(text),
+      pending,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(busyMessage)),
-          CLIPBOARD_WRITE_TIMEOUT_MS,
-        );
+        timer = setTimeout(() => reject(new Error(message)), ms);
       }),
     ]);
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Writes to the clipboard: the Tauri plugin first, then the browser clipboard,
+ * each with its own timeout, because another app holding the clipboard can
+ * leave a write pending. Only when both fail does it throw `busyMessage`.
+ * Logs which path succeeded or failed.
+ */
+async function writeClipboardWithFallback(
+  pluginWrite: (text: string) => Promise<void>,
+  text: string,
+  busyMessage: string,
+  log: (message: string) => void,
+): Promise<void> {
+  try {
+    await withClipboardTimeout(
+      pluginWrite(text),
+      CLIPBOARD_PLUGIN_TIMEOUT_MS,
+      "Clipboard plugin timed out.",
+    );
+    log("Clipboard write succeeded via the Tauri clipboard plugin.");
+    return;
+  } catch (error) {
+    log(
+      `Clipboard plugin write failed: ${safeErrorMessage(error)}. Trying the browser clipboard.`,
+    );
+  }
+  try {
+    await withClipboardTimeout(
+      navigator.clipboard.writeText(text),
+      CLIPBOARD_BROWSER_TIMEOUT_MS,
+      "Browser clipboard timed out.",
+    );
+    log("Clipboard write succeeded via navigator.clipboard.");
+    return;
+  } catch (error) {
+    log(`Browser clipboard write failed: ${safeErrorMessage(error)}.`);
+  }
+  throw new Error(busyMessage);
+}
+
+/** Calls a controller command, counting it as user activity first. */
+function withActivity<A extends unknown[], R>(
+  noteActivity: () => void,
+  command: (...args: A) => R,
+): (...args: A) => R {
+  return (...args: A): R => {
+    noteActivity();
+    return command(...args);
+  };
 }
 
 /**
@@ -350,6 +455,7 @@ export function createAppController(
   let music: MusicKit.MusicKitInstance | null = null;
   let restoreAuthProbe: (() => void) | undefined;
   let stopMusicKitEvents: (() => void) | undefined;
+  let stopOnlineReload: (() => void) | undefined;
 
   const log = (message: string): void => {
     const line = redactSensitive(`[${timestamp(now)}] ${message}`);
@@ -370,18 +476,36 @@ export function createAppController(
     return music;
   };
 
+  /** Play starts fail fast while the Apple sign-in is known expired. */
+  const requirePlayableMusic = (): MusicKit.MusicKitInstance => {
+    if (isSessionExpired()) {
+      throw new Error("Sign in again to play Apple Music.");
+    }
+    return requireMusic();
+  };
+
   const context: ControllerContext = {
     requireMusic,
     getMusic: () => music,
     now,
     log,
+    suspectSession: (error, path) => accounts.suspectSession(error, path),
   };
   const library = createLibraryLoader(
     context,
     dependencies.libraryCache ?? createLibraryCache(),
   );
   const discovery = createDiscovery(context, dependencies);
-  const playback = createPlayback(context);
+  const playback = createPlayback({
+    ...context,
+    requireMusic: requirePlayableMusic,
+  });
+  // Unattended playback cap: playing with no activity for hours is paused.
+  const idle = createIdleGuard(() => {
+    if (getState().playback.status !== "playing") return;
+    void playback.pause();
+    reportNotice("Paused after 4 hours without activity.");
+  });
   const ratings = createRatings(context);
   const playlists = createPlaylistEditing(context, library);
   const pinning = createControllerPins(context, {
@@ -389,9 +513,9 @@ export function createAppController(
     libraryClient: () => library.client(),
   });
   const trackNavigation = createTrackNavigationResolver(requireMusic);
-  const { requireLibrary, ensureLibraryCache, clearLibraryCache } = library;
+  const { requireLibrary, ensureLibraryCache } = library;
   const collections = createCollectionPlayback({
-    requireMusic,
+    requireMusic: requirePlayableMusic,
     getMusic: () => music,
     requireLibrary,
     playTracks: playback.playTracks,
@@ -406,9 +530,12 @@ export function createAppController(
   const playTracks = (
     tracks: readonly Track[],
     startIndex = 0,
+    options?: PlayOptions,
   ): Promise<void> => {
     collections.invalidate();
-    return playback.playTracks(tracks, startIndex).then(() => undefined);
+    return playback
+      .playTracks(tracks, startIndex, undefined, options)
+      .then(() => undefined);
   };
   const playCollection = collections.play;
   let stationResolver:
@@ -431,8 +558,17 @@ export function createAppController(
     log,
     playTracks,
     seek: playback.seek,
+    playStation: playback.playStation,
+    // Play waits for a handoff's stop() still in flight.
+    beforeResume: () => streamRelease.settled(),
     playIntent: playback.playIntent,
     fullQueue: playback.fullQueue,
+  });
+  const streamRelease = createStreamRelease({
+    getMusic: () => music ?? undefined,
+    fullQueue: playback.fullQueue,
+    currentStation: playback.currentStation,
+    log,
   });
   const updater =
     dependencies.updater ??
@@ -475,87 +611,28 @@ export function createAppController(
     sleepTimer.observe(getState().playback),
   );
 
-  /** Bumped on sign-in and sign-out; work started earlier must not land. */
-  let accountGeneration = 0;
-  /** Sign-out work in progress, whose MusicKit auth events are our own. */
-  let accountTransitions = 0;
-
   /**
-   * Cancels everything tied to the current account. Sign-in runs it too,
-   * because the popup may sign in a different Apple ID.
+   * Sign-in, re-auth, sign-out, session expiry, and MusicKit authorization
+   * changes. Created after the domain modules it resets.
    */
-  const resetAccountScope = (): void => {
-    accountGeneration += 1;
-    collections.invalidate();
-    ratings.reset();
-    discovery.resetAccount();
-    playback.cancelPendingPlayback();
-    // A timer armed for this account must not pause the next sign-in.
-    sleepTimer.cancel();
-    playback.clearContinuation();
-    // Library artist mappings belong to the previous account.
-    stationResolver = undefined;
-    trackNavigation.clear();
-  };
-
-  /**
-   * Local sign-out: drops the account's cached library, pins, and saved queue.
-   * It never calls Apple, so it also serves a session Apple already ended.
-   */
-  const clearSignedInData = async (): Promise<void> => {
-    await clearLibraryCache();
-    // Pins are local and not tied to an Apple ID; the next account to
-    // sign in on this PC must not see them.
-    await pinning.clearStored();
-    await playbackSession.clear();
-    // Recent searches belong to the signed-in account, so sign-out (and a
-    // revoked session) is what clears them; sign-in does not.
-    clearRecentSearches();
-    discovery.resetAccount();
-    resetState();
-    setPins([]);
-    setInitializationState({ status: "ready" });
-  };
-
-  /**
-   * Runs the local sign-out for a session MusicKit no longer authorizes. No
-   * request goes to Apple, since the session is already gone.
-   */
-  const endSessionFromMusicKit = async (
-    instance: MusicKit.MusicKitInstance,
-  ): Promise<void> => {
-    accountTransitions += 1;
-    try {
-      resetAccountScope();
-      try {
-        instance.stop?.();
-      } catch (error) {
-        log(`Stop after revoked session failed: ${safeErrorMessage(error)}`);
-      }
-      await clearSignedInData();
-      log("Apple Music reports the session is no longer authorized.");
-    } catch (error) {
-      log(`Local sign-out failed: ${safeErrorMessage(error)}`);
-    } finally {
-      accountTransitions -= 1;
-    }
-  };
-
-  /**
-   * MusicKit reports a revoked token or a sign-out from elsewhere. The app
-   * then runs its local sign-out and shows the signed-out UI. Our own sign-in
-   * and sign-out are ignored here because they update the state themselves.
-   * A sign-in from elsewhere is left to the sign-in flow.
-   */
-  const onMusicKitAuthorizationChange = (
-    instance: MusicKit.MusicKitInstance,
-  ): void => {
-    if (accountTransitions > 0 || getState().auth.pending) return;
-    if (typeof instance.isAuthorized !== "boolean") return;
-    if (isAuthorized(instance)) return;
-    if (getState().auth.status !== "authorized") return;
-    void endSessionFromMusicKit(instance);
-  };
+  const accounts = createControllerAccount(context, {
+    createLibraryClient,
+    library,
+    pinning,
+    playbackSession,
+    ratings,
+    discovery,
+    playback,
+    collections,
+    sleepTimer,
+    streamRelease,
+    trackNavigation,
+    resetStations: () => {
+      // Library artist mappings belong to the previous account.
+      stationResolver = undefined;
+    },
+    refreshCurrentData: () => controller.refreshCurrentData(),
+  });
 
   const syncPlaybackDiagnostics = (): void => {
     if (!diagnosticsStore) return;
@@ -590,6 +667,10 @@ export function createAppController(
     try {
       const instance = await initialize();
       music = instance;
+      setUserTokenGuard(instance, {
+        blocked: isSessionExpired,
+        onRejected: (error, path) => accounts.suspectSession(error, path),
+      });
       registerSensitiveValue(instance.developerToken);
       setDeveloperTokenExpiry(developerTokenExpiry(instance.developerToken));
       registerSensitiveValue(instance.musicUserToken);
@@ -621,12 +702,15 @@ export function createAppController(
           (message, error) => {
             log(`Media playback error: ${message}`);
             autoSkip.onPlaybackError(error);
+            accounts.suspectSession(error);
           },
           undefined,
           () => playback.syncPlaybackModes(instance),
           {
+            ignoreProviderPlayback: () =>
+              getState().playback.pendingRestore?.released === true,
             onAuthorizationChange: () =>
-              onMusicKitAuthorizationChange(instance),
+              accounts.onMusicKitAuthorizationChange(instance),
             onMusicVolumeChange: (volume) => {
               if (!playback.reflectMusicVolume(volume)) return;
               // Saved on the same debounce as a drag, so it survives a restart.
@@ -674,6 +758,8 @@ export function createAppController(
         setDeveloperTokenExpiry(now());
         return;
       }
+      stopOnlineReload?.();
+      stopOnlineReload = reloadWhenOnline(now, log);
       if (await library.enterOfflineMode()) {
         log("Showing the cached library offline.");
       }
@@ -689,80 +775,15 @@ export function createAppController(
       await pinning.reload();
     },
 
-    async authorize(): Promise<void> {
-      if (getState().auth.pending) return;
-      let authorizationStarted = false;
-      try {
-        const instance = requireMusic();
-        authorizationStarted = true;
-        setAuthPending(true);
-        resetAccountScope();
-        // A fresh authorization may belong to a different Apple account. Drop
-        // the previous session's metadata before MusicKit opens its popup.
-        log("Authorizing… waiting for Apple Music sign-in window.");
-        const userToken = await authorize(instance);
-        registerSensitiveValue(userToken);
-        // The cached library and saved queue may belong to the previous
-        // account. They are dropped only once sign-in succeeds, so closing
-        // the sign-in window keeps them; the new account's data loads after
-        // this, once auth is marked authorized below.
-        await Promise.all([clearLibraryCache(), playbackSession.clear()]);
-        // Keep the user token private to MusicKit; only expose auth status.
-        setAuthState({ status: "authorized" });
-        // A lookup made while the popup was open used the old sign-in; look
-        // the playing song's rating up again for the new one.
-        ratings.reset();
-        ratings.syncCurrentTrack();
-        try {
-          if (!library.client()) {
-            library.setClient(createLibraryClient(instance));
-          }
-        } catch (error) {
-          library.setClient(null);
-          log(
-            `Library API unavailable after authorization: ${safeErrorMessage(error)}`,
-          );
-        }
-        await Promise.all([ensureLibraryCache(), pinning.reload()]);
-        const storefront = String(instance.storefrontId ?? "").trim();
-        if (storefront) setAccountSummary({ storefront, connectedAt: now() });
-        log("Authorization successful.");
-      } catch (error) {
-        const message = safeErrorMessage(error);
-        log(`Authorization failed: ${message}`);
-        throw error;
-      } finally {
-        if (authorizationStarted) setAuthPending(false);
-      }
-    },
+    authorize: accounts.authorize,
+
+    reauthorize: accounts.reauthorize,
+
+    cancelSignIn: accounts.cancelSignIn,
+
+    signOut: accounts.signOut,
 
     resetSettingsAndRestart: preferences.resetSettingsAndRestart,
-
-    async signOut(): Promise<void> {
-      accountTransitions += 1;
-      try {
-        // Late responses from this account must not land after sign-out.
-        resetAccountScope();
-        try {
-          const instance = requireMusic();
-          // Sign-out resets the UI to idle; audio must not keep playing.
-          try {
-            instance.stop?.();
-          } catch (error) {
-            log(`Stop before sign-out failed: ${safeErrorMessage(error)}`);
-          }
-          await unauthorize(instance);
-          await clearSignedInData();
-          log("Signed out.");
-        } catch (error) {
-          const message = safeErrorMessage(error);
-          log(`Sign out failed: ${message}`);
-          throw error;
-        }
-      } finally {
-        accountTransitions -= 1;
-      }
-    },
 
     // An invalid cursor is treated as no more pages, so nothing is requested.
     loadLibrarySection: (section, options) => {
@@ -973,12 +994,12 @@ export function createAppController(
     },
     async queueCollection(kind, id, source, where): Promise<void> {
       const instance = requireMusic();
-      const account = accountGeneration;
+      const account = accounts.generation();
       const playsBefore = collections.generation();
       // Sign-out keeps the MusicKit instance, so the account generation is
       // what stops a load from queueing the previous account's songs.
       const stale = (): boolean =>
-        instance !== music || account !== accountGeneration;
+        instance !== music || account !== accounts.generation();
       const tracks = await loadAllTracks(
         kind,
         id,
@@ -1152,30 +1173,35 @@ export function createAppController(
       if (!diagnosticsStore) {
         throw new Error("Diagnostics are unavailable in this session.");
       }
-      await writeClipboardWithTimeout(
+      await writeClipboardWithFallback(
         dependencies.writeClipboardText ?? writeText,
         createSupportReport(diagnosticsStore.getSnapshot()),
         "Couldn't copy the report: the clipboard is busy. Try again.",
+        log,
       );
       log("Diagnostics report copied to the clipboard.");
     },
 
     async copyText(text: string): Promise<void> {
-      await writeClipboardWithTimeout(
+      await writeClipboardWithFallback(
         dependencies.writeClipboardText ?? writeText,
         text,
         "Couldn't copy: the clipboard is busy. Try again.",
+        log,
       );
     },
 
     log,
 
     dispose(): void {
+      idle.dispose();
+      stopOnlineReload?.();
       playbackSession.stop();
       stopPauseListener();
       collections.invalidate();
       stopSleepTimerPositions();
       sleepTimer.cancel();
+      streamRelease.dispose();
       trackNavigation.clear();
       preferences.flushPendingVolume();
       stopMusicKitEvents?.();
@@ -1186,6 +1212,13 @@ export function createAppController(
       updater.dispose();
     },
   };
+
+  for (const name of ACTIVITY_COMMANDS) {
+    controller[name] = withActivity(
+      idle.noteActivity,
+      controller[name] as (...args: unknown[]) => unknown,
+    ) as never;
+  }
 
   // The settings defaults are intentionally stable if load is delayed/fails.
   setSettings({ ...DEFAULT_SETTINGS });

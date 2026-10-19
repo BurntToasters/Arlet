@@ -250,6 +250,10 @@ export interface PlaybackState {
 export interface PendingPlaybackRestore {
   positionSeconds: number;
   savedAt: number;
+  /** Set when the stream was handed back; MusicKit holds no queue or lease. */
+  released?: true;
+  /** The station playing at the handoff; Play restarts it, not loose songs. */
+  station?: Station;
 }
 
 export type SleepTimerState =

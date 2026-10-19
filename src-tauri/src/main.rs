@@ -13,6 +13,7 @@ mod music_diagnostic;
 mod pins;
 mod playback_session;
 mod settings;
+mod system_events;
 mod token_policy;
 mod tray;
 mod webview_recovery;
@@ -108,6 +109,7 @@ fn main() {
             if let Err(error) = webview_recovery::install(&window) {
                 eprintln!("Unable to install WebView2 crash recovery: {error}");
             }
+            system_events::install(app.handle());
             settings::set_tray_icon(appearance.tray_icon);
             if appearance.tray_icon {
                 if let Err(error) = tray::install(app.handle()) {

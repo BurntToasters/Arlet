@@ -513,9 +513,11 @@ export function Sidebar(): JSX.Element {
             </strong>
             <small>
               {state.auth.status === "authorized"
-                ? account.storefront
-                  ? `${account.storefront} · Connected`
-                  : "Connected"
+                ? state.auth.sessionExpired
+                  ? "Sign in again"
+                  : account.storefront
+                    ? `${account.storefront} · Connected`
+                    : "Connected"
                 : "Connect account"}
             </small>
           </span>

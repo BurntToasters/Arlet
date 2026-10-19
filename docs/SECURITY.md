@@ -124,6 +124,48 @@ Now-playing artwork is fetched by Windows itself for the media overlay, so
 only `*.mzstatic.com` and `*.apple.com` artwork URLs are passed on; any other
 host would learn the user's IP address.
 
+## Remote script exposure
+
+Threat: a compromised or misbehaving MusicKit script, or a bug in the page,
+calls the Rust commands with hostile input. The script runs in the main
+window, so every command that window is granted is reachable from it.
+
+Why no isolation yet: Tauri's isolation pattern would route every IPC call
+through a sandboxed iframe, which means rewiring the whole controller and
+retesting every native path. That is too invasive for this release, so the
+mitigation is input validation at each command. Revisit it if the grant grows.
+
+Each command treats its arguments as hostile. Caps are checked in Rust before
+any disk or OS call:
+
+- `save_settings`: 512 KiB, must be a JSON object.
+- `save_pins`: 64 KiB, at most 100 entries, each with a non-empty id.
+- `save_playback_session`: 256 KiB, at most 500 items, `schemaVersion` 1.
+- `library_cache_*`: scope, section, cursor, next cursor, and storefront at
+  most 2048 bytes; item id and type at most 2048 bytes; 10,000 items and
+  16 MiB of item data per page. A rejected write is rolled back. There is no
+  SQL.
+- `append_local_log`: 8 KiB per entry, line breaks escaped; the file rotates
+  at 5 MiB.
+- `update_windows_media_session`: title, artist, and album are cut to 1024
+  characters; artwork URLs over 2048 bytes are dropped; only `*.mzstatic.com`
+  and `*.apple.com` HTTPS artwork is passed to Windows.
+- `update_windows_media_timeline`: non-finite or non-positive durations are
+  rejected; positions are clamped to the duration.
+- `set_snap_overlay_bounds`: integers within ±1,000,000, dimensions up to 16,384.
+- `set_window_fx`: exactly `acrylic`, `mica`, or `solid`.
+- `open_about_link`: exactly `project`, `release_notes`, or `license`; the URL
+  is built in Rust.
+- No argument from the page: `open_support_page`, `open_music_diagnostic`,
+  `get_app_info`, `get_developer_token`, `get_beta_updater_target`,
+  `get_log_dir`, `clear_logs`, `supports_window_fx`, `reset_settings`,
+  `clear_windows_media_session`, `quit_ready`. Each returns fixed data or
+  acts on fixed paths.
+
+Native events are not commands. Suspend and default-output-change pauses
+(`src-tauri/src/system_events.rs`) are triggered by Windows, not by the page,
+and screen lock is deliberately not a trigger.
+
 ## Sign-out
 
 Signing out stops playback, revokes MusicKit authorization, clears the SQLite

@@ -27,6 +27,8 @@ export function configureMusicKit(
       name: "Arlet",
       build: __APP_VERSION__,
     },
+    // Errors reach the UI through events; MusicKit's own dialog shows raw codes.
+    suppressErrorDialog: true,
   });
 }
 

@@ -314,10 +314,18 @@ async function artistFallback(page, check) {
 async function sparseArtist(page, check) {
   await fixtureCall(page, "reset");
   await home(page);
+  // artistFallback visited this artist just before, so its hero can paint
+  // from memory before any request goes out. Wait for a request that this
+  // visit sent and finished, so the shelves are read from a fresh response.
   const ready = await openHash(
     page,
     "#/artist/artist-views-sparse?source=catalog",
     `${heroIs("Sparse Discovery Artist")} && document.querySelectorAll(".artist-albums .library-card").length >= 2`,
+    20_000,
+  );
+  const fresh = await waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().requests.some((item) => item.path.split("?")[0] === "/v1/catalog/us/artists/artist-views-sparse" && item.completedAt)`,
     20_000,
   );
   const shelves = await page.evaluate(`
@@ -337,11 +345,12 @@ async function sparseArtist(page, check) {
   check(
     "sparse artist hides the shelves Apple left out, along with its bio and banner",
     ready &&
+      fresh &&
       shelves.every(([, present]) => present === false) &&
       bio === false &&
       banner === false &&
       requested?.query?.views?.includes("live-albums") === true,
-    { ready, shelves, bio, banner, views: requested?.query?.views },
+    { ready, fresh, shelves, bio, banner, views: requested?.query?.views },
   );
 }
 
@@ -1156,6 +1165,22 @@ async function externalSignOut(page, check) {
     );
     await home(page);
     await fixtureCall(page, "emitAuthorizationStatus", [false]);
+    // MusicKit no longer authorizes the session: the banner asks for a new
+    // sign-in and nothing local is deleted yet.
+    const banner = await waitFor(
+      page,
+      `Boolean(document.querySelector(".session-expired-notice"))`,
+      10_000,
+    );
+    const recentKept = await page.evaluate(
+      `return localStorage.getItem(${q(RECENT_KEY)});`,
+    );
+    // Signing out through the banner is what runs the local cleanup.
+    const clicked = await clickByText(
+      page,
+      ".session-expired-notice button",
+      "Sign out",
+    );
     // "#/library" alone is Home; a library section is the real route.
     const signedOut = await openHash(
       page,
@@ -1170,12 +1195,23 @@ async function externalSignOut(page, check) {
     const recentCleared =
       recentAfter === null || JSON.parse(recentAfter).length === 0;
     check(
-      "external sign-out runs local cleanup and shows the signed-out UI",
+      "external sign-out shows the sign-in banner, keeps data, then Sign out runs local cleanup",
       String(recentBefore).includes("discovery") &&
+        banner &&
+        recentKept === recentBefore &&
+        clicked &&
         signedOut &&
         recentCleared &&
         authorized === false,
-      { recentBefore, recentAfter, signedOut, authorized },
+      {
+        recentBefore,
+        recentKept,
+        banner,
+        clicked,
+        recentAfter,
+        signedOut,
+        authorized,
+      },
     );
   } finally {
     await fixtureCall(page, "emitAuthorizationStatus", [true]);

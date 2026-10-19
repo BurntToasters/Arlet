@@ -32,6 +32,8 @@ import { runPerformance } from "./e2e-performance.js";
 import { runPolish } from "./e2e-polish.js";
 import { runDiscovery } from "./e2e-discovery.js";
 import { runArtwork } from "./e2e-artwork.js";
+import { runAccountSession } from "./e2e-account-session.js";
+import { runAuditFixes } from "./e2e-audit-fixes.js";
 import { runSessionRestore } from "./e2e-session-restore.js";
 import { sleep } from "./e2e-helpers.js";
 
@@ -40,13 +42,83 @@ const IDENTIFIER = "run.rosie.arlet";
 const TARGET_DIR = path.join(root, "src-tauri", "target", "e2e");
 const EXE = path.join(TARGET_DIR, "release", "arlet.exe");
 const DEBUG_PORT = 9333;
+// TEMP_WEBVIEW2_LOCKOUT_WORKAROUND: TEMPORARY UPSTREAM WORKAROUND, REMOVE when fixed.
+// Cause: a fresh WebView2 environment can generate a failed Windows interactive
+// logon (Event 4625); repeated launches increment the bad-password counter and
+// can lock the account. The app is not trying passwords. Disabling the Chromium
+// feature below is the workaround (Windows only).
+// Tracking: MicrosoftEdge/WebView2Feedback #5722, Chromium #562403601.
+// REMOVE only after the fixed stable WebView2 runtime is installed and several
+// fresh-profile launches log no matching Event 4625 (Logon Type 2, Advapi,
+// 0xC000006D/0xC000006A, msedgewebview2.exe) and the E2E passes without it.
+// Chromium runs the probe when either feature is enabled
+// (chrome_autofill_client.cc).
+// Cleanup: delete this const and its use in buildWebView2Args only.
+const TEMP_WEBVIEW2_LOCKOUT_WORKAROUND = [
+  "AutofillAiWalletPrivatePasses",
+  "AutofillAmbientAutofill",
+];
 const RUNTIME_ENV_TOKEN = "runtime-env-token-must-be-ignored";
 // Mirrors RELEASE_ORIGIN in src-tauri/src/token_policy.rs.
 const RELEASE_ORIGIN = "http://tauri.localhost";
+// Apple's live MusicKit script. Each marker group lists alternatives; one must
+// appear in the script text (docs/TESTING.md "Audit fixes", item 3).
+const MUSICKIT_LIVE_SCRIPT_URL =
+  "https://js-cdn.music.apple.com/musickit/v3/musickit.js";
+const LIVE_SCRIPT_MARKERS = [
+  ["suppressErrorDialog"],
+  ["MKDialog"],
+  ['"lease-action"'],
+  ["stopLicenseSession", "_license.stop"],
+  ["userTokenIsValid"],
+];
 const USER_TOKEN = "AqmL0f7xY2/Zp+Q9wR3kT8vN1bC4dE6gH5jK7mP0sU2yW==";
 
 function fail(message) {
   throw new Error(`[e2e-app] ${message}`);
+}
+
+// Builds WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS from the developer's value plus
+// extra switches. Feature lists are merged into one switch each so no list
+// silently replaces another; other switches are kept once, first-seen order.
+function buildWebView2Args(...extraSwitches) {
+  const tokens = [
+    ...(process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS ?? "").split(/\s+/),
+    ...extraSwitches,
+  ];
+  const ordered = [];
+  const featureLists = new Map();
+  const addFeatures = (prefix, names) => {
+    if (!featureLists.has(prefix)) {
+      featureLists.set(prefix, []);
+      ordered.push(prefix);
+    }
+    const list = featureLists.get(prefix);
+    for (const name of names) {
+      const feature = name.trim();
+      if (feature && !list.includes(feature)) list.push(feature);
+    }
+  };
+  for (const token of tokens) {
+    if (!token) continue;
+    const match = /^(--(?:disable|enable)-features=)(.*)$/.exec(token);
+    if (match) {
+      addFeatures(match[1], match[2].split(","));
+    } else if (!ordered.includes(token)) {
+      ordered.push(token);
+    }
+  }
+  if (process.platform === "win32") {
+    addFeatures("--disable-features=", TEMP_WEBVIEW2_LOCKOUT_WORKAROUND);
+  }
+  return ordered
+    .filter((item) => !featureLists.has(item) || featureLists.get(item).length)
+    .map((item) =>
+      featureLists.has(item)
+        ? `${item}${featureLists.get(item).join(",")}`
+        : item,
+    )
+    .join(" ");
 }
 
 function syntheticToken() {
@@ -609,7 +681,9 @@ async function run() {
       env: {
         ...process.env,
         MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN,
-        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${DEBUG_PORT}`,
+        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: buildWebView2Args(
+          `--remote-debugging-port=${DEBUG_PORT}`,
+        ),
       },
       stdio: "ignore",
     });
@@ -726,6 +800,39 @@ async function run() {
         musicRuntimeCapabilities,
       );
     }
+
+    // Canary for the internals Arlet's error and sign-in handling read from
+    // Apple's script text (docs/TESTING.md "Audit fixes", item 3). Each entry
+    // lists alternatives; one must appear in the live script. The weekly
+    // musickit-canary workflow runs this.
+    const liveScript = await fetch(MUSICKIT_LIVE_SCRIPT_URL, {
+      signal: AbortSignal.timeout(30_000),
+    })
+      .then(async (response) => ({
+        ok: response.ok,
+        text: response.ok ? await response.text() : "",
+        status: response.status,
+      }))
+      .catch((error) => ({
+        ok: false,
+        text: "",
+        error: String(error?.message ?? error).slice(0, 200),
+      }));
+    const missingMarkers = LIVE_SCRIPT_MARKERS.filter(
+      (alternatives) =>
+        !alternatives.some((marker) => liveScript.text.includes(marker)),
+    ).map((alternatives) => alternatives.join(" or "));
+    check(
+      "live MusicKit script keeps the markers Arlet's error and sign-in code reads",
+      liveScript.ok && missingMarkers.length === 0,
+      {
+        url: MUSICKIT_LIVE_SCRIPT_URL,
+        bytes: liveScript.text.length,
+        status: liveScript.status,
+        error: liveScript.error,
+        missingMarkers,
+      },
+    );
 
     if (realToken) {
       const catalog = await page.evaluate(`
@@ -1389,6 +1496,8 @@ async function run() {
         ["polish", runPolish],
         ["discovery", runDiscovery],
         ["artwork", runArtwork],
+        ["audit-fixes", runAuditFixes],
+        ["account-session", runAccountSession],
         // Last: it signs out at the end.
         ["session-restore", runSessionRestore],
       ]) {
@@ -1447,8 +1556,17 @@ async function run() {
       10_000,
     );
     const aliveAfterClose = processAlive(appPid);
+    // The first instance owns the debug port; the handoff relaunch must not
+    // ask for it again.
+    const relaunchWebView2Args = buildWebView2Args();
     const relaunch = spawn(EXE, [], {
-      env: { ...process.env, MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN },
+      env: {
+        ...process.env,
+        MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN,
+        ...(relaunchWebView2Args && {
+          WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: relaunchWebView2Args,
+        }),
+      },
       stdio: "ignore",
     });
     await new Promise((resolve) => {

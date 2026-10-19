@@ -2,7 +2,7 @@
 
 | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                                          | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
 | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.3/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.3/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.4/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0-beta.4/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -18,6 +18,27 @@
 ### ℹ️ Enjoying Arlet? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
+
+## Changes in `v0.3.0-beta.4:`
+
+- **Fix - "More than one device is trying to play music":** Arlet no longer pauses Apple Music on your phone while it sits paused, idle, or in the tray. A paused player kept renewing its stream with Apple in the background, so Apple counted Arlet as still playing. Now, after one minute paused, Arlet hands the stream back. It still shows the same song paused at the same spot, and pressing Play takes a moment longer to pick up where you left off.
+- **NEW - Pause on sleep:** Arlet pauses when your PC goes to sleep or hibernates, and on laptops when the lid is closed and the screen turns off. A closed lid with an external monitor still on keeps playing.
+- **NEW - Pause when headphones disconnect:** Unplugging headphones or losing a Bluetooth connection pauses playback instead of switching to your speakers. Plugging headphones in keeps playing.
+- **NEW - Still listening?:** After 4 hours of playback with no activity in Arlet, it pauses and says so. Using the tray, media keys, or the Windows media controls counts as activity.
+- **Fix - Sign-in expired:** After an Apple ID password change, Arlet no longer shows a bare `MEDIA_LICENSE` box while still saying `Connected`. A banner explains that the sign-in expired, with `Sign in again` and `Sign out`. Your library, pins, and queue are kept, and signing in again picks up where you were.
+- **Fix - Ended sessions:** When Apple Music ends Arlet's session by itself, Arlet now shows the same banner instead of silently signing you out and clearing your library, pins, and queue.
+- **NEW - Sign in again:** `Settings` → `Account` has a `Sign in again` button to refresh your Apple Music sign-in by hand. If that sign-in is cancelled, Arlet shows the expired banner instead of staying `Connected` without a sign-in.
+- **NEW - Cancel sign-in:** A sign-in that is stuck on `Signing in…` can be cancelled from the title bar menu, Settings, or the banner.
+- **Fix - Playback errors:** Errors from Apple Music now say what to try, for example to stop playback on another device or to sign in again, instead of showing a raw error code.
+- **Fix - Shuffle after a pause:** With shuffle on, resuming after a pause or a restart no longer brings back songs you already heard. `Next` and `Previous` on a resumed queue keep the same order.
+- **Fix - Stations:** Resuming a paused station restarts the station instead of playing its last few songs. While it waits to resume, its progress bar can't be dragged.
+- **Fix - Offline start:** If Arlet started without a connection, it now reloads by itself when the connection comes back. The `Reconnect` button still works too.
+- **Fix - Copying:** `Copy Apple Music link` and `Copy diagnostics report` now try a second way to reach the clipboard before saying it's busy, and answer sooner.
+- **Fix - Updates:** A newer release now replaces an older update that downloaded but wasn't installed yet. The older one stays installable until the newer one has fully downloaded. A failed background check no longer hides an update that is ready to install.
+- **Fix - Notices:** The expired sign-in banner and the "install the latest update" notice no longer overlap when both show.
+- **Security:** Arlet's built-in commands now limit the size of everything they accept, such as now-playing text and saved library pages, so a misbehaving page can't feed them oversized data.
+- **Improvement - Memory:** Saved ratings no longer grow for as long as Arlet stays open.
+- **Testing:** End-to-end tests now check that a paused player hands its stream back after a minute and resumes at the same song and position. They also check that an expired or lost sign-in shows the banner without deleting anything, that `Sign in again` asks Apple for a fresh sign-in, and that cancelling a sign-in works. Further checks cover the 4-hour pause, the system pause signal, shuffle not repeating heard songs, and parked stations. A weekly check now warns if Apple changes the parts of Apple Music's web player that these fixes rely on. Test runs also no longer risk locking your Windows account through the web view's autofill, and a flaky artist page check was fixed.
 
 ## Changes in `v0.3.0-beta.3:`
 

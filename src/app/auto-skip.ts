@@ -1,4 +1,5 @@
 import type { PlaybackState } from "../domain/music.ts";
+import { musicKitReasonOf } from "../musickit/errors.ts";
 
 /**
  * MusicKit reasons that belong to one song. Account-wide failures
@@ -32,19 +33,12 @@ export interface AutoSkip {
   onPlaying(): void;
 }
 
-function reasonOf(error: unknown): string | undefined {
-  if (!error || typeof error !== "object") return undefined;
-  const record = error as Record<string, unknown>;
-  const reason = record.errorCode ?? record.reason;
-  return typeof reason === "string" ? reason : undefined;
-}
-
 /** Skips a song that fails when it starts, like Apple Music does. */
 export function createAutoSkip(dependencies: AutoSkipDependencies): AutoSkip {
   let consecutive = 0;
   return {
     onPlaybackError(error: unknown): boolean {
-      const reason = reasonOf(error);
+      const reason = musicKitReasonOf(error);
       if (!reason || !SKIPPABLE_REASONS.has(reason)) return false;
       const { current, queue, queueIndex, repeatMode } =
         dependencies.readPlayback();

@@ -374,9 +374,28 @@ export function setAuthState(auth: AuthState): void {
 }
 
 export function setAuthPending(pending: boolean): void {
+  // A cancelled sign-in window leaves an expired session expired.
+  const expired =
+    state.auth.status === "authorized" && state.auth.sessionExpired === true;
   update({
     ...state,
-    auth: { status: state.auth.status, pending },
+    auth: {
+      status: state.auth.status,
+      pending,
+      ...(expired ? { sessionExpired: true } : {}),
+    },
+  });
+}
+
+export function setSessionExpired(expired: boolean): void {
+  if (state.auth.status !== "authorized") return;
+  update({
+    ...state,
+    auth: {
+      status: "authorized",
+      pending: state.auth.pending,
+      ...(expired ? { sessionExpired: true } : {}),
+    },
   });
 }
 

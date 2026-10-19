@@ -50,6 +50,31 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  *     is live, so a test sets live first.
  *   emitMetadata({ title, artist }) emits metadataDidChange with the same
  *     payload, as the alias the app listens for.
+ *
+ * Stream handoff and sign-in expiry (scripts/e2e-account-session.js;
+ * docs/TESTING.md "Stream handoff and sign-in expiry"):
+ *   MusicKit.configure(options) records the option names and
+ *     suppressErrorDialog (never a token) in snapshot().configure.
+ *   stop() records a "stop" transition and, like MusicKit, emits
+ *     playbackStateDidChange (stopped) and nowPlayingItemDidChange {}.
+ *   configure({ rejectMeStatus: 403 }) makes every /v1/me request reject
+ *     with an MKError-shaped error (errorCode "ACCESS_DENIED", status and
+ *     data.status); the request is still recorded. 0 or null clears it.
+ *   authorize() while isAuthorized returns the stale token without a popup,
+ *     as MusicKit does, and records { type: "authorize", popup: false }.
+ *     Otherwise it records popup: true and clears rejectMeStatus, or throws
+ *     AUTHORIZATION_ERROR when configure({ rejectAuthorize: true }) is set.
+ *   unauthorize() records "unauthorize", sets isAuthorized = false and emits
+ *     authorizationStatusDidChange.
+ *   reset() clears rejectMeStatus and rejectAuthorize.
+ *
+ * Audit fixes (scripts/e2e-audit-fixes.js; docs/TESTING.md "Audit fixes"):
+ *   configure({ hangAuthorize: true }) makes authorize() record
+ *     { type: "authorize", popup: true, hung: true } and wait, like a sign-in
+ *     window whose closed-window poll never fires. Each held call is counted
+ *     in snapshot().authorizeHeld until releaseAuthorize() (returns how many
+ *     it released) lets it finish through the normal path. reset() releases
+ *     any held call too.
  */
 
 function installMusicKitFixture() {
@@ -262,6 +287,20 @@ function installMusicKitFixture() {
     rejectQueryKeys: [],
     repeatViewCursor: false,
     liveMetadata: null,
+    // Sign-in expiry controls (header comment).
+    rejectMeStatus: 0,
+    rejectAuthorize: false,
+    // Sign-in window that never reports back (audit fixes, cancel a stuck
+    // sign-in). Held calls wait in authorizeReleases until releaseAuthorize().
+    hangAuthorize: false,
+    authorizeReleases: [],
+    configureOptions: null,
+  };
+  // Lets every held authorize() call finish through the normal path.
+  const releaseHeldAuthorize = () => {
+    const releases = state.authorizeReleases.splice(0);
+    for (const release of releases) release();
+    return releases.length;
   };
   let instance;
 
@@ -2119,6 +2158,20 @@ function installMusicKitFixture() {
       request.error = `Fixture request rejected: ${pathText}`;
       throw new Error(request.error);
     }
+    if (
+      state.rejectMeStatus &&
+      String(path).split("?", 1)[0].startsWith("/v1/me")
+    ) {
+      const status = state.rejectMeStatus;
+      const error = new Error(`Fixture user token rejected (${status})`);
+      error.errorCode = "ACCESS_DENIED";
+      error.reason = "ACCESS_DENIED";
+      error.status = status;
+      error.data = { status };
+      request.error = error.message;
+      request.status = status;
+      throw error;
+    }
     const response = templateArtwork(responseFor(pathText, request));
     request.completedAt = Date.now();
     request.response = clone(response);
@@ -2306,11 +2359,37 @@ function installMusicKitFixture() {
       else state.listeners.delete(name);
     },
     async authorize() {
+      // MusicKit returns the stale token with no popup while it looks valid.
+      if (this.isAuthorized) {
+        state.transitions.push({ type: "authorize", popup: false });
+        return this.musicUserToken;
+      }
+      const held = state.hangAuthorize;
+      if (held) {
+        state.transitions.push({ type: "authorize", popup: true, hung: true });
+        await new Promise((resolve) => state.authorizeReleases.push(resolve));
+      }
+      if (state.rejectAuthorize) {
+        state.transitions.push({
+          type: "authorize",
+          popup: true,
+          rejected: true,
+        });
+        const error = new Error("Fixture sign-in window closed");
+        error.errorCode = "AUTHORIZATION_ERROR";
+        error.reason = "AUTHORIZATION_ERROR";
+        throw error;
+      }
+      // A held call already recorded its popup when it started.
+      if (!held) state.transitions.push({ type: "authorize", popup: true });
+      state.rejectMeStatus = 0;
       this.isAuthorized = true;
       return this.musicUserToken;
     },
     async unauthorize() {
       this.isAuthorized = false;
+      state.transitions.push({ type: "unauthorize" });
+      emit(events.authorizationStatusDidChange, {});
     },
     async setQueue(options) {
       const itemIds = loadQueueItems(
@@ -2370,7 +2449,9 @@ function installMusicKitFixture() {
     },
     stop() {
       this.playbackState = STOPPED;
+      state.transitions.push({ type: "stop" });
       emit(events.playbackStateDidChange, { state: STOPPED });
+      emit(events.nowPlayingItemDidChange, {});
     },
     async skipToNextItem() {
       if (!state.queue.length) return -1;
@@ -2458,6 +2539,10 @@ function installMusicKitFixture() {
 
   const fixture = {
     seed: "arlet-playlist-continuation-2026-10-08",
+    /** Lets every held authorize() call finish; returns how many it released. */
+    releaseAuthorize() {
+      return releaseHeldAuthorize();
+    },
     configure(options = {}) {
       if (Object.prototype.hasOwnProperty.call(options, "delayPaths")) {
         state.delayPaths = [...(options.delayPaths ?? [])];
@@ -2530,6 +2615,15 @@ function installMusicKitFixture() {
       if (Object.prototype.hasOwnProperty.call(options, "repeatViewCursor")) {
         state.repeatViewCursor = options.repeatViewCursor === true;
       }
+      if (Object.prototype.hasOwnProperty.call(options, "rejectMeStatus")) {
+        state.rejectMeStatus = Math.max(0, Number(options.rejectMeStatus) || 0);
+      }
+      if (Object.prototype.hasOwnProperty.call(options, "rejectAuthorize")) {
+        state.rejectAuthorize = options.rejectAuthorize === true;
+      }
+      if (Object.prototype.hasOwnProperty.call(options, "hangAuthorize")) {
+        state.hangAuthorize = options.hangAuthorize === true;
+      }
       return this.snapshot();
     },
     reset() {
@@ -2557,6 +2651,10 @@ function installMusicKitFixture() {
       state.rejectQueryKeys = [];
       state.repeatViewCursor = false;
       state.liveMetadata = null;
+      state.rejectMeStatus = 0;
+      state.rejectAuthorize = false;
+      state.hangAuthorize = false;
+      releaseHeldAuthorize();
       state.queue = [];
       state.queueIndex = 0;
       state.shuffleHistory = [];
@@ -2825,6 +2923,10 @@ function installMusicKitFixture() {
         },
         volume: player.volume,
         authorized: instance.isAuthorized === true,
+        authorizeHeld: state.authorizeReleases.length,
+        configure: state.configureOptions
+          ? clone(state.configureOptions)
+          : null,
         liveMetadata: state.liveMetadata ? clone(state.liveMetadata) : null,
         contextTarget: state.contextTarget ? clone(state.contextTarget) : null,
       };
@@ -2845,8 +2947,13 @@ function installMusicKitFixture() {
       stopped: STOPPED,
       waiting: 9,
     },
-    configure() {
+    configure(options) {
       state.configured = true;
+      // Option names and the dialog flag only; the tokens never get recorded.
+      state.configureOptions = {
+        keys: Object.keys(options ?? {}),
+        suppressErrorDialog: options?.suppressErrorDialog === true,
+      };
       return instance;
     },
     getInstance() {

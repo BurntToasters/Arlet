@@ -6,7 +6,7 @@ import {
   setPlaybackError,
 } from "../state.ts";
 import { normalizeTrack } from "./normalize.ts";
-import { mapErrorToCode } from "./errors.ts";
+import { friendlyPlaybackMessage, mapErrorToCode } from "./errors.ts";
 import { redactSensitive } from "../platform/redact.ts";
 import type { PlaybackState } from "../domain/music.ts";
 import { syncMusicKitQueue } from "./player.ts";
@@ -42,6 +42,11 @@ export interface MusicKitEventHandlers {
   onAuthorizationChange?: () => void;
   /** MusicKit reported a volume. The caller decides whether it is new. */
   onMusicVolumeChange?: (volume: number) => void;
+  /**
+   * True while a parked queue stands for a stopped player, so MusicKit's stop
+   * and now-playing echoes must not overwrite it.
+   */
+  ignoreProviderPlayback?: () => boolean;
 }
 
 function mapPlaybackState(state: number): PlaybackState["status"] {
@@ -73,7 +78,9 @@ export function registerMusicKitEvents(
   onModeChange?: () => void,
   handlers: MusicKitEventHandlers = {},
 ): () => void {
+  const ignored = (): boolean => handlers.ignoreProviderPlayback?.() === true;
   const onPlaybackStateChange = (event: Record<string, unknown>): void => {
+    if (ignored()) return;
     // `oldState` is the state being left; without `state`, ask the player.
     const state =
       typeof event.state === "number" ? event.state : instance.playbackState;
@@ -82,6 +89,7 @@ export function registerMusicKitEvents(
   };
   let lastItemId: string | undefined;
   const onNowPlayingItemChange = (event: Record<string, unknown>): void => {
+    if (ignored()) return;
     const item = (event.item ?? null) as MusicKit.MediaItem | null;
     // Live text belongs to one stream. Drop it when the item changes, and
     // always when the new item is not live.
@@ -101,6 +109,7 @@ export function registerMusicKitEvents(
   // duration (and so the preview/full classification) changes.
   let lastDuration: number | undefined;
   const onPlaybackTimeChange = (event: Record<string, unknown>): void => {
+    if (ignored()) return;
     // NaN before metadata loads would also defeat the duration check below.
     const position = finiteOrZero(event.currentPlaybackTime);
     const duration = finiteOrZero(event.currentPlaybackDuration);
@@ -112,6 +121,7 @@ export function registerMusicKitEvents(
   // Duration can arrive after the first ticks, when metadata finishes loading.
   // It goes through the same tick channel, keeping the last reported position.
   const onPlaybackDurationChange = (event: Record<string, unknown>): void => {
+    if (ignored()) return;
     const duration = firstFiniteNumber(
       event.currentPlaybackDuration,
       event.duration,
@@ -124,14 +134,20 @@ export function registerMusicKitEvents(
     onStateChange?.();
   };
   const onMediaPlaybackError = (event: Record<string, unknown>): void => {
-    const message = String(event.message ?? "Playback error");
-    const safeMessage = redactSensitive(message);
-    setPlaybackError(mapErrorToCode(message), safeMessage);
+    if (ignored()) return;
+    const safeMessage = redactSensitive(
+      friendlyPlaybackMessage({
+        ...event,
+        message: String(event.message ?? "Playback error"),
+      }),
+    );
+    setPlaybackError(mapErrorToCode(event), safeMessage);
     onPlaybackError?.(safeMessage, event);
     onStateChange?.();
   };
 
   const onQueueItemsChange = (event: Record<string, unknown>): void => {
+    if (ignored()) return;
     if (syncMusicKitQueue(instance, event)) onQueueChange?.();
     onStateChange?.();
   };

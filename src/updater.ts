@@ -135,6 +135,54 @@ export function isBetaVersion(version: string): boolean {
   return PUBLISHED_BETA_VERSION_PATTERN.test(version);
 }
 
+const SEMVER_PATTERN =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/u;
+
+function parseSemver(
+  version: string,
+): { core: number[]; prerelease: string[] } | undefined {
+  const match = SEMVER_PATTERN.exec(version);
+  if (!match) return undefined;
+  return {
+    core: [Number(match[1]), Number(match[2]), Number(match[3])],
+    prerelease: match[4] ? match[4].split(".") : [],
+  };
+}
+
+/**
+ * Semver precedence: negative when `a` is older, positive when newer, 0 when
+ * equal. Undefined when either side is not semver, so callers keep the update
+ * they already have.
+ */
+export function compareVersions(a: string, b: string): number | undefined {
+  const left = parseSemver(a);
+  const right = parseSemver(b);
+  if (!left || !right) return undefined;
+  for (let index = 0; index < 3; index += 1) {
+    const diff = (left.core[index] ?? 0) - (right.core[index] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  // A release outranks its own prereleases.
+  if (left.prerelease.length === 0 || right.prerelease.length === 0) {
+    return right.prerelease.length - left.prerelease.length;
+  }
+  const length = Math.max(left.prerelease.length, right.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const x = left.prerelease[index];
+    const y = right.prerelease[index];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    if (x === y) continue;
+    const xNumeric = /^\d+$/u.test(x);
+    const yNumeric = /^\d+$/u.test(y);
+    if (xNumeric && yNumeric) return Number(x) - Number(y);
+    if (xNumeric) return -1;
+    if (yNumeric) return 1;
+    return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
 export function createUpdaterService(
   options: UpdaterServiceOptions = {},
 ): UpdaterService {
@@ -358,8 +406,21 @@ export function createUpdaterService(
     }
   };
 
+  /** Re-presents the downloaded update after a check that found nothing newer. */
+  const emitPendingReady = (interactive: boolean): void => {
+    emit({
+      status: "ready",
+      releaseNotes: releaseNotesForUpdate(pendingUpdate),
+      promptOpen: interactive || state.promptOpen,
+      error: undefined,
+      message: "Update downloaded and ready to install.",
+    });
+  };
+
   const runCheck = async (interactive: boolean): Promise<void> => {
     let checkedUpdate: UpdaterUpdate | null = null;
+    /** The downloaded update this check is replacing; it stays ready until the swap. */
+    let replacedPending: UpdaterUpdate | null = null;
     const checkGeneration = generation;
     const checkChannel = settings.updateChannel;
     try {
@@ -393,30 +454,43 @@ export function createUpdaterService(
         clearPending();
         emit({ releaseNotes: undefined, promptOpen: false });
       }
-      if (pendingUpdate) {
-        // A check that started before Install must not flip "installing"
-        // back to "ready", which would re-enable Install on the same
-        // resource, nor download the update again during the install.
-        if (!installInFlight) {
-          emit({
-            status: "ready",
-            releaseNotes: releaseNotesForUpdate(pendingUpdate),
-            promptOpen: interactive || state.promptOpen,
-            error: undefined,
-            message: "Update downloaded and ready to install.",
-          });
-        }
-        return;
-      }
+      // A check that started before Install must not flip "installing"
+      // back to "ready", which would re-enable Install on the same resource,
+      // nor download an update during the install.
+      if (pendingUpdate && installInFlight) return;
 
       onLog(
         `Update check started (interactive=${interactive}, target=${feed.target ?? "default"}).`,
       );
       checkedUpdate = await checkFeed(feed.target);
-      if (disposed || checkGeneration !== generation) {
+      if (disposed || checkGeneration !== generation || installInFlight) {
         closeUpdate(checkedUpdate);
         checkedUpdate = null;
         return;
+      }
+      if (pendingUpdate) {
+        // Only a strictly newer release replaces the downloaded one; a same or
+        // unreadable version keeps it installable with its prompt state.
+        const pending: UpdaterUpdate = pendingUpdate;
+        const order = checkedUpdate
+          ? compareVersions(checkedUpdate.version, pending.version)
+          : undefined;
+        if (!checkedUpdate || order === undefined || order <= 0) {
+          closeUpdate(checkedUpdate);
+          checkedUpdate = null;
+          onLog(
+            `Update check: ${pending.version} is still the newest version offered.`,
+          );
+          emitPendingReady(interactive);
+          return;
+        }
+        // The pending update stays installable until the newer one has fully
+        // downloaded; the swap below releases it.
+        replacedPending = pending;
+        onLog(
+          `Newer update ${checkedUpdate.version} downloading; ${pending.version} stays ready until it is complete.`,
+        );
+        emitPendingReady(interactive);
       }
       if (!checkedUpdate) {
         onLog(
@@ -442,23 +516,28 @@ export function createUpdaterService(
       onLog(`Update available: ${checkedUpdate.version}`);
       let downloadedBytes = 0;
       let contentLength: number | undefined;
-      emit({
-        status: "downloading",
-        version: checkedUpdate.version,
-        progress: 0,
-        downloadedBytes: 0,
-        contentLength: undefined,
-        releaseNotes: undefined,
-        message: `Downloading version ${checkedUpdate.version}…`,
-        error: undefined,
-        promptOpen: false,
-      });
+      // A replacement downloads silently while the pending update stays ready.
+      if (!replacedPending) {
+        emit({
+          status: "downloading",
+          version: checkedUpdate.version,
+          progress: 0,
+          downloadedBytes: 0,
+          contentLength: undefined,
+          releaseNotes: undefined,
+          message: `Downloading version ${checkedUpdate.version}…`,
+          error: undefined,
+          promptOpen: false,
+        });
+      }
       const downloaded = await downloadUpdate(
         checkedUpdate,
         feed.target,
         checkGeneration,
         (event: DownloadEvent): void => {
-          if (disposed || checkGeneration !== generation) return;
+          if (disposed || checkGeneration !== generation || replacedPending) {
+            return;
+          }
           if (event.event === "Started") {
             downloadedBytes = 0;
             contentLength = event.data.contentLength;
@@ -481,16 +560,32 @@ export function createUpdaterService(
           });
         },
       );
-      if (!downloaded || disposed || checkGeneration !== generation) {
+      if (
+        !downloaded ||
+        disposed ||
+        checkGeneration !== generation ||
+        installInFlight ||
+        (replacedPending !== null && pendingUpdate !== replacedPending)
+      ) {
+        // The newer resource is released; a replaced pending update was never
+        // closed, so it stays installable.
+        if (replacedPending) {
+          onLog(
+            `Newer update ${checkedUpdate.version} was not completed; ${replacedPending.version} stays ready.`,
+          );
+        }
         closeUpdate(checkedUpdate);
         checkedUpdate = null;
         return;
       }
 
+      // The newer update is complete: release the old one and present it.
+      const previous = pendingUpdate;
       pendingUpdate = checkedUpdate;
       pendingTarget = feed.target;
       pendingResolvedChannel = feed.resolvedChannel;
       checkedUpdate = null;
+      if (previous) closeUpdate(previous);
       onLog(`Update ${pendingUpdate.version} downloaded and ready to install.`);
       emit({
         status: "ready",
@@ -507,6 +602,24 @@ export function createUpdaterService(
     } catch (error) {
       if (disposed || checkGeneration !== generation) return;
       const message = safeErrorMessage(error);
+      const pending = pendingUpdate;
+      if (pending && !installInFlight) {
+        // A failed check must not hide a downloaded update. Interactive checks
+        // may show the error, but Install stays available.
+        onLog(
+          `${interactive ? "Updater error" : "Update check failed"} (pending ${pending.version} kept): ${message}`,
+        );
+        emit({
+          status: "ready",
+          releaseNotes: releaseNotesForUpdate(pending),
+          promptOpen: interactive || state.promptOpen,
+          message: "Update downloaded and ready to install.",
+          error: interactive
+            ? `Failed to check for updates. ${message}`
+            : undefined,
+        });
+        return;
+      }
       onLog(
         `${interactive ? "Updater error" : "Update check failed"}: ${message}`,
       );

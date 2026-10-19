@@ -187,6 +187,7 @@ export function SettingsView(): JSX.Element {
   const settings = state.settings;
   const authorized = state.auth.status === "authorized";
   const authorizationPending = state.auth.pending === true;
+  const sessionExpired = authorized && state.auth.sessionExpired === true;
   const account = state.account;
   const [licensesOpen, setLicensesOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
@@ -274,9 +275,11 @@ export function SettingsView(): JSX.Element {
             </span>
             <div className="account-card-copy">
               <strong>
-                {authorized
-                  ? "Apple Music connected"
-                  : "Apple Music not connected"}
+                {sessionExpired
+                  ? "Apple Music sign-in expired"
+                  : authorized
+                    ? "Apple Music connected"
+                    : "Apple Music not connected"}
               </strong>
               <span>
                 {initializationCopy(state.initialization)}
@@ -286,15 +289,39 @@ export function SettingsView(): JSX.Element {
               </span>
             </div>
             {authorized ? (
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() =>
-                  void controller.signOut().catch(reportActionError)
-                }
-              >
-                Sign out
-              </button>
+              <>
+                <button
+                  className={
+                    sessionExpired ? "primary-button" : "secondary-button"
+                  }
+                  type="button"
+                  disabled={authorizationPending}
+                  onClick={() =>
+                    void controller.reauthorize().catch(reportActionError)
+                  }
+                >
+                  {authorizationPending ? "Signing in…" : "Sign in again"}
+                </button>
+                {authorizationPending ? (
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    data-action="cancel-sign-in"
+                    onClick={() => controller.cancelSignIn()}
+                  >
+                    Cancel
+                  </button>
+                ) : null}
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() =>
+                    void controller.signOut().catch(reportActionError)
+                  }
+                >
+                  Sign out
+                </button>
+              </>
             ) : (
               <button
                 className="primary-button"
@@ -310,6 +337,16 @@ export function SettingsView(): JSX.Element {
                 {authorizationPending ? "Signing in…" : "Sign in"}
               </button>
             )}
+            {!authorized && authorizationPending ? (
+              <button
+                className="secondary-button"
+                type="button"
+                data-action="cancel-sign-in"
+                onClick={() => controller.cancelSignIn()}
+              >
+                Cancel
+              </button>
+            ) : null}
           </div>
         </section>
 

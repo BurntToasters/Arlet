@@ -1,6 +1,6 @@
 [package]
 name = "arlet"
-version = "0.3.0-beta.3"
+version = "0.3.0-beta.4"
 description = "Unofficial Apple Music client for Windows 10 and 11, built with Tauri v2 and MusicKit."
 repository = "https://github.com/BurntToasters/Arlet"
 homepage = "https://github.com/BurntToasters/Arlet#readme"
@@ -28,15 +28,21 @@ tauri-plugin-updater = "2"
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"
+# The `implement` macro for the audio endpoint notifier emits `windows_core` paths.
+windows-core = "0.62"
 # Same version wry uses; needed for the WebView2 ProcessFailed hook.
 webview2-com = "0.39"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
+    "Win32_System_Com",
     "Win32_System_LibraryLoader",
+    "Win32_System_Power",
     "Win32_System_Registry",
     "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
     "Win32_System_WinRT",
     "Win32_Storage_FileSystem",
     "Win32_UI_Controls",

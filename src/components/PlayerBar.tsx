@@ -279,6 +279,7 @@ export function PlayerBar(): JSX.Element {
         />
         <PlaybackProgress
           hasTrack={Boolean(current)}
+          seekable={!playback.pendingRestore?.station}
           onSeek={(seconds) => run(() => controller.seek(seconds))}
         />
       </div>

@@ -1,9 +1,5 @@
-/* Embedded-token expiry warning; above the player, left of the toasts. */
+/* Embedded-token expiry warning; positioned by .notice-stack (30-session-expired.css). */
 .token-expiry-notice {
-  position: fixed;
-  z-index: 44;
-  bottom: calc(var(--player-height) + 12px);
-  left: calc(var(--sidebar-width) + 16px);
   display: flex;
   max-width: min(460px, calc(100vw - 32px));
   align-items: flex-start;
@@ -32,11 +28,6 @@
   background: transparent;
   color: var(--text-muted);
   place-items: center;
-}
-@media (max-width: 760px) {
-  .token-expiry-notice {
-    left: 16px;
-  }
 }
 .licenses-intro {
   margin: 0 0 12px;

@@ -1,4 +1,8 @@
-import { httpStatusOf, mapErrorToCode } from "../musickit/errors.ts";
+import {
+  friendlyPlaybackMessage,
+  httpStatusOf,
+  mapErrorToCode,
+} from "../musickit/errors.ts";
 import {
   changeToMediaAtIndex,
   queueDescriptorsForTracks,
@@ -17,7 +21,11 @@ import {
 } from "../musickit/unresolved.ts";
 import { reportActionError } from "../components/action-errors.ts";
 import type { PlayTiming } from "./collection-playback.ts";
-import { FIRST_BATCH_LENGTH, startWindow } from "./queue-window.ts";
+import {
+  FIRST_BATCH_LENGTH,
+  startWindow,
+  type PlayOptions,
+} from "./queue-window.ts";
 import {
   clearPlaybackError,
   getState,
@@ -55,17 +63,20 @@ function isTransientLookupFailure(error: unknown): boolean {
 
 /** Shared request tokens and failure reporting for every play path. */
 export function createPlayRequests(context: PlaybackContext) {
-  const { log, session } = context;
+  const { log, session, suspectSession } = context;
 
   const reportPlayFailure = (label: string, error: unknown): void => {
     const message = safeErrorMessage(error);
-    setPlaybackError(mapErrorToCode(errorMessage(error)), message);
+    setPlaybackError(mapErrorToCode(error), friendlyPlaybackMessage(error));
     log(`${label}: ${message}`);
+    suspectSession?.(error);
   };
 
   /** One play request. `current` gates state writes; `mayStart` gates audio. */
   const beginPlayRequest = () => {
     const intent = ++session.playIntent;
+    // Any new play replaces a station; playStation sets it again after this.
+    session.station = undefined;
     const pauses = session.pauseCount;
     return {
       current: (): boolean => intent === session.playIntent,
@@ -171,6 +182,7 @@ export function createPlayTracks(
     requestedTracks: readonly Track[],
     requestedStart = 0,
     timing?: PlayTiming,
+    options: PlayOptions = {},
   ): Promise<number | undefined> => {
     const startedAt = timing?.startedAt ?? performance.now();
     const steps = [...(timing?.steps ?? [])];
@@ -190,7 +202,12 @@ export function createPlayTracks(
       throw new Error("The selected song is unavailable.");
     }
     const shuffled = readPlaybackModes(instance).shuffleMode === "songs";
-    const split = startWindow(requestedTracks, requestedStart, shuffled);
+    const split = startWindow(
+      requestedTracks,
+      requestedStart,
+      shuffled,
+      options,
+    );
     let batch = split.batch;
     let rest = split.rest;
     clearContinuation();

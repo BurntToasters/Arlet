@@ -354,12 +354,22 @@ async function ensureSignedIn(page, check) {
   return signedIn;
 }
 
-// Mirrors discovery's external sign-out: the app runs its local sign-out
-// (recents, saved queue and library cache go), then the fixture is authorized
-// again without the app signing back in.
+// Mirrors discovery's external sign-out: MusicKit stops authorizing, the app
+// shows its sign-in banner and keeps its data, and Sign out in the banner runs
+// the local sign-out (recents, saved queue and library cache go). Then the
+// fixture is authorized again without the app signing back in.
 async function leaveSignedOut(page) {
   await fixtureCall(page, "emitAuthorizationStatus", [false]);
-  await page.evaluate(`location.hash = "#/library/recent"; return true;`);
+  await waitFor(
+    page,
+    `Boolean(document.querySelector(".session-expired-notice"))`,
+    10_000,
+  );
+  await page.evaluate(`
+    [...document.querySelectorAll(".session-expired-notice button")]
+      .find((node) => node.textContent.trim() === "Sign out")?.click();
+    location.hash = "#/library/recent";
+    return true;`);
   await waitFor(
     page,
     `document.body.innerText.includes("Sign in to view your library")`,
