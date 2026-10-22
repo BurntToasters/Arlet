@@ -1,4 +1,11 @@
-import { CircleAlert, ListMusic, Repeat, Shuffle, Star } from "lucide-preact";
+import {
+  CircleAlert,
+  ListMusic,
+  PictureInPicture2,
+  Repeat,
+  Shuffle,
+  Star,
+} from "lucide-preact";
 import type { JSX } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import {
@@ -16,6 +23,7 @@ import {
   type LiveMetadata,
 } from "../musickit/live-metadata.ts";
 import type { TrackNavigation } from "../musickit/song-navigation.ts";
+import { toggleMiniPlayer } from "../app/mini-player.ts";
 import { setUiState } from "../state.ts";
 import { Artwork } from "./Artwork.tsx";
 import { IconButton } from "./IconButton.tsx";
@@ -321,6 +329,16 @@ export function PlayerBar(): JSX.Element {
           </span>
         ) : null}
         <VolumeControl />
+        <button
+          className="icon-button"
+          type="button"
+          data-mini-player-toggle
+          aria-label="Mini player"
+          title="Mini player (Ctrl+Shift+M)"
+          onClick={() => void toggleMiniPlayer().catch(reportActionError)}
+        >
+          <PictureInPicture2 aria-hidden="true" size={18} strokeWidth={1.8} />
+        </button>
         <IconButton
           icon={ListMusic}
           label="Toggle Playing Next"

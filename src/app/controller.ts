@@ -318,6 +318,8 @@ export interface AppController {
   /** Rejects when the runtime has no writable autoplay; saves only on success. */
   setAutoplay(enabled: boolean): Promise<void>;
   setTrayIcon(enabled: boolean): Promise<void>;
+  /** Writes or removes the Windows sign-in entry; the Rust side owns the registry write. */
+  setLaunchAtStartup(enabled: boolean): Promise<void>;
   /** Saving it switches the native log file on or off at once. */
   setDebugMode(enabled: boolean): Promise<void>;
   /** Turning this off deletes the saved queue. */
@@ -1099,6 +1101,8 @@ export function createAppController(
     setAutoplay: preferences.setAutoplay,
 
     setTrayIcon: preferences.setTrayIcon,
+
+    setLaunchAtStartup: preferences.setLaunchAtStartup,
 
     setDebugMode: preferences.setDebugMode,
 

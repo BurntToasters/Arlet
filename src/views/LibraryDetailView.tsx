@@ -52,6 +52,8 @@ import { reportActionError } from "../components/action-errors.ts";
 import type { PlaylistCuratorRef } from "../musickit/curators.ts";
 import { OfflineBanner } from "../components/OfflineBanner.tsx";
 import { VirtualList } from "../components/VirtualList.tsx";
+import { SelectionBar } from "../components/SelectionBar.tsx";
+import { useTrackSelection } from "../components/track-selection.ts";
 import {
   detailNotes,
   detailSummary,
@@ -174,6 +176,15 @@ function TrackList({
       groupByDisc(resources, parentKind === "album" ? discNumberOf : () => 1),
     [resources, parentKind],
   );
+  // Selection spans every disc, in the album's track order.
+  const loadedTracks = useMemo(
+    () => resources.map(toTrack).filter((item): item is Track => Boolean(item)),
+    [resources],
+  );
+  const selection = useTrackSelection(
+    loadedTracks,
+    `${parentKind}:${parentId}`,
+  );
   // Several discs show each track's position on its disc; play still uses the
   // album-wide index.
   const multiDisc = groups.length > 1;
@@ -197,35 +208,52 @@ function TrackList({
             "data-context-parent-source": parentSource,
             "data-context-parent-index": String(index),
           }}
+          selected={selection.isSelected(item.id)}
+          onSelect={selection.handleClick}
         />
       )}
     />
   );
   if (groups.length < 2) {
     return (
-      <section className="library-list-panel" aria-label="Tracks">
-        {renderRows(groups[0]?.items ?? [])}
-      </section>
+      <>
+        <section
+          className="library-list-panel"
+          aria-label="Tracks"
+          ref={selection.setPanel}
+          onKeyDown={selection.onKeyDown}
+        >
+          {renderRows(groups[0]?.items ?? [])}
+        </section>
+        <SelectionBar tracks={selection.tracks} onClear={selection.clear} />
+      </>
     );
   }
   return (
-    <div className="library-disc-groups">
-      {groups.map((group) => (
-        <section
-          key={group.disc}
-          className="library-disc"
-          aria-labelledby={`library-disc-${group.disc}`}
-        >
-          <h2
-            id={`library-disc-${group.disc}`}
-            className="library-disc-heading"
+    <>
+      <div
+        className="library-disc-groups"
+        ref={selection.setPanel}
+        onKeyDown={selection.onKeyDown}
+      >
+        {groups.map((group) => (
+          <section
+            key={group.disc}
+            className="library-disc"
+            aria-labelledby={`library-disc-${group.disc}`}
           >
-            Disc {group.disc}
-          </h2>
-          <div className="library-list-panel">{renderRows(group.items)}</div>
-        </section>
-      ))}
-    </div>
+            <h2
+              id={`library-disc-${group.disc}`}
+              className="library-disc-heading"
+            >
+              Disc {group.disc}
+            </h2>
+            <div className="library-list-panel">{renderRows(group.items)}</div>
+          </section>
+        ))}
+      </div>
+      <SelectionBar tracks={selection.tracks} onClear={selection.clear} />
+    </>
   );
 }
 

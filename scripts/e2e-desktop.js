@@ -4,7 +4,8 @@
  * same Tauri events the Rust side emits, through the listeners the app has
  * registered. The tray and the SMTC flyout are release-only evidence. */
 
-import { waitFor as pollFor } from "./e2e-helpers.js";
+import { spawnSync } from "node:child_process";
+import { sleep, waitFor as pollFor } from "./e2e-helpers.js";
 
 const PAUSED = 4;
 const PLAYING = 5;
@@ -24,9 +25,12 @@ export function recordTauriEvents() {
   if (window.__ARLET_E2E_TAURI_EVENTS__) return;
   const handlers = new Map();
   const seen = [];
+  // Totals per command; `seen` keeps only the latest 50 for debugging.
+  const counts = new Map();
   let mediaSession;
   const record = (command, args) => {
     seen.push(command);
+    counts.set(command, (counts.get(command) ?? 0) + 1);
     if (seen.length > 50) seen.shift();
     if (command === "update_windows_media_session") {
       mediaSession = args?.payload;
@@ -88,6 +92,10 @@ export function recordTauriEvents() {
     },
     debug() {
       return { events: [...handlers.keys()], commands: [...seen] };
+    },
+    /** How many times the page sent a command since it loaded. */
+    count(command) {
+      return counts.get(command) ?? 0;
     },
     /** The last payload sent to the Windows media session. */
     mediaSession() {
@@ -194,6 +202,32 @@ async function waitForSetting(page, key, value, timeoutMs = 3000) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   return false;
+}
+
+const LAUNCH_LABEL = "Launch Arlet when Windows starts";
+// Set by e2e-app.js (ARLET_E2E_RUN_KEY); the real Run key is only compared.
+const E2E_RUN_KEY = "HKCU\\Software\\ArletE2E\\Run";
+const REAL_RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+const LAUNCH_DATA_RE = /"[^"]+\\arlet\.exe" --autostart/iu;
+
+/** `reg query` exits 1 when the value is absent; that reads as not present. */
+function readRunValue(key) {
+  const out = spawnSync("reg", ["query", key, "/v", "Arlet"], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (out.error || out.status !== 0) return { present: false, data: "" };
+  return { present: true, data: out.stdout };
+}
+
+async function waitForRunValue(key, present, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  let value = readRunValue(key);
+  while (value.present !== present && Date.now() < deadline) {
+    await sleep(250);
+    value = readRunValue(key);
+  }
+  return value;
 }
 
 /** Emits a system-media event the way the Rust side does. */
@@ -508,6 +542,73 @@ export async function runDesktop({ page, check }) {
       "tray icon toggle saves its setting",
       trayToggleShown && trayOff && trayOn,
       { trayToggleShown, trayOff, trayOn },
+    );
+
+    // Failure modes guarded by the launch-at-startup checks below:
+    // - the setting is not saved, or the toggle does nothing;
+    // - the Run value is not written while the setting is on;
+    // - the value has wrong data: no quotes around the exe path, the wrong
+    //   exe, or no --autostart argument;
+    // - the value is not removed when the setting is turned off;
+    // - the real HKCU Run key is changed instead of ARLET_E2E_RUN_KEY.
+    const launchToggleShown = await waitFor(
+      page,
+      labelExists(LAUNCH_LABEL),
+      3000,
+    );
+    const realRunBefore = readRunValue(REAL_RUN_KEY);
+    let launchOn = false;
+    let launchOff = false;
+    let launchValueOn = { present: false, data: "" };
+    let launchValueOff = { present: true, data: "" };
+    let realRunWhileOn = realRunBefore;
+    try {
+      await page.evaluate(clickToggle(LAUNCH_LABEL));
+      launchOn = await waitForSetting(page, "launchAtStartup", true);
+      launchValueOn = await waitForRunValue(E2E_RUN_KEY, true);
+      realRunWhileOn = readRunValue(REAL_RUN_KEY);
+      await page.evaluate(clickToggle(LAUNCH_LABEL));
+      launchOff = await waitForSetting(page, "launchAtStartup", false);
+      launchValueOff = await waitForRunValue(E2E_RUN_KEY, false);
+    } finally {
+      // Leave the setting off even when a step above failed.
+      if ((await savedSettings(page)).launchAtStartup === true) {
+        await page.evaluate(clickToggle(LAUNCH_LABEL));
+        await waitForSetting(page, "launchAtStartup", false);
+      }
+    }
+    const realRunAfter = readRunValue(REAL_RUN_KEY);
+    const sameRunValue = (a, b) => a.present === b.present && a.data === b.data;
+    check(
+      "launch at startup toggle saves its setting",
+      launchToggleShown && launchOn && launchOff,
+      { launchToggleShown, launchOn, launchOff },
+    );
+    check(
+      "launch at startup writes the exe with --autostart to the E2E Run key",
+      launchValueOn.present && LAUNCH_DATA_RE.test(launchValueOn.data),
+      {
+        present: launchValueOn.present,
+        data: launchValueOn.data.slice(0, 300),
+      },
+    );
+    check(
+      "launch at startup removes the E2E Run value when turned off",
+      !launchValueOff.present,
+      {
+        present: launchValueOff.present,
+        data: launchValueOff.data.slice(0, 300),
+      },
+    );
+    check(
+      "launch at startup leaves the real Run key untouched",
+      sameRunValue(realRunBefore, realRunWhileOn) &&
+        sameRunValue(realRunBefore, realRunAfter),
+      {
+        before: realRunBefore.data.slice(0, 300),
+        whileOn: realRunWhileOn.data.slice(0, 300),
+        after: realRunAfter.data.slice(0, 300),
+      },
     );
 
     await page.evaluate("location.hash = '#/home'; return true;");

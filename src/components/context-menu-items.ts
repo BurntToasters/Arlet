@@ -31,7 +31,11 @@ import type { LucideIcon } from "lucide-preact";
 import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { useAppRouter } from "../app/context.tsx";
 import type { AppController } from "../app/controller.ts";
-import { isLibraryTarget, ratingResourceType } from "../app/ratings.ts";
+import {
+  isLibraryTarget,
+  ratingResourceType,
+  trackRatingTarget,
+} from "../app/ratings.ts";
 import type { Track } from "../domain/music.ts";
 import type { TrackNavigation } from "../musickit/song-navigation.ts";
 import type { Route } from "../routing/router.ts";
@@ -134,6 +138,7 @@ export function buildItems({
   navigation,
   editable,
   selected,
+  selectionTracks,
   close,
   restoreFocus,
   restoreTarget,
@@ -145,6 +150,8 @@ export function buildItems({
   navigation?: TrackNavigation;
   editable: boolean;
   selected: boolean;
+  /** The songs of a 2+ selection that the row belongs to, in list order. */
+  selectionTracks?: readonly Track[];
   close: () => void;
   restoreFocus: () => void;
   restoreTarget?: HTMLElement;
@@ -239,6 +246,74 @@ export function buildItems({
         }),
       },
     );
+  }
+
+  const appItems: MenuItem[] = [
+    {
+      id: "search",
+      label: "Search Apple Music",
+      shortcut: "Ctrl+K",
+      icon: Search,
+      action: run(() => router.navigate({ kind: "search", query: "" })),
+    },
+    {
+      id: "settings",
+      label: "Settings",
+      icon: Settings,
+      action: run(() => router.navigate({ kind: "settings" })),
+    },
+  ];
+
+  // A row in a 2+ selection gets the bulk actions only. Single-song items
+  // (navigation to its album or artist, station, queue removal) are left out.
+  if (selectionTracks && selectionTracks.length > 1) {
+    const tracks = selectionTracks;
+    const count = tracks.length;
+    const bulkPlayback: MenuItem[] = [
+      {
+        id: "play-next",
+        label: `Play ${count} Songs Next`,
+        icon: SkipForward,
+        action: run(() => {
+          void controller.playNextTracks(tracks).catch(reportActionError);
+        }),
+      },
+      {
+        id: "play-later",
+        label: `Play ${count} Songs Later`,
+        icon: Forward,
+        action: run(() => {
+          void controller.playLaterTracks(tracks).catch(reportActionError);
+        }),
+      },
+      {
+        id: "add-to-playlist",
+        label: `Add ${count} Songs to Playlist…`,
+        icon: ListPlus,
+        action: run(() => {
+          requestPlaylistDialog("picker", tracks, restoreTarget);
+        }),
+      },
+    ];
+    const bulkLibrary: MenuItem[] = [
+      {
+        id: "favorite",
+        label: `Favorite ${count} Songs`,
+        icon: Star,
+        action: run(() => {
+          void Promise.all(
+            tracks.map((item) => controller.rate(trackRatingTarget(item), 1)),
+          ).catch(reportActionError);
+        }),
+      },
+    ];
+    return joinGroups([
+      navigationItems,
+      editItems,
+      bulkPlayback,
+      bulkLibrary,
+      appItems,
+    ]);
   }
 
   const playbackItems: MenuItem[] = [];
@@ -558,22 +633,6 @@ export function buildItems({
       },
     );
   }
-
-  const appItems: MenuItem[] = [
-    {
-      id: "search",
-      label: "Search Apple Music",
-      shortcut: "Ctrl+K",
-      icon: Search,
-      action: run(() => router.navigate({ kind: "search", query: "" })),
-    },
-    {
-      id: "settings",
-      label: "Settings",
-      icon: Settings,
-      action: run(() => router.navigate({ kind: "settings" })),
-    },
-  ];
 
   return joinGroups([
     navigationItems,

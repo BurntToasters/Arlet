@@ -45,6 +45,8 @@ export interface AppSettings {
   restoreSession: boolean;
   /** Show the tray icon; closing the window then hides to it instead of quitting. */
   trayIcon: boolean;
+  /** Start Arlet when Windows signs in (HKCU Run entry; starts hidden in the tray when trayIcon is on). */
+  launchAtStartup: boolean;
   /** Write the app log to disk (`arlet.log`). Off by default. */
   debugMode: boolean;
   /** Reserved for forward-compatible settings owned by other versions. */
@@ -271,6 +273,8 @@ export interface UiState {
   diagnosticsOpen: boolean;
   sidebarOpen: boolean;
   nowPlayingOpen: boolean;
+  /** Compact window mode; the main shell is replaced by MiniPlayer. */
+  miniPlayer?: boolean;
   /** Collection whose pages load before playback starts. */
   pendingCollection?: PendingCollectionPlay;
 }

@@ -10,6 +10,7 @@
 // Offline auto-reload, the ratings caps and the updater are code-reviewed
 // (TESTING.md).
 
+import { restoreClipboard } from "./e2e-clipboard.js";
 import { fixtureCall, sleep, waitFor as pollFor } from "./e2e-helpers.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -290,9 +291,9 @@ async function clipboardCopy(page, check, dataDir) {
   );
   const previous = await page.evaluate(`
     try {
-      return (await window.__TAURI_INTERNALS__.invoke("plugin:clipboard-manager|read_text")) ?? "";
+      return (await window.__TAURI_INTERNALS__.invoke("plugin:clipboard-manager|read_text")) ?? null;
     } catch {
-      return "";
+      return null;
     }`);
   const clickedAt = Date.now();
   await page.evaluate(`
@@ -311,13 +312,8 @@ async function clipboardCopy(page, check, dataDir) {
     await sleep(100);
   }
   const elapsed = Date.now() - clickedAt;
-  try {
-    await page.evaluate(`
-      await window.__TAURI_INTERNALS__.invoke("plugin:clipboard-manager|write_text", { text: ${q(String(previous))} });
-      return true;`);
-  } catch {
-    // Restoring the user's clipboard is best effort.
-  }
+  // Best effort, and kept out of clipboard history (e2e-clipboard.js).
+  restoreClipboard(previous);
   // Observed, not asserted: the log names the path that ran, when readable.
   const logFile = path.join(
     process.env.LOCALAPPDATA ?? "",

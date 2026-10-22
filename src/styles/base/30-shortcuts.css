@@ -1,0 +1,66 @@
+/* Keyboard shortcut overlay (ShortcutOverlay.tsx). It reuses the playlist
+   dialog surface and only widens it and lays out the rows. */
+.shortcut-overlay {
+  width: min(760px, 100%);
+  max-height: min(720px, calc(100vh - 40px));
+  overflow-y: auto;
+}
+
+.shortcut-overlay:focus {
+  outline: none;
+}
+
+.shortcut-overlay-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.shortcut-overlay-group h3 {
+  margin: 0 0 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.shortcut-overlay-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 24px;
+  margin: 0;
+}
+
+.shortcut-overlay-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+}
+
+.shortcut-overlay-row dt {
+  min-width: 84px;
+}
+
+.shortcut-overlay-row dd {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.shortcut-overlay-row kbd {
+  display: inline-block;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+  font: inherit;
+  font-size: 12px;
+}
+
+@media (max-width: 600px) {
+  .shortcut-overlay-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

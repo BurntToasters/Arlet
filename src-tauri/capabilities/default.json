@@ -51,6 +51,8 @@
     "allow-update-windows-media-session",
     "allow-update-windows-media-timeline",
     "allow-clear-windows-media-session",
+    "allow-set-mini-player",
+    "allow-set-mini-player-on-top",
     "allow-quit-ready"
   ]
 }

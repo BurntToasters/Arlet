@@ -30,6 +30,8 @@ import type { RuntimeAppState } from "../state.ts";
 import { Artwork } from "../components/Artwork.tsx";
 import { LibraryToolbar } from "../components/LibraryToolbar.tsx";
 import { SongRow } from "../components/SongRow.tsx";
+import { SelectionBar } from "../components/SelectionBar.tsx";
+import { useTrackSelection } from "../components/track-selection.ts";
 import { CardActions, CardShell } from "../components/CardActions.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import {
@@ -514,6 +516,8 @@ export function LibraryTrackRow({
   disabled,
   contextData: collectionContext,
   discTrackNumbers,
+  selected,
+  onSelect,
 }: {
   resource: ResourceLike;
   index: number;
@@ -523,6 +527,9 @@ export function LibraryTrackRow({
   contextData?: Record<string, string>;
   /** Shows the track's position on its disc; see SongRow. */
   discTrackNumbers?: boolean;
+  /** Multi-select; see SongRow. */
+  selected?: boolean;
+  onSelect?: (event: MouseEvent, track: Track) => boolean;
 }): JSX.Element {
   const appController = useAppController();
   const track = toTrack(resource);
@@ -545,6 +552,8 @@ export function LibraryTrackRow({
       durationClassName="library-row-duration"
       contextData={{ ...contextData(resource, "track"), ...collectionContext }}
       discTrackNumbers={discTrackNumbers}
+      selected={selected}
+      onSelect={onSelect ? (event) => onSelect(event, track) : undefined}
     />
   );
 }
@@ -895,6 +904,14 @@ export function LibraryView({
       ),
     };
   }, [visibleResources, section]);
+  const loadedTracks = useMemo(
+    () =>
+      trackResources
+        .map(toTrack)
+        .filter((item): item is Track => Boolean(item)),
+    [trackResources],
+  );
+  const selection = useTrackSelection(loadedTracks, section);
 
   useEffect(() => {
     if (!canView) return;
@@ -1120,24 +1137,37 @@ export function LibraryView({
           ) : null}
           {trackResources.length &&
           !["artists", "albums", "playlists"].includes(section) ? (
-            <section className="library-list-panel" aria-label={copy.title}>
-              <VirtualList
-                className="library-track-list"
-                items={trackResources}
-                getKey={(resource) => resource.id}
-                renderRow={(resource, index) => (
-                  <LibraryTrackRow
-                    resource={resource}
-                    index={index}
-                    onPlay={playTrack}
-                    onPlayNext={(track) =>
-                      act(() => controller.playNextTracks([track]))
-                    }
-                    disabled={!authorized}
-                  />
-                )}
+            <>
+              <section
+                className="library-list-panel"
+                aria-label={copy.title}
+                ref={selection.setPanel}
+                onKeyDown={selection.onKeyDown}
+              >
+                <VirtualList
+                  className="library-track-list"
+                  items={trackResources}
+                  getKey={(resource) => resource.id}
+                  renderRow={(resource, index) => (
+                    <LibraryTrackRow
+                      resource={resource}
+                      index={index}
+                      onPlay={playTrack}
+                      onPlayNext={(track) =>
+                        act(() => controller.playNextTracks([track]))
+                      }
+                      disabled={!authorized}
+                      selected={selection.isSelected(resource.id)}
+                      onSelect={selection.handleClick}
+                    />
+                  )}
+                />
+              </section>
+              <SelectionBar
+                tracks={selection.tracks}
+                onClear={selection.clear}
               />
-            </section>
+            </>
           ) : null}
           {recentCards.length ? (
             <section

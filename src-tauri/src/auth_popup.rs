@@ -65,6 +65,11 @@ pub fn create_main_window(app: &App) -> Result<WebviewWindow, Box<dyn std::error
         // Keep the window hidden through webview creation. Startup applies the
         // saved native material and custom chrome before the first show.
         .visible(false)
+        // An E2E background launch must not take focus. Not focusable keeps
+        // WS_EX_NOACTIVATE through every style change tao makes; unfocused
+        // stops the webview from pulling keyboard focus when it is created.
+        .focused(!crate::background_launch::enabled())
+        .focusable(!crate::background_launch::enabled())
         .on_new_window(|url, _features| decide_new_window(url))
         .on_navigation(move |url| {
             let allowed = is_allowed_main_navigation(url, dev_url.as_ref());

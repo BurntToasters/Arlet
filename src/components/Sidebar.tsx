@@ -21,14 +21,20 @@ import {
 } from "lucide-preact";
 import type { LucideIcon } from "lucide-preact";
 import type { JSX, TargetedEvent } from "preact";
-import { useAppRouter, useAppSelector, useAppSlices } from "../app/context.tsx";
+import {
+  useAppController,
+  useAppRouter,
+  useAppSelector,
+  useAppSlices,
+} from "../app/context.tsx";
 import {
   libraryDetailKey,
   setUiState,
   type RuntimeAppState,
 } from "../state.ts";
 import { openSupportPage } from "../platform/support.ts";
-import { reportActionError } from "./action-errors.ts";
+import { reportActionError, reportNotice } from "./action-errors.ts";
+import { draggedTracks, isTrackDrag } from "./track-selection.ts";
 import type { PinnedPlaylist } from "../domain/music.ts";
 import type { LibrarySection, Route } from "../routing/router.ts";
 
@@ -236,7 +242,10 @@ export function Sidebar(): JSX.Element {
     "pins",
   );
   const router = useAppRouter();
+  const controller = useAppController();
   const account = state.account;
+  // Key of the pinned playlist a song drag is over, while it can take the drop.
+  const [dropTarget, setDropTarget] = useState<string | undefined>(undefined);
   const [query, setQuery] = useState(
     state.navigation.kind === "search" ? state.navigation.query : "",
   );
@@ -361,6 +370,49 @@ export function Sidebar(): JSX.Element {
   const pinsSettled =
     playlistsStatus === "success" || playlistsStatus === "refreshing";
 
+  // Library pins take a drop of songs from the song lists. Catalog pins do
+  // not, so they get no handlers and never call preventDefault.
+  const dropHandlers = (pin: PinnedPlaylist, name: string | undefined) => {
+    if (pin.source !== "library") return {};
+    const key = `${pin.source}:${pin.id}`;
+    return {
+      onDragOver: (event: DragEvent) => {
+        if (!isTrackDrag(event.dataTransfer)) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+        setDropTarget(key);
+      },
+      onDragLeave: (event: DragEvent) => {
+        const next = event.relatedTarget;
+        if (
+          next instanceof Node &&
+          event.currentTarget instanceof Node &&
+          event.currentTarget.contains(next)
+        ) {
+          return;
+        }
+        setDropTarget((current) => (current === key ? undefined : current));
+      },
+      onDrop: (event: DragEvent) => {
+        setDropTarget(undefined);
+        if (!isTrackDrag(event.dataTransfer)) return;
+        event.preventDefault();
+        const tracks = draggedTracks();
+        if (!tracks?.length) return;
+        const count = tracks.length;
+        const label = name ?? "playlist";
+        void controller
+          .addTracksToPlaylist(pin.id, tracks)
+          .then(() =>
+            reportNotice(
+              `Added ${count} ${count === 1 ? "song" : "songs"} to ${label}.`,
+            ),
+          )
+          .catch(reportActionError);
+      },
+    };
+  };
+
   const renderPin = (pin: PinnedPlaylist): JSX.Element => {
     const route: Route =
       pin.source === "catalog"
@@ -369,11 +421,19 @@ export function Sidebar(): JSX.Element {
     const active = sameRoute(state.navigation, route);
     const display = resolvePinDisplay(state, pinIndex, pin);
     const name = display.name;
+    const key = `${pin.source}:${pin.id}`;
+    const dropping = dropTarget === key;
     if (name) {
       return (
         <button
-          key={`${pin.source}:${pin.id}`}
-          className={`sidebar-link ${active ? "is-active" : ""}`.trim()}
+          key={key}
+          className={[
+            "sidebar-link",
+            active ? "is-active" : "",
+            dropping ? "is-drop-target" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
           type="button"
           aria-label={name}
           title={name}
@@ -383,6 +443,7 @@ export function Sidebar(): JSX.Element {
           data-context-route-kind="playlist"
           data-context-source={pin.source}
           onClick={() => navigate(route)}
+          {...dropHandlers(pin, name)}
         >
           {renderPinIcon(display.artworkUrl)}
           <span>{name}</span>
@@ -392,8 +453,8 @@ export function Sidebar(): JSX.Element {
     if (!pinsSettled) {
       return (
         <button
-          key={`${pin.source}:${pin.id}`}
-          className="sidebar-link"
+          key={key}
+          className={dropping ? "sidebar-link is-drop-target" : "sidebar-link"}
           type="button"
           aria-label="Pinned playlist"
           title="Pinned playlist"
@@ -403,6 +464,7 @@ export function Sidebar(): JSX.Element {
           data-context-route-kind="playlist"
           data-context-source={pin.source}
           onClick={() => navigate(route)}
+          {...dropHandlers(pin, undefined)}
         >
           <ListMusic aria-hidden="true" size={18} strokeWidth={1.8} />
           <span>Playlist</span>
@@ -411,8 +473,8 @@ export function Sidebar(): JSX.Element {
     }
     return (
       <button
-        key={`${pin.source}:${pin.id}`}
-        className="sidebar-link"
+        key={key}
+        className={dropping ? "sidebar-link is-drop-target" : "sidebar-link"}
         type="button"
         aria-label="Unknown playlist"
         title="Unknown playlist"
@@ -422,6 +484,7 @@ export function Sidebar(): JSX.Element {
         data-context-id={pin.id}
         data-context-route-kind="playlist"
         data-context-source={pin.source}
+        {...dropHandlers(pin, undefined)}
       >
         <ListMusic aria-hidden="true" size={18} strokeWidth={1.8} />
         <span>Unknown playlist</span>

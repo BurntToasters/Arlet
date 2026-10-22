@@ -5,9 +5,11 @@
 // arlet.log}. Per-user Arlet data folders are moved aside and restored.
 // The failure modes it covers are listed in docs/TESTING.md.
 //
-// Usage: node scripts/e2e-app.js [--skip-build] [--real-token]
+// Usage: node scripts/e2e-app.js [--skip-build] [--real-token] [--foreground]
 // --real-token embeds MUSICKIT_DEVELOPER_TOKEN from the environment and checks
 // that Apple accepts it from the release origin (catalog request, no sign-in).
+// Arlet launches in the background (never the active window, behind other
+// windows) so a run does not take the keyboard; --foreground opts out.
 
 import { spawn, spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
@@ -21,6 +23,9 @@ import { runLibraryActions } from "./e2e-library-actions.js";
 import { runPlaylistPlayback } from "./e2e-playlist-playback.js";
 import { runFlows } from "./e2e-flows.js";
 import { runLibraryView } from "./e2e-library-view.js";
+import { runShortcuts } from "./e2e-shortcuts.js";
+import { runMultiSelect } from "./e2e-multi-select.js";
+import { runMiniPlayer } from "./e2e-mini-player.js";
 import { runSongNavigation } from "./e2e-song-navigation.js";
 import { runTransport } from "./e2e-transport.js";
 import { runQueueEdit } from "./e2e-queue-edit.js";
@@ -37,12 +42,18 @@ import { runAccountSession } from "./e2e-account-session.js";
 import { runAuditFixes } from "./e2e-audit-fixes.js";
 import { runSessionRestore } from "./e2e-session-restore.js";
 import { sleep } from "./e2e-helpers.js";
+import { startForegroundMonitor } from "./e2e-foreground.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IDENTIFIER = "run.rosie.arlet";
 const TARGET_DIR = path.join(root, "src-tauri", "target", "e2e");
 const EXE = path.join(TARGET_DIR, "release", "arlet.exe");
 const DEBUG_PORT = 9333;
+// Launch-at-startup writes its Run value here, never to the real Run key:
+// the app reads ARLET_E2E_RUN_KEY (Rust side) and the whole key is removed
+// before and after each run.
+const E2E_RUN_KEY = "Software\\ArletE2E\\Run";
+const E2E_REG_ROOT = "HKCU\\Software\\ArletE2E";
 // TEMP_WEBVIEW2_LOCKOUT_WORKAROUND: TEMPORARY UPSTREAM WORKAROUND, REMOVE when fixed.
 // Cause: a fresh WebView2 environment can generate a failed Windows interactive
 // logon (Event 4625); repeated launches increment the bad-password counter and
@@ -352,6 +363,7 @@ const DEFAULT_SETTINGS_FOR_E2E = {
   autoplay: true,
   restoreSession: true,
   trayIcon: true,
+  launchAtStartup: false,
   debugMode: false,
 };
 
@@ -391,6 +403,26 @@ function runningArletPid() {
 
 // The settings reset restarts Arlet as a new process outside the original
 // child's tree; run() refuses to start while any other Arlet is open.
+/** Removes the test-only Run key; "not found" is expected and ignored. */
+const FOREGROUND = process.argv.includes("--foreground");
+// Read by background_launch.rs. The switches keep a window that sits behind
+// others rendering at full speed, since Chromium throttles occluded windows.
+const BACKGROUND_ENV = FOREGROUND ? {} : { ARLET_E2E_BACKGROUND: "1" };
+const BACKGROUND_SWITCHES = FOREGROUND
+  ? []
+  : [
+      "--disable-features=CalculateNativeWinOcclusion",
+      "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding",
+    ];
+
+function clearE2eRunKey() {
+  spawnSync("reg", ["delete", E2E_REG_ROOT, "/f"], {
+    stdio: "ignore",
+    windowsHide: true,
+  });
+}
+
 function killArlet() {
   spawnSync("taskkill", ["/IM", "arlet.exe", "/T", "/F"], { stdio: "ignore" });
 }
@@ -419,9 +451,31 @@ public static class ArletE2eWindow {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+  public delegate bool EnumProc(IntPtr hwnd, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd, System.Text.StringBuilder text, int maxCount);
+  // The visible top-level window titled Arlet; MainWindowHandle can miss a
+  // window that never became active (an E2E background launch).
+  public static IntPtr Find(uint[] processIds) {
+    IntPtr found = IntPtr.Zero;
+    EnumWindows((hwnd, lParam) => {
+      uint owner;
+      GetWindowThreadProcessId(hwnd, out owner);
+      if (Array.IndexOf(processIds, owner) < 0 || !IsWindowVisible(hwnd)) return true;
+      var title = new System.Text.StringBuilder(64);
+      GetWindowText(hwnd, title, title.Capacity);
+      if (title.ToString() != "Arlet") return true;
+      found = hwnd;
+      return false;
+    }, IntPtr.Zero);
+    return found;
+  }
 }
 "@
-$handle = (Get-Process -Name arlet | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1).MainWindowHandle
+$ids = [uint32[]]@(Get-Process -Name arlet | ForEach-Object { $_.Id })
+$handle = [ArletE2eWindow]::Find($ids)
 $frame = New-Object ArletE2eWindow+RECT
 $client = New-Object ArletE2eWindow+RECT
 [void][ArletE2eWindow]::GetWindowRect($handle, [ref]$frame)
@@ -528,6 +582,12 @@ function connect(url) {
     socket.addEventListener("open", resolve, { once: true });
     socket.addEventListener("error", reject, { once: true });
   });
+  // A background window is never focused; the page still behaves as focused.
+  if (!FOREGROUND) {
+    void opened
+      .then(() => send("Emulation.setFocusEmulationEnabled", { enabled: true }))
+      .catch(() => undefined);
+  }
   const send = (method, params = {}) =>
     new Promise((resolve, reject) => {
       const id = ++nextId;
@@ -663,6 +723,7 @@ async function run() {
   const onInterrupt = () => {
     console.error("[e2e-app] Interrupted; restoring your Arlet data.");
     killArlet();
+    clearE2eRunKey();
     restore(moved);
     process.exit(130);
   };
@@ -671,7 +732,10 @@ async function run() {
   let child;
   let page;
   let musicRuntimeCapabilities;
+  const foreground = FOREGROUND ? undefined : startForegroundMonitor();
   try {
+    // A previous aborted run must not leak a launch-at-startup entry in.
+    clearE2eRunKey();
     seedCorruptSettings();
     seedLegacyCache();
     fs.writeFileSync(
@@ -682,8 +746,11 @@ async function run() {
       env: {
         ...process.env,
         MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN,
+        ARLET_E2E_RUN_KEY: E2E_RUN_KEY,
+        ...BACKGROUND_ENV,
         WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: buildWebView2Args(
           `--remote-debugging-port=${DEBUG_PORT}`,
+          ...BACKGROUND_SWITCHES,
         ),
       },
       stdio: "ignore",
@@ -1239,6 +1306,38 @@ async function run() {
       Buffer.from(offlineShot.data, "base64"),
     );
 
+    // 11a. Failure mode: the connection returning after a failed start never
+    // retries (no listener). e2e-audit-fixes.js checks only that a healthy
+    // app does not reload, which passes without a listener too. A reload
+    // drops the page marker; polls during it may hit a torn-down context.
+    await page.evaluate(
+      "window.__ARLET_E2E_ONLINE_MARK__ = 1; window.dispatchEvent(new Event('online')); return true;",
+    );
+    let onlineReloaded = false;
+    const onlineDeadline = Date.now() + 15_000;
+    while (!onlineReloaded && Date.now() < onlineDeadline) {
+      await sleep(250);
+      try {
+        onlineReloaded = await page.evaluate(
+          "return typeof window.__ARLET_E2E_ONLINE_MARK__ === 'undefined' && document.readyState === 'complete';",
+        );
+      } catch {
+        // The old document is going away; poll the new one.
+      }
+    }
+    const offlineAgain =
+      onlineReloaded &&
+      (await waitFor(
+        page,
+        `document.querySelector(".offline-banner")`,
+        45_000,
+      ));
+    check(
+      "after a failed start, the connection returning reloads the app to retry",
+      onlineReloaded && offlineAgain,
+      { onlineReloaded, offlineAgain },
+    );
+
     // 11b. An expired embedded token: the update notice shows, not the
     // offline banner (its Reconnect could never work). The token command is
     // answered with the release-build error through Tauri's IPC transport.
@@ -1494,6 +1593,9 @@ async function run() {
         ["desktop", runDesktop],
         ["flows", runFlows],
         ["library-view", runLibraryView],
+        ["shortcuts", runShortcuts],
+        ["multi-select", runMultiSelect],
+        ["mini-player", runMiniPlayer],
         ["performance", runPerformance],
         ["polish", runPolish],
         ["discovery", runDiscovery],
@@ -1560,11 +1662,13 @@ async function run() {
     const aliveAfterClose = processAlive(appPid);
     // The first instance owns the debug port; the handoff relaunch must not
     // ask for it again.
-    const relaunchWebView2Args = buildWebView2Args();
+    const relaunchWebView2Args = buildWebView2Args(...BACKGROUND_SWITCHES);
     const relaunch = spawn(EXE, [], {
       env: {
         ...process.env,
         MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN,
+        ARLET_E2E_RUN_KEY: E2E_RUN_KEY,
+        ...BACKGROUND_ENV,
         ...(relaunchWebView2Args && {
           WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: relaunchWebView2Args,
         }),
@@ -1738,6 +1842,21 @@ async function run() {
     if (child?.pid) {
       killArlet();
       await waitForArletExit();
+    }
+    clearE2eRunKey();
+    if (foreground) {
+      const summary = foreground.stop();
+      fs.writeFileSync(
+        path.join(artifactDir, "foreground.json"),
+        `${JSON.stringify(summary, null, 2)}\n`,
+      );
+      check(
+        "background launch: Arlet never became the active window or covered it",
+        summary.samples > 0 &&
+          summary.arletSamples === 0 &&
+          summary.aboveSamples === 0,
+        summary,
+      );
     }
     const testLog = readTestLog();
     if (testLog && !fs.existsSync(path.join(artifactDir, "arlet.log"))) {

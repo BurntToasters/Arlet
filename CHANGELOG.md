@@ -21,7 +21,16 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 
 ## Changes in `v0.3.0-beta.6:`
 
-- **Fix:** (add release notes)
+- **NEW - Library sorting and filters:** Albums, Artists, Songs, and Playlists have a toolbar. The filter box matches titles, artists, and albums, and ignores capitals and accents. Sort by `Title A–Z`, `Title Z–A`, `Recently added`, or `Oldest added`. Artists sort by name only, `A–Z` or `Z–A`. The `Favorites` button shows favorites on albums, songs, and playlists, and the `All content`, `Explicit`, and `Clean` filter works on albums and songs. With a sort or filter on, Arlet loads the rest of the section in the background so results cover your whole library, and shows how many items match, as `N of M`. Playlist folders stay in place, and folders with no matching playlists are hidden while filtering. Sort and filters are remembered for each section, but the filter text is not. If nothing matches, `Clear filters` resets them.
+- **NEW - Select several songs:** In Songs and on album and playlist pages, Ctrl+click or Shift+click selects songs. A plain click still plays. `Ctrl+A` selects all, and `Esc` clears the selection. A bar offers `Play Next`, `Play Later`, `Add to Playlist…`, and `Favorite` for the selection. Right-clicking a selected song shows the same actions for every song you selected.
+- **NEW - Drag to playlist:** Drag a song, or a selection, onto a pinned library playlist in the sidebar to add it to that playlist.
+- **NEW - Mini player:** The `Mini player` button in the player bar, or Ctrl+Shift+M, shrinks Arlet to a small window with artwork, the song, `Previous`, `Play`, and `Next` buttons, and progress. The mini player stays on top of other windows. Turn that off with `Keep on top`. `Exit mini player` or `Esc` returns to the full window at its previous size and place, or to full screen if you started there. Playback continues while you switch.
+- **NEW - Taskbar buttons:** Hovering Arlet's taskbar button shows `Previous`, `Play/Pause`, and `Next` under the window preview.
+- **NEW - Launch at startup:** `Settings` → `Window` → `Launch Arlet when Windows starts` opens Arlet when you sign in to Windows. It starts in the tray when the tray icon is on, and minimized otherwise. Uninstalling Arlet removes the startup entry.
+- **NEW - Shortcut list:** `Ctrl+/` or `?` opens a list of all keyboard shortcuts.
+- **Improvement - Tray:** Hovering the tray icon shows the current song and artist.
+- **Fix - Library loading:** Turning on a sort or filter right after Arlet starts no longer stops after the first page while the library refreshes.
+- **Testing:** End-to-end tests cover sorting, filtering, favorites, and remembered choices across a restart, the shortcut list, selecting songs and their actions, dragging to a playlist, and the mini player resizing the real window and restoring it. Another check writes and removes the startup setting's entry in a test-only registry key, never the real one. Taskbar buttons and the tray tooltip are checked by hand on release builds.
 
 ## Changes in `v0.3.0-beta.5:`
 

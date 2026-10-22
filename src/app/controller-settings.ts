@@ -191,6 +191,10 @@ export function createControllerSettings(
     await persistSettings({ ...getState().settings, trayIcon: enabled });
   };
 
+  const setLaunchAtStartup = async (enabled: boolean): Promise<void> => {
+    await persistSettings({ ...getState().settings, launchAtStartup: enabled });
+  };
+
   const setDebugMode = async (enabled: boolean): Promise<void> => {
     await persistSettings({ ...getState().settings, debugMode: enabled });
     setNativeLogDebugMode(enabled);
@@ -240,6 +244,7 @@ export function createControllerSettings(
     setAutoCheckUpdates,
     setAutoplay,
     setTrayIcon,
+    setLaunchAtStartup,
     setDebugMode,
     setRestoreSession,
     setUpdateChannel,

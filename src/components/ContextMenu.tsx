@@ -25,6 +25,7 @@ import {
   type MenuEntry,
   type MenuItem,
 } from "./context-menu-items.ts";
+import { activeSelectionFor } from "./track-selection.ts";
 
 interface MenuState {
   x: number;
@@ -111,6 +112,10 @@ export function ContextMenu(): JSX.Element | null {
             };
       const target = parseTarget(contextNode);
       const track = targetTrack(target);
+      // Set when the row is part of a 2+ selection; the menu then offers bulk actions.
+      const selectionTracks = track
+        ? activeSelectionFor(track.id, contextNode)
+        : undefined;
       restoreFocusRef.current =
         options.restoreFocus ??
         (document.activeElement instanceof HTMLElement
@@ -131,6 +136,7 @@ export function ContextMenu(): JSX.Element | null {
           navigation,
           editable: options.editable,
           selected: options.selected,
+          selectionTracks,
           close,
           restoreFocus,
           restoreTarget: restoreFocusRef.current ?? undefined,

@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { restoreClipboard } from "./e2e-clipboard.js";
 import { fixtureCall, sleep, waitFor } from "./e2e-helpers.js";
 
 const FIXTURE = "window.__ARLET_E2E_MUSIC__";
@@ -216,10 +217,10 @@ function readClipboardText(page) {
 }
 
 async function supportReport({ page, check }) {
-  // The check borrows the clipboard, so the user's text is put back
-  // afterwards. Non-text content (an image) cannot be restored; the
-  // clipboard is then left empty rather than holding the report.
-  const previousClipboard = (await readClipboardText(page)) ?? "";
+  // The check borrows the clipboard; restoreClipboard puts the user's text
+  // back, kept out of clipboard history. Non-text content (an image) cannot
+  // be restored; the clipboard is then left empty rather than holding the report.
+  const previousClipboard = await readClipboardText(page);
   await page.evaluate(`location.hash = "#/settings"; return true;`);
   const shown = await waitFor(
     page,
@@ -237,13 +238,8 @@ async function supportReport({ page, check }) {
   // Reads back what the app put on the system clipboard.
   const report = await readClipboardText(page);
   const text = String(report ?? "");
-  try {
-    await page.evaluate(`
-      await window.__TAURI_INTERNALS__.invoke("plugin:clipboard-manager|write_text", { text: ${JSON.stringify(String(previousClipboard))} });
-      return true;`);
-  } catch {
-    // Restoring is best effort; it must never fail the support report check.
-  }
+  // Best effort; it never fails the support report check.
+  const clipboardRestore = restoreClipboard(previousClipboard);
   check(
     "the support report names the version and carries no tokens",
     shown &&
@@ -256,6 +252,7 @@ async function supportReport({ page, check }) {
       copied,
       length: text.length,
       head: text.slice(0, 200),
+      clipboardRestore,
       toasts: await page.evaluate(
         `return [...document.querySelectorAll(".action-toast-message")].map((node) => node.textContent);`,
       ),

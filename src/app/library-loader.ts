@@ -166,8 +166,8 @@ export function createLibraryLoader(
     openLibraryCache,
     ensureLibraryCache,
   } = cache;
-  /** Sections with a refresh in flight; "load more" waits for it. */
-  const refreshingSections = new Set<LibrarySection>();
+  /** Sections with a refresh in flight; "load more" and load-all wait for it. */
+  const refreshingSections = new Map<LibrarySection, Promise<void>>();
   const refreshedSections = new Set<LibrarySection>();
   const libraryRequests = new Map<LibrarySection, number>();
   /** Load-all calls in flight; a new account generation starts its own. */
@@ -347,9 +347,10 @@ export function createLibraryLoader(
       status: current.items.length > 0 ? "refreshing" : "loading",
       error: undefined,
     });
-    refreshingSections.add(section);
+    const refresh = refreshSectionPage(section, generation, isCurrent);
+    refreshingSections.set(section, refresh);
     try {
-      await refreshSectionPage(section, generation, isCurrent);
+      await refresh;
     } finally {
       if (
         libraryRequests.get(section) === requestId ||
@@ -601,6 +602,9 @@ export function createLibraryLoader(
     generation: number,
   ): Promise<void> => {
     for (let pages = 0; pages < MAX_LOAD_ALL_PAGES; pages += 1) {
+      // A refresh shows its first page before it finishes writing the cache.
+      // loadMore skips while the refresh runs, so wait for it rather than stop.
+      await refreshingSections.get(section)?.catch(() => undefined);
       const next = getState().library.collections[section].next;
       if (!next || !isAccountGenerationCurrent(generation) || isOffline()) {
         return;

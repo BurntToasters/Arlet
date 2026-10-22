@@ -27,6 +27,18 @@ running Arlet first; the app is single-instance. `--skip-build` reuses the
 last E2E binary. `npm run test:all -- --require-clean-proof` (every release
 proof) runs this suite on Windows, so no release is recorded without it.
 
+The app launches in the background, so a run does not interrupt whoever is
+using the PC. `ARLET_E2E_BACKGROUND=1` (`src-tauri/src/background_launch.rs`)
+builds the window not focusable, strips activation from every position
+change, and keeps it at the bottom of the z-order, which also drops
+always-on-top and keeps full-screen tests out of sight. The tray handoff does
+not call `set_focus`, whose Alt-key workaround would take the foreground. The
+page gets DevTools focus emulation and WebView2 switches that stop throttling
+a covered window. `scripts/e2e-foreground.js` samples the foreground window
+every 250 ms and writes `foreground.json`. The check fails if Arlet was ever
+the active window or a sized Arlet window overlapped the active one from
+above. `--foreground` opts out (no flag, no monitor).
+
 After each run, older `e2e-artifacts/<timestamp>` folders are pruned so only
 the newest 20 (the current run included) remain. Set `ARLET_E2E_KEEP_RUNS` to
 change that count; `0` keeps every folder. Only direct children whose names
@@ -49,7 +61,8 @@ Failure modes it covers:
    from the roaming config folder to local app data, the fixed cache commands
    fail, or the generic SQL plugin is still reachable.
 10. The open-source licenses dialog is empty.
-11. With Apple's CDN unreachable, the cached library is not shown.
+11. With Apple's CDN unreachable, the cached library is not shown, or the
+    connection returning (an `online` event) does not reload to retry.
 12. A renderer crash leaves a blank window, or leaves no line in `arlet.log`
     (WebView2 failures are written even with Debug Mode off).
 
@@ -959,7 +972,8 @@ Failure modes:
 E2E suite (`scripts/e2e-audit-fixes.js`, run after "artwork" in the native
 run): idle cap and activity re-arm (6 s stand-in for 4 h, with the keydown at
 2 s and reads at 7 s), a `windows-media-control` "pause" event, the
-`online` event with healthy MusicKit (no reload), the diagnostics copy
+`online` event with healthy MusicKit (no reload; the reload after a failed
+start, with Apple's CDN blocked, is `e2e-app.js` item 11), the diagnostics copy
 answering within 6 s with "Copied" or the busy error (the logged path is
 recorded when readable), cancel of a stuck sign-in from the notice, titlebar
 and Settings (a held `configure({ hangAuthorize: true })` call is released
@@ -983,10 +997,6 @@ Code-reviewed, no E2E:
 - Ratings caches (item 10): `settled`, `generations`, and `added` are capped
   at 2000 with oldest-first eviction that skips in-flight entries. Reaching
   2000 distinct lookups in one session is not practical in the fixture.
-- Offline auto-reload (item 6): the reload only follows a failed MusicKit init
-  that is not an expired token. Forcing a real init failure needs the fixture
-  removed before startup, which the suite does not do. The suite checks only
-  that a healthy init does not reload.
 - Token-expiry notice in the stack (item 11): `developerTokenExpiresAt` comes
   from the embedded developer token in a release build, and the suite cannot
   change it. The suite checks only the `.notice-stack` container.

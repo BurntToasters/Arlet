@@ -6,6 +6,12 @@ import { Artwork } from "./Artwork.tsx";
 import { requestContextMenu } from "./context-menu-events.ts";
 import { useNowPlayingStatus } from "./now-playing.ts";
 import { useSerializedContextRefs } from "./context-refs.ts";
+import {
+  activeSelectionFor,
+  endTrackDrag,
+  startTrackDrag,
+  TRACK_DRAG_TYPE,
+} from "./track-selection.ts";
 import { useVisibleRatingLookup } from "./use-visible-ratings.ts";
 import type { Track } from "../domain/music.ts";
 
@@ -31,9 +37,19 @@ export interface SongRowProps {
    * the row number. Rows without a track number keep the row number.
    */
   discTrackNumbers?: boolean;
+  /** The row is part of its list's selection. Used with onSelect. */
+  selected?: boolean;
+  /**
+   * Called for every click. Returns true when the click was a selection
+   * gesture (Ctrl, Meta or Shift), so the row does not play.
+   */
+  onSelect?: (event: MouseEvent) => boolean;
 }
 
-/** Shared song row. Main playback and row actions stay sibling buttons. */
+/**
+ * Shared song row. Main playback and row actions stay sibling buttons. The
+ * shell is draggable: the drag carries the selection when this row is in it.
+ */
 export function SongRow({
   track,
   index,
@@ -46,6 +62,8 @@ export function SongRow({
   durationClassName,
   contextData,
   discTrackNumbers = false,
+  selected = false,
+  onSelect,
 }: SongRowProps): JSX.Element {
   const trackLabel = `${track.title} by ${track.artistName}`;
   const nowPlaying = useNowPlayingStatus(track);
@@ -69,10 +87,12 @@ export function SongRow({
   ];
   const playFlags = [
     ...(current ? [nowPlaying === "playing" ? "now playing" : "paused"] : []),
+    // Selection is part of the play button's name; a plain list has no aria-selected.
+    ...(onSelect && selected ? ["selected"] : []),
     ...extras,
   ];
   return (
-    <li ref={lookupRef}>
+    <li ref={lookupRef} className={selected ? "is-selected" : undefined}>
       <div
         className={[
           "song-row-shell",
@@ -86,6 +106,26 @@ export function SongRow({
         data-context-album-ref={refs.album}
         data-context-artist-refs={refs.artists}
         data-context-catalog-url={track.catalogUrl}
+        draggable
+        onDragStart={(event) => {
+          // A selected row drags the whole selection; any other row drags alone.
+          const tracks = activeSelectionFor(track.id, event.currentTarget) ?? [
+            track,
+          ];
+          startTrackDrag(tracks);
+          const transfer = event.dataTransfer;
+          if (!transfer) return;
+          transfer.effectAllowed = "copy";
+          transfer.setData(
+            TRACK_DRAG_TYPE,
+            JSON.stringify(tracks.map((item) => item.id)),
+          );
+          transfer.setData(
+            "text/plain",
+            tracks.map((item) => item.title).join("\n"),
+          );
+        }}
+        onDragEnd={() => endTrackDrag()}
       >
         <button
           className={rowClassName}
@@ -99,7 +139,10 @@ export function SongRow({
                 : `Play ${trackLabel}`
           }
           aria-current={current ? "true" : undefined}
-          onClick={onPlay}
+          onClick={(event) => {
+            if (onSelect?.(event)) return;
+            onPlay();
+          }}
         >
           <span className={numberClassName} aria-hidden="true">
             {current ? (

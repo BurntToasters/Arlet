@@ -117,6 +117,10 @@ const OPEN_NOW_PLAYING = `
   const dialog = document.querySelector(".now-playing");
   return {
     opened: Boolean(dialog),
+    // Says whether a failing read caught the dialog closing again.
+    className: dialog?.className ?? null,
+    dialogs: document.querySelectorAll(".now-playing").length,
+    reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
     animations: dialog?.getAnimations().map((animation) => ({
       name: animation.animationName,
       transform: Boolean(animation.effect?.getKeyframes().some((frame) => "transform" in frame)),
@@ -773,8 +777,9 @@ async function queueDrawer(page, check) {
     `document.querySelector('aside.queue-drawer[data-state="open"]')`,
     4000,
   );
+  // The extra fields say what blocked the drawer when this check fails.
   const focus = await page.evaluate(
-    `const node = document.activeElement; return { tag: node?.tagName ?? null, text: node?.textContent.trim() ?? null, inDrawer: Boolean(node?.closest("aside.queue-drawer")) };`,
+    `const node = document.activeElement; return { tag: node?.tagName ?? null, text: node?.textContent.trim() ?? null, label: node?.getAttribute("aria-label") ?? null, inDrawer: Boolean(node?.closest("aside.queue-drawer")), drawerState: document.querySelector("aside.queue-drawer")?.dataset.state ?? null, blockers: [...document.querySelectorAll('[role="dialog"], [role="menu"], dialog[open], .now-playing')].map((item) => item.className || item.tagName) };`,
   );
   check(
     "opening Playing Next moves focus to its heading",
@@ -782,7 +787,7 @@ async function queueDrawer(page, check) {
       focus.tag === "H2" &&
       focus.text === "Playing Next" &&
       focus.inDrawer,
-    focus,
+    { ...focus, open: Boolean(open) },
   );
   await pressKey(page, "Escape");
   const focusBack = await waitFor(
@@ -795,10 +800,15 @@ async function queueDrawer(page, check) {
     `!document.querySelector("aside.queue-drawer")`,
     3000,
   );
+  const afterEscape = gone
+    ? undefined
+    : await page.evaluate(
+        `return { drawerState: document.querySelector("aside.queue-drawer")?.dataset.state ?? null, label: document.activeElement?.getAttribute("aria-label") ?? null, blockers: [...document.querySelectorAll('[role="dialog"], [role="menu"], dialog[open], .now-playing')].map((item) => item.className || item.tagName) };`,
+      );
   check(
     "Escape closes Playing Next and returns focus to its toggle",
     focusBack && gone,
-    { focusBack, gone },
+    { focusBack, gone, afterEscape },
   );
 }
 

@@ -339,6 +339,18 @@
           "markdownDescription": "Enables the save_settings command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_mini_player command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-mini-player",
+          "markdownDescription": "Enables the set_mini_player command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_mini_player_on_top command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-mini-player-on-top",
+          "markdownDescription": "Enables the set_mini_player_on_top command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_snap_overlay_bounds command without any pre-configured scope.",
           "type": "string",
           "const": "allow-set-snap-overlay-bounds",
@@ -531,6 +543,18 @@
           "markdownDescription": "Denies the save_settings command without any pre-configured scope."
         },
         {
+          "description": "Denies the set_mini_player command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-mini-player",
+          "markdownDescription": "Denies the set_mini_player command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_mini_player_on_top command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-mini-player-on-top",
+          "markdownDescription": "Denies the set_mini_player_on_top command without any pre-configured scope."
+        },
+        {
           "description": "Denies the set_snap_overlay_bounds command without any pre-configured scope.",
           "type": "string",
           "const": "deny-set-snap-overlay-bounds",
@@ -597,6 +621,12 @@
           "markdownDescription": "Enables the write_image command without any pre-configured scope."
         },
         {
+          "description": "Enables the write_secret command without any pre-configured scope.",
+          "type": "string",
+          "const": "clipboard-manager:allow-write-secret",
+          "markdownDescription": "Enables the write_secret command without any pre-configured scope."
+        },
+        {
           "description": "Enables the write_text command without any pre-configured scope.",
           "type": "string",
           "const": "clipboard-manager:allow-write-text",
@@ -631,6 +661,12 @@
           "type": "string",
           "const": "clipboard-manager:deny-write-image",
           "markdownDescription": "Denies the write_image command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the write_secret command without any pre-configured scope.",
+          "type": "string",
+          "const": "clipboard-manager:deny-write-secret",
+          "markdownDescription": "Denies the write_secret command without any pre-configured scope."
         },
         {
           "description": "Denies the write_text command without any pre-configured scope.",

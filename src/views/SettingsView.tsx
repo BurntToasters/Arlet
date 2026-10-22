@@ -592,12 +592,30 @@ export function SettingsView(): JSX.Element {
                 }
               />
             </label>
+            <label className="settings-field settings-toggle-field">
+              <span>
+                <Minimize2 aria-hidden="true" size={16} strokeWidth={1.8} />{" "}
+                Launch Arlet when Windows starts
+              </span>
+              <input
+                type="checkbox"
+                checked={settings.launchAtStartup}
+                onChange={(event) =>
+                  void Promise.resolve(
+                    controller.setLaunchAtStartup(event.currentTarget.checked),
+                  ).catch(reportActionError)
+                }
+              />
+            </label>
           </div>
           <p className="settings-field-help">
             With this on, closing the window keeps Arlet playing in the tray.
             Click the tray icon to show or hide Arlet, or right-click it for
             playback controls and Quit. With it off, closing the window quits
             Arlet.
+          </p>
+          <p className="settings-field-help">
+            Starts in the tray when the tray icon is on.
           </p>
         </section>
 

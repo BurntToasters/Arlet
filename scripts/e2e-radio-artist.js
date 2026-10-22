@@ -22,6 +22,11 @@ const EXPECTED_SHORTCUTS = [
   ["Ctrl+R", "Refresh current data"],
   ["Alt+←", "Back"],
   ["Alt+→", "Forward"],
+  ["Ctrl+/", "Show keyboard shortcuts"],
+  ["Ctrl+Shift+M", "Mini player"],
+  ["Ctrl+Click / Shift+Click", "Select songs"],
+  ["Ctrl+A", "Select all songs in list"],
+  ["Esc", "Clear selection"],
 ];
 
 const snapshot = (page) => fixtureCall(page, "snapshot");

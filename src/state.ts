@@ -48,6 +48,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoplay: true,
   restoreSession: true,
   trayIcon: true,
+  launchAtStartup: false,
   debugMode: false,
 };
 
@@ -261,6 +262,7 @@ const initialState: RuntimeAppState = {
     diagnosticsOpen: false,
     sidebarOpen: false,
     nowPlayingOpen: false,
+    miniPlayer: false,
   },
   diagnostics: {
     logs: [],

@@ -37,6 +37,7 @@ import path from "node:path";
 import { fixtureCall, sleep, waitFor } from "./e2e-helpers.js";
 
 const STORAGE_KEY = "arlet.library.view.v1";
+const LIBRARY_CACHE_SCOPE = "current-account";
 const ALBUM_COUNT = 250;
 const SONG_COUNT = 120;
 const TOTAL = {
@@ -951,7 +952,6 @@ export async function runLibraryView({ page, check, artifactDir }) {
       `localStorage.removeItem(${q(STORAGE_KEY)}); return true;`,
     );
     await fixtureCall(page, "reset");
-    await page.evaluate("location.hash = '#/home'; return true;");
     fs.writeFileSync(
       path.join(artifactDir, "library-view-results.json"),
       `${JSON.stringify(
@@ -965,5 +965,12 @@ export async function runLibraryView({ page, check, artifactDir }) {
         2,
       )}\n`,
     );
+    // The 250 albums and 120 songs above would otherwise stay in the native
+    // library cache and the in-memory store, and the next scenario (performance)
+    // would start from them. Clear the cache, then reload for a fresh store.
+    await page.evaluate(
+      `await window.__TAURI_INTERNALS__.invoke("library_cache_clear", { scope: ${q(LIBRARY_CACHE_SCOPE)} }); return true;`,
+    );
+    await reloadApp(page);
   }
 }

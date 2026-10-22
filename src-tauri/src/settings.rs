@@ -56,6 +56,7 @@ pub struct StartupAppearance {
     pub window_effect: WindowEffectPreference,
     pub tray_icon: bool,
     pub debug_mode: bool,
+    pub launch_at_startup: bool,
 }
 
 impl Default for StartupAppearance {
@@ -65,6 +66,7 @@ impl Default for StartupAppearance {
             window_effect: WindowEffectPreference::Acrylic,
             tray_icon: true,
             debug_mode: false,
+            launch_at_startup: false,
         }
     }
 }
@@ -75,6 +77,14 @@ fn tray_icon_setting(value: &Value) -> bool {
         .get("trayIcon")
         .and_then(Value::as_bool)
         .unwrap_or(true)
+}
+
+/// Reads the `launchAtStartup` flag; only an explicit `true` turns it on.
+fn launch_at_startup_setting(value: &Value) -> bool {
+    value
+        .get("launchAtStartup")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// Reads the `debugMode` flag; only an explicit `true` turns logging on.
@@ -131,6 +141,7 @@ pub fn parse_startup_appearance(json: &str) -> StartupAppearance {
         ),
         tray_icon: tray_icon_setting(&value),
         debug_mode: debug_mode_setting(&value),
+        launch_at_startup: launch_at_startup_setting(&value),
     }
 }
 
@@ -309,6 +320,9 @@ pub fn save_settings(app: tauri::AppHandle, json: String) -> Result<(), String> 
     let tray_icon = tray_icon_setting(&parsed);
     set_tray_icon(tray_icon);
     crate::tray::apply(&app, tray_icon);
+    if let Err(error) = crate::autostart::apply(launch_at_startup_setting(&parsed)) {
+        crate::logging::write_native_log(&format!("Launch at startup was not updated: {error}"));
+    }
     Ok(())
 }
 
@@ -340,6 +354,10 @@ pub fn reset_settings(app: tauri::AppHandle) -> Result<(), String> {
             // No restart follows, so saves must keep working this session.
             RESET_PENDING.store(false, std::sync::atomic::Ordering::SeqCst);
             return Err(error);
+        }
+        // Defaults turn launch at startup off, so the Run entry goes too.
+        if let Err(error) = crate::autostart::apply(false) {
+            crate::logging::write_native_log(&format!("Launch at startup was not reset: {error}"));
         }
     }
     app.request_restart();

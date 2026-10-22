@@ -2,11 +2,10 @@
 
 This document tracks our progress through the Arlet `docs/history/plan.md` architecture brief to easily pick up where we left off.
 
-## 📌 Status (2026-10-16 — read first)
+## 📌 Status (2026-10-19 — read first)
 
-`v0.3.0-beta.2` is the latest beta; `v0.3.0-beta.3` is written up in
-`CHANGELOG.md` and ships after the checks below. Performance, UI polish, and
-discovery are done for 0.3.0.
+`v0.3.0-beta.6` is written up in `CHANGELOG.md` and ships after the checks
+below. Performance, UI polish, and discovery are done for 0.3.0.
 
 - [x] **0.3.0 performance:** virtualized library grid and Up Next, store
       subscriptions split by slice, sized artwork, batched ratings, WAL
@@ -27,9 +26,9 @@ discovery are done for 0.3.0.
 
 Next, in order:
 
-- [ ] **Wave D:** library sort/filter, multi-select, drag to playlist,
+- [x] **Wave D:** library sort/filter, multi-select, drag to playlist,
       shortcut overlay, taskbar thumbnail buttons, tray tooltip, launch at
-      startup, mini player.
+      startup, mini player. Done: shipped in beta.6.
 - [ ] **Wave E:** Phase 0 matrix and CSP narrowing (see the Phase 0 item
       below), DPI and high-contrast checks.
 
@@ -46,6 +45,12 @@ Before beta.3 ships:
       `AZURE_*`, `GPG_KEY_ID`, and `AFTER_PACK_LOC` are set.
 - [ ] **Token expiry calendar:** put the developer token's expiry date on the
       calendar, and ship a new release before it lapses.
+
+Before beta.6 ships:
+
+- [ ] **Manual desktop checks:** taskbar thumbnail buttons (hover,
+      Prev/Play/Next), tray tooltip text, and launch at startup through
+      the real Run key after a Windows sign-in, on a signed release build.
 
 The Preact shell, library, search, browse, radio, playlists, queue, SMTC, and
 window materials are implemented; the 2026-09-11 notes below are history.

@@ -64,6 +64,7 @@ export function migrateSettings(raw: unknown): AppSettings {
     autoplay: z.boolean().safeParse(parsed.autoplay),
     restoreSession: z.boolean().safeParse(parsed.restoreSession),
     trayIcon: z.boolean().safeParse(parsed.trayIcon),
+    launchAtStartup: z.boolean().safeParse(parsed.launchAtStartup),
     debugMode: z.boolean().safeParse(parsed.debugMode),
   };
   const reserved = Object.fromEntries(
@@ -96,6 +97,9 @@ export function migrateSettings(raw: unknown): AppSettings {
     trayIcon: candidate.trayIcon.success
       ? candidate.trayIcon.data
       : DEFAULT_SETTINGS.trayIcon,
+    launchAtStartup: candidate.launchAtStartup.success
+      ? candidate.launchAtStartup.data
+      : DEFAULT_SETTINGS.launchAtStartup,
     debugMode: candidate.debugMode.success
       ? candidate.debugMode.data
       : DEFAULT_SETTINGS.debugMode,
@@ -117,6 +121,7 @@ export function serializeSettings(settings: AppSettings): string {
     autoplay: settings.autoplay,
     restoreSession: settings.restoreSession,
     trayIcon: settings.trayIcon,
+    launchAtStartup: settings.launchAtStartup,
     debugMode: settings.debugMode,
   });
 }

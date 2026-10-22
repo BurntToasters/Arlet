@@ -1,9 +1,15 @@
-import { useEffect } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import type { JSX } from "preact";
 import type { HashRouter } from "../routing/router.ts";
 import { getState, setUiState, subscribePlaybackPosition } from "../state.ts";
 import type { AppController } from "./controller.ts";
-import { shortcutFor, type ShortcutAction } from "./shortcuts.ts";
+import {
+  hasOpenDialog,
+  isEditableTarget,
+  isShortcutOverlayKey,
+  shortcutFor,
+  type ShortcutAction,
+} from "./shortcuts.ts";
 import { reportActionError } from "../components/action-errors.ts";
 import {
   closeNowPlayingLeavingFullscreen,
@@ -23,9 +29,12 @@ import { Titlebar } from "../components/Titlebar.tsx";
 import { RouteView } from "../views/RouteView.tsx";
 import { DevDiagnostics } from "./DevDiagnostics.tsx";
 import { MediaSessionSync } from "./MediaSessionSync.tsx";
+import { MiniPlayer } from "../components/MiniPlayer.tsx";
+import { exitMiniPlayer, toggleMiniPlayer } from "./mini-player.ts";
 import { UpdateReadyModal } from "../components/UpdateReadyModal.tsx";
 import { ContextMenu } from "../components/ContextMenu.tsx";
 import { PlaylistDialogs } from "../components/PlaylistDialogs.tsx";
+import { ShortcutOverlay } from "../components/ShortcutOverlay.tsx";
 import { ActionToasts } from "../components/ActionToasts.tsx";
 import { SessionExpiredNotice } from "../components/SessionExpiredNotice.tsx";
 import { TokenExpiryNotice } from "../components/TokenExpiryNotice.tsx";
@@ -83,6 +92,8 @@ function runShortcut(
       void closeNowPlayingLeavingFullscreen();
       return true;
     case "toggleFullscreen":
+      // The compact window keeps its size; fullscreen would ignore it.
+      if (ui.miniPlayer) return false;
       void toggleWindowFullscreen().catch(reportActionError);
       return true;
   }
@@ -98,6 +109,7 @@ function AppLayout({
   const state = useAppSlices("navigation", "settings", "ui", "windowEffect");
   const controller = useAppControllerForLayout();
   const router = useAppRouter();
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -111,9 +123,49 @@ function AppLayout({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
+      const miniActive = getState().ui.miniPlayer === true;
+      if (
+        event.ctrlKey &&
+        event.shiftKey &&
+        !event.altKey &&
+        !event.metaKey &&
+        event.key.toLowerCase() === "m"
+      ) {
+        // Entering is blocked while typing or in a dialog; leaving never is.
+        if (
+          !miniActive &&
+          (isEditableTarget(event.target) || hasOpenDialog())
+        ) {
+          return;
+        }
+        event.preventDefault();
+        void toggleMiniPlayer().catch(reportActionError);
+        return;
+      }
+      if (
+        miniActive &&
+        event.key === "Escape" &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        !event.shiftKey &&
+        !event.metaKey
+      ) {
+        if (isEditableTarget(event.target) || hasOpenDialog()) return;
+        event.preventDefault();
+        void exitMiniPlayer().catch(reportActionError);
+        return;
+      }
       const action = shortcutFor(event);
       if (action && runShortcut(controller, action)) {
         event.preventDefault();
+      } else if (isShortcutOverlayKey(event)) {
+        // Typing `?` in a field or stacking on another dialog must not open it.
+        // The overlay is not rendered in mini mode, so it cannot open there.
+        if (miniActive || isEditableTarget(event.target) || hasOpenDialog()) {
+          return;
+        }
+        event.preventDefault();
+        setShortcutsOpen(true);
       } else if (
         event.ctrlKey &&
         event.shiftKey &&
@@ -122,7 +174,11 @@ function AppLayout({
         if (!import.meta.env.DEV) return;
         event.preventDefault();
         setUiState({ diagnosticsOpen: !getState().ui.diagnosticsOpen });
-      } else if (event.ctrlKey && event.key.toLowerCase() === "k") {
+      } else if (
+        event.ctrlKey &&
+        event.key.toLowerCase() === "k" &&
+        !miniActive
+      ) {
         event.preventDefault();
         router.navigate({ kind: "search", query: "" });
         // The Search view may render a few frames after navigation.
@@ -248,6 +304,18 @@ function AppLayout({
     });
   }, []);
 
+  if (state.ui.miniPlayer) {
+    // Only the visible layout changes: playback sync and toasts stay mounted.
+    // The notices and modals keep their state in the store and show again on exit.
+    return (
+      <>
+        <MediaSessionSync />
+        <MiniPlayer />
+        <ActionToasts />
+      </>
+    );
+  }
+
   return (
     <div className="app-shell">
       <MediaSessionSync />
@@ -271,6 +339,9 @@ function AppLayout({
       <UpdateReadyModal />
       <ContextMenu />
       <PlaylistDialogs />
+      {shortcutsOpen ? (
+        <ShortcutOverlay onClose={() => setShortcutsOpen(false)} />
+      ) : null}
       <ActionToasts />
       <div className="notice-stack">
         <SessionExpiredNotice />

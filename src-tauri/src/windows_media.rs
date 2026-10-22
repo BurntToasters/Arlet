@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use tauri::WebviewWindow;
+use tauri::{Manager, WebviewWindow};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -515,7 +515,17 @@ pub fn update_windows_media_session(
     payload: NowPlayingPayload,
 ) -> Result<(), String> {
     let payload = payload.bounded();
-    PLAYING.store(payload.playback_status == "playing", Ordering::SeqCst);
+    let playing = payload.playback_status == "playing";
+    PLAYING.store(playing, Ordering::SeqCst);
+    let app = window.app_handle().clone();
+    crate::tray::set_now_playing(&app, &payload.title, &payload.artist);
+    crate::thumbbar::update(
+        &app,
+        playing,
+        payload.previous_enabled,
+        payload.play_enabled || payload.pause_enabled,
+        payload.next_enabled,
+    );
     #[cfg(target_os = "windows")]
     {
         platform::update(&window, payload)
@@ -544,6 +554,9 @@ pub fn update_windows_media_timeline(payload: TimelinePayload) -> Result<(), Str
 pub fn clear_windows_media_session(window: WebviewWindow) -> Result<(), String> {
     // Nothing plays after a clear: the tray toggle must send Play next.
     PLAYING.store(false, Ordering::SeqCst);
+    let app = window.app_handle().clone();
+    crate::tray::clear_now_playing(&app);
+    crate::thumbbar::update(&app, false, false, false, false);
     #[cfg(target_os = "windows")]
     {
         platform::clear(&window)

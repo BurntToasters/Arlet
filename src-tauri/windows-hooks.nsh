@@ -12,3 +12,11 @@
     Abort
   arlet_windows_supported:
 !macroend
+
+; An update runs the old uninstaller with /UPDATE ($UpdateMode = 1); the
+; startup entry stays then, since the updated app keeps the same path.
+!macro NSIS_HOOK_PREUNINSTALL
+  ${If} $UpdateMode <> 1
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "Arlet"
+  ${EndIf}
+!macroend
