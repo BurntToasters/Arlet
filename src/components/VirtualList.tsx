@@ -8,6 +8,8 @@ const OVERSCAN_ROWS = 8;
 interface Window {
   start: number;
   end: number;
+  /** Row height the spacer rows were rendered with. */
+  height: number;
 }
 
 export interface VirtualListProps<T> {
@@ -22,11 +24,35 @@ export interface VirtualListProps<T> {
   scrollParentSelector?: string;
 }
 
-function scrollParent(
+export function scrollParent(
   element: HTMLElement,
   selector: string,
 ): HTMLElement | null {
   return element.closest<HTMLElement>(selector);
+}
+
+/**
+ * Runs `callback` at most once per animation frame, so a burst of scroll or
+ * resize events costs one measurement.
+ */
+export function frameScheduler(callback: () => void): {
+  schedule: () => void;
+  cancel: () => void;
+} {
+  let frame = 0;
+  return {
+    schedule: () => {
+      if (frame !== 0) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        callback();
+      });
+    },
+    cancel: () => {
+      if (frame !== 0) window.cancelAnimationFrame(frame);
+      frame = 0;
+    },
+  };
 }
 
 /**
@@ -44,10 +70,14 @@ export function VirtualList<T>({
 }: VirtualListProps<T>): JSX.Element {
   const listRef = useRef<HTMLOListElement>(null);
   const measured = useRef(rowHeight);
+  // Read from the DOM once; a window resize clears it so zoom or font
+  // changes are picked up without measuring on every scroll.
+  const rowKnown = useRef(false);
   const virtual = items.length > VIRTUALIZE_THRESHOLD;
   const [range, setRange] = useState<Window>({
     start: 0,
     end: Math.min(items.length, OVERSCAN_ROWS * 3),
+    height: rowHeight,
   });
 
   useLayoutEffect(() => {
@@ -57,34 +87,55 @@ export function VirtualList<T>({
     // Without the expected scroller the window scrolls the list; the range
     // must still follow it, or the list stops after its first rows.
     const scroller = scrollParent(list, scrollParentSelector);
+    // A list can be its own scroller (Up Next). Its rows then start at its
+    // scroll origin rather than at a viewport edge above it.
+    const listScrolls = scroller === list;
     const scrollTarget: EventTarget = scroller ?? window;
     const update = (): void => {
-      const row = list.querySelector<HTMLElement>(
-        ":scope > li:not([aria-hidden])",
-      );
-      if (row && row.offsetHeight > 0) measured.current = row.offsetHeight;
+      if (!rowKnown.current) {
+        const row = list.querySelector<HTMLElement>(
+          ":scope > li:not([aria-hidden])",
+        );
+        if (row && row.offsetHeight > 0) {
+          measured.current = row.offsetHeight;
+          rowKnown.current = true;
+        }
+      }
       const height = measured.current;
       const viewport =
         (scroller ? scroller.clientHeight : 0) || window.innerHeight;
-      const viewportTop = scroller ? scroller.getBoundingClientRect().top : 0;
-      const above = Math.max(0, viewportTop - list.getBoundingClientRect().top);
+      const above = listScrolls
+        ? list.scrollTop
+        : Math.max(
+            0,
+            (scroller ? scroller.getBoundingClientRect().top : 0) -
+              list.getBoundingClientRect().top,
+          );
       const start = Math.max(0, Math.floor(above / height) - OVERSCAN_ROWS);
       const end = Math.min(
         items.length,
         Math.ceil((above + viewport) / height) + OVERSCAN_ROWS,
       );
       setRange((current) =>
-        current.start === start && current.end === end
+        current.start === start &&
+        current.end === end &&
+        current.height === height
           ? current
-          : { start, end },
+          : { start, end, height },
       );
     };
+    const frame = frameScheduler(update);
+    const onResize = (): void => {
+      rowKnown.current = false;
+      frame.schedule();
+    };
     update();
-    scrollTarget.addEventListener("scroll", update, { passive: true });
-    window.addEventListener("resize", update);
+    scrollTarget.addEventListener("scroll", frame.schedule, { passive: true });
+    window.addEventListener("resize", onResize);
     return () => {
-      scrollTarget.removeEventListener("scroll", update);
-      window.removeEventListener("resize", update);
+      frame.cancel();
+      scrollTarget.removeEventListener("scroll", frame.schedule);
+      window.removeEventListener("resize", onResize);
     };
   }, [virtual, items.length, scrollParentSelector]);
 
@@ -101,7 +152,7 @@ export function VirtualList<T>({
   }
   const start = Math.min(range.start, items.length);
   const end = Math.min(Math.max(range.end, start), items.length);
-  const height = measured.current;
+  const height = range.height;
   return (
     <ol ref={listRef} className={className} aria-label={ariaLabel}>
       <li aria-hidden="true" style={{ height: `${start * height}px` }} />

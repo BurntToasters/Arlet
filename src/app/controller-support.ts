@@ -1,3 +1,6 @@
+import { asRecord } from "../musickit/response.ts";
+
+export { asRecord };
 import { normalizeLibraryItems } from "../musickit/normalize.ts";
 import type { AppleMusicLibraryClient } from "../musickit/library.ts";
 import type { CachedPage } from "../library/cache.ts";
@@ -16,6 +19,8 @@ export interface ControllerContext {
   getMusic(): MusicKit.MusicKitInstance | null;
   now(): number;
   log(message: string): void;
+  /** Reports a failure that may mean the Apple sign-in expired. */
+  suspectSession?(error: unknown, path?: string): void;
 }
 
 export type LibraryMethod = (...args: unknown[]) => Promise<unknown>;
@@ -35,18 +40,16 @@ export function timestamp(now: () => number): string {
   return new Date(now()).toISOString();
 }
 
-export function asRecord(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object"
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
 function asItems(value: unknown): unknown[] {
   if (Array.isArray(value)) return value;
   const record = asRecord(value);
   for (const key of ["items", "data", "tracks", "resources"]) {
     if (Array.isArray(record?.[key])) return record[key] as unknown[];
   }
+  // MusicKit's `api.music` wraps Apple's body: `{ data: { data: [...] } }`.
+  // Read one level down, or a catalog response reads as empty.
+  const body = asRecord(record?.data);
+  if (body && body !== record) return asItems(body);
   return [];
 }
 

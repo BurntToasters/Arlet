@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { waitFor as pollFor } from "./e2e-helpers.js";
+
 const PLAYLIST_ID = "playlist-1";
 const ALBUM_ID = "album-1";
 const SECOND_PLAYLIST_PAGE =
@@ -20,13 +22,23 @@ async function waitForPlaylistLoadSettled(page, requestsBefore) {
   );
 }
 
-async function waitFor(page, expression, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await page.evaluate(`return Boolean(${expression});`)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  return false;
+const waitFor = (page, expression, timeoutMs = 10_000) =>
+  pollFor(page, expression, timeoutMs, 100);
+
+/** Play from the playlist's right-click menu, which fetches its pages. */
+async function playFromPlaylistMenu(page) {
+  await page.evaluate(`
+    await window.__ARLET_E2E_MUSIC__.selectContext({ id: "${PLAYLIST_ID}", kind: "playlist", source: "library" });
+    return true;
+  `);
+  await waitFor(
+    page,
+    `document.querySelector('.context-menu [data-menu-item="play-now"]:not(:disabled)')`,
+  );
+  await page.evaluate(`
+    document.querySelector('.context-menu [data-menu-item="play-now"]')?.click();
+    return true;
+  `);
 }
 
 function ids(snapshot) {
@@ -334,11 +346,13 @@ export async function runPlaylistPlayback({ page, check }) {
   const workingQueue = await page.evaluate(
     "return window.__ARLET_E2E_MUSIC__.snapshot();",
   );
+  // A fully loaded page plays from its own list; the playlist's menu Play
+  // fetches the pages, which is the path these two checks cover.
   await page.evaluate(`
     window.__ARLET_E2E_MUSIC__.configure({ repeatPlaylistCursor: true });
-    document.querySelectorAll(".library-track-row")[0]?.click();
     return true;
   `);
+  await playFromPlaylistMenu(page);
   await waitForPlaylistLoadSettled(page, workingQueue.requests.length);
   const afterRepeatedCursor = await page.evaluate(
     "return window.__ARLET_E2E_MUSIC__.snapshot();",
@@ -367,9 +381,9 @@ export async function runPlaylistPlayback({ page, check }) {
       repeatPlaylistCursor: false,
       rejectPaths: [${JSON.stringify(SECOND_PLAYLIST_PAGE)}],
     });
-    document.querySelectorAll(".library-track-row")[1]?.click();
     return true;
   `);
+  await playFromPlaylistMenu(page);
   await waitForPlaylistLoadSettled(page, requestsBeforeFailure);
   const afterPageFailure = await page.evaluate(
     "return window.__ARLET_E2E_MUSIC__.snapshot();",
@@ -582,13 +596,18 @@ export async function runPlaylistPlayback({ page, check }) {
     .filter((item) => item.type === "setQueue")
     .at(-1);
   check(
-    "a library-only song queues its i. ID under songs, which MusicKit loads from the library",
+    "a library-only song is queued as a library song with its i. ID",
     libraryRowReady &&
       libraryOnlyStarted &&
-      // The rest of the Songs list is queued with it; this song is the start.
-      libraryOnlySet?.options?.songs?.[libraryOnlySet?.options?.startWith] ===
-        "i.library-only" &&
-      !libraryOnlySet?.shape?.includes("items"),
+      (() => {
+        const item =
+          libraryOnlySet?.options?.items?.[libraryOnlySet?.options?.startWith];
+        return (
+          item?.id === "i.library-only" &&
+          item?.type === "library-songs" &&
+          item?.attributes?.playParams?.isLibrary === true
+        );
+      })(),
     { setQueue: libraryOnlySet, queue: libraryOnlySnapshot.queue },
   );
 
@@ -711,9 +730,10 @@ export async function runPlaylistPlayback({ page, check }) {
   const directMark = (
     await page.evaluate("return window.__ARLET_E2E_MUSIC__.snapshot();")
   ).transitions.length;
-  await page.evaluate(`
+  const directClickedAt = await page.evaluate(`
+    const clickedAt = Date.now();
     document.querySelectorAll(".library-track-row")[3]?.click();
-    return true;
+    return clickedAt;
   `);
   const directStarted = await waitFor(
     page,
@@ -725,6 +745,17 @@ export async function runPlaylistPlayback({ page, check }) {
   const directSet = direct.transitions
     .slice(directMark)
     .find((item) => item.type === "setQueue");
+  // The page already shows every song, so Play fetches no pages first.
+  const refetched = direct.requests.filter(
+    (request) =>
+      request.startedAt >= directClickedAt &&
+      String(request.path).includes("/playlists/playlist-1/tracks"),
+  ).length;
+  check(
+    "Play on a playlist page starts from the songs on screen without fetching pages",
+    directStarted && refetched === 0,
+    { refetched },
+  );
   check(
     "a mid-playlist click starts MusicKit's queue at that song with no re-select",
     directStarted &&
@@ -732,6 +763,10 @@ export async function runPlaylistPlayback({ page, check }) {
         JSON.stringify(["song-duplicate", "song-e", "song-f"]) &&
       directSet?.options?.startWith === 0 &&
       directSet.ids.length <= 16 &&
+      // Song details, not IDs: MusicKit skips its per-song lookup.
+      directSet.shape?.includes("items") &&
+      directSet.options?.items?.[0]?.attributes?.playParams?.id ===
+        "song-duplicate" &&
       !direct.transitions
         .slice(directMark)
         .some((item) => item.type === "selectIndex"),
@@ -797,5 +832,113 @@ export async function runPlaylistPlayback({ page, check }) {
       )) === "Album Track A",
     { transitions: replaced.transitions.slice(replacedMark) },
   );
-  await page.evaluate(`location.hash = "#/home"; return true;`);
+
+  // MusicKit takes the song details but cannot start them: Arlet queues the
+  // same songs by ID once and plays, with no error shown.
+  await page.evaluate(`
+    window.__ARLET_E2E_MUSIC__.reset();
+    location.hash = "#/home";
+    return true;
+  `);
+  await page.evaluate(
+    `location.hash = "#/playlist/${PLAYLIST_ID}"; return true;`,
+  );
+  await waitFor(
+    page,
+    `document.querySelector(".library-track-row")?.textContent.includes("Track A") && document.querySelectorAll(".library-track-row").length >= 6`,
+  );
+  await page.evaluate(`
+    window.__ARLET_E2E_MUSIC__.configure({ rejectPlayTimes: 1 });
+    document.querySelectorAll(".library-track-row")[2]?.click();
+    return true;
+  `);
+  const retried = await waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().transitions.some((item) => item.type === "play")`,
+  );
+  const retry = await page.evaluate(
+    "return window.__ARLET_E2E_MUSIC__.snapshot();",
+  );
+  const retryOrder = retry.transitions
+    .filter((item) => ["setQueue", "playRejected", "play"].includes(item.type))
+    .map((item) =>
+      item.type === "setQueue"
+        ? `setQueue:${item.shape?.includes("items") ? "details" : "ids"}`
+        : item.type,
+    );
+  check(
+    "a song MusicKit queued from details but could not start plays after one retry by ID",
+    retried &&
+      JSON.stringify(retryOrder.slice(0, 4)) ===
+        JSON.stringify([
+          "setQueue:details",
+          "playRejected",
+          "setQueue:ids",
+          "play",
+        ]) &&
+      !(await page.evaluate(
+        `return Boolean(document.querySelector(".player-error"));`,
+      )),
+    { retryOrder },
+  );
+
+  // The same retry when the song cannot be resolved by ID (removed from
+  // Apple Music; MusicKit only finds out when it plays a details queue): it
+  // is dropped, or retried by its library ID, and the Play still starts.
+  const missingId = retry.transitions.find((item) => item.type === "setQueue")
+    ?.ids?.[0];
+  await page.evaluate(`
+    window.__ARLET_E2E_MUSIC__.reset();
+    window.__ARLET_E2E_MUSIC__.configure({
+      detailsSkipLookup: true,
+      unresolvedIds: [${JSON.stringify(String(missingId))}],
+      rejectPlayTimes: 1,
+    });
+    document.querySelectorAll(".library-track-row")[2]?.click();
+    return true;
+  `);
+  const unresolvedRetried = await waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().transitions.some((item) => item.type === "play")`,
+  );
+  const unresolved = await page.evaluate(
+    "return window.__ARLET_E2E_MUSIC__.snapshot();",
+  );
+  const unresolvedOrder = unresolved.transitions
+    .filter((item) =>
+      ["setQueue", "setQueueUnresolved", "playRejected", "play"].includes(
+        item.type,
+      ),
+    )
+    .map((item) =>
+      item.type === "setQueue"
+        ? `setQueue:${item.shape?.includes("items") ? "details" : "ids"}`
+        : item.type,
+    );
+  const finalQueue = unresolved.transitions
+    .filter((item) => item.type === "setQueue")
+    .at(-1);
+  check(
+    "a details retry that hits an unresolvable song drops it and still plays",
+    Boolean(missingId) &&
+      unresolvedRetried &&
+      JSON.stringify(unresolvedOrder) ===
+        JSON.stringify([
+          "setQueue:details",
+          "playRejected",
+          "setQueueUnresolved",
+          "setQueue:ids",
+          "play",
+        ]) &&
+      !finalQueue?.ids?.includes(String(missingId)) &&
+      !(await page.evaluate(
+        `return Boolean(document.querySelector(".player-error"));`,
+      )),
+    { missingId, unresolvedOrder, finalIds: finalQueue?.ids },
+  );
+  await page.evaluate(`
+    window.__ARLET_E2E_MUSIC__.reset();
+    location.hash = "#/home";
+    return true;
+  `);
 }

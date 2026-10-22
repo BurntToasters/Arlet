@@ -6,13 +6,18 @@
 #![cfg_attr(not(windows), allow(dead_code))]
 
 mod auth_popup;
+mod autostart;
+mod background_launch;
 mod commands;
 mod library_cache;
 mod logging;
+mod mini_player;
 mod music_diagnostic;
 mod pins;
 mod playback_session;
 mod settings;
+mod system_events;
+mod thumbbar;
 mod token_policy;
 mod tray;
 mod webview_recovery;
@@ -84,6 +89,14 @@ fn main() {
             // already follow Debug Mode.
             let appearance = settings::load_startup_appearance(app.handle());
             settings::set_debug_mode(appearance.debug_mode);
+            // Rewrites the Run entry when the exe path has changed since it was written.
+            if appearance.launch_at_startup {
+                if let Err(error) = autostart::apply(true) {
+                    logging::write_native_log(&format!(
+                        "Launch at startup was not applied: {error}"
+                    ));
+                }
+            }
             let window = create_main_window_or_exit(app);
             // The config is declaratively frameless; repeat the setting while
             // hidden for runtimes that cache an older generated config. A
@@ -108,6 +121,10 @@ fn main() {
             if let Err(error) = webview_recovery::install(&window) {
                 eprintln!("Unable to install WebView2 crash recovery: {error}");
             }
+            if let Err(error) = thumbbar::install(&window) {
+                eprintln!("Unable to install the taskbar toolbar: {error}");
+            }
+            system_events::install(app.handle());
             settings::set_tray_icon(appearance.tray_icon);
             if appearance.tray_icon {
                 if let Err(error) = tray::install(app.handle()) {
@@ -116,9 +133,29 @@ fn main() {
             }
             // Positioned while still hidden, so there is no visible jump.
             let restored = window_state::restore(&window);
-            window.show()?;
+            let background = background_launch::enabled();
+            if background {
+                if let Err(error) = background_launch::install(&window) {
+                    eprintln!("Unable to launch in the background: {error}");
+                }
+                // Behind every window before the first show, so it never appears on top.
+                background_launch::send_to_back(&window);
+            }
+            // A sign-in launch stays in the tray when the tray is up, else it
+            // starts minimized. Without a tray a hidden window could not return.
+            let from_autostart = autostart::launched_at_startup();
+            let stay_hidden = from_autostart && tray::is_installed();
+            if !stay_hidden {
+                window.show()?;
+            }
             if let Some(state) = restored {
                 window_state::settle_after_show(&window, state);
+            }
+            if background && !stay_hidden {
+                background_launch::send_to_back(&window);
+            }
+            if from_autostart && !stay_hidden {
+                window.minimize()?;
             }
             #[cfg(debug_assertions)]
             if music_diagnostic::should_auto_open_music_diagnostic(
@@ -148,6 +185,13 @@ fn main() {
                         // A shown-again window may move without a final Moved
                         // event; capture the geometry it closes at.
                         window_state::record(window);
+                        // A settings reset closes for its restart; any other
+                        // close quits once the page has saved its queue.
+                        if !settings::reset_pending() {
+                            use tauri::Manager;
+                            api.prevent_close();
+                            tray::request_quit(window.app_handle());
+                        }
                     }
                 }
             }
@@ -159,6 +203,7 @@ fn main() {
                 // Auth popups and the diagnostic window must not tear down
                 // the main window's media session.
                 if window.label() == auth_popup::MAIN_WINDOW_LABEL {
+                    thumbbar::remove();
                     windows_media::dispose();
                 }
             }
@@ -168,6 +213,8 @@ fn main() {
             commands::get_developer_token,
             commands::get_beta_updater_target,
             commands::open_support_page,
+            commands::open_about_link,
+            tray::quit_ready,
             music_diagnostic::open_music_diagnostic,
             settings::load_settings,
             settings::save_settings,
@@ -194,6 +241,8 @@ fn main() {
             windows_media::update_windows_media_session,
             windows_media::update_windows_media_timeline,
             windows_media::clear_windows_media_session,
+            mini_player::set_mini_player,
+            mini_player::set_mini_player_on_top,
         ])
         .run(tauri::generate_context!())
         .unwrap_or_else(|error| {

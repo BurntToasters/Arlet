@@ -2,6 +2,8 @@
 
 // Keyboard and transport over the injected MusicKit fixture. Keys go through
 // CDP Input events so the real window keydown listener and focus rules run.
+import { sleep, waitFor as pollFor } from "./e2e-helpers.js";
+
 const ALBUM_ID = "album-1";
 const ALBUM_TRACK_IDS = ["album-a", "album-b", "album-c", "album-d"];
 const CTRL = 2;
@@ -17,18 +19,8 @@ const KEY = {
   arrowDown: { key: "ArrowDown", code: "ArrowDown", keyCode: 40 },
 };
 
-async function waitFor(page, expression, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await page.evaluate(`return Boolean(${expression});`)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  return false;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+const waitFor = (page, expression, timeoutMs = 10_000) =>
+  pollFor(page, expression, timeoutMs, 100);
 
 async function press(page, key, modifiers = 0) {
   const base = {
@@ -73,14 +65,6 @@ const MUTE_PRESSED = `document.querySelector(".volume-mute-button")?.getAttribut
 export async function runTransport({ page, check }) {
   await page.evaluate(`
     window.__ARLET_E2E_MUSIC__.reset();
-    if (!window.__ARLET_E2E_INVOKES__) {
-      window.__ARLET_E2E_INVOKES__ = [];
-      const invoke = window.__TAURI_INTERNALS__.invoke;
-      window.__TAURI_INTERNALS__.invoke = (command, args, options) => {
-        window.__ARLET_E2E_INVOKES__.push(command);
-        return invoke.call(window.__TAURI_INTERNALS__, command, args, options);
-      };
-    }
     location.hash = "#/album/${ALBUM_ID}";
     return true;
   `);
@@ -195,6 +179,9 @@ export async function runTransport({ page, check }) {
     { seeks },
   );
 
+  const savesAtStart = await page.evaluate(
+    `return window.__ARLET_E2E_TAURI_EVENTS__.count("save_settings");`,
+  );
   const beforeVolume = await snapshot(page);
   await press(page, KEY.arrowDown, CTRL);
   const lowered = await waitFor(page, `${VOLUME_VALUE} === "0.95"`);
@@ -212,7 +199,13 @@ export async function runTransport({ page, check }) {
   // Let the debounced settings write from the volume change settle first.
   await sleep(600);
   const savesBeforeMute = await page.evaluate(
-    `return window.__ARLET_E2E_INVOKES__.filter((item) => item === "save_settings").length;`,
+    `return window.__ARLET_E2E_TAURI_EVENTS__.count("save_settings");`,
+  );
+  // The volume change must be saved, or the count below could not see a rewrite.
+  check(
+    "the settings save is observed: a volume change writes settings",
+    savesBeforeMute > savesAtStart,
+    { saves: [savesAtStart, savesBeforeMute] },
   );
   await press(page, KEY.m);
   const muted = await waitFor(
@@ -228,7 +221,7 @@ export async function runTransport({ page, check }) {
   await sleep(600);
   const afterUnmute = await snapshot(page);
   const savesAfterUnmute = await page.evaluate(
-    `return window.__ARLET_E2E_INVOKES__.filter((item) => item === "save_settings").length;`,
+    `return window.__ARLET_E2E_TAURI_EVENTS__.count("save_settings");`,
   );
   check(
     "mute silences output, unmute restores the level, and settings are not rewritten",

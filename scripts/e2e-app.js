@@ -5,9 +5,11 @@
 // arlet.log}. Per-user Arlet data folders are moved aside and restored.
 // The failure modes it covers are listed in docs/TESTING.md.
 //
-// Usage: node scripts/e2e-app.js [--skip-build] [--real-token]
+// Usage: node scripts/e2e-app.js [--skip-build] [--real-token] [--foreground]
 // --real-token embeds MUSICKIT_DEVELOPER_TOKEN from the environment and checks
 // that Apple accepts it from the release origin (catalog request, no sign-in).
+// Arlet launches in the background (never the active window, behind other
+// windows) so a run does not take the keyboard; --foreground opts out.
 
 import { spawn, spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
@@ -20,6 +22,10 @@ import { MUSIC_FIXTURE_SEED, musicFixtureSource } from "./e2e-music-fixture.js";
 import { runLibraryActions } from "./e2e-library-actions.js";
 import { runPlaylistPlayback } from "./e2e-playlist-playback.js";
 import { runFlows } from "./e2e-flows.js";
+import { runLibraryView } from "./e2e-library-view.js";
+import { runShortcuts } from "./e2e-shortcuts.js";
+import { runMultiSelect } from "./e2e-multi-select.js";
+import { runMiniPlayer } from "./e2e-mini-player.js";
 import { runSongNavigation } from "./e2e-song-navigation.js";
 import { runTransport } from "./e2e-transport.js";
 import { runQueueEdit } from "./e2e-queue-edit.js";
@@ -28,20 +34,103 @@ import { runRadioArtist } from "./e2e-radio-artist.js";
 import { runUnavailable } from "./e2e-unavailable.js";
 import { runLayout } from "./e2e-layout.js";
 import { desktopEventRecorderSource, runDesktop } from "./e2e-desktop.js";
+import { runPerformance } from "./e2e-performance.js";
+import { runPolish } from "./e2e-polish.js";
+import { runDiscovery } from "./e2e-discovery.js";
+import { runArtwork } from "./e2e-artwork.js";
+import { runAccountSession } from "./e2e-account-session.js";
+import { runAuditFixes } from "./e2e-audit-fixes.js";
 import { runSessionRestore } from "./e2e-session-restore.js";
+import { sleep } from "./e2e-helpers.js";
+import { startForegroundMonitor } from "./e2e-foreground.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const IDENTIFIER = "run.rosie.arlet";
 const TARGET_DIR = path.join(root, "src-tauri", "target", "e2e");
 const EXE = path.join(TARGET_DIR, "release", "arlet.exe");
 const DEBUG_PORT = 9333;
+// Launch-at-startup writes its Run value here, never to the real Run key:
+// the app reads ARLET_E2E_RUN_KEY (Rust side) and the whole key is removed
+// before and after each run.
+const E2E_RUN_KEY = "Software\\ArletE2E\\Run";
+const E2E_REG_ROOT = "HKCU\\Software\\ArletE2E";
+// TEMP_WEBVIEW2_LOCKOUT_WORKAROUND: TEMPORARY UPSTREAM WORKAROUND, REMOVE when fixed.
+// Cause: a fresh WebView2 environment can generate a failed Windows interactive
+// logon (Event 4625); repeated launches increment the bad-password counter and
+// can lock the account. The app is not trying passwords. Disabling the Chromium
+// feature below is the workaround (Windows only).
+// Tracking: MicrosoftEdge/WebView2Feedback #5722, Chromium #562403601.
+// REMOVE only after the fixed stable WebView2 runtime is installed and several
+// fresh-profile launches log no matching Event 4625 (Logon Type 2, Advapi,
+// 0xC000006D/0xC000006A, msedgewebview2.exe) and the E2E passes without it.
+// Chromium runs the probe when either feature is enabled
+// (chrome_autofill_client.cc).
+// Cleanup: delete this const and its use in buildWebView2Args only.
+const TEMP_WEBVIEW2_LOCKOUT_WORKAROUND = [
+  "AutofillAiWalletPrivatePasses",
+  "AutofillAmbientAutofill",
+];
 const RUNTIME_ENV_TOKEN = "runtime-env-token-must-be-ignored";
 // Mirrors RELEASE_ORIGIN in src-tauri/src/token_policy.rs.
 const RELEASE_ORIGIN = "http://tauri.localhost";
+// Apple's live MusicKit script. Each marker group lists alternatives; one must
+// appear in the script text (docs/TESTING.md "Audit fixes", item 3).
+const MUSICKIT_LIVE_SCRIPT_URL =
+  "https://js-cdn.music.apple.com/musickit/v3/musickit.js";
+const LIVE_SCRIPT_MARKERS = [
+  ["suppressErrorDialog"],
+  ["MKDialog"],
+  ['"lease-action"'],
+  ["stopLicenseSession", "_license.stop"],
+  ["userTokenIsValid"],
+];
 const USER_TOKEN = "AqmL0f7xY2/Zp+Q9wR3kT8vN1bC4dE6gH5jK7mP0sU2yW==";
 
 function fail(message) {
   throw new Error(`[e2e-app] ${message}`);
+}
+
+// Builds WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS from the developer's value plus
+// extra switches. Feature lists are merged into one switch each so no list
+// silently replaces another; other switches are kept once, first-seen order.
+function buildWebView2Args(...extraSwitches) {
+  const tokens = [
+    ...(process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS ?? "").split(/\s+/),
+    ...extraSwitches,
+  ];
+  const ordered = [];
+  const featureLists = new Map();
+  const addFeatures = (prefix, names) => {
+    if (!featureLists.has(prefix)) {
+      featureLists.set(prefix, []);
+      ordered.push(prefix);
+    }
+    const list = featureLists.get(prefix);
+    for (const name of names) {
+      const feature = name.trim();
+      if (feature && !list.includes(feature)) list.push(feature);
+    }
+  };
+  for (const token of tokens) {
+    if (!token) continue;
+    const match = /^(--(?:disable|enable)-features=)(.*)$/.exec(token);
+    if (match) {
+      addFeatures(match[1], match[2].split(","));
+    } else if (!ordered.includes(token)) {
+      ordered.push(token);
+    }
+  }
+  if (process.platform === "win32") {
+    addFeatures("--disable-features=", TEMP_WEBVIEW2_LOCKOUT_WORKAROUND);
+  }
+  return ordered
+    .filter((item) => !featureLists.has(item) || featureLists.get(item).length)
+    .map((item) =>
+      featureLists.has(item)
+        ? `${item}${featureLists.get(item).join(",")}`
+        : item,
+    )
+    .join(" ");
 }
 
 function syntheticToken() {
@@ -77,6 +166,32 @@ function dataDirs() {
     return target;
   });
 }
+
+/**
+ * Injected for the expired-token check only: answers `get_developer_token`
+ * with the release build's expiry error, as Tauri's IPC protocol does.
+ */
+const EXPIRED_TOKEN_SOURCE = `(() => {
+  if (sessionStorage.getItem("arlet-e2e-expired-token") !== "1") return;
+  const nativeFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    try {
+      const url = new URL(String(input?.url ?? input));
+      if (
+        url.hostname === "ipc.localhost" &&
+        decodeURIComponent(url.pathname.slice(1)) === "get_developer_token"
+      ) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify("Arlet's Apple Music access token has expired. Install the latest Arlet update."),
+            { headers: { "Content-Type": "application/json", "Tauri-Response": "error" } },
+          ),
+        );
+      }
+    } catch {}
+    return nativeFetch(input, init);
+  };
+})();`;
 
 // Written into the test profile so a later run can tell it from real data.
 const TEST_PROFILE_MARKER = ".arlet-e2e-test-profile";
@@ -136,8 +251,15 @@ function moveAside(stamp) {
 }
 
 function restore(moved) {
+  // One profile that cannot be deleted must not stop the other restores.
   for (const dir of dataDirs()) {
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
+    } catch (error) {
+      console.error(
+        `[e2e-app] Could not remove the test profile at ${dir}: ${error.message}`,
+      );
+    }
   }
   for (const { dir, backup } of moved) {
     try {
@@ -241,6 +363,7 @@ const DEFAULT_SETTINGS_FOR_E2E = {
   autoplay: true,
   restoreSession: true,
   trayIcon: true,
+  launchAtStartup: false,
   debugMode: false,
 };
 
@@ -280,6 +403,26 @@ function runningArletPid() {
 
 // The settings reset restarts Arlet as a new process outside the original
 // child's tree; run() refuses to start while any other Arlet is open.
+/** Removes the test-only Run key; "not found" is expected and ignored. */
+const FOREGROUND = process.argv.includes("--foreground");
+// Read by background_launch.rs. The switches keep a window that sits behind
+// others rendering at full speed, since Chromium throttles occluded windows.
+const BACKGROUND_ENV = FOREGROUND ? {} : { ARLET_E2E_BACKGROUND: "1" };
+const BACKGROUND_SWITCHES = FOREGROUND
+  ? []
+  : [
+      "--disable-features=CalculateNativeWinOcclusion",
+      "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding",
+    ];
+
+function clearE2eRunKey() {
+  spawnSync("reg", ["delete", E2E_REG_ROOT, "/f"], {
+    stdio: "ignore",
+    windowsHide: true,
+  });
+}
+
 function killArlet() {
   spawnSync("taskkill", ["/IM", "arlet.exe", "/T", "/F"], { stdio: "ignore" });
 }
@@ -308,9 +451,31 @@ public static class ArletE2eWindow {
   [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
   [DllImport("user32.dll")] public static extern bool GetClientRect(IntPtr h, out RECT r);
+  public delegate bool EnumProc(IntPtr hwnd, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd, System.Text.StringBuilder text, int maxCount);
+  // The visible top-level window titled Arlet; MainWindowHandle can miss a
+  // window that never became active (an E2E background launch).
+  public static IntPtr Find(uint[] processIds) {
+    IntPtr found = IntPtr.Zero;
+    EnumWindows((hwnd, lParam) => {
+      uint owner;
+      GetWindowThreadProcessId(hwnd, out owner);
+      if (Array.IndexOf(processIds, owner) < 0 || !IsWindowVisible(hwnd)) return true;
+      var title = new System.Text.StringBuilder(64);
+      GetWindowText(hwnd, title, title.Capacity);
+      if (title.ToString() != "Arlet") return true;
+      found = hwnd;
+      return false;
+    }, IntPtr.Zero);
+    return found;
+  }
 }
 "@
-$handle = (Get-Process -Name arlet | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1).MainWindowHandle
+$ids = [uint32[]]@(Get-Process -Name arlet | ForEach-Object { $_.Id })
+$handle = [ArletE2eWindow]::Find($ids)
 $frame = New-Object ArletE2eWindow+RECT
 $client = New-Object ArletE2eWindow+RECT
 [void][ArletE2eWindow]::GetWindowRect($handle, [ref]$frame)
@@ -363,10 +528,6 @@ public static class ArletE2eVisibility {
 }
 
 const near = (actual, expected) => Math.abs(actual - expected) <= 2;
-
-async function sleep(ms) {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /**
  * Waits for the app page on the debugging port. `launched` is the process
@@ -421,6 +582,12 @@ function connect(url) {
     socket.addEventListener("open", resolve, { once: true });
     socket.addEventListener("error", reject, { once: true });
   });
+  // A background window is never focused; the page still behaves as focused.
+  if (!FOREGROUND) {
+    void opened
+      .then(() => send("Emulation.setFocusEmulationEnabled", { enabled: true }))
+      .catch(() => undefined);
+  }
   const send = (method, params = {}) =>
     new Promise((resolve, reject) => {
       const id = ++nextId;
@@ -450,6 +617,65 @@ async function settle(page, command, args) {
   return page.evaluate(
     `try { return { ok: true, value: await ${invoke(command, args)} }; } catch (error) { return { ok: false, error: String(error?.message ?? error) }; }`,
   );
+}
+
+// Run folders are named by the stamp written in run() (ISO time with ':' and
+// '.' replaced by '-'), so only names of that exact shape are ever pruned.
+const RUN_STAMP_PATTERN = /^\d{4}(?:-\d{2}){2}T(?:\d{2}-){2}\d{2}-\d{3}Z$/u;
+const DEFAULT_KEEP_RUNS = 20;
+
+function keepRunCount() {
+  const raw = String(process.env.ARLET_E2E_KEEP_RUNS ?? "").trim();
+  if (raw === "") return DEFAULT_KEEP_RUNS;
+  if (!/^\d+$/u.test(raw)) {
+    console.warn(
+      `[e2e-app] ignoring ARLET_E2E_KEEP_RUNS=${raw}; using ${DEFAULT_KEEP_RUNS}`,
+    );
+    return DEFAULT_KEEP_RUNS;
+  }
+  return Number(raw);
+}
+
+// Deletes old run folders directly under e2e-artifacts/, keeping the newest
+// `keep` (the current run included). Symlinks, junctions, files, and folders
+// with other names are never touched. Failures are logged, never thrown.
+function pruneOldRuns(artifactsRoot, currentStamp, keep) {
+  if (keep === 0) return;
+  try {
+    const runs = [];
+    for (const name of fs.readdirSync(artifactsRoot)) {
+      if (!RUN_STAMP_PATTERN.test(name) || name === currentStamp) continue;
+      const entry = path.join(artifactsRoot, name);
+      const info = fs.lstatSync(entry);
+      if (info.isSymbolicLink() || !info.isDirectory()) continue;
+      runs.push(name);
+    }
+    // Fixed-width ISO stamps sort chronologically, so newest comes last.
+    runs.sort();
+    // The current run already occupies one of the `keep` slots.
+    const stale = runs.slice(0, Math.max(0, runs.length - (keep - 1)));
+    let pruned = 0;
+    for (const name of stale) {
+      try {
+        fs.rmSync(path.join(artifactsRoot, name), {
+          recursive: true,
+          force: true,
+        });
+        pruned += 1;
+      } catch (error) {
+        console.warn(
+          `[e2e-app] could not prune ${name}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    console.log(
+      `[e2e-app] pruned ${pruned} old run folder(s), keeping ${keep}`,
+    );
+  } catch (error) {
+    console.warn(
+      `[e2e-app] run pruning skipped: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 async function run() {
@@ -497,6 +723,7 @@ async function run() {
   const onInterrupt = () => {
     console.error("[e2e-app] Interrupted; restoring your Arlet data.");
     killArlet();
+    clearE2eRunKey();
     restore(moved);
     process.exit(130);
   };
@@ -505,7 +732,10 @@ async function run() {
   let child;
   let page;
   let musicRuntimeCapabilities;
+  const foreground = FOREGROUND ? undefined : startForegroundMonitor();
   try {
+    // A previous aborted run must not leak a launch-at-startup entry in.
+    clearE2eRunKey();
     seedCorruptSettings();
     seedLegacyCache();
     fs.writeFileSync(
@@ -516,7 +746,12 @@ async function run() {
       env: {
         ...process.env,
         MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN,
-        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${DEBUG_PORT}`,
+        ARLET_E2E_RUN_KEY: E2E_RUN_KEY,
+        ...BACKGROUND_ENV,
+        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: buildWebView2Args(
+          `--remote-debugging-port=${DEBUG_PORT}`,
+          ...BACKGROUND_SWITCHES,
+        ),
       },
       stdio: "ignore",
     });
@@ -634,6 +869,39 @@ async function run() {
       );
     }
 
+    // Canary for the internals Arlet's error and sign-in handling read from
+    // Apple's script text (docs/TESTING.md "Audit fixes", item 3). Each entry
+    // lists alternatives; one must appear in the live script. The weekly
+    // musickit-canary workflow runs this.
+    const liveScript = await fetch(MUSICKIT_LIVE_SCRIPT_URL, {
+      signal: AbortSignal.timeout(30_000),
+    })
+      .then(async (response) => ({
+        ok: response.ok,
+        text: response.ok ? await response.text() : "",
+        status: response.status,
+      }))
+      .catch((error) => ({
+        ok: false,
+        text: "",
+        error: String(error?.message ?? error).slice(0, 200),
+      }));
+    const missingMarkers = LIVE_SCRIPT_MARKERS.filter(
+      (alternatives) =>
+        !alternatives.some((marker) => liveScript.text.includes(marker)),
+    ).map((alternatives) => alternatives.join(" or "));
+    check(
+      "live MusicKit script keeps the markers Arlet's error and sign-in code reads",
+      liveScript.ok && missingMarkers.length === 0,
+      {
+        url: MUSICKIT_LIVE_SCRIPT_URL,
+        bytes: liveScript.text.length,
+        status: liveScript.status,
+        error: liveScript.error,
+        missingMarkers,
+      },
+    );
+
     if (realToken) {
       const catalog = await page.evaluate(`
         const deadline = Date.now() + 30000;
@@ -656,6 +924,53 @@ async function run() {
         "Apple accepts the embedded token from the release origin",
         catalog.ok,
         catalog,
+      );
+      // Probe: does queuing full song details skip MusicKit's per-song
+      // lookup (one Apple request per 16 songs) that queuing IDs makes?
+      // Informational; it decides whether Arlet queues details. No sign-in
+      // or playback: setQueue only.
+      const probe = await page.evaluate(`
+        const instance = window.MusicKit?.getInstance?.();
+        if (!instance) return { ok: false, error: "no MusicKit" };
+        const lookups = () => performance.getEntriesByType("resource")
+          .filter((entry) => entry.name.includes("/v1/catalog/") &&
+            (entry.name.includes("/songs?") || entry.name.includes("/songs/"))).length;
+        const measure = async (options) => {
+          const before = lookups();
+          const startedAt = performance.now();
+          try {
+            await instance.setQueue(options);
+          } catch (error) {
+            return { ok: false, error: String(error?.message ?? error).slice(0, 200) };
+          }
+          const items = instance.queue?.items ?? [];
+          return {
+            ok: true,
+            ms: Math.round(performance.now() - startedAt),
+            lookups: lookups() - before,
+            length: items.length,
+            first: items[0] ? { id: items[0].id, title: items[0].title ?? items[0].attributes?.name } : null,
+          };
+        };
+        try {
+          const response = await instance.api.music("/v1/catalog/us/search", {
+            term: "daft punk",
+            types: "songs",
+            limit: 5,
+          });
+          const songs = response?.data?.results?.songs?.data ?? [];
+          if (songs.length === 0) return { ok: false, error: "no search results" };
+          performance.clearResourceTimings();
+          const byIds = await measure({ songs: songs.map((song) => song.id) });
+          const byItems = await measure({ items: songs });
+          return { ok: byIds.ok && byItems.ok, byIds, byItems };
+        } catch (error) {
+          return { ok: false, error: String(error?.message ?? error).slice(0, 200) };
+        }`);
+      check(
+        "probe: setQueue with song details vs IDs (informational)",
+        probe.ok,
+        probe,
       );
     }
 
@@ -990,6 +1305,73 @@ async function run() {
       path.join(artifactDir, "screenshot-offline.png"),
       Buffer.from(offlineShot.data, "base64"),
     );
+
+    // 11a. Failure mode: the connection returning after a failed start never
+    // retries (no listener). e2e-audit-fixes.js checks only that a healthy
+    // app does not reload, which passes without a listener too. A reload
+    // drops the page marker; polls during it may hit a torn-down context.
+    await page.evaluate(
+      "window.__ARLET_E2E_ONLINE_MARK__ = 1; window.dispatchEvent(new Event('online')); return true;",
+    );
+    let onlineReloaded = false;
+    const onlineDeadline = Date.now() + 15_000;
+    while (!onlineReloaded && Date.now() < onlineDeadline) {
+      await sleep(250);
+      try {
+        onlineReloaded = await page.evaluate(
+          "return typeof window.__ARLET_E2E_ONLINE_MARK__ === 'undefined' && document.readyState === 'complete';",
+        );
+      } catch {
+        // The old document is going away; poll the new one.
+      }
+    }
+    const offlineAgain =
+      onlineReloaded &&
+      (await waitFor(
+        page,
+        `document.querySelector(".offline-banner")`,
+        45_000,
+      ));
+    check(
+      "after a failed start, the connection returning reloads the app to retry",
+      onlineReloaded && offlineAgain,
+      { onlineReloaded, offlineAgain },
+    );
+
+    // 11b. An expired embedded token: the update notice shows, not the
+    // offline banner (its Reconnect could never work). The token command is
+    // answered with the release-build error through Tauri's IPC transport.
+    await page.send("Page.enable");
+    const expiredScript = await page.send(
+      "Page.addScriptToEvaluateOnNewDocument",
+      { source: EXPIRED_TOKEN_SOURCE },
+    );
+    await page.evaluate(
+      "sessionStorage.setItem('arlet-e2e-expired-token', '1'); return true;",
+    );
+    await page.send("Page.reload", { ignoreCache: true });
+    await sleep(1000);
+    const expiredNotice = await waitFor(
+      page,
+      `document.querySelector(".token-expiry-notice")?.textContent.includes("expired")`,
+      30_000,
+    );
+    const expiredView = await page.evaluate(`return {
+      offlineBanner: Boolean(document.querySelector(".offline-banner")),
+      notice: document.querySelector(".token-expiry-notice")?.textContent ?? null,
+    };`);
+    check(
+      "an expired embedded token shows the update notice, not the offline banner",
+      expiredNotice && !expiredView.offlineBanner,
+      expiredView,
+    );
+    await page.evaluate(
+      "sessionStorage.removeItem('arlet-e2e-expired-token'); return true;",
+    );
+    await page.send("Page.removeScriptToEvaluateOnNewDocument", {
+      identifier: expiredScript.identifier,
+    });
+
     await page.send("Network.setBlockedURLs", { urls: [] });
 
     // 12. Renderer crash: the window reloads instead of staying blank.
@@ -1005,6 +1387,18 @@ async function run() {
       30_000,
     );
     check("renderer crash reloads the window", recovered);
+    // The crash is recorded whatever Debug Mode says: nothing else would.
+    const crashLogged = await (async () => {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (readTestLog().includes("[native] WebView2 process failed (kind")) {
+          return true;
+        }
+        await sleep(200);
+      }
+      return false;
+    })();
+    check("a WebView2 crash is written to arlet.log", crashLogged);
 
     // 13. Reset settings: Cancel changes nothing; confirming restores
     // defaults and restarts, keeping sign-in storage and pins.
@@ -1198,6 +1592,16 @@ async function run() {
         ["layout", runLayout],
         ["desktop", runDesktop],
         ["flows", runFlows],
+        ["library-view", runLibraryView],
+        ["shortcuts", runShortcuts],
+        ["multi-select", runMultiSelect],
+        ["mini-player", runMiniPlayer],
+        ["performance", runPerformance],
+        ["polish", runPolish],
+        ["discovery", runDiscovery],
+        ["artwork", runArtwork],
+        ["audit-fixes", runAuditFixes],
+        ["account-session", runAccountSession],
         // Last: it signs out at the end.
         ["session-restore", runSessionRestore],
       ]) {
@@ -1206,7 +1610,12 @@ async function run() {
           await page.evaluate(
             'document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); return true;',
           );
-          await scenario({ page, check, dataDir: dataDirs()[0] });
+          await scenario({
+            page,
+            check,
+            dataDir: dataDirs()[0],
+            artifactDir,
+          });
         } catch (error) {
           check(`${name} completes`, false, String(error?.message ?? error));
         } finally {
@@ -1251,8 +1660,19 @@ async function run() {
       10_000,
     );
     const aliveAfterClose = processAlive(appPid);
+    // The first instance owns the debug port; the handoff relaunch must not
+    // ask for it again.
+    const relaunchWebView2Args = buildWebView2Args(...BACKGROUND_SWITCHES);
     const relaunch = spawn(EXE, [], {
-      env: { ...process.env, MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN },
+      env: {
+        ...process.env,
+        MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN,
+        ARLET_E2E_RUN_KEY: E2E_RUN_KEY,
+        ...BACKGROUND_ENV,
+        ...(relaunchWebView2Args && {
+          WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: relaunchWebView2Args,
+        }),
+      },
       stdio: "ignore",
     });
     await new Promise((resolve) => {
@@ -1282,6 +1702,50 @@ async function run() {
     const trayDisabled = await settle(page, "save_settings", {
       json: JSON.stringify({ ...DEFAULT_SETTINGS_FOR_E2E, trayIcon: false }),
     });
+
+    // Quitting saves the queue position first. Sign back in (the session
+    // scenario signed out), play, then report 100s and at once 123s: the
+    // second report is inside the 30-second save throttle, so only the save
+    // on quit can write it.
+    await page.evaluate('location.hash = "#/settings"; return true;');
+    await waitFor(
+      page,
+      '[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign in")',
+      10_000,
+    );
+    await page.evaluate(`
+      [...document.querySelectorAll("button")]
+        .find((node) => node.textContent.trim() === "Sign in")
+        ?.click();
+      return true;`);
+    await waitFor(
+      page,
+      '[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign out")',
+      10_000,
+    );
+    await page.evaluate(
+      'location.hash = "#/playlist/playlist-1"; return true;',
+    );
+    await waitFor(
+      page,
+      'document.querySelector(".library-track-row")?.textContent.includes("Track A")',
+      10_000,
+    );
+    await page.evaluate(
+      'document.querySelectorAll(".library-track-row")[0]?.click(); return true;',
+    );
+    const playingBeforeQuit = await waitFor(
+      page,
+      'document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Track A"',
+      10_000,
+    );
+    await sleep(2500);
+    await page.evaluate(`
+      window.__ARLET_E2E_MUSIC__.emitPlaybackTime(100);
+      window.__ARLET_E2E_MUSIC__.emitPlaybackTime(123);
+      return true;`);
+    await sleep(300);
+    const sessionFile = path.join(dataDirs()[0], "playback-session.json");
 
     // Resize, then close normally: the new geometry is saved for next launch.
     const resized = await settle(page, "plugin:window|set_size", {
@@ -1326,6 +1790,22 @@ async function run() {
       trayDisabled.ok && appPid !== undefined && !processAlive(appPid),
       { trayDisabled: trayDisabled.ok, appPid, alive: processAlive(appPid) },
     );
+    let quitSession = null;
+    try {
+      quitSession = JSON.parse(fs.readFileSync(sessionFile, "utf8"));
+    } catch {
+      // Left null so the check fails with the detail below.
+    }
+    check(
+      "quitting saves the queue's latest position before Arlet exits",
+      playingBeforeQuit &&
+        Math.abs(Number(quitSession?.positionSeconds) - 123) < 1,
+      {
+        playingBeforeQuit,
+        positionSeconds: quitSession?.positionSeconds ?? null,
+        firstId: quitSession?.items?.[0]?.id ?? null,
+      },
+    );
 
     // Stop the app, then confirm the roaming cache moved to the local data
     // dir and migrated to the current schema.
@@ -1362,6 +1842,21 @@ async function run() {
     if (child?.pid) {
       killArlet();
       await waitForArletExit();
+    }
+    clearE2eRunKey();
+    if (foreground) {
+      const summary = foreground.stop();
+      fs.writeFileSync(
+        path.join(artifactDir, "foreground.json"),
+        `${JSON.stringify(summary, null, 2)}\n`,
+      );
+      check(
+        "background launch: Arlet never became the active window or covered it",
+        summary.samples > 0 &&
+          summary.arletSamples === 0 &&
+          summary.aboveSamples === 0,
+        summary,
+      );
     }
     const testLog = readTestLog();
     if (testLog && !fs.existsSync(path.join(artifactDir, "arlet.log"))) {
@@ -1400,6 +1895,7 @@ async function run() {
     `${JSON.stringify(report, null, 2)}\n`,
   );
   console.log(`[e2e-app] artifact: ${path.relative(root, artifactDir)}`);
+  pruneOldRuns(path.join(root, "e2e-artifacts"), stamp, keepRunCount());
   if (!report.passed) fail("one or more checks failed");
 }
 

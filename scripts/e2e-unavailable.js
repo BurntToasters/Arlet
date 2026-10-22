@@ -2,6 +2,8 @@
  * mirrors MusicKit's item loader: an unresolved ID rejects the whole call with
  * NOT_FOUND, and an unplayable ID is dropped without an error. */
 
+import { fixtureCall, sleep, waitFor } from "./e2e-helpers.js";
+
 const FIXTURE = "window.__ARLET_E2E_MUSIC__";
 const PLAYLIST_ID = "playlist-1";
 const PLAYLIST_IDS = [
@@ -13,23 +15,6 @@ const PLAYLIST_IDS = [
   "song-f",
 ];
 const TITLE = `document.querySelector(".player-bar .player-track-copy strong")?.textContent`;
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-function fixtureCall(page, method, args = []) {
-  return page.evaluate(`
-    return await ${FIXTURE}[${JSON.stringify(method)}](...${JSON.stringify(args)});
-  `);
-}
-
-async function waitFor(page, expression, timeoutMs = 8000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await page.evaluate(`return Boolean(${expression});`)) return true;
-    await sleep(50);
-  }
-  return false;
-}
-
 const snapshot = (page) => fixtureCall(page, "snapshot");
 const toastText = (page) =>
   page.evaluate(
@@ -390,6 +375,54 @@ export async function runUnavailable({ page, check }) {
         activeId: snap.queue.activeId,
         restAfter,
       },
+    );
+    check(
+      "background top-ups queue song details, not IDs (no lookup per 16 songs)",
+      refills.length === 2 &&
+        refills.every((item) => item.shape?.includes("items")),
+      { shapes: refills.map((item) => item.shape) },
+    );
+
+    // The saved session holds the whole playlist, not only the songs
+    // already handed to MusicKit, so a restart does not cut it short.
+    await sleep(2600);
+    const savedSession = await page.evaluate(`
+      const raw = await window.__TAURI_INTERNALS__.invoke("load_playback_session");
+      const session = raw ? JSON.parse(raw) : null;
+      return {
+        count: session?.items?.length ?? 0,
+        current: session?.items?.[session.index]?.id ?? null,
+        hasRest: Boolean(session?.items?.some((item) => item.id === "big-0400")),
+      };`);
+    check(
+      "the saved session includes the rest of a long playlist",
+      savedSession.count === 500 &&
+        savedSession.current === "big-0071" &&
+        savedSession.hasRest,
+      savedSession,
+    );
+
+    // Save as playlist offers every song, including the ones still to come.
+    await page.evaluate(`
+      [...document.querySelectorAll(".queue-toolbar button")]
+        .find((node) => node.textContent.trim() === "Save as playlist")?.click();
+      return true;
+    `);
+    const saveOffersAll = await waitFor(
+      page,
+      `document.querySelector(".playlist-dialog")?.textContent.includes("1199 selected songs")`,
+    );
+    const saveText = await page.evaluate(
+      `return document.querySelector(".playlist-dialog")?.textContent ?? null;`,
+    );
+    await page.evaluate(`
+      document.querySelector('button[aria-label="Close playlist dialog"]')?.click();
+      return true;
+    `);
+    check(
+      "Save as playlist includes the songs still waiting to be queued",
+      saveOffersAll,
+      { saveText: String(saveText).slice(0, 200) },
     );
 
     // Clear drops the rest of the playlist too.

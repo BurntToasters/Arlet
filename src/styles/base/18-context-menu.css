@@ -46,3 +46,9 @@
   font-size: 9px;
   white-space: nowrap;
 }
+
+.context-menu-separator {
+  height: 1px;
+  margin: 3px 8px;
+  background: var(--border);
+}

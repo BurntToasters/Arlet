@@ -12,6 +12,7 @@ declare namespace MusicKit {
       name: string;
       build: string;
     };
+    suppressErrorDialog?: boolean;
   }
 
   interface MusicKitInstance {
@@ -163,14 +164,18 @@ declare namespace MusicKit {
     completed: number;
   };
 
+  /** Names of events the runtime may not advertise; check `typeof` before use. */
   const Events: {
     playbackStateDidChange: string;
     nowPlayingItemDidChange: string;
-    authorizationStatusDidChange: string;
+    authorizationStatusDidChange?: string;
     mediaPlaybackError: string;
     queueItemsDidChange: string;
     playbackTimeDidChange: string;
-    playbackDurationDidChange: string;
+    playbackDurationDidChange?: string;
+    playbackVolumeDidChange?: string;
+    timedMetadataDidChange?: string;
+    metadataDidChange?: string;
     shuffleModeDidChange?: string;
     repeatModeDidChange?: string;
   };

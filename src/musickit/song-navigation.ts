@@ -106,7 +106,6 @@ export function createTrackNavigationResolver(
   clear(): void;
 } {
   const pending = new Map<string, Promise<NavigationRefs>>();
-  let storefrontRequest: Promise<string> | undefined;
   let generation = 0;
 
   const load = async (
@@ -135,19 +134,8 @@ export function createTrackNavigationResolver(
       }
 
       const source = sourceForTrack(track);
-      const instance = requireMusic();
-      if (!storefrontRequest) {
-        let storefrontLookup: Promise<string>;
-        storefrontLookup = resolveStorefront(instance).catch(
-          (error: unknown) => {
-            if (storefrontRequest === storefrontLookup)
-              storefrontRequest = undefined;
-            throw error;
-          },
-        );
-        storefrontRequest = storefrontLookup;
-      }
-      const storefront = await storefrontRequest;
+      // Shares the catalog's storefront lookup, so it is asked once per account.
+      const storefront = await resolveStorefront(requireMusic());
       if (requestGeneration !== generation) return { artists: [] };
       const key = `${source}|${storefront}|${resourcePathForTrack(track)}|${track.id}`;
       let request = pending.get(key);
@@ -165,7 +153,6 @@ export function createTrackNavigationResolver(
     clear(): void {
       generation += 1;
       pending.clear();
-      storefrontRequest = undefined;
     },
   };
 }

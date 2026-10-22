@@ -6,6 +6,7 @@ import type {
   Track,
 } from "../domain/music.ts";
 import { httpStatusOf, mapErrorToCode } from "./errors.ts";
+import { asRecord, dataArray, resultsOf } from "./response.ts";
 import {
   normalizeAlbumResource,
   normalizeArtistResource,
@@ -24,22 +25,9 @@ export interface SearchResourceGroups {
   playlists: Playlist[];
 }
 
-export interface BrowseResources {
-  songs: Track[];
-  albums: Album[];
-  playlists: Playlist[];
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== "object") return null;
-  return value as Record<string, unknown>;
-}
-
 function resourceData(raw: unknown, type: string): AppleMusicResource[] {
   if (Array.isArray(raw)) return raw as AppleMusicResource[];
-  const root = asRecord(raw);
-  const payload = asRecord(root?.data) ?? root;
-  const results = asRecord(payload?.results) ?? payload;
+  const results = resultsOf(raw);
   const typed = asRecord(results?.[type]);
   const data = typed?.data;
   if (Array.isArray(data)) return data as AppleMusicResource[];
@@ -61,8 +49,7 @@ function resourceData(raw: unknown, type: string): AppleMusicResource[] {
     return [];
   }
   if (Array.isArray(results?.data)) return results.data as AppleMusicResource[];
-  if (Array.isArray(root?.data)) return root.data as AppleMusicResource[];
-  return [];
+  return dataArray(raw) as AppleMusicResource[];
 }
 
 function normalizeResourceList<T>(
@@ -182,7 +169,16 @@ export function createMusicRequest(
   instance: MusicKit.MusicKitInstance,
   options: MusicRequestOptions = {},
 ): MusicKitMusicRequest {
-  const raw = rawMusicKitMusicRequest(instance);
+  // Looked up per call: MusicKit replaces its API object, and the user token
+  // in its headers, on every sign-in and sign-out.
+  const raw: MusicKitMusicRequest = (path, query, requestOptions) => {
+    const music = rawMusicKitMusicRequest(instance);
+    return requestOptions !== undefined
+      ? music(path, query, requestOptions)
+      : query !== undefined
+        ? music(path, query)
+        : music(path);
+  };
   const sleep =
     options.sleep ??
     ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
@@ -204,12 +200,7 @@ export function createMusicRequest(
     requestOptions?: Record<string, unknown>,
   ): Promise<unknown> => {
     const method = String(requestOptions?.method ?? "GET").toUpperCase();
-    const call = (): Promise<unknown> =>
-      requestOptions !== undefined
-        ? raw(path, query, requestOptions)
-        : query !== undefined
-          ? raw(path, query)
-          : raw(path);
+    const call = (): Promise<unknown> => raw(path, query, requestOptions);
     for (let attempt = 0; ; attempt += 1) {
       try {
         return await call();
@@ -258,14 +249,82 @@ export function createMusicRequest(
     return language;
   };
 
-  return async (path, query, requestOptions) => {
-    if (path.startsWith("/v1/catalog/") && query?.l === undefined) {
+  const request: MusicKitMusicRequest = async (path, query, requestOptions) => {
+    // Apple's next-page paths can already carry `l`; never send it twice.
+    if (
+      path.startsWith("/v1/catalog/") &&
+      query?.l === undefined &&
+      !/[?&]l=/u.test(path)
+    ) {
       const tag = await resolveLanguage();
       if (tag)
         return withRetry(path, { ...(query ?? {}), l: tag }, requestOptions);
     }
     return withRetry(path, query, requestOptions);
   };
+
+  return async (path, query, requestOptions) => {
+    const guard = userTokenGuards.get(instance);
+    const userPath = isUserPath(path);
+    if (guard && userPath && guard.blocked()) {
+      throw new Error(SESSION_EXPIRED_MESSAGE);
+    }
+    try {
+      return await request(path, query, requestOptions);
+    } catch (error) {
+      if (guard && userPath) guard.onRejected(error, path);
+      throw readableRefusal(error, userPath);
+    }
+  };
+}
+
+/**
+ * MusicKit reports a refused request as its bare status ("403"). The status
+ * and reason stay on the error; only the message the views show is replaced.
+ */
+function readableRefusal(error: unknown, userPath: boolean): unknown {
+  const status = httpStatusOf(error);
+  if (status !== 401 && status !== 403) return error;
+  if (!(error instanceof Error) || !/^\s*\d*\s*$/u.test(error.message)) {
+    return error;
+  }
+  try {
+    error.message = userPath
+      ? "Apple Music didn't accept your sign-in. Sign in again from Settings."
+      : "Apple Music refused the request. Try again later.";
+  } catch {
+    // A read-only message keeps the original text.
+  }
+  return error;
+}
+
+export const SESSION_EXPIRED_MESSAGE =
+  "Your Apple Music sign-in expired. Sign in again to load your library.";
+
+export interface UserTokenGuard {
+  /** True while the sign-in is known expired; `/v1/me` calls then fail at once. */
+  blocked(): boolean;
+  /** A `/v1/me` request failed. The caller decides whether the token is dead. */
+  onRejected(error: unknown, path: string): void;
+}
+
+const userTokenGuards = new WeakMap<object, UserTokenGuard>();
+
+const isUserPath = (path: string): boolean => /^\/v1\/me(?:[/?]|$)/u.test(path);
+
+export function setUserTokenGuard(
+  instance: MusicKit.MusicKitInstance,
+  guard: UserTokenGuard | undefined,
+): void {
+  if (guard) userTokenGuards.set(instance, guard);
+  else userTokenGuards.delete(instance);
+}
+
+/** Cheapest user-scoped call; sent without the guard to test the token. */
+export function probeUserToken(
+  instance: MusicKit.MusicKitInstance,
+): Promise<unknown> {
+  return rawMusicKitMusicRequest(instance)("/v1/me/storefront");
 }
 
 const musicRequests = new WeakMap<object, MusicKitMusicRequest>();
@@ -305,9 +364,10 @@ function rawMusicKitMusicRequest(
 }
 
 export function storefrontFromMeResponse(raw: unknown): string | null {
-  const root = asRecord(raw);
-  const data = root?.data;
-  const entries = Array.isArray(data) ? data : data ? [data] : [];
+  // The envelope's `data` is the body, so the entries come from dataArray.
+  const single = asRecord(raw)?.data;
+  const listed = dataArray(raw);
+  const entries = listed.length > 0 ? listed : single ? [single] : [];
   for (const entry of entries) {
     const record = asRecord(entry);
     const id = record?.id;
@@ -316,11 +376,18 @@ export function storefrontFromMeResponse(raw: unknown): string | null {
   return null;
 }
 
-export async function resolveStorefront(
+/**
+ * Fallback lookups by instance. An entry is valid only for the user token it
+ * was made with, so sign-out or a different account never reuses it.
+ */
+const storefrontFallbacks = new WeakMap<
+  object,
+  { userToken: string; storefront: Promise<string> }
+>();
+
+async function fetchStorefrontFromMe(
   instance: MusicKit.MusicKitInstance,
 ): Promise<string> {
-  const existing = String(instance.storefrontId ?? "").trim();
-  if (existing) return existing;
   const request = resolveMusicKitMusicRequest(instance);
   const fromMe = storefrontFromMeResponse(await request("/v1/me/storefront"));
   if (fromMe) return fromMe;
@@ -329,11 +396,29 @@ export async function resolveStorefront(
   );
 }
 
+export async function resolveStorefront(
+  instance: MusicKit.MusicKitInstance,
+): Promise<string> {
+  const existing = String(instance.storefrontId ?? "").trim();
+  if (existing) return existing;
+  const userToken = String(instance.musicUserToken ?? "");
+  let cached = storefrontFallbacks.get(instance);
+  if (cached?.userToken !== userToken) {
+    const lookup = fetchStorefrontFromMe(instance);
+    cached = { userToken, storefront: lookup };
+    storefrontFallbacks.set(instance, cached);
+    // A failed lookup is not kept, so the next call asks Apple again.
+    void lookup.catch(() => {
+      if (storefrontFallbacks.get(instance)?.storefront === lookup) {
+        storefrontFallbacks.delete(instance);
+      }
+    });
+  }
+  return cached.storefront;
+}
+
 export function songsFromSearchResponse(raw: unknown): CatalogSongResource[] {
-  const root = asRecord(raw);
-  const payload = asRecord(root?.data) ?? root;
-  const results = asRecord(payload?.results) ?? payload;
-  const songs = asRecord(results?.songs);
+  const songs = asRecord(resultsOf(raw)?.songs);
   const data = songs?.data;
   if (!Array.isArray(data)) return [];
   return data.filter((item): item is CatalogSongResource => {
@@ -402,33 +487,6 @@ export async function searchMusicResources(
   return limitSearchGroups(normalizeSearchGroups(raw, "library-"), limit);
 }
 
-export async function loadBrowseCharts(
-  instance: MusicKit.MusicKitInstance,
-  options: { limit?: number } = {},
-): Promise<BrowseResources> {
-  const requestedLimit = options.limit ?? 20;
-  const limit = Number.isFinite(requestedLimit)
-    ? Math.max(0, Math.floor(requestedLimit))
-    : 20;
-  const storefront = await resolveStorefront(instance);
-  const raw = await resolveMusicKitMusicRequest(instance)(
-    `/v1/catalog/${encodeURIComponent(storefront)}/charts`,
-    {
-      chart: "most-played",
-      types: "songs,albums,playlists",
-      limit,
-    },
-  );
-  const groups = normalizeSearchGroups(raw);
-  return {
-    songs: groups.songs
-      .filter((track) => track.playable !== false)
-      .slice(0, limit),
-    albums: groups.albums.slice(0, limit),
-    playlists: groups.playlists.slice(0, limit),
-  };
-}
-
 function stationUrl(resource: AppleMusicResource): string | undefined {
   const record = asRecord(resource);
   const attributes = asRecord(record?.attributes);
@@ -484,13 +542,7 @@ export function normalizeStation(
 }
 
 export function stationsFromResponse(raw: unknown): Station[] {
-  const root = asRecord(raw);
-  const data = Array.isArray(root?.data)
-    ? root.data
-    : Array.isArray(raw)
-      ? raw
-      : [];
-  return data
+  return dataArray(raw)
     .map((value) => normalizeStation(value as AppleMusicResource))
     .filter((value): value is Station => Boolean(value));
 }

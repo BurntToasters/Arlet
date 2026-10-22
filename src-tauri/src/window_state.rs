@@ -182,7 +182,9 @@ pub fn settle_after_show(window: &WebviewWindow, state: WindowState) {
 /// report off-screen coordinates and are skipped; while maximized only the
 /// flag changes, so un-maximizing later returns to the last normal size.
 pub fn record(window: &tauri::Window) {
-    if window.is_minimized().unwrap_or(true) {
+    // Mini mode resizes the window to a fixed compact size; that must not
+    // replace the normal geometry saved for the next launch.
+    if crate::mini_player::is_active() || window.is_minimized().unwrap_or(true) {
         return;
     }
     let Some(cache) = window.app_handle().try_state::<WindowStateCache>() else {
@@ -213,6 +215,13 @@ pub fn record(window: &tauri::Window) {
     });
     drop(current);
     schedule_persist(window.app_handle());
+}
+
+/// The last recorded normal (not maximized-rectangle) geometry, if any.
+pub fn last_normal(app: &tauri::AppHandle) -> Option<WindowState> {
+    let cache = app.try_state::<WindowStateCache>()?;
+    let current = cache.0.lock().ok()?;
+    *current
 }
 
 /// Bumped by each move or resize; a pending save only writes if no newer

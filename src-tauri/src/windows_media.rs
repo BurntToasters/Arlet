@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use tauri::WebviewWindow;
+use tauri::{Manager, WebviewWindow};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -20,6 +20,33 @@ pub struct NowPlayingPayload {
     /// `"off" | "all" | "one"`, as MusicKit reports it.
     #[serde(default = "default_repeat")]
     pub repeat: String,
+}
+
+/// Longest title, artist, or album passed to the OS overlay, in characters.
+pub const MAX_TEXT_CHARS: usize = 1024;
+/// Longest artwork URL accepted; longer ones are dropped, not truncated,
+/// because a cut URL is never a valid artwork address.
+pub const MAX_ARTWORK_URL_BYTES: usize = 2048;
+
+fn clamp_chars(value: String, max: usize) -> String {
+    match value.char_indices().nth(max) {
+        Some((index, _)) => value[..index].to_string(),
+        None => value,
+    }
+}
+
+impl NowPlayingPayload {
+    /// Caps the text the webview sends. The caller is treated as hostile: a
+    /// huge string must not reach the OS overlay or the change-detection key.
+    pub fn bounded(mut self) -> Self {
+        self.title = clamp_chars(self.title, MAX_TEXT_CHARS);
+        self.artist = clamp_chars(self.artist, MAX_TEXT_CHARS);
+        self.album = self.album.map(|album| clamp_chars(album, MAX_TEXT_CHARS));
+        self.artwork_url = self
+            .artwork_url
+            .filter(|url| url.len() <= MAX_ARTWORK_URL_BYTES);
+        self
+    }
 }
 
 fn default_repeat() -> String {
@@ -138,20 +165,26 @@ mod platform {
         display_key: Option<String>,
     }
 
-    /// True when the display text or artwork differs from what is shown,
-    /// and records the new key.
-    fn display_changed(key: String) -> Result<bool, String> {
+    /// True when the display text or artwork differs from what is shown.
+    fn display_changed(key: &str) -> Result<bool, String> {
+        let guard = session()
+            .lock()
+            .map_err(|_| "Windows media session lock poisoned".to_string())?;
+        Ok(guard
+            .as_ref()
+            .is_none_or(|existing| existing.display_key.as_deref() != Some(key)))
+    }
+
+    /// Records the key once Windows accepted the display, so a failed update
+    /// is retried by the next one instead of being skipped as unchanged.
+    fn record_display(key: String) -> Result<(), String> {
         let mut guard = session()
             .lock()
             .map_err(|_| "Windows media session lock poisoned".to_string())?;
-        let Some(existing) = guard.as_mut() else {
-            return Ok(true);
-        };
-        if existing.display_key.as_deref() == Some(key.as_str()) {
-            return Ok(false);
+        if let Some(existing) = guard.as_mut() {
+            existing.display_key = Some(key);
         }
-        existing.display_key = Some(key);
-        Ok(true)
+        Ok(())
     }
 
     static SESSION: OnceLock<Mutex<Option<Session>>> = OnceLock::new();
@@ -345,7 +378,7 @@ mod platform {
             payload.album.as_deref().unwrap_or(""),
             artwork_url.as_deref().unwrap_or("")
         );
-        if !display_changed(key)? {
+        if !display_changed(&key)? {
             return Ok(());
         }
         let display = controls
@@ -376,7 +409,8 @@ mod platform {
                 }
             }
         }
-        display.Update().map_err(|error| error.to_string())
+        display.Update().map_err(|error| error.to_string())?;
+        record_display(key)
     }
 
     /// Updates only an existing session; a timeline alone never creates one.
@@ -480,7 +514,18 @@ pub fn update_windows_media_session(
     window: WebviewWindow,
     payload: NowPlayingPayload,
 ) -> Result<(), String> {
-    PLAYING.store(payload.playback_status == "playing", Ordering::SeqCst);
+    let payload = payload.bounded();
+    let playing = payload.playback_status == "playing";
+    PLAYING.store(playing, Ordering::SeqCst);
+    let app = window.app_handle().clone();
+    crate::tray::set_now_playing(&app, &payload.title, &payload.artist);
+    crate::thumbbar::update(
+        &app,
+        playing,
+        payload.previous_enabled,
+        payload.play_enabled || payload.pause_enabled,
+        payload.next_enabled,
+    );
     #[cfg(target_os = "windows")]
     {
         platform::update(&window, payload)
@@ -507,6 +552,11 @@ pub fn update_windows_media_timeline(payload: TimelinePayload) -> Result<(), Str
 
 #[tauri::command]
 pub fn clear_windows_media_session(window: WebviewWindow) -> Result<(), String> {
+    // Nothing plays after a clear: the tray toggle must send Play next.
+    PLAYING.store(false, Ordering::SeqCst);
+    let app = window.app_handle().clone();
+    crate::tray::clear_now_playing(&app);
+    crate::thumbbar::update(&app, false, false, false, false);
     #[cfg(target_os = "windows")]
     {
         platform::clear(&window)
@@ -536,7 +586,10 @@ fn is_trusted_artwork_url(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{seek_seconds, timeline_ticks, NowPlayingPayload, RepeatMode, TimelinePayload};
+    use super::{
+        seek_seconds, timeline_ticks, NowPlayingPayload, RepeatMode, TimelinePayload,
+        MAX_ARTWORK_URL_BYTES, MAX_TEXT_CHARS,
+    };
 
     fn timeline(position_seconds: f64, duration_seconds: f64) -> Option<(i64, i64)> {
         timeline_ticks(TimelinePayload {
@@ -584,6 +637,53 @@ mod tests {
             assert_eq!(RepeatMode::from_wire(mode.to_wire()), mode);
         }
         assert_eq!(RepeatMode::from_wire("loop"), RepeatMode::Off);
+    }
+
+    fn payload_with_text(text: &str, artwork_url: Option<String>) -> NowPlayingPayload {
+        NowPlayingPayload {
+            title: text.into(),
+            artist: text.into(),
+            album: Some(text.into()),
+            artwork_url,
+            playback_status: "paused".into(),
+            play_enabled: true,
+            pause_enabled: false,
+            next_enabled: true,
+            previous_enabled: true,
+            shuffle: false,
+            repeat: "off".into(),
+        }
+    }
+
+    // Failure modes: a hostile caller sends megabyte strings that reach the
+    // OS overlay; a cut artwork URL is requested as a broken address; a
+    // multi-byte character split panics.
+    #[test]
+    fn bounded_caps_text_by_characters_and_drops_long_artwork() {
+        let long = "é".repeat(MAX_TEXT_CHARS + 5);
+        let url = format!(
+            "https://a.mzstatic.com/{}",
+            "x".repeat(MAX_ARTWORK_URL_BYTES)
+        );
+        let bounded = payload_with_text(&long, Some(url)).bounded();
+        assert_eq!(bounded.title.chars().count(), MAX_TEXT_CHARS);
+        assert_eq!(bounded.artist.chars().count(), MAX_TEXT_CHARS);
+        assert_eq!(
+            bounded.album.as_deref().map(|value| value.chars().count()),
+            Some(MAX_TEXT_CHARS)
+        );
+        assert_eq!(bounded.artwork_url, None);
+    }
+
+    #[test]
+    fn bounded_keeps_ordinary_values() {
+        let bounded =
+            payload_with_text("Song", Some("https://a.mzstatic.com/x.jpg".into())).bounded();
+        assert_eq!(bounded.title, "Song");
+        assert_eq!(
+            bounded.artwork_url.as_deref(),
+            Some("https://a.mzstatic.com/x.jpg")
+        );
     }
 
     #[test]

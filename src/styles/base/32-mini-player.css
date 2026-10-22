@@ -1,0 +1,182 @@
+/* Compact mini player: the main window in mini mode (360x132, usable at the
+   300x120 minimum). Replaces the normal shell, so it owns the whole window. */
+.mini-player {
+  position: relative;
+  box-sizing: border-box;
+  display: grid;
+  width: 100%;
+  height: 100vh;
+  grid-template-columns: 64px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  padding: 12px 12px 10px;
+  overflow: hidden;
+  background: var(--surface-glass);
+  color: var(--text);
+  isolation: isolate;
+  user-select: none;
+}
+
+:root[data-window-effect="acrylic"] .mini-player,
+:root[data-window-effect="mica"] .mini-player {
+  background: transparent;
+}
+
+:root[data-window-effect="solid"] .mini-player {
+  background: var(--surface-base);
+}
+
+.mini-player .mini-player-artwork {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+  width: 64px;
+  height: 64px;
+}
+
+.mini-player-head {
+  display: flex;
+  min-width: 0;
+  grid-column: 2;
+  grid-row: 1;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.mini-player-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 2px;
+}
+
+.mini-player-copy strong,
+.mini-player-copy span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mini-player-copy strong {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.mini-player-copy span {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.mini-player-controls {
+  display: flex;
+  min-width: 0;
+  grid-column: 2;
+  grid-row: 2;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.mini-player .mini-player-button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.mini-player .mini-player-button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.mini-player .mini-player-button:active:not(:disabled) {
+  background: var(--surface-active);
+}
+
+.mini-player .mini-player-button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.mini-player .mini-player-button.is-active {
+  color: var(--accent);
+}
+
+.mini-player .mini-player-play {
+  width: 40px;
+  height: 40px;
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.mini-player .mini-player-play:hover:not(:disabled) {
+  background: var(--accent-strong);
+  color: var(--accent-ink);
+}
+
+.mini-player .mini-player-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.mini-player-progress {
+  position: relative;
+  grid-column: 1 / -1;
+  grid-row: 3;
+  height: 3px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--border);
+}
+
+.mini-player-progress span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width var(--duration-normal) linear;
+}
+
+@media (forced-colors: active) {
+  .mini-player {
+    background: Canvas;
+    color: CanvasText;
+  }
+  .mini-player .mini-player-button {
+    border-color: ButtonText;
+    color: ButtonText;
+  }
+  .mini-player .mini-player-button:disabled {
+    border-color: GrayText;
+    color: GrayText;
+    opacity: 1;
+  }
+  .mini-player .mini-player-button.is-active {
+    outline: 1px solid Highlight;
+  }
+  .mini-player .mini-player-play {
+    background: Highlight;
+    border-color: Highlight;
+    color: HighlightText;
+  }
+  .mini-player-progress {
+    border: 1px solid CanvasText;
+    background: Canvas;
+  }
+  .mini-player-progress span {
+    background: Highlight;
+  }
+}

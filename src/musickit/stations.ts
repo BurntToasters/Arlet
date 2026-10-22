@@ -1,4 +1,5 @@
 import type { MusicSource, Station, Track } from "../domain/music.ts";
+import { asRecord, responseBody } from "./response.ts";
 import { httpStatusOf } from "./errors.ts";
 import {
   normalizeStation,
@@ -14,24 +15,15 @@ export interface StationTarget {
   source?: MusicSource;
 }
 
-type Body = Record<string, unknown>;
-
-function asBody(value: unknown): Body | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Body)
-    : undefined;
-}
-
-/** Accepts the MusicKit `{ request, response, data }` envelope or a bare body. */
-function bodyOf(raw: unknown): Body | undefined {
-  const root = asBody(raw);
-  return asBody(root?.data) ?? root;
-}
-
 /** First related resource of the first `data` entry, e.g. `station`. */
-function firstRelated(body: Body | undefined, name: string): unknown {
-  const resource = asBody(Array.isArray(body?.data) ? body.data[0] : undefined);
-  const related = asBody(asBody(resource?.relationships)?.[name]);
+function firstRelated(
+  body: Record<string, unknown> | undefined,
+  name: string,
+): unknown {
+  const resource = asRecord(
+    Array.isArray(body?.data) ? body.data[0] : undefined,
+  );
+  const related = asRecord(asRecord(resource?.relationships)?.[name]);
   return Array.isArray(related?.data) ? related.data[0] : undefined;
 }
 
@@ -81,12 +73,12 @@ export function createStationResolver(instance: MusicKit.MusicKitInstance) {
     if (source === "catalog") return Promise.resolve(id);
     return cached(artistIds, id, () =>
       orNone(async () => {
-        const body = bodyOf(
+        const body = responseBody(
           await request(`/v1/me/library/artists/${encodeURIComponent(id)}`, {
             include: "catalog",
           }),
         );
-        const first = asBody(firstRelated(body, "catalog"));
+        const first = asRecord(firstRelated(body, "catalog"));
         return typeof first?.id === "string" ? first.id : undefined;
       }),
     );
@@ -105,7 +97,7 @@ export function createStationResolver(instance: MusicKit.MusicKitInstance) {
       orNone(async () => {
         const storefront = await resolveStorefront(instance);
         const type = target.kind === "song" ? "songs" : "artists";
-        const body = bodyOf(
+        const body = responseBody(
           await request(
             `/v1/catalog/${encodeURIComponent(storefront)}/${type}/${encodeURIComponent(catalogId)}`,
             { include: "station" },
@@ -128,7 +120,7 @@ export function createStationResolver(instance: MusicKit.MusicKitInstance) {
     const artistId = await catalogArtistId(id, catalogId, source);
     if (!artistId) return [];
     const storefront = await resolveStorefront(instance);
-    const body = bodyOf(
+    const body = responseBody(
       await request(
         `/v1/catalog/${encodeURIComponent(storefront)}/artists/${encodeURIComponent(artistId)}/view/top-songs`,
         { limit },
@@ -137,7 +129,7 @@ export function createStationResolver(instance: MusicKit.MusicKitInstance) {
     const list = Array.isArray(body?.data) ? body.data : [];
     const tracks: Track[] = [];
     for (const value of list) {
-      const track = asBody(value)
+      const track = asRecord(value)
         ? normalizeTrackResource(value as never)
         : undefined;
       if (track) tracks.push(track);

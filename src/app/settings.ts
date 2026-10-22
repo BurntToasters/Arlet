@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { z } from "zod";
+import * as z from "zod/mini";
 import type { AppSettings, ThemePreference } from "../state.ts";
 import { DEFAULT_SETTINGS } from "../state.ts";
 import {
@@ -18,7 +18,7 @@ export {
 const themeSchema = z.enum(["system", "light", "dark"]);
 const windowEffectSchema = z.enum(["acrylic", "mica", "solid"]);
 const updateChannelSchema = z.enum(["auto", "stable", "beta"]);
-const volumeSchema = z.number().finite().min(0).max(1);
+const volumeSchema = z.number().check(z.gte(0), z.lte(1));
 
 function systemMediaQuery(): Pick<MediaQueryList, "matches"> {
   if (
@@ -64,6 +64,7 @@ export function migrateSettings(raw: unknown): AppSettings {
     autoplay: z.boolean().safeParse(parsed.autoplay),
     restoreSession: z.boolean().safeParse(parsed.restoreSession),
     trayIcon: z.boolean().safeParse(parsed.trayIcon),
+    launchAtStartup: z.boolean().safeParse(parsed.launchAtStartup),
     debugMode: z.boolean().safeParse(parsed.debugMode),
   };
   const reserved = Object.fromEntries(
@@ -96,6 +97,9 @@ export function migrateSettings(raw: unknown): AppSettings {
     trayIcon: candidate.trayIcon.success
       ? candidate.trayIcon.data
       : DEFAULT_SETTINGS.trayIcon,
+    launchAtStartup: candidate.launchAtStartup.success
+      ? candidate.launchAtStartup.data
+      : DEFAULT_SETTINGS.launchAtStartup,
     debugMode: candidate.debugMode.success
       ? candidate.debugMode.data
       : DEFAULT_SETTINGS.debugMode,
@@ -117,6 +121,7 @@ export function serializeSettings(settings: AppSettings): string {
     autoplay: settings.autoplay,
     restoreSession: settings.restoreSession,
     trayIcon: settings.trayIcon,
+    launchAtStartup: settings.launchAtStartup,
     debugMode: settings.debugMode,
   });
 }

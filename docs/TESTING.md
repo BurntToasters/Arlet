@@ -27,6 +27,25 @@ running Arlet first; the app is single-instance. `--skip-build` reuses the
 last E2E binary. `npm run test:all -- --require-clean-proof` (every release
 proof) runs this suite on Windows, so no release is recorded without it.
 
+The app launches in the background, so a run does not interrupt whoever is
+using the PC. `ARLET_E2E_BACKGROUND=1` (`src-tauri/src/background_launch.rs`)
+builds the window not focusable, strips activation from every position
+change, and keeps it at the bottom of the z-order, which also drops
+always-on-top and keeps full-screen tests out of sight. The tray handoff does
+not call `set_focus`, whose Alt-key workaround would take the foreground. The
+page gets DevTools focus emulation and WebView2 switches that stop throttling
+a covered window. `scripts/e2e-foreground.js` samples the foreground window
+every 250 ms and writes `foreground.json`. The check fails if Arlet was ever
+the active window or a sized Arlet window overlapped the active one from
+above. `--foreground` opts out (no flag, no monitor).
+
+After each run, older `e2e-artifacts/<timestamp>` folders are pruned so only
+the newest 20 (the current run included) remain. Set `ARLET_E2E_KEEP_RUNS` to
+change that count; `0` keeps every folder. Only direct children whose names
+match the script's timestamp format are deleted, never symlinks or junctions,
+files, the current run, or other folders such as `audit-*`. The number pruned
+is logged, and a pruning failure is logged as a warning without failing the run.
+
 Failure modes it covers:
 
 1. A release build cannot embed the token, or serves the runtime env instead.
@@ -42,8 +61,10 @@ Failure modes it covers:
    from the roaming config folder to local app data, the fixed cache commands
    fail, or the generic SQL plugin is still reachable.
 10. The open-source licenses dialog is empty.
-11. With Apple's CDN unreachable, the cached library is not shown.
-12. A renderer crash leaves a blank window.
+11. With Apple's CDN unreachable, the cached library is not shown, or the
+    connection returning (an `online` event) does not reload to retry.
+12. A renderer crash leaves a blank window, or leaves no line in `arlet.log`
+    (WebView2 failures are written even with Debug Mode off).
 
 The harness itself must not lose the real data folders:
 
@@ -54,6 +75,9 @@ The harness itself must not lose the real data folders:
   a marker file, so the next run puts the backup back before it starts.
 - Data without that marker is never deleted. With more than one backup, or
   unmarked data in place, the run stops and asks for a manual restore.
+- Deleting the test profile fails (a WebView2 process still holds a file),
+  and the run stops before it renames any backup back, so Arlet opens on the
+  test profile until the next run.
 
 It also writes `screenshot-offline.png`. CI runs this gate on Windows x64 and
 uploads the report as the `e2e-report` artifact.
@@ -64,7 +88,14 @@ release origin and that it carries no `origin` claim. That proves the token
 on this machine; `release:preflight` checks the release VM's token against
 Apple separately. Library (`/v1/me`) requests need a signed-in user, so
 confirm them by hand on an installed build.
-The E2E binary then contains that token; it stays in `src-tauri/target/e2e`.
+
+Release token age:
+
+- The weekly canary warns 150 days after the latest stable release, assuming
+  its token was freshly minted for 180 days. A release built with an older
+  pasted token (30 days left passes the build) stops playback for everyone
+  before the canary warns. `release:preflight` now requires 150 days left.
+  The E2E binary then contains that token; it stays in `src-tauri/target/e2e`.
 
 It does not sign in to Apple Music or play protected audio.
 
@@ -131,6 +162,16 @@ MusicKit's item loader rejects the whole `setQueue`, `playNext`, or
 `playLater` call with `NOT_FOUND` ("One or more items could not be resolved")
 when any catalog ID is missing, and it silently drops songs that resolve but
 are not playable. Failure scenarios:
+
+- A song MusicKit took as song details (no lookup) but could not start is
+  queued again by ID, and that retry hits an unresolved ID: the Play fails
+  instead of skipping the song (or retrying a library song by its library
+  ID), as the first queue setup would.
+- Rebuilding the queue from a chosen row (runtimes without
+  `changeToMediaAtIndex`) fails on one unresolved song instead of dropping it.
+- Background top-ups and Play Next/Later queue by ID, so MusicKit looks up
+  every added song (one Apple request per 16). Details are tried first; a
+  rejected details call falls back to IDs once.
 
 - One removed or temporarily unavailable song stops a whole playlist or album
   from playing.
@@ -218,6 +259,12 @@ are not playable. Failure scenarios:
 - A provider queue event during an edit is overwritten by a stale snapshot.
 - `Clear` stops the current song; history rows become editable.
 - A 600-song queue freezes the drawer.
+- Moving a song in Playing Next moves a different song when the queue
+  shifted after the user picked it (a sync or top-up); the move must follow
+  the song's ID. (Code-reviewed; the existing move checks cover the normal
+  path, and the shift itself is not driven here.)
+- `Save as playlist` saves only the songs already handed to MusicKit and
+  leaves out the rest of a long playlist that the drawer says is coming.
 
 ## Ratings and library
 
@@ -229,7 +276,7 @@ are not playable. Failure scenarios:
   Artist 2" instead of the song's artist text.
 - Add to Library gives no confirmation and the item does not appear in
   Library until a manual refresh.
-- An optimistic Love stays set after the request fails.
+- An optimistic Favorite stays set after the request fails.
 - Fast repeated clicks race and leave the wrong final rating.
 - A late rating response is shown for a newer track.
 - Add to Library duplicates an item or calls the wrong endpoint.
@@ -255,6 +302,16 @@ are not playable. Failure scenarios:
 - `End of track` lets the next song play audibly, or never fires at queue end.
 - Autoplay is offered when the runtime does not support it, or the setting is
   saved even though the runtime rejected it.
+- Windows media keys and the flyout cannot go Previous on the first song of
+  a Play (every Play now starts at queue index 0), while the in-app Previous
+  restarts the song or steps back into the playlist. Next is disabled on the
+  last queued song while more songs of the playlist are still to be added.
+- A failed media-overlay update is remembered as shown, so the overlay stays
+  stale until the song changes.
+- After playback stops, the tray Play/Pause item sends Pause, because the
+  last playing state is never cleared.
+  (These two are native-only and code-reviewed: the overlay and the tray
+  need a real desktop, see Release-only evidence.)
 
 ## Tray
 
@@ -272,6 +329,9 @@ closing the window quits.
   when shown).
 - Tray commands arrive before the frontend listens.
 - A second launch does not show a window hidden in the tray.
+- With the tray off, closing leaves the window on screen while the page
+  saves before quitting. (Code-reviewed; the close-with-tray-off check still
+  proves the save and the exit.)
 - A missing or non-boolean `trayIcon` value disables the tray instead of
   using the default.
 
@@ -284,9 +344,72 @@ closing the window quits.
 - A saved position beyond the song duration, or library IDs that no longer
   exist, break playback.
 - Saving on every position tick thrashes the disk.
+- Quitting (tray Quit, or closing with the tray off) while playing loses up
+  to 30 seconds of position: the page's unload save does not finish before
+  the process exits. Arlet now waits up to 1.5 seconds for the page to save.
 - Next, Previous, or a seek shortcut on a restored queue does nothing, or
   calls the provider before Play: there is no provider queue yet.
 - A seek before Play is lost, and Play resumes at the old saved position.
+- A restored long playlist ends after the songs MusicKit already held (50 to
+  150), because the rest still to be added, and the songs before the one the
+  Play started at, were not saved.
+- A restored song loses its explicit rating, so it is queued without
+  `contentRating` (no badge, and no content limit if MusicKit applies it
+  client-side), or a song Apple marks unplayable is sent again.
+- Installing an update or resetting settings exits without the quit save, so
+  up to 30 seconds of position and a pending volume change are lost.
+  (Code-reviewed: both now run the same save the quit check covers; an
+  update install needs a published release.)
+- An expired embedded developer token shows "You're offline" with a Reconnect
+  button that fails forever; the token notice never appears because the
+  expiry is only known after MusicKit started.
+
+## Stream handoff and sign-in expiry
+
+- Paused or errored playback keeps the DRM lease past 1 minute: MusicKit
+  `stop()` is never called, so a phone playing the same account is paused
+  with "More than one device is trying to play music".
+- The handoff changes what the user sees: the queue, current song, or
+  position changes, the status becomes "stopped" or "Nothing playing", or
+  MusicKit's own stop and now-playing echoes overwrite the parked queue.
+- Play after a handoff restarts at 0:00, plays a different song, or loses
+  the rest of a long playlist. A station resumes as loose songs.
+- A pause shorter than 1 minute is handed back anyway, or playing audio is
+  ever stopped.
+- Play pressed while the handoff's `stop()` is still in flight starts on a
+  stopping player.
+- MusicKit's own error dialog (a raw `MEDIA_LICENSE` and similar) still
+  appears, or a raw reason code reaches the player bar or a toast.
+- A rejected user token (403 or 401 on `/v1/me`, `AUTHORIZATION_ERROR`,
+  `TOKEN_EXPIRED`, or `MEDIA_LICENSE` with a dead token) leaves the UI
+  saying "Connected".
+- A single forbidden resource, a network failure, or a `MEDIA_LICENSE` with
+  a healthy token is treated as an expired sign-in. That would be a false
+  positive.
+- Expiry verification hammers Apple: more than one probe per cooldown, or
+  `/v1/me` requests keep going out while expired.
+- An expired sign-in deletes the library cache, pins, saved queue, or
+  recents.
+- "Sign in again" reuses the stale token and never opens the sign-in window.
+  Or the `authorizationStatusDidChange` caused by its own `unauthorize()` is
+  treated as a revocation.
+- Closing the sign-in window leaves Arlet half signed in (banner gone,
+  MusicKit unauthorized).
+- "Sign out" from the expired state does not run the full local sign-out.
+
+`scripts/e2e-account-session.js` drives these against the MusicKit fixture
+(`stop` and `unauthorize` transitions, `configure({ rejectMeStatus: 403 })`
+and `configure({ rejectAuthorize: true })`, and the configure options in
+`snapshot().configure`). The 60 s handoff delay is shortened by mapping
+`setTimeout` delay 60000 to a few hundred ms, installed only once playback is
+audible and removed before Play. The 30 s probe cooldown cannot be shortened
+from the page, so the suite reloads first and waits out the remainder before
+the one check that needs a second probe. It leaves the app signed in and
+healthy. Its artifacts under `e2e-artifacts/<timestamp>/`: the `account
+session` and handoff/expiry checks in `report.json`,
+`screenshot-account-session.png` (end state), `screenshot-account-session-expired.png`
+(the banner), and `account-session-trace.json` (every fixture request and
+transition, including the single `/v1/me/storefront` probe).
 
 ## Radio and artist pages
 
@@ -299,6 +422,24 @@ closing the window quits.
 - Artist top songs for a library artist call the catalog with a library ID.
 - Top songs from a previous artist flash on the next artist page.
 - The shortcut list in Settings drifts from the real key handling.
+- A catalog next-page path Apple returns with `l=` already in it gets a
+  second `l` added, so later pages can come back in another language or fail.
+  (Code-reviewed; the fixture's catalog pages carry no language.)
+- An artist page shows "No albums found" because a catalog response wrapped
+  by MusicKit (`{ data: { data: [...] } }`) is read as empty, or lists only
+  the first page (25) of an artist's albums.
+- An artist page looks like an album page, its banner text is unreadable over
+  the artwork, or its Top Songs grid scrolls sideways at narrow widths.
+- Play on a playlist page fetches the songs already on screen again before
+  any audio starts.
+- Queuing songs by ID makes MusicKit look each one up first (one Apple
+  request per 16 songs). Arlet queues song details instead; the real-token
+  run (`test:e2e:app:real`) records the probe: one lookup by ID, none with
+  details. Library-only songs are described as library songs; music videos
+  still queue by ID. A rejected details queue, or details MusicKit queued but
+  could not start, falls back to IDs once. With details MusicKit does not
+  look songs up, so a song since removed from Apple Music fails when it
+  starts and is skipped by auto-skip (covered above).
 
 ## Search, playlist dialogs, and support report
 
@@ -309,7 +450,9 @@ closing the window quits.
 - A Play leaves no timing line in `arlet.log`, so a slow start reported by
   a user cannot be broken down into page loads, queue setup, and play.
 - Add to playlist sends the song to the wrong playlist, or the dialog stays
-  open after a successful add.
+  open after a successful add. The picker lists no playlist in time (a slow
+  library load): the check waits up to 20 seconds for the option and reports
+  the dialog, its feedback text, and the playlist requests in `detail`.
 - New playlist drops the typed name or the selected song, or a late reply
   closes a dialog opened after it.
 - The copied diagnostics report is empty, lacks the app version, or contains
@@ -343,6 +486,566 @@ A native crash or a failed window start is written to `arlet.log` even with
 Debug Mode off, because nothing else records it. That path is not driven
 here.
 
+## Rendering performance
+
+`scripts/e2e-performance.js` runs inside the native suite against the MusicKit
+fixture. It measures CDP `Performance` metric deltas (ScriptDuration,
+LayoutCount, RecalcStyleCount, Nodes, JSHeapUsedSize) for steady playback, a
+volume drag, a large library, Up Next, and artwork sizes. Every number is
+written to the check `detail` and lands in `report.json`.
+
+The metrics are relative. A report records numbers from one machine and one
+run. Three ceilings and one leak check are set; a check fails when its count
+is above its ceiling:
+
+- `LIBRARY_CARD_MAX` (600): `.library-card` elements mounted in one library
+  grid. The grid is virtualized, so this measures the viewport window, not the
+  library size. The album and artist checks also require the scroll loop to
+  reach the end (no `.library-load-more`) and the fixture to have answered all
+  5000 items, counted by distinct id. Each step scrolls `.content-scroll` to
+  its bottom and samples the mounted card count.
+- `GRID_NODES_MAX` (5000): live elements (`getElementsByTagName("*")`) in the
+  page, the largest value sampled while the album and artist grids scroll. A
+  card is 16 elements (shell, open button, artwork box and img, copy block,
+  actions box, Play button and icon, "..." button and icon). Measured in a
+  native run: album grid max 3,452 elements (top 1,852, back to top 645);
+  artist grid max 2,852. 5000 is about 1.45 times the album max. After the
+  album scroll, CDP `Nodes` fell from 9,154 to 4,003 once garbage was
+  collected, so the earlier growth was uncollected detached nodes, not live DOM.
+- Leak check (`GRID_LEAK_MARGIN`, 50): after the scroll reaches the end, the
+  scroller goes back to `scrollTop = 0`. The live element count there must not
+  exceed the count at the top by more than 50. Growth only; a smaller count is
+  not a leak. Both counts are read after `HeapProfiler.collectGarbage`, so a
+  detached subtree still held by JavaScript shows up as growth.
+- `UP_NEXT_ROW_MAX` (120): `.now-playing-queue > li` rows that are not
+  `aria-hidden`. The virtual spacer rows are not counted.
+
+CDP `Nodes` is still in each detail, but it also counts text nodes and detached
+nodes that have not been collected, so it is a context figure, not a ceiling.
+The grid detail records `topElements`, `maxElements`, `backToTopElements`,
+`leakGrowth`, `nodeCeiling`, `leakMargin` and `maxCards` for each library.
+
+The volume drag is checked on disk, not by counting IPC calls. Tauri defines
+`__TAURI_INTERNALS__.invoke` as non-writable, so the save is observed through
+`settings.json` in the scenario's data directory. Before the drag the file's
+volume and mtime are recorded; 40 input events move the slider 0.4 away from
+the start. Read straight after the drag, the file must be unchanged, which
+shows there is no write per event and the 300 ms debounce has not fired. After
+1.5 s the persisted volume must equal the slider's final value (within 0.001)
+and the mtime must have moved. Before, during and after volumes and mtimes are
+in the detail.
+
+Artwork is an exact check, not a ceiling. The fixture serves an mzstatic-shaped
+template (`configure({ artworkTemplate })`, with `{id}` per resource) so the
+app's size rewrite runs. For a 42 px Up Next queue thumbnail and the Now Playing
+hero, the check reads `devicePixelRatio` and each rendered CSS width, then
+computes the expected size with the rule in `artworkBucketFor`: the smallest of
+96, 300 or 640 px that covers CSS width times DPR, else 640. Every logged
+segment (such as `96x96`) must equal that expected segment.
+
+A ceiling set to `null` only records its number.
+
+Failure modes this pass must not have:
+
+- Playback ticks or unrelated store updates re-render the whole shell, so
+  every view and the player bar rebuild several times a second.
+- A volume drag re-renders every view and writes settings on every input
+  event, instead of once when the drag ends.
+- Queue events with an unchanged queue rebuild the queue and save the session
+  on each event.
+- Library album and artist grids with thousands of items mount every card,
+  so scrolling costs grow with the library instead of the viewport.
+- Now Playing's Up Next mounts hundreds of rows, not the visible ones.
+- A 42 px thumbnail downloads a 300 px (or larger) image, and hero art is
+  upscaled from a smaller source.
+- A library page refresh waits on disk writes before it shows anything.
+- The cached library and the saved queue wait for MusicKit's network
+  configure before they appear.
+- The cache's write-ahead log files survive a library clear and resurrect
+  old data on the next start.
+- With Debug Mode off, logging still crosses IPC for every line.
+
+## Artwork sizing
+
+`scripts/e2e-artwork.js` runs inside the native suite against the artwork
+fixture (`configure({ artworkGrid: true, artworkTemplate })` in
+`scripts/e2e-music-fixture.js`). The fixture serves short and very long titles
+in the same grid, library artists whose artwork is only on their catalog
+artist (`relationships.catalog.data[0].attributes.artwork`, served when the
+request asks `include=catalog`), one artist and one album with no artwork. The
+artwork template points every URL at the app icon, which the app already serves
+from its own origin, so every `<img>` really loads. The app takes artwork only from http(s) URLs, so a data: image never
+reaches an `<img>`. The template is needed: the seed artwork URLs never load.
+
+It visits eight views: Home, Library albums, playlists, artists and recently
+added, Radio, a search for `artwork`, and the library artist page for
+`lib-artist-art-1`. Each card is measured from its `.card-shell`: the open
+button (or static div) that holds the artwork, and the `.card-actions` overlay.
+The search top result (`.search-tile-featured`, 140 px art beside text) and the
+artist page's featured album (`.artist-featured-card`) are left out of the
+equal-width check, but their overlays are still checked against their art.
+
+Failure modes this pass must not have:
+
+- A card's open button shrinks to its title, so its artwork is narrow for a
+  short title and wide for a long one (the artwork is not the card's content
+  width).
+- Artwork is not square, so the tile height follows the title or the grid.
+- Cards in one grid row differ in width.
+- The Play and "..." overlay (`.card-actions`) sits beside the artwork, or is
+  sized to the card instead of the art.
+- Artwork renders with an image that fails to load, or an item without art shows
+  nothing where its initials belong.
+- A library artist tile with no artwork renders its icon as a wide strip instead
+  of a square.
+- A library artist's catalog artwork is ignored, so its tile has no picture
+  (`include=catalog` not requested, or the catalog artwork read from the wrong
+  path).
+- A library artist's page hero has no picture, although its catalog artist has
+  artwork.
+- An album with no artwork shows no initials, or the wrong initials.
+
+Each check's `detail` in `report.json` holds the measurements: the rects of the
+artwork, content box and overlay, the row widths, and the kind of art each card
+showed (`img`, `initials` or `icon`). The runner also writes one screenshot per
+view (`artwork-<view>.png`, named by view) into the run's artifact folder.
+
+Checks in `scripts/e2e-artwork.js`, by view. The check name is the `report.json`
+name; `<view>` is one of the eight views above:
+
+| Check                                                                     | Guards                                       |
+| ------------------------------------------------------------------------- | -------------------------------------------- |
+| `<view>: every card's artwork fills its card content width`               | button shrinks to its title                  |
+| `<view>: its cards render`                                                | fixture not reached, cards missing           |
+| `<view>: every card's artwork is square`                                  | non-square art, strips                       |
+| `<view>: cards in one grid row share a width`                             | row widths differ                            |
+| `<view>: each card's Play and More overlay sits over its artwork`         | overlay offset or sized to the card          |
+| `<view>: fixture artwork loads, and items without art show a placeholder` | image not loading, placeholder missing       |
+| `library albums: an album without art shows its initials`                 | initials missing or wrong                    |
+| `library artists: a catalog artist's image shows on its tile`             | `include=catalog` or catalog artwork ignored |
+| `library artists: an artist without art shows a square icon`              | icon rendered as a strip                     |
+| `artist page: the hero shows the catalog artist's image`                  | library artist hero without catalog artwork  |
+
+Not covered here: the real mzstatic bucket sizes (see Rendering performance),
+hover and focus states of the overlay, and lazily loaded rows far below the
+fold (the runner steps through the content area once, so lazy images load).
+
+## UI polish and accessibility
+
+`scripts/e2e-polish.js` runs inside the native suite (before Session restore)
+against the `polish` fixture ids in `scripts/e2e-music-fixture.js`. It drives
+the real UI over CDP and reads the fixture's snapshot for requests, queue and
+volume. Each check is written to `report.json` with its observed values in
+`detail`. The runner also writes `screenshot-polish.png` (the state at the end
+of the scenario) and `polish-trace.json`; the per-check screenshots are not
+written.
+
+A check that fails names the gap in its `detail`. The album header menu has no
+copy-link item (the hero carries no catalog URL), which is the one known gap at
+this writing. A check failing means the source is behind the target below, not
+that the test is wrong.
+
+Toasts: a success toast carries `action-toast-success`. An error toast has no
+class of its own, so the checks match it as an `.action-toast` that is not a
+success.
+
+Clipboard: the copied text is not read back. Reading it through
+`navigator.clipboard` makes WebView2 show a Block/Allow prompt on the test
+machine, which stalls the run. Copy-link is checked by its success toast, and
+the exact URL is checked on the card shell.
+
+F11 works while focus is in a text field or a dialog, by design: it has no
+text-editing meaning, so it is a window action everywhere (`src/app/shortcuts.ts`).
+
+Failure modes this pass must not have:
+
+Album and playlist headers:
+
+- A header button (Add to Library, Favorite, Pin/Unpin, "…") acts on the wrong
+  item, such as the first track or the previously opened album.
+- A header button does not reflect state: Favorite's `aria-pressed`, the Pin or
+  Unpin label, or Add to Library's done state is stale after the library or
+  ratings change.
+- Favorite sends two requests for one click, or none.
+- "…" opens the context menu for another item, or without the album's
+  reference, so "Go to album" is missing.
+- Editorial notes render HTML or run script. The fixture's notes contain
+  `<i>`, `<br>` and a `<script>` that sets `window.__ARLET_POLISH_XSS__`; that
+  flag must stay undefined, and the markup must appear as text.
+- The "More" toggle's `aria-expanded` disagrees with the visible notes.
+- Metadata invents values: a missing release date gives a year, missing genres
+  give a genre, or a missing duration shows "0 min" or "NaN".
+- Total length is wrong for the fixture (703 s, shown as "12 min" because
+  `formatRuntime` rounds to whole minutes), or shows "NaN" or "0 min" when
+  durations are missing.
+- Record label or copyright appears for an item that has neither, or shows
+  another item's value.
+- Disc N grouping breaks click-to-play: starting track 1 of Disc 2 must play
+  that track, and the queue follows the album order (Disc 1, then Disc 2).
+- Disc headings break virtualization, so rows go missing at a disc boundary
+  or a heading counts as a track in index-based playback.
+- A single-disc album shows a "Disc 1" heading.
+
+Now Playing:
+
+- Favorite or Dislike writes a rating for another song, the wrong value, or drops
+  a fast second click.
+- Shuffle and repeat buttons disagree with the fixture's modes in the
+  snapshot (`modes.shuffle`, `modes.repeat`).
+- The volume control writes settings on every input event instead of after
+  the debounce, or does not reach `player.volume`.
+- The open or close animation leaves the dialog mounted after close, or traps
+  focus after close (focus does not return to the artwork button).
+- Fullscreen sticks after Esc, or the Now Playing button's label and the window
+  disagree. F11 working in a text field or dialog is intended, not a failure.
+- The slider's `aria-valuetext` shows a raw number or "NaN" instead of a
+  formatted time or percentage.
+- With `prefers-reduced-motion: reduce`, open, close or transition animations
+  still run.
+
+Context menu:
+
+- Separators are doubled, leading or trailing, or reachable by arrow keys.
+- "Copy Apple Music link" (`data-menu-item="copy-link"`) copies a URL that is
+  not `https://music.apple.com`, or the URL of a different item than the menu
+  opened for. It is shown for an item with no Apple URL.
+- After the menu is split into files, an item keeps no handler or a stale one.
+
+Loading skeletons:
+
+- A skeleton stays on screen after data arrives, or its hidden label stays
+  visible.
+- A refresh with data already shown replaces that data with the skeleton, so
+  the layout jumps and the scroll position is lost.
+- A first load that fails shows the skeleton forever instead of the error.
+- Skeletons lack `role="status"` or the hidden label, so a screen reader hears
+  nothing, or a spinner still shows on first load.
+
+Toasts and About:
+
+- A success is styled as an error (danger colour or `role="alert"`), or an
+  error as a success.
+- An About link navigates the app window away from `tauri.localhost` instead
+  of opening the system browser, or a link is not on the allowlist.
+- The About version is stale or a placeholder rather than the app's version.
+
+Keyboard and later items:
+
+- A keyboard-only user cannot reach a card's "…" (not focusable, or hidden
+  until hover).
+- A favorite star on a song row shows for an unfavorited song, or for the wrong row.
+- QueueDrawer leaves focus on removed or hidden content after Esc.
+- Search tabs ignore Arrow keys, or move focus without moving `aria-selected`.
+- The explicit badge has no accessible name, or its name is only "explicit".
+- A page state (loading, empty, error) renders without an `h1`.
+
+Checks in `scripts/e2e-polish.js`, by the failure mode each one guards (the
+check name is the `report.json` name):
+
+| Check                                                                                                                                     | Guards                                                                      |
+| ----------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| polish fixture data reachable                                                                                                             | fixture route renders (kept from the first pass)                            |
+| album metadata: year, song count, runtime from 703 s, genre                                                                               | invented values; total length                                               |
+| sparse album shows only its song count                                                                                                    | invented values; "NaN" or "0 min"; More shown with no content               |
+| More toggle expands and collapses, with aria-expanded matching the panel                                                                  | More toggle state                                                           |
+| editorial notes are plain text: no markup element, no script ran                                                                          | notes render HTML or run script                                             |
+| record label and copyright appear under More                                                                                              | label or copyright for the wrong item                                       |
+| playlist description renders as plain text                                                                                                | description HTML or script                                                  |
+| Disc 1 and Disc 2 headings group the four tracks in album order                                                                           | disc grouping                                                               |
+| rows show per-disc track numbers                                                                                                          | disc numbering (not a listed failure mode; the spec for this pass)          |
+| clicking the first row of Disc 2 starts MusicKit's queue at that song: [d2 t1, d2 t2] at index 0                                          | disc grouping breaks click-to-play                                          |
+| the Disc 2 Play was given the whole album from the page: no track pages fetched                                                           | album re-fetched before Play                                                |
+| Previous from Disc 2 track 1 plays Disc 1 track 2 (the album's earlier songs are kept)                                                    | earlier songs dropped from Previous history                                 |
+| a single-disc album shows no Disc heading                                                                                                 | single-disc "Disc 1" heading                                                |
+| header Favorite toggles once per click, sending one PUT then one DELETE                                                                   | Favorite sends two requests or none; aria-pressed                           |
+| More actions opens the album menu and its target is the album                                                                             | "..." acts on the wrong item                                                |
+| context menu has no leading, trailing or double separators                                                                                | separators doubled, leading or trailing                                     |
+| ArrowDown visits each menu item once, wraps, and never lands on a separator                                                               | separators reachable by arrow keys                                          |
+| album header menu offers Copy Apple Music link                                                                                            | copy-link missing (expected to fail; see above)                             |
+| Escape closes the album menu and returns focus to its More button                                                                         | menu focus                                                                  |
+| Pin and Unpin flip the playlist header label both ways                                                                                    | Pin or Unpin label stale                                                    |
+| album card carries its Apple Music link on the card shell                                                                                 | copy-link URL                                                               |
+| keyboard Tab from the card reaches its Play button, then its More actions button                                                          | card "..." not focusable                                                    |
+| card menu offers Copy Apple Music link and has clean separators                                                                           | copy-link on a card                                                         |
+| copy-link shows the success toast, not the error style                                                                                    | success styled as error                                                     |
+| (no check: the copied text is not read back; the exact URL is asserted on the card shell, and copy-link is asserted by its success toast) | copy-link URL                                                               |
+| card Play starts the album from its first track                                                                                           | card Play starts the wrong collection                                       |
+| Arrow, Home and End keys move selection, focus and the tabpanel label together                                                            | search tabs ignore Arrow keys                                               |
+| open animation moves the dialog when motion is allowed (baseline)                                                                         | baseline for the reduced-motion check                                       |
+| Now Playing controls carry their state labels                                                                                             | controls missing or stale labels                                            |
+| volume slider reads a percentage and reaches the player                                                                                   | volume writes or reads wrong                                                |
+| seek slider reads m:ss of m:ss, not a raw number                                                                                          | slider aria-valuetext "NaN" or raw number                                   |
+| artwork bgColor tints Now Playing through --now-playing-tint                                                                              | tint missing                                                                |
+| a track without bgColor keeps the plain surface                                                                                           | tint on a track without bgColor                                             |
+| closing Now Playing returns focus to the artwork button and unmounts it                                                                   | focus after close; dialog left mounted                                      |
+| reduced motion: opening Now Playing runs no transform animation                                                                           | animation with reduced motion                                               |
+| reduced motion: closing Now Playing unmounts within 400 ms                                                                                | exit transition with reduced motion                                         |
+| opening Playing Next moves focus to its heading                                                                                           | queue drawer focus                                                          |
+| Escape closes Playing Next and returns focus to its toggle                                                                                | queue drawer focus after Esc                                                |
+| a rejected rating shows the error style and rolls Favorite back                                                                           | error styled as success; rollback                                           |
+| radio first load shows a labelled role=status skeleton, removed once data renders                                                         | skeleton stuck or unlabelled                                                |
+| a failed first load ends the skeleton instead of keeping it                                                                               | skeleton on a failed load                                                   |
+| Ctrl+R refresh keeps album cards on screen and shows no skeleton                                                                          | refresh replaces data with a skeleton                                       |
+| About links are enabled type=button elements labelled Project page, Release notes and License, with no href or target (not clicked)       | About link navigates the window, is missing, or is disabled                 |
+| a route change moves focus to the page h1                                                                                                 | route focus                                                                 |
+| viewport override switches the shell to the compact layout (720 px)                                                                       | environment: the webview ignores the override (a failing check, not a skip) |
+| opening the compact drawer moves focus into it                                                                                            | compact drawer focus                                                        |
+| Escape closes the compact drawer and focuses the menu button                                                                              | compact drawer Esc                                                          |
+| Tab on the last drawer control wraps to the first one                                                                                     | compact drawer focus trap                                                   |
+| F11 enters window fullscreen; the Now Playing button then reads Exit full screen                                                          | fullscreen state disagrees with the window                                  |
+| Escape in Now Playing closes it and leaves fullscreen                                                                                     | fullscreen sticks after Esc                                                 |
+
+Fullscreen is read from the window size against the screen, because the app
+uses window fullscreen and not DOM fullscreen (`document.fullscreenElement`
+stays null).
+
+## Apple Music discovery features
+
+`scripts/e2e-discovery.js` runs inside the native suite (before Session
+restore) against the discovery ids in `scripts/e2e-music-fixture.js`. The
+fixture header lists every id, route and control. Each check's `detail` holds
+the values it saw, and the run writes `discovery-trace.json` (the fixture
+snapshot) and `screenshot-discovery.png` to the artifact folder.
+
+The scenario resets the fixture between groups. External sign-out runs last
+and restores the account in `finally`, so Session restore starts signed in.
+
+Not covered yet: the fixture has one account, so recent searches are not
+tested across accounts; the see-all loop guard (`repeatViewCursor`) is in the
+fixture but no check drives it; Home's other card types are not modeled.
+
+Failure modes, each with the check that guards it (the check names are the
+`report.json` names).
+
+Artist page (`views` and `extend` in one request):
+
+- The page sends more than one artist request when views succeed, or sends a
+  See all or fallback request on load. [artist page makes one artist request
+  when views succeed]
+- Albums are fetched again from the first page, or listed twice (the "every
+  album" regression). [artist albums fill from the views with one next page
+  and no duplicates]
+- Views fail and the page shows less than before. [artist page falls back to
+  its separate requests when views fail; the check first visits another
+  artist and waits for each fallback request to settle]
+- Top Songs repeat or drop a song. [artist top songs show the five inline
+  songs, each once]
+- The bio renders the fixture's `<b>`, `<a>` or `<script>` as markup, or runs
+  the script (`window.__ARLET_DISCOVERY_XSS__`). [artist bio shows its markup as
+  text and runs no script]
+- The banner is missing when editorial artwork exists. [artist banner comes
+  from the editorial artwork]
+- A sparse artist shows an empty shelf, or a bio or banner with no data.
+  [sparse artist hides the shelves Apple left out, along with its bio and
+  banner]
+- A library artist renders its library record without its catalog views.
+  [library artist reads its catalog twin, then the catalog views]
+
+Album shelves (`include=tracks` with `views`, album `album-discover`):
+
+- Shelves replace or drop tracks, so the four tracks no longer all list.
+  [album shelves keep all four tracks and hide the empty more-by-artist shelf]
+- The empty more-by-artist shelf shows. [same check]
+- A library album does not load its catalog views. [a library album keeps its
+  tracks and loads the catalog album views]
+
+Search suggestions (`/search/suggestions`):
+
+- A one-character term sends a request. [a one-character term sends no
+  suggestion request]
+- A late reply overwrites a newer list. `configure({ delayTerms: { pol: 1200 } })`
+  delays "pol" while "fix" is typed. [a late suggestion reply never replaces a
+  newer one]
+- Esc does not close the list, or the terms and top result do not show.
+  [suggestions list terms and a top result, and Escape closes them]
+- Tab stays inside the list. [Tab leaves the suggestion list instead of holding
+  focus]
+- Picking a term does not run that search. [picking a suggested term runs that
+  search]
+
+Search results (`with=topResults`, `types`, `limit`, `offset`):
+
+- The overview omits topResults, a requested type, or the limit of 10. [overview
+  search asks every group with topResults and a limit of 10]
+- See all albums duplicates or skips albums (60 albums, 25 a page). [See all
+  albums pages through all 60 with no duplicate pages or albums]
+- Stations or curators land in the Albums section, or a curator tile does not
+  open its page. [stations and curators get their own sections, and a curator
+  tile opens its page]
+
+Browse charts (`/charts` with `genre`, `with`, `next`):
+
+- Choosing a genre does not change the charts request, or shows the same songs.
+  [choosing Pop sends genre 14 to charts and shows its songs]
+- City or daily shelves stay when the genre has none, or hide Top Songs too.
+  [city and daily shelves hide only where the genre has none; Top Songs stays]
+- Top Songs See all repeats songs, or follows a next link that is not a chart
+  path. [Top Songs See all pages through 30 songs with no duplicates, via the
+  chart's next link]
+
+Radio station genres (`station-genres`, `station-genres/{id}/stations`):
+
+- A genre chip does not open its station shelf. [a genre chip opens its
+  station shelf from station-genres]
+- A station with a URL does not play, or a station without one has an active
+  Play. [a station with a URL plays from its card, and one without has no Play]
+- Live text is missing for a live item, or stays after the item changes.
+  [live radio text shows for a live item and clears when the item changes]
+
+Curators (`curators/{id}`, `apple-curators/{id}` with `views=grouped-playlists`,
+`playlists?ids=`, `playlists/{id}?include=curator`):
+
+- An Apple curator shows no groups, because bare playlist refs are not
+  batched. [an Apple curator shows its editorial group, resolved through the
+  playlists batch]
+- A non-Apple curator's flat playlist shelf is wrong, or a batch sends more
+  than 25 ids. [a curator's flat playlist shelf lists its three playlists, and
+  batches stay at 25 ids or fewer]
+- A curator's playlist is a dead link. [a curator's playlist opens and lists its
+  tracks (no dead link)]
+- A playlist's curator link is missing, reads a different curator name, or
+  opens the wrong kind of curator. [a playlist's curator link opens the curator
+  page]
+
+Home (`recent/played`, `history/heavy-rotation`, `recommendations`):
+
+- Recently Played is missing, drops albums or stations, shows a menu on a
+  station card, or does not follow its next page once. [Home shows Recently
+  Played with albums and stations, and station cards have no menu]
+- Heavy Rotation filters out stations or playlists. [Heavy Rotation keeps
+  stations, albums and playlists unfiltered]
+- A nested recommendation group is dropped, or merged into its parent. [a
+  nested recommendation group becomes its own titled shelf]
+
+MusicKit events (fixture controls in the header):
+
+- A late duration leaves seek disabled. [a late duration enables seek and shows
+  the total]
+- An external volume change is not shown or not saved, or the app writes it
+  back again. The control makes one "volume" write; any more is a loop. [an
+  external volume change shows, saves to settings, and does not loop]
+- External sign-out leaves recent searches or the signed-in UI in place. [external
+  sign-out runs local cleanup and shows the signed-out UI]
+
+## Audit fixes
+
+Native-only and code-reviewed (no E2E):
+
+- Item 1, pause on system suspend and on default output change
+  (`src-tauri/src/system_events.rs`): the failure modes are listed in the
+  module doc comment, and the pure decision logic has Rust unit tests. The
+  event wiring is code-reviewed. The manual checks are under "Release-only
+  evidence".
+- Item 4, native command hardening (`docs/SECURITY.md`): code-reviewed. Every
+  `#[tauri::command]` input cap and enum check in `src-tauri/src/` is reviewed.
+
+Failure modes:
+
+- Idle playback cap (item 2): playback that has run 4 h with no pointer,
+  key, wheel, transport, queue, tray, or SMTC command is not paused. A pause
+  fires during active use. The pause shows no "Paused after 4 hours without
+  activity." notice. Two timers run, so the pause fires twice. The timer keeps
+  running while paused or not playing.
+- Cancel a stuck sign-in (item 5): Cancel leaves `auth.pending` set. An
+  abandoned `authorize()` that later resolves leaves Arlet signed out. Its
+  rejection shows an error instead of being ignored. A new sign-in click during
+  an abandoned attempt does nothing. Cancel is missing from the titlebar
+  connection menu, the Settings account card, or the session-expired notice.
+- Offline recovery (item 6): a reload happens after an init failure that was
+  not a network error, or after an expired developer token. A reload happens
+  more than once within 30 s. A reload happens when init never failed. The
+  offline banner's Reconnect disappears.
+- Clipboard copy (item 7): a stalled plugin call blocks past 2 s without
+  falling back to `navigator.clipboard`. The fallback is skipped after a plugin
+  error. "Clipboard is busy" shows while either path succeeded. Neither path
+  logs its result.
+- Ratings caches (item 10): `settled`, `generations`, or `added` grows past
+  2000 entries. Eviction drops an in-flight entry, so a request repeats or a
+  result is lost. A re-added key is not treated as the newest entry.
+- Notice stacking (item 11): the session-expired and token-expiry notices
+  overlap, or one is hidden while the other shows. The container takes space
+  when neither notice is showing. Either notice overflows at phone width.
+- Parked station seek (item 12): `seek` on a parked station moves the shown
+  position or the resumed track. The scrubber stays enabled for a parked
+  station. Seek is dropped on a normal queue.
+
+E2E suite (`scripts/e2e-audit-fixes.js`, run after "artwork" in the native
+run): idle cap and activity re-arm (6 s stand-in for 4 h, with the keydown at
+2 s and reads at 7 s), a `windows-media-control` "pause" event, the
+`online` event with healthy MusicKit (no reload; the reload after a failed
+start, with Apple's CDN blocked, is `e2e-app.js` item 11), the diagnostics copy
+answering within 6 s with "Copied" or the busy error (the logged path is
+recorded when readable), cancel of a stuck sign-in from the notice, titlebar
+and Settings (a held `configure({ hangAuthorize: true })` call is released
+later and must still sign in; a new attempt during an abandoned one starts
+fresh; a later expiry is detected), the notice stack container, and a parked
+station's disabled scrubber and dropped seek; a manual "Sign in again" that is
+cancelled or rejected, and a token MusicKit drops silently (second audit item
+1); and a parked queue resumed with shuffle on, which keeps its saved order
+(item 2). The suite ends signed in and
+healthy. Artifacts under `e2e-artifacts/<timestamp>/`: the `audit fixes`
+checks in `report.json`, `screenshot-audit-fixes-idle.png`,
+`screenshot-audit-fixes-sign-in-pending.png`,
+`screenshot-audit-fixes-expired.png`, and `audit-fixes-trace.json`.
+
+The live MusicKit script check (item 3, `e2e-app.js`) fetches
+`js-cdn.music.apple.com/musickit/v3/musickit.js` and fails with the list of
+missing markers in its detail.
+
+Code-reviewed, no E2E:
+
+- Ratings caches (item 10): `settled`, `generations`, and `added` are capped
+  at 2000 with oldest-first eviction that skips in-flight entries. Reaching
+  2000 distinct lookups in one session is not practical in the fixture.
+- Token-expiry notice in the stack (item 11): `developerTokenExpiresAt` comes
+  from the embedded developer token in a release build, and the suite cannot
+  change it. The suite checks only the `.notice-stack` container.
+
+Second audit (spec items 1 to 5). Items 1 and 2 are driven by the native
+suite (`scripts/e2e-audit-fixes.js`, checks `re-auth failures`, `lost token`
+and `parked queue order`). The rest are code-reviewed:
+
+- Failed manual re-auth (item 1): a cancelled "Sign in again" on a healthy
+  session expires it when MusicKit is unauthorized, and does not when MusicKit
+  holds a token again. A rejected or closed attempt expires it, logs the reason,
+  and the notice signs in again. An abandoned attempt that completes later clears
+  the notice. A token MusicKit drops without an event expires the session with
+  no `/v1/me/storefront` probe. Failure modes: a closed, cancelled, or rejected
+  re-auth leaves "Connected" with no token; a healthy session is probed while
+  MusicKit reports it unauthorized; an account transition blocks the expiry.
+- Parked queue order (item 2): Next, Previous, and Play on a parked queue, with
+  shuffle on, each queue only the songs from the target index on, in saved
+  order, and Play then seeks to the saved position. Previous steps back into
+  history without queueing it. Restore from disk runs the same
+  `resumeRestoredQueue` path, but a restart is not driven here.
+- Lid close on Modern Standby (item 3): native-only. The decision logic (pause
+  once on entering "lid closed and display off"; ignore the registration seed)
+  is unit-tested in `src-tauri/src/system_events.rs`, and the wiring is
+  code-reviewed. The desktop check is under "Release-only evidence".
+- Newer release replaces a pending update (item 4), and a failed periodic check
+  keeps a ready update (item 5), in `src/updater.ts`: code-reviewed, not driven.
+  Reaching the updater needs the live release feed, and a pending update needs
+  a signed installer downloaded from it. The E2E build does not stub that feed,
+  and a fake feed would bypass the signed-updater check the flow keeps. Check
+  these by hand on a release build: a newer release replaces a downloaded one,
+  a same-version check keeps "ready", and a failed check keeps Install.
+
+Stale sign-in after Sign out and Sign in (found after a real password change).
+MusicKit replaces its API object, which carries the user token, on every
+sign-in and sign-out. The fixture now does the same, and its replaced object
+rejects `/v1/me` with a bare `403`, as the old token would. Driven by the check
+`sign out then in`. Failure modes:
+
+- The request wrapper keeps the API object from before the sign-in, so every
+  library request sends the dead token and fails with `403` until a restart,
+  while the titlebar says "Connected".
+- The expiry check probes with a fresh API object, passes, and so never shows
+  the banner while the real requests keep failing.
+- A suspect error that arrives while a sign-in is still finishing is dropped
+  and never checked again. It is now kept, and checked once the sign-in
+  settles, with the probe cooldown reset.
+- A refused request shows the bare status `403` instead of readable text.
+
 ## Release-only evidence
 
 The following checks require a Windows release environment and are kept out of
@@ -369,6 +1072,18 @@ the deterministic smoke gate:
   or hides the window, and turning `Show tray icon` off removes the icon. The
   E2E harness covers closing with the tray on and off, the setting toggle, and
   the second launch only.
+- Lid close (second audit item 3), on a Modern Standby laptop with Apple Music
+  playing: close the lid with the display off and no external monitor. Arlet
+  pauses once, and the stream is released after about 1 min. Docked with the
+  lid closed and an external display on, or the display timing out with the
+  lid open, does not pause.
+- Suspend and output change (item 1), on a real Windows desktop with Apple
+  Music signed in and a second device on the same account:
+  - Sleep or hibernate the PC while playing. Arlet is paused on resume, and
+    the stream is released after about 1 min so the second device can play.
+  - Unplug the headphones or disconnect Bluetooth while playing. Arlet pauses
+    once. A default output change while paused does nothing.
+  - Lock the screen while playing. Playback continues, by design.
 - `End of track` pauses at the next item change, so a brief bleed of the next
   song may be audible on MusicKit before the pause lands. Listen for it on
   protected and unprotected tracks.
@@ -378,7 +1093,7 @@ the deterministic smoke gate:
     (`setQueue` `startWith`), and the shuffle button reflects `shuffleMode`.
   - Queue remove, move, and clear use `Queue.splice` without restarting audio.
   - A library-only (uploaded) song plays from the `songs` descriptor.
-  - Love, Dislike, clear, and Add to Library reach Apple (check the Music app).
+  - Favorite, Dislike, clear, and Add to Library reach Apple (check the Music app).
   - Autoplay continues after the queue ends when enabled.
   - `Start Station` for a catalog song, a library song, and an artist; Top
     Songs for a library artist.

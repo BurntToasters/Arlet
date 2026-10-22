@@ -2,6 +2,7 @@ import type { QueueEditTier } from "../musickit/queue-edit.ts";
 import { redactSensitive } from "../platform/redact.ts";
 
 export const ACTION_ERROR_EVENT = "arlet:action-error";
+export const ACTION_NOTICE_EVENT = "arlet:action-notice";
 const MAX_MESSAGE_LENGTH = 200;
 
 /**
@@ -24,10 +25,10 @@ export function reportActionError(error: unknown): void {
   );
 }
 
-/** A short confirmation in the same toast, for actions with no other feedback. */
+/** A short success confirmation toast, for actions with no other feedback. */
 export function reportNotice(message: string): void {
   window.dispatchEvent(
-    new CustomEvent<string>(ACTION_ERROR_EVENT, { detail: message }),
+    new CustomEvent<string>(ACTION_NOTICE_EVENT, { detail: message }),
   );
 }
 
@@ -42,11 +43,7 @@ export function reportQueueEdit(edit: Promise<QueueEditTier>): void {
     .then((tier) => {
       if (tier !== "rebuild" || queueRebuildNoticeShown) return;
       queueRebuildNoticeShown = true;
-      window.dispatchEvent(
-        new CustomEvent<string>(ACTION_ERROR_EVENT, {
-          detail: "Queue edits briefly restart audio in this runtime.",
-        }),
-      );
+      reportNotice("Queue edits briefly restart audio in this runtime.");
     })
     .catch(reportActionError);
 }

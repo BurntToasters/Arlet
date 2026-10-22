@@ -1,12 +1,18 @@
 import {
   AlertCircle,
+  ChevronDown,
   Disc3,
+  LibraryBig,
   ListMusic,
   LoaderCircle,
+  MoreHorizontal,
+  Pin,
+  PinOff,
   Play,
   Radio,
   RefreshCw,
   Shuffle,
+  Star,
   UserRound,
 } from "lucide-preact";
 import type { LucideIcon } from "lucide-preact";
@@ -15,11 +21,19 @@ import type { JSX } from "preact";
 import {
   useAppController,
   useAppRouter,
-  useAppState,
+  useAppSelector,
+  useAppSlices,
 } from "../app/context.tsx";
+import { safeErrorMessage } from "../app/controller-support.ts";
 import type { AppController } from "../app/controller.ts";
-import type { CollectionPlayOptions } from "../app/collection-playback.ts";
+import {
+  isLibraryTarget,
+  ratingKeyOf,
+  type RatingTarget,
+} from "../app/ratings.ts";
+import { getState } from "../state.ts";
 import { Artwork } from "../components/Artwork.tsx";
+import { requestContextMenu } from "../components/context-menu-events.ts";
 import { EmptyState } from "./EmptyState.tsx";
 import {
   LibraryTrackRow,
@@ -29,52 +43,40 @@ import {
   toTrack,
   type ResourceLike,
 } from "./LibraryView.tsx";
-import type { Track } from "../domain/music.ts";
+import type { AlbumShelves, Track } from "../domain/music.ts";
+import {
+  ARTWORK_BACKDROP_BUCKET,
+  normalizeArtworkUrl,
+} from "../musickit/normalize.ts";
 import { reportActionError } from "../components/action-errors.ts";
-import { SongRow } from "../components/SongRow.tsx";
+import type { PlaylistCuratorRef } from "../musickit/curators.ts";
 import { OfflineBanner } from "../components/OfflineBanner.tsx";
 import { VirtualList } from "../components/VirtualList.tsx";
+import { SelectionBar } from "../components/SelectionBar.tsx";
+import { useTrackSelection } from "../components/track-selection.ts";
+import {
+  detailNotes,
+  detailSummary,
+  discNumberOf,
+  groupByDisc,
+  playlistCuratedBy,
+  type DiscGroup,
+} from "./detail-meta.ts";
+import { detailContext, resourceSource } from "./detail-context.ts";
+import { AlbumPageShelves } from "./AlbumShelves.tsx";
+import {
+  ARTIST_TOP_SONGS_SHOWN,
+  ArtistBio,
+  ArtistShelves,
+  ArtistShelvesSkeleton,
+  artistBannerOf,
+  artistBioOf,
+  artistHasShelves,
+  artistShelvesOf,
+} from "./ArtistShelves.tsx";
 
 type DetailKind = "album" | "artist" | "playlist";
 type DetailSource = "library" | "catalog";
-
-interface DetailController {
-  loadAlbum?: (
-    id: string,
-    source?: DetailSource,
-    options?: { refresh?: boolean },
-  ) => Promise<unknown>;
-  loadArtist?: (
-    id: string,
-    source?: DetailSource,
-    options?: { refresh?: boolean },
-  ) => Promise<unknown>;
-  loadPlaylist?: (
-    id: string,
-    source?: DetailSource,
-    options?: { refresh?: boolean },
-  ) => Promise<unknown>;
-  playAlbum?: (
-    id: string,
-    source?: DetailSource,
-    startIndex?: number,
-    trackId?: string,
-  ) => Promise<void>;
-  playPlaylist?: (
-    id: string,
-    source?: DetailSource,
-    startIndex?: number,
-    trackId?: string,
-  ) => Promise<void>;
-  playCollection?: (
-    kind: "playlist" | "album",
-    id: string,
-    source?: DetailSource,
-    startIndex?: number,
-    options?: CollectionPlayOptions,
-  ) => Promise<void>;
-  refreshCurrentData?: () => Promise<unknown>;
-}
 
 /** Background loads; their views render the error state. */
 function run(action: () => Promise<unknown> | undefined): void {
@@ -99,18 +101,6 @@ function callLoader(
   options?: { refresh?: boolean },
 ): void {
   if (loader) run(() => loader(id, source, options));
-}
-
-function resourceSource(resource: ResourceLike): DetailSource | undefined {
-  const raw = resource.raw;
-  const attributes =
-    raw.attributes && typeof raw.attributes === "object"
-      ? (raw.attributes as Record<string, unknown>)
-      : undefined;
-  const value = raw.source ?? attributes?.source;
-  if (value === "library" || value === "catalog") return value;
-  const type = resource.type?.toLowerCase();
-  return type?.startsWith("library-") ? "library" : undefined;
 }
 
 function findResource(
@@ -163,21 +153,6 @@ function detailCopy(kind: DetailKind): {
   }
 }
 
-function detailContext(
-  resource: ResourceLike,
-  kind: DetailKind,
-): Record<string, string> {
-  return {
-    "data-context-kind": kind,
-    "data-context-id": resource.id,
-    "data-context-title": resource.title,
-    "data-context-route-kind": kind,
-    ...(resourceSource(resource)
-      ? { "data-context-source": resourceSource(resource) as string }
-      : {}),
-  };
-}
-
 function TrackList({
   resources,
   canPlay,
@@ -193,41 +168,345 @@ function TrackList({
   parentId: string;
   parentSource: DetailSource;
 }): JSX.Element {
+  // Each disc is its own list, so headings sit outside the virtualized rows
+  // and the row-height spacers stay exact. Rows keep their album-wide index,
+  // which is what Play starts from.
+  const groups = useMemo(
+    () =>
+      groupByDisc(resources, parentKind === "album" ? discNumberOf : () => 1),
+    [resources, parentKind],
+  );
+  // Selection spans every disc, in the album's track order.
+  const loadedTracks = useMemo(
+    () => resources.map(toTrack).filter((item): item is Track => Boolean(item)),
+    [resources],
+  );
+  const selection = useTrackSelection(
+    loadedTracks,
+    `${parentKind}:${parentId}`,
+  );
+  // Several discs show each track's position on its disc; play still uses the
+  // album-wide index.
+  const multiDisc = groups.length > 1;
+  const renderRows = (rows: DiscGroup<ResourceLike>["items"]): JSX.Element => (
+    <VirtualList
+      className="library-track-list"
+      items={rows}
+      getKey={({ item, index }) =>
+        `${item.type ?? "track"}:${item.id}:${index}`
+      }
+      renderRow={({ item, index }) => (
+        <LibraryTrackRow
+          resource={item}
+          index={index}
+          onPlay={onPlay}
+          disabled={!canPlay}
+          discTrackNumbers={multiDisc}
+          contextData={{
+            "data-context-parent-kind": parentKind,
+            "data-context-parent-id": parentId,
+            "data-context-parent-source": parentSource,
+            "data-context-parent-index": String(index),
+          }}
+          selected={selection.isSelected(item.id)}
+          onSelect={selection.handleClick}
+        />
+      )}
+    />
+  );
+  if (groups.length < 2) {
+    return (
+      <>
+        <section
+          className="library-list-panel"
+          aria-label="Tracks"
+          ref={selection.setPanel}
+          onKeyDown={selection.onKeyDown}
+        >
+          {renderRows(groups[0]?.items ?? [])}
+        </section>
+        <SelectionBar tracks={selection.tracks} onClear={selection.clear} />
+      </>
+    );
+  }
   return (
-    <section className="library-list-panel" aria-label="Tracks">
-      <VirtualList
-        className="library-track-list"
-        items={resources}
-        getKey={(resource, index) =>
-          `${resource.type ?? "track"}:${resource.id}:${index}`
-        }
-        renderRow={(resource, index) => (
-          <LibraryTrackRow
-            resource={resource}
-            index={index}
-            onPlay={onPlay}
-            disabled={!canPlay}
-            contextData={{
-              "data-context-parent-kind": parentKind,
-              "data-context-parent-id": parentId,
-              "data-context-parent-source": parentSource,
-              "data-context-parent-index": String(index),
-            }}
-          />
-        )}
-      />
+    <>
+      <div
+        className="library-disc-groups"
+        ref={selection.setPanel}
+        onKeyDown={selection.onKeyDown}
+      >
+        {groups.map((group) => (
+          <section
+            key={group.disc}
+            className="library-disc"
+            aria-labelledby={`library-disc-${group.disc}`}
+          >
+            <h2
+              id={`library-disc-${group.disc}`}
+              className="library-disc-heading"
+            >
+              Disc {group.disc}
+            </h2>
+            <div className="library-list-panel">{renderRows(group.items)}</div>
+          </section>
+        ))}
+      </div>
+      <SelectionBar tracks={selection.tracks} onClear={selection.clear} />
+    </>
+  );
+}
+
+/** The rating target the context menu builds for a page of this kind. */
+function ratingTargetFor(kind: "album" | "playlist", id: string): RatingTarget {
+  return { type: kind === "album" ? "albums" : "playlists", id };
+}
+
+/** Favorite, Add to Library, Pin and "…" for an album or playlist header. */
+function DetailHeroActions({
+  kind,
+  id,
+  title,
+  resource,
+  controller,
+  online,
+}: {
+  kind: "album" | "playlist";
+  id: string;
+  title: string;
+  resource: ResourceLike;
+  controller: AppController;
+  /** Writes to Apple Music need an authorized session that is not offline. */
+  online: boolean;
+}): JSX.Element {
+  const ratingTarget = ratingTargetFor(kind, id);
+  const key = ratingKeyOf(ratingTarget);
+  const favorite = useAppSelector(
+    (state) => key !== undefined && state.ratings[key] === 1,
+  );
+  const pinned = useAppSelector((state) =>
+    state.pins.some((pin) => pin.id === id),
+  );
+  const canAddToLibrary =
+    !isLibraryTarget(ratingTarget) && resourceSource(resource) !== "library";
+  useEffect(() => {
+    if (online) run(() => controller.loadRating(ratingTargetFor(kind, id)));
+  }, [online, controller, kind, id]);
+  const toggleFavorite = (): void => {
+    if (key === undefined) return;
+    // Toggle against the value at click time, as the context menu does.
+    const current = getState().ratings[key];
+    run(() => controller.rate(ratingTarget, current === 1 ? 0 : 1));
+  };
+  const togglePin = (): void =>
+    act(() =>
+      pinned
+        ? controller.unpin(id)
+        : controller.togglePin(id, resourceSource(resource) ?? "library"),
+    );
+  return (
+    <>
+      <button
+        className="secondary-button"
+        type="button"
+        aria-pressed={favorite}
+        disabled={!online}
+        onClick={toggleFavorite}
+      >
+        <Star
+          aria-hidden="true"
+          size={16}
+          fill={favorite ? "currentColor" : "none"}
+        />{" "}
+        Favorite
+      </button>
+      {canAddToLibrary ? (
+        <button
+          className="secondary-button"
+          type="button"
+          disabled={!online}
+          onClick={() => run(() => controller.addToLibrary(ratingTarget))}
+        >
+          <LibraryBig aria-hidden="true" size={16} /> Add to Library
+        </button>
+      ) : null}
+      {kind === "playlist" ? (
+        <button className="secondary-button" type="button" onClick={togglePin}>
+          {pinned ? (
+            <PinOff aria-hidden="true" size={16} />
+          ) : (
+            <Pin aria-hidden="true" size={16} />
+          )}{" "}
+          {pinned ? "Unpin" : "Pin"}
+        </button>
+      ) : null}
+      <button
+        className="icon-button"
+        type="button"
+        aria-label={`More actions for ${title}`}
+        title="More actions"
+        aria-haspopup="menu"
+        onClick={(event) => {
+          const target = event.currentTarget.closest<HTMLElement>(
+            "[data-context-kind]",
+          );
+          if (target) requestContextMenu(target, event.currentTarget);
+        }}
+      >
+        <MoreHorizontal aria-hidden="true" size={16} />
+      </button>
+    </>
+  );
+}
+
+/** "Curated by X": a button to the curator's page when Apple named one. */
+function CuratedBy({
+  label,
+  curator,
+}: {
+  label: string;
+  curator?: PlaylistCuratorRef;
+}): JSX.Element {
+  const router = useAppRouter();
+  if (!curator) return <>{label}</>;
+  return (
+    <button
+      className="curator-link"
+      type="button"
+      onClick={() =>
+        router.navigate({
+          kind: "curator",
+          id: curator.id,
+          curatorKind: curator.kind,
+        })
+      }
+    >
+      {label}
+    </button>
+  );
+}
+
+/**
+ * A catalog playlist's curator, read on its own so the track list does not
+ * wait for it. Undefined until the read lands or when Apple names none.
+ */
+function usePlaylistCurator(
+  controller: AppController,
+  enabled: boolean,
+  id: string,
+): PlaylistCuratorRef | undefined {
+  const [loaded, setLoaded] = useState<{
+    id: string;
+    curator?: PlaylistCuratorRef;
+  }>();
+  useEffect(() => {
+    if (!enabled) return;
+    let current = true;
+    controller
+      .loadPlaylistCurator(id)
+      .then((curator) => {
+        if (current) setLoaded({ id, curator });
+      })
+      .catch((error: unknown) => {
+        controller.log(`Curator unavailable: ${safeErrorMessage(error)}`);
+        if (current) setLoaded({ id });
+      });
+    return () => {
+      current = false;
+    };
+  }, [controller, enabled, id]);
+  return loaded?.id === id ? loaded.curator : undefined;
+}
+
+/** The metadata line under an album or playlist title. */
+function DetailSummary({
+  kind,
+  resource,
+  tracks,
+  complete,
+  curator,
+}: {
+  kind: "album" | "playlist";
+  resource: ResourceLike;
+  tracks: ResourceLike[];
+  complete: boolean;
+  curator?: PlaylistCuratorRef;
+}): JSX.Element | null {
+  const parts = detailSummary(kind, resource, tracks, complete);
+  const curatedBy =
+    kind === "playlist" ? playlistCuratedBy(resource) : undefined;
+  if (parts.length === 0 && !curatedBy) return null;
+  return (
+    <p className="library-detail-meta">
+      {parts.join(" · ")}
+      {parts.length > 0 && curatedBy ? " · " : null}
+      {curatedBy ? <CuratedBy label={curatedBy} curator={curator} /> : null}
+    </p>
+  );
+}
+
+/** Collapsed notes, label and copyright; renders nothing when there are none. */
+function DetailMore({
+  kind,
+  resource,
+}: {
+  kind: "album" | "playlist";
+  resource: ResourceLike;
+}): JSX.Element | null {
+  const [open, setOpen] = useState(false);
+  const details = detailNotes(kind, resource);
+  if (!details) return null;
+  return (
+    <section className="library-detail-more">
+      <button
+        className="library-detail-more-toggle"
+        type="button"
+        aria-expanded={open}
+        aria-controls="library-detail-more-panel"
+        onClick={() => setOpen((value) => !value)}
+      >
+        More <ChevronDown aria-hidden="true" size={14} />
+      </button>
+      <div
+        id="library-detail-more-panel"
+        className="library-detail-more-body"
+        hidden={!open}
+      >
+        {details.notes ? (
+          <p className="library-detail-notes">{details.notes}</p>
+        ) : null}
+        {details.recordLabel || details.copyright ? (
+          <dl className="library-detail-facts">
+            {details.recordLabel ? (
+              <>
+                <dt>Label</dt>
+                <dd>{details.recordLabel}</dd>
+              </>
+            ) : null}
+            {details.copyright ? (
+              <>
+                <dt>Copyright</dt>
+                <dd>{details.copyright}</dd>
+              </>
+            ) : null}
+          </dl>
+        ) : null}
+      </div>
     </section>
   );
 }
 
-/** Top songs for the open artist; results from a previous artist are ignored. */
+/**
+ * Top songs read on their own, for an artist page whose request lacked them.
+ * Results from a previous artist are ignored. Undefined until a read lands.
+ */
 function useArtistTopSongs(
   controller: AppController,
   enabled: boolean,
   id: string,
   source: DetailSource,
   catalogId: string | undefined,
-): Track[] {
+): Track[] | undefined {
   const key = `${source}:${id}`;
   const [loaded, setLoaded] = useState<{ key: string; tracks: Track[] }>();
   useEffect(() => {
@@ -248,7 +527,7 @@ function useArtistTopSongs(
       current = false;
     };
   }, [controller, enabled, id, source, catalogId, key]);
-  return loaded?.key === key ? loaded.tracks : [];
+  return loaded?.key === key ? loaded.tracks : undefined;
 }
 
 export function LibraryDetailView({
@@ -260,10 +539,8 @@ export function LibraryDetailView({
   id: string;
   source?: DetailSource;
 }): JSX.Element {
-  const state = useAppState();
+  const state = useAppSlices("auth", "initialization", "library");
   const controller = useAppController();
-  const router = useAppRouter();
-  const extendedController = controller as AppController & DetailController;
   const sourceDetail =
     source === "catalog" ? readDetail(state, kind, `catalog:${id}`) : undefined;
   const detail =
@@ -294,6 +571,18 @@ export function LibraryDetailView({
       ),
     [rawTracks, rawAlbums, rawItems, resource],
   );
+  // Albums newest first, so an artist's latest work leads the shelf.
+  const artistAlbums = useMemo(
+    () =>
+      kind === "artist"
+        ? [...resources].sort((left, right) =>
+            String(right.releaseDate ?? "").localeCompare(
+              String(left.releaseDate ?? ""),
+            ),
+          )
+        : [],
+    [kind, resources],
+  );
   const copy = detailCopy(kind);
   const DetailIcon = copy.icon;
   const authorized =
@@ -307,17 +596,17 @@ export function LibraryDetailView({
     if (!authorized && !offline) return;
     const loader =
       kind === "album"
-        ? extendedController.loadAlbum
+        ? controller.loadAlbum
         : kind === "artist"
-          ? extendedController.loadArtist
-          : extendedController.loadPlaylist;
+          ? controller.loadArtist
+          : controller.loadPlaylist;
     callLoader(loader, id, source);
   }, [
     authorized,
     offline,
-    extendedController.loadAlbum,
-    extendedController.loadArtist,
-    extendedController.loadPlaylist,
+    controller.loadAlbum,
+    controller.loadArtist,
+    controller.loadPlaylist,
     id,
     kind,
     source,
@@ -325,25 +614,31 @@ export function LibraryDetailView({
 
   const playbackSource: DetailSource =
     source ?? (resource ? resourceSource(resource) : undefined) ?? "library";
+  // The page's songs, when it holds every one: Play starts from them
+  // instead of fetching the pages again.
+  const shownTracks = (): Track[] | undefined => {
+    if (detail.next || detail.status === "loading") return undefined;
+    const tracks = resources
+      .map(toTrack)
+      .filter((track): track is Track => Boolean(track));
+    return tracks.length ? tracks : undefined;
+  };
   const playCollection = (
     startIndex: number,
     trackId?: string,
   ): Promise<void> | undefined => {
-    if (kind === "playlist" && extendedController.playPlaylist) {
-      return extendedController.playPlaylist(
-        id,
-        playbackSource,
-        startIndex,
+    const shown = shownTracks();
+    if ((kind === "playlist" || kind === "album") && shown) {
+      return controller.playCollection(kind, id, playbackSource, startIndex, {
         trackId,
-      );
+        shown,
+      });
     }
-    if (kind === "album" && extendedController.playAlbum) {
-      return extendedController.playAlbum(
-        id,
-        playbackSource,
-        startIndex,
-        trackId,
-      );
+    if (kind === "playlist") {
+      return controller.playPlaylist(id, playbackSource, startIndex, trackId);
+    }
+    if (kind === "album") {
+      return controller.playAlbum(id, playbackSource, startIndex, trackId);
     }
     const tracks = resources
       .map(toTrack)
@@ -358,20 +653,47 @@ export function LibraryDetailView({
     if (resources.length) act(() => playCollection(0));
   };
   const shuffleAll = (): void => {
-    if (kind === "artist" || !extendedController.playCollection) return;
+    if (kind === "artist") return;
     act(() =>
-      extendedController.playCollection?.(kind, id, playbackSource, 0, {
+      controller.playCollection(kind, id, playbackSource, 0, {
         shuffle: true,
+        shown: shownTracks(),
       }),
     );
   };
-  const topSongs = useArtistTopSongs(
+  // The artist's shelves come with its one request. Top songs are read on
+  // their own only when that request lacked them, and only once it settled.
+  const artistShelves =
+    kind === "artist" ? artistShelvesOf(resource) : undefined;
+  const viewTopSongs = artistShelves?.topSongs;
+  // Only a settled detail counts: before the first read lands the status is
+  // still idle, and the fallback would fire ahead of the artist request.
+  const topSongsFallback =
+    kind === "artist" &&
+    authorized &&
+    detail.status === "success" &&
+    viewTopSongs === undefined;
+  const fallbackTopSongs = useArtistTopSongs(
     controller,
-    kind === "artist" && authorized,
+    topSongsFallback,
     id,
     playbackSource,
     resource?.catalogId,
   );
+  // Only a catalog playlist's "Curated by" needs its curator's id.
+  const playlistCurator = usePlaylistCurator(
+    controller,
+    authorized &&
+      kind === "playlist" &&
+      source === "catalog" &&
+      Boolean(resource?.raw.curatorName),
+    id,
+  );
+  const topSongs = (viewTopSongs ?? fallbackTopSongs ?? []).slice(
+    0,
+    ARTIST_TOP_SONGS_SHOWN,
+  );
+  const topSongsPending = topSongsFallback && fallbackTopSongs === undefined;
   const playTopSongs = (): void => {
     if (topSongs.length) act(() => controller.playTracks(topSongs, 0));
   };
@@ -387,7 +709,7 @@ export function LibraryDetailView({
         source: playbackSource,
       }),
     );
-  const pending = state.ui.pendingCollection;
+  const pending = useAppSelector((store) => store.ui.pendingCollection);
   const collectionBusy =
     kind !== "artist" && pending?.kind === kind && pending.id === id;
 
@@ -415,6 +737,7 @@ export function LibraryDetailView({
   }
 
   if (loading) {
+    if (kind === "artist") return <ArtistShelvesSkeleton />;
     return (
       <div className="library-feedback" role="status">
         <LoaderCircle className="spin" aria-hidden="true" size={22} /> Loading{" "}
@@ -436,10 +759,10 @@ export function LibraryDetailView({
             onClick={() => {
               const loader =
                 kind === "album"
-                  ? extendedController.loadAlbum
+                  ? controller.loadAlbum
                   : kind === "artist"
-                    ? extendedController.loadArtist
-                    : extendedController.loadPlaylist;
+                    ? controller.loadArtist
+                    : controller.loadPlaylist;
               callLoader(loader, id, source, { refresh: true });
             }}
           >
@@ -454,19 +777,57 @@ export function LibraryDetailView({
   const artist = resource?.artistName;
   const artworkTrack = resource ? toTrack(resource) : undefined;
   const isArtist = kind === "artist";
+  // Totals only count songs that are all loaded; a partial list would under-state them.
+  const complete = !detail.next && detail.status !== "loading";
+  // Apple's editorial banner when it has one; otherwise the blurred portrait.
+  const artistBanner = isArtist ? artistBannerOf(resource) : undefined;
+  const artistBackdrop =
+    isArtist && !artistBanner ? artworkTrack?.artwork?.url : undefined;
+  const artistBio = isArtist ? artistBioOf(resource) : undefined;
+  const albumShelves =
+    kind === "album" && resource
+      ? (resource.raw.shelves as AlbumShelves | undefined)
+      : undefined;
+  // Nothing but the header: no albums, top songs or other shelves came back.
+  const artistEmpty =
+    isArtist &&
+    artistAlbums.length === 0 &&
+    topSongs.length === 0 &&
+    !topSongsPending &&
+    !artistHasShelves(artistShelves);
   return (
     <>
       {offline ? <OfflineBanner /> : null}
       <section
-        className="library-detail-hero"
+        className={`library-detail-hero${isArtist ? " artist-hero" : ""}`}
         {...(resource ? detailContext(resource, kind) : {})}
       >
+        {/* Images, not CSS url(): the artwork URL never enters CSS. */}
+        {artistBanner ? (
+          <img
+            className="artist-hero-banner"
+            src={artistBanner}
+            alt=""
+            aria-hidden="true"
+            decoding="async"
+          />
+        ) : null}
+        {artistBackdrop ? (
+          <img
+            className="artist-hero-backdrop"
+            src={normalizeArtworkUrl(artistBackdrop, ARTWORK_BACKDROP_BUCKET)}
+            alt=""
+            aria-hidden="true"
+            decoding="async"
+          />
+        ) : null}
         <div className="library-detail-art">
           {artworkTrack ? (
             <Artwork
               track={artworkTrack}
               size="hero"
               alt={`${title} artwork`}
+              priority
             />
           ) : (
             <span className="library-detail-icon">
@@ -478,6 +839,15 @@ export function LibraryDetailView({
           <span className="eyebrow">{copy.eyebrow}</span>
           <h1 tabIndex={-1}>{title}</h1>
           {artist ? <p>{artist}</p> : null}
+          {kind !== "artist" && resource ? (
+            <DetailSummary
+              kind={kind}
+              resource={resource}
+              tracks={resources}
+              complete={complete}
+              curator={playlistCurator}
+            />
+          ) : null}
           <div className="library-detail-actions">
             {!isArtist && resources.length ? (
               <button
@@ -495,9 +865,7 @@ export function LibraryDetailView({
                 Play all
               </button>
             ) : null}
-            {!isArtist &&
-            resources.length &&
-            extendedController.playCollection ? (
+            {!isArtist && resources.length ? (
               <button
                 className="secondary-button"
                 type="button"
@@ -538,6 +906,16 @@ export function LibraryDetailView({
                 </button>
               </>
             ) : null}
+            {kind !== "artist" && resource ? (
+              <DetailHeroActions
+                kind={kind}
+                id={id}
+                title={title}
+                resource={resource}
+                controller={controller}
+                online={authorized && !offline}
+              />
+            ) : null}
             <button
               className="icon-button"
               type="button"
@@ -545,10 +923,10 @@ export function LibraryDetailView({
               onClick={() => {
                 const loader =
                   kind === "album"
-                    ? extendedController.loadAlbum
+                    ? controller.loadAlbum
                     : kind === "artist"
-                      ? extendedController.loadArtist
-                      : extendedController.loadPlaylist;
+                      ? controller.loadArtist
+                      : controller.loadPlaylist;
                 callLoader(loader, id, source, { refresh: true });
               }}
             >
@@ -557,6 +935,10 @@ export function LibraryDetailView({
           </div>
         </div>
       </section>
+      {kind !== "artist" && resource ? (
+        <DetailMore kind={kind} resource={resource} />
+      ) : null}
+      {artistBio ? <ArtistBio key={id} notes={artistBio} /> : null}
       {detail.source === "cache" || detail.stale || detail.isStale ? (
         <p className="library-stale-note" role="status">
           Showing saved data while Apple Music refreshes.
@@ -567,90 +949,22 @@ export function LibraryDetailView({
           Refresh failed; showing saved data. {detail.error}
         </p>
       ) : null}
-      {isArtist && topSongs.length ? (
-        <section
-          className="artist-top-songs"
-          aria-labelledby="top-songs-heading"
-        >
-          <h2 id="top-songs-heading">Top Songs</h2>
-          <div className="library-list-panel">
-            <ol className="library-track-list">
-              {topSongs.map((track, index) => (
-                <SongRow
-                  key={`${track.id}:${index}`}
-                  track={track}
-                  index={index}
-                  onPlay={() =>
-                    act(() => controller.playTracks(topSongs, index))
-                  }
-                  onPlayNext={() =>
-                    act(() => controller.playNextTracks([track]))
-                  }
-                  disabled={!authorized}
-                  rowClassName="library-track-row"
-                  numberClassName="library-row-number"
-                  copyClassName="library-row-copy"
-                  durationClassName="library-row-duration"
-                  contextData={{
-                    "data-context-kind": "track",
-                    "data-context-id": track.id,
-                    "data-context-title": track.title,
-                    "data-context-artist": track.artistName,
-                    ...(track.albumTitle
-                      ? { "data-context-album": track.albumTitle }
-                      : {}),
-                    ...(track.artwork?.url
-                      ? { "data-context-artwork": track.artwork.url }
-                      : {}),
-                    ...(track.resourceType
-                      ? { "data-context-resource-type": track.resourceType }
-                      : {}),
-                    ...(track.catalogId
-                      ? { "data-context-catalog-id": track.catalogId }
-                      : {}),
-                  }}
-                />
-              ))}
-            </ol>
-          </div>
-        </section>
-      ) : null}
       {isArtist ? (
-        resources.length ? (
-          <section className="library-card-grid" aria-label="Artist albums">
-            {resources.map((album) => (
-              <button
-                key={album.id}
-                className="library-card"
-                type="button"
-                {...detailContext(album, "album")}
-                onClick={() =>
-                  router.navigate({
-                    kind: "album",
-                    id: album.id,
-                    source: resourceSource(album) ?? source,
-                  } as Parameters<typeof router.navigate>[0])
-                }
-              >
-                <Artwork
-                  track={toTrack(album)}
-                  size="lg"
-                  alt={`${album.title} artwork`}
-                  className="library-card-art"
-                />
-                <span className="library-card-copy">
-                  <strong>{album.title}</strong>
-                  <small>{album.artistName ?? "Album"}</small>
-                </span>
-              </button>
-            ))}
-          </section>
-        ) : (
+        artistEmpty ? (
           <EmptyState
             icon={Disc3}
             title="No albums found"
             description="Apple Music did not return albums for this artist."
             compact
+          />
+        ) : (
+          <ArtistShelves
+            shelves={artistShelves}
+            albums={artistAlbums}
+            topSongs={topSongs}
+            topSongsPending={topSongsPending}
+            authorized={authorized}
+            playbackSource={playbackSource}
           />
         )
       ) : resources.length ? (
@@ -670,6 +984,12 @@ export function LibraryDetailView({
           compact
         />
       )}
+      {kind === "album" && resource ? (
+        <AlbumPageShelves
+          shelves={albumShelves}
+          artistName={resource.artistName}
+        />
+      ) : null}
     </>
   );
 }

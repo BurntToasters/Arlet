@@ -1,0 +1,134 @@
+/* Browse and Radio: genre pickers, See all views, and live radio text. */
+
+.browse-genre-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: -6px 0 22px;
+}
+
+.browse-genre-label {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.browse-genre-select {
+  max-width: 100%;
+  min-width: 180px;
+}
+
+.browse-genre-status {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.home-feed-section > .browse-shelf-heading {
+  align-items: center;
+}
+
+.browse-shelf-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-muted);
+}
+
+.browse-see-all {
+  padding: 4px 8px;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--accent-strong);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.browse-see-all:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.browse-see-all:focus-visible,
+.browse-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.browse-see-all-view {
+  min-width: 0;
+}
+
+.browse-see-all-heading {
+  align-items: center;
+  margin-bottom: 18px;
+}
+
+.browse-see-all-heading h2 {
+  min-width: 0;
+}
+
+.browse-see-all-heading .secondary-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.browse-see-all-more {
+  display: flex;
+  justify-content: center;
+  margin-top: 18px;
+}
+
+.browse-see-all-end {
+  margin: 18px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.browse-feedback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 18px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.browse-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.browse-chip {
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface-subtle);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.browse-chip:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.browse-chip[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--surface-active);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+/* Live radio text stays on one line and is cut with an ellipsis, so the
+   player and Now Playing never change height as the program text changes. */
+.live-metadata-text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

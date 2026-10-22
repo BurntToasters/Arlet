@@ -1,41 +1,33 @@
 /* Failure modes live in docs/TESTING.md ("Radio and artist pages"). */
 
+import { fixtureCall, waitFor } from "./e2e-helpers.js";
+
 const FIXTURE = "window.__ARLET_E2E_MUSIC__";
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const SONG_STATION_URL =
   "https://music.apple.com/us/station/navigation-song-station/ra.song-one";
 const TOP_IDS = ["top-1", "top-2", "top-3"];
+// Key and label pairs, in the order Settings shows them (shortcuts.ts).
 const EXPECTED_SHORTCUTS = [
-  "Space",
-  "Ctrl+→",
-  "Ctrl+←",
-  "Ctrl+↑",
-  "Ctrl+↓",
-  "Shift+→",
-  "Shift+←",
-  "M",
-  "Esc",
-  "Ctrl+K",
-  "Ctrl+R",
-  "Alt+←",
-  "Alt+→",
+  ["Space", "Play or pause"],
+  ["Ctrl+→", "Next song"],
+  ["Ctrl+←", "Previous song"],
+  ["Ctrl+↑", "Volume up"],
+  ["Ctrl+↓", "Volume down"],
+  ["Shift+→", "Skip forward 10 seconds"],
+  ["Shift+←", "Skip back 10 seconds"],
+  ["M", "Mute or unmute"],
+  ["Esc", "Close Now Playing"],
+  ["F11", "Toggle full screen"],
+  ["Ctrl+K", "Search Apple Music"],
+  ["Ctrl+R", "Refresh current data"],
+  ["Alt+←", "Back"],
+  ["Alt+→", "Forward"],
+  ["Ctrl+/", "Show keyboard shortcuts"],
+  ["Ctrl+Shift+M", "Mini player"],
+  ["Ctrl+Click / Shift+Click", "Select songs"],
+  ["Ctrl+A", "Select all songs in list"],
+  ["Esc", "Clear selection"],
 ];
-
-function fixtureCall(page, method, args = []) {
-  return page.evaluate(`
-    const fixture = ${FIXTURE};
-    return await fixture[${JSON.stringify(method)}](...${JSON.stringify(args)});
-  `);
-}
-
-async function waitFor(page, expression, timeoutMs = 8000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await page.evaluate(`return Boolean(${expression});`)) return true;
-    await sleep(50);
-  }
-  return false;
-}
 
 const snapshot = (page) => fixtureCall(page, "snapshot");
 const transitionsOf = async (page) => (await snapshot(page)).transitions;
@@ -371,14 +363,69 @@ export async function runRadioArtist({ page, check }) {
   );
   await fixtureCall(page, "configure", [{ rejectPaths: [] }]);
 
+  // A catalog artist lists every album (two pages, through MusicKit's
+  // response envelope), newest first with years, under a banner header.
+  await page.evaluate(`location.hash = "#/home"; return true;`);
+  await page.evaluate(
+    `location.hash = "#/artist/nav-artist-two?source=catalog"; return true;`,
+  );
+  const albumsListed = await waitFor(
+    page,
+    `document.querySelectorAll('.artist-albums .library-card').length === 30`,
+    15_000,
+  );
+  const artistPage = await page.evaluate(`
+    const cards = [...document.querySelectorAll('.artist-albums .library-card')];
+    const hero = document.querySelector('.artist-hero');
+    const box = (node) => node?.getBoundingClientRect();
+    const heroBox = box(hero);
+    const inside = (node) => {
+      const rect = box(node);
+      return Boolean(rect && heroBox && rect.left >= heroBox.left && rect.right <= heroBox.right && rect.top >= heroBox.top && rect.bottom <= heroBox.bottom);
+    };
+    const portrait = hero?.querySelector('.library-detail-art .artwork-hero, .library-detail-icon');
+    const scroller = document.querySelector('.content-scroll');
+    return {
+      count: cards.length,
+      first: cards[0]?.querySelector('strong')?.textContent ?? null,
+      firstYear: cards[0]?.querySelector('small')?.textContent ?? null,
+      hasHero: Boolean(hero),
+      roundPortrait: portrait ? getComputedStyle(portrait).borderRadius === "50%" : false,
+      titleInside: inside(hero?.querySelector('h1')),
+      actionsInside: inside(hero?.querySelector('.library-detail-actions')),
+      sideways: scroller ? scroller.scrollWidth > scroller.clientWidth + 1 : true,
+    };
+  `);
+  check(
+    "a catalog artist page lists every album, newest first, with years",
+    albumsListed &&
+      artistPage.count === 30 &&
+      artistPage.first === "Artist Two Album 30" &&
+      artistPage.firstYear === "2024",
+    artistPage,
+  );
+  check(
+    "an artist page has its own banner with a round portrait and nothing outside it",
+    artistPage.hasHero &&
+      artistPage.roundPortrait &&
+      artistPage.titleInside &&
+      artistPage.actionsInside &&
+      !artistPage.sideways,
+    artistPage,
+  );
+
   // Settings lists every shortcut.
   await page.evaluate(`location.hash = "#/settings"; return true;`);
   await waitFor(page, `document.querySelector('.shortcut-list')`);
+  // Each row is a key (kbd in dt) with its label (dd); both are compared.
   const keys = await page.evaluate(`
-    return [...document.querySelectorAll('.shortcut-row dt kbd')].map((node) => node.textContent.trim());
+    return [...document.querySelectorAll('.shortcut-row')].map((row) => [
+      row.querySelector('dt kbd')?.textContent.trim() ?? null,
+      row.querySelector('dd')?.textContent.trim() ?? null,
+    ]);
   `);
   check(
-    "Settings lists every keyboard shortcut",
+    "Settings lists every keyboard shortcut with its label, including F11",
     JSON.stringify(keys) === JSON.stringify(EXPECTED_SHORTCUTS),
     { keys },
   );

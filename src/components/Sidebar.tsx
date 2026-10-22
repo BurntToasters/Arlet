@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState } from "preact/hooks";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "preact/hooks";
 import {
   Album,
   Clock3,
@@ -15,14 +21,20 @@ import {
 } from "lucide-preact";
 import type { LucideIcon } from "lucide-preact";
 import type { JSX, TargetedEvent } from "preact";
-import { useAppRouter, useAppSlices } from "../app/context.tsx";
+import {
+  useAppController,
+  useAppRouter,
+  useAppSelector,
+  useAppSlices,
+} from "../app/context.tsx";
 import {
   libraryDetailKey,
   setUiState,
   type RuntimeAppState,
 } from "../state.ts";
 import { openSupportPage } from "../platform/support.ts";
-import { reportActionError } from "./action-errors.ts";
+import { reportActionError, reportNotice } from "./action-errors.ts";
+import { draggedTracks, isTrackDrag } from "./track-selection.ts";
 import type { PinnedPlaylist } from "../domain/music.ts";
 import type { LibrarySection, Route } from "../routing/router.ts";
 
@@ -99,31 +111,6 @@ function sameRoute(left: Route, right: Route): boolean {
     );
   }
   return true;
-}
-
-interface AccountSummaryLike {
-  displayName?: string;
-  name?: string;
-  storefront?: string;
-}
-
-function readAccountSummary(
-  state: Pick<RuntimeAppState, "account">,
-): AccountSummaryLike | undefined {
-  const value = (state as unknown as { account?: unknown }).account;
-  if (!value || typeof value !== "object") return undefined;
-  const candidate = value as Record<string, unknown>;
-  return {
-    displayName:
-      typeof candidate.displayName === "string"
-        ? candidate.displayName
-        : undefined,
-    name: typeof candidate.name === "string" ? candidate.name : undefined,
-    storefront:
-      typeof candidate.storefront === "string"
-        ? candidate.storefront
-        : undefined,
-  };
 }
 
 function displayNameOf(value: unknown): string | undefined {
@@ -215,6 +202,36 @@ function renderPinIcon(artworkUrl?: string): JSX.Element {
   return <ListMusic aria-hidden="true" size={18} strokeWidth={1.8} />;
 }
 
+// Matches the breakpoint in 13-responsive.css, where the sidebar is a drawer.
+const compactQuery = "(max-width: 720px)";
+
+/** Read live at each use, so focus and keys follow the rendered layout. */
+function isCompactShell(): boolean {
+  return window.matchMedia(compactQuery).matches;
+}
+
+/** Re-renders when the breakpoint changes; the value itself is not cached. */
+function useCompactShell(): boolean {
+  const [compact, setCompact] = useState(
+    () => window.matchMedia(compactQuery).matches,
+  );
+  useEffect(() => {
+    const query = window.matchMedia(compactQuery);
+    const sync = (): void => setCompact(query.matches);
+    query.addEventListener("change", sync);
+    sync();
+    return () => query.removeEventListener("change", sync);
+  }, []);
+  return compact;
+}
+
+/** Enabled buttons and inputs in the drawer, in tab order. */
+function drawerControls(drawer: HTMLElement | null): HTMLElement[] {
+  return Array.from(
+    drawer?.querySelectorAll<HTMLElement>("button, input") ?? [],
+  ).filter((node) => !node.matches(":disabled, [aria-disabled='true']"));
+}
+
 export function Sidebar(): JSX.Element {
   const state = useAppSlices(
     "account",
@@ -223,21 +240,91 @@ export function Sidebar(): JSX.Element {
     "library",
     "navigation",
     "pins",
-    "ui",
   );
   const router = useAppRouter();
-  const account = readAccountSummary(state);
+  const controller = useAppController();
+  const account = state.account;
+  // Key of the pinned playlist a song drag is over, while it can take the drop.
+  const [dropTarget, setDropTarget] = useState<string | undefined>(undefined);
   const [query, setQuery] = useState(
     state.navigation.kind === "search" ? state.navigation.query : "",
   );
+  const drawerRef = useRef<HTMLElement>(null);
+  // Only a re-render trigger; the checks below read the live breakpoint.
+  const compactShell = useCompactShell();
+  const drawerOpen = useAppSelector((store) => store.ui.sidebarOpen);
+  const drawerWasOpen = useRef(drawerOpen);
 
   useEffect(() => {
     if (state.navigation.kind === "search") setQuery(state.navigation.query);
   }, [state.navigation]);
 
+  // Layout effects run in the same commit as the open class, so the drawer is
+  // already focusable (not inert) when focus and key handling are set up.
+  // A closed compact drawer is inert: off-screen, but kept out of Tab order.
+  useLayoutEffect(() => {
+    if (drawerRef.current) {
+      drawerRef.current.inert = isCompactShell() && !drawerOpen;
+    }
+  }, [compactShell, drawerOpen]);
+
+  // Opening the drawer moves focus into it. Closing it returns focus to the
+  // menu button, unless focus already went somewhere else (such as the page
+  // heading after a route change).
+  useLayoutEffect(() => {
+    const wasOpen = drawerWasOpen.current;
+    drawerWasOpen.current = drawerOpen;
+    if (!isCompactShell() || wasOpen === drawerOpen) return;
+    if (drawerOpen) {
+      drawerRef.current?.querySelector<HTMLElement>(".sidebar-link")?.focus();
+      return;
+    }
+    const active = document.activeElement;
+    if (
+      !active ||
+      active === document.body ||
+      drawerRef.current?.contains(active)
+    ) {
+      document.querySelector<HTMLElement>(".mobile-menu-button")?.focus();
+    }
+  }, [compactShell, drawerOpen]);
+
+  // While the drawer is open it is modal: Esc closes it and Tab cycles inside.
+  useLayoutEffect(() => {
+    if (!drawerOpen) return undefined;
+    const onKeyDown = (event: KeyboardEvent): void => {
+      const drawer = drawerRef.current;
+      if (event.defaultPrevented || !drawer || !isCompactShell()) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setUiState({ sidebarOpen: false });
+        document.querySelector<HTMLElement>(".mobile-menu-button")?.focus();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const controls = drawerControls(drawer);
+      const first = controls[0];
+      const last = controls.at(-1);
+      if (!first || !last) return;
+      const active = document.activeElement;
+      const inside = active instanceof Node && drawer.contains(active);
+      if (event.shiftKey) {
+        if (!inside || active === first) {
+          event.preventDefault();
+          last.focus();
+        }
+      } else if (!inside || active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [compactShell, drawerOpen]);
+
   const navigate = (route: Route): void => {
     router.navigate(route);
-    if (state.ui.sidebarOpen) setUiState({ sidebarOpen: false });
+    if (drawerOpen) setUiState({ sidebarOpen: false });
   };
 
   const submitSearch = (event: TargetedEvent<HTMLFormElement>): void => {
@@ -283,6 +370,49 @@ export function Sidebar(): JSX.Element {
   const pinsSettled =
     playlistsStatus === "success" || playlistsStatus === "refreshing";
 
+  // Library pins take a drop of songs from the song lists. Catalog pins do
+  // not, so they get no handlers and never call preventDefault.
+  const dropHandlers = (pin: PinnedPlaylist, name: string | undefined) => {
+    if (pin.source !== "library") return {};
+    const key = `${pin.source}:${pin.id}`;
+    return {
+      onDragOver: (event: DragEvent) => {
+        if (!isTrackDrag(event.dataTransfer)) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+        setDropTarget(key);
+      },
+      onDragLeave: (event: DragEvent) => {
+        const next = event.relatedTarget;
+        if (
+          next instanceof Node &&
+          event.currentTarget instanceof Node &&
+          event.currentTarget.contains(next)
+        ) {
+          return;
+        }
+        setDropTarget((current) => (current === key ? undefined : current));
+      },
+      onDrop: (event: DragEvent) => {
+        setDropTarget(undefined);
+        if (!isTrackDrag(event.dataTransfer)) return;
+        event.preventDefault();
+        const tracks = draggedTracks();
+        if (!tracks?.length) return;
+        const count = tracks.length;
+        const label = name ?? "playlist";
+        void controller
+          .addTracksToPlaylist(pin.id, tracks)
+          .then(() =>
+            reportNotice(
+              `Added ${count} ${count === 1 ? "song" : "songs"} to ${label}.`,
+            ),
+          )
+          .catch(reportActionError);
+      },
+    };
+  };
+
   const renderPin = (pin: PinnedPlaylist): JSX.Element => {
     const route: Route =
       pin.source === "catalog"
@@ -291,11 +421,19 @@ export function Sidebar(): JSX.Element {
     const active = sameRoute(state.navigation, route);
     const display = resolvePinDisplay(state, pinIndex, pin);
     const name = display.name;
+    const key = `${pin.source}:${pin.id}`;
+    const dropping = dropTarget === key;
     if (name) {
       return (
         <button
-          key={`${pin.source}:${pin.id}`}
-          className={`sidebar-link ${active ? "is-active" : ""}`.trim()}
+          key={key}
+          className={[
+            "sidebar-link",
+            active ? "is-active" : "",
+            dropping ? "is-drop-target" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
           type="button"
           aria-label={name}
           title={name}
@@ -305,6 +443,7 @@ export function Sidebar(): JSX.Element {
           data-context-route-kind="playlist"
           data-context-source={pin.source}
           onClick={() => navigate(route)}
+          {...dropHandlers(pin, name)}
         >
           {renderPinIcon(display.artworkUrl)}
           <span>{name}</span>
@@ -314,8 +453,8 @@ export function Sidebar(): JSX.Element {
     if (!pinsSettled) {
       return (
         <button
-          key={`${pin.source}:${pin.id}`}
-          className="sidebar-link"
+          key={key}
+          className={dropping ? "sidebar-link is-drop-target" : "sidebar-link"}
           type="button"
           aria-label="Pinned playlist"
           title="Pinned playlist"
@@ -325,6 +464,7 @@ export function Sidebar(): JSX.Element {
           data-context-route-kind="playlist"
           data-context-source={pin.source}
           onClick={() => navigate(route)}
+          {...dropHandlers(pin, undefined)}
         >
           <ListMusic aria-hidden="true" size={18} strokeWidth={1.8} />
           <span>Playlist</span>
@@ -333,8 +473,8 @@ export function Sidebar(): JSX.Element {
     }
     return (
       <button
-        key={`${pin.source}:${pin.id}`}
-        className="sidebar-link"
+        key={key}
+        className={dropping ? "sidebar-link is-drop-target" : "sidebar-link"}
         type="button"
         aria-label="Unknown playlist"
         title="Unknown playlist"
@@ -344,6 +484,7 @@ export function Sidebar(): JSX.Element {
         data-context-id={pin.id}
         data-context-route-kind="playlist"
         data-context-source={pin.source}
+        {...dropHandlers(pin, undefined)}
       >
         <ListMusic aria-hidden="true" size={18} strokeWidth={1.8} />
         <span>Unknown playlist</span>
@@ -353,7 +494,8 @@ export function Sidebar(): JSX.Element {
 
   return (
     <aside
-      className={`sidebar ${state.ui.sidebarOpen ? "is-open" : ""}`.trim()}
+      ref={drawerRef}
+      className={`sidebar ${drawerOpen ? "is-open" : ""}`.trim()}
       aria-label="Main navigation"
     >
       <form className="sidebar-search" role="search" onSubmit={submitSearch}>
@@ -373,7 +515,11 @@ export function Sidebar(): JSX.Element {
         {pins.length > 0 ? (
           <>
             <div className="sidebar-heading">Pinned</div>
-            <div className="sidebar-group" aria-label="Pinned playlists">
+            <div
+              className="sidebar-group"
+              role="group"
+              aria-label="Pinned playlists"
+            >
               {pins.map(renderPin)}
             </div>
           </>
@@ -426,15 +572,15 @@ export function Sidebar(): JSX.Element {
           </span>
           <span className="account-copy">
             <strong>
-              {state.auth.status === "authorized"
-                ? (account?.displayName ?? account?.name ?? "Apple Music")
-                : "Sign in"}
+              {state.auth.status === "authorized" ? "Apple Music" : "Sign in"}
             </strong>
             <small>
               {state.auth.status === "authorized"
-                ? account?.storefront
-                  ? `${account.storefront} · Connected`
-                  : "Connected"
+                ? state.auth.sessionExpired
+                  ? "Sign in again"
+                  : account.storefront
+                    ? `${account.storefront} · Connected`
+                    : "Connected"
                 : "Connect account"}
             </small>
           </span>

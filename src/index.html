@@ -14,6 +14,15 @@
       content="#191a1d"
     />
     <title>Arlet</title>
+    <!-- Connections open while MusicKit loads; the API uses CORS, hence the
+         crossorigin on its hint. All three hosts are in the CSP. -->
+    <link rel="preconnect" href="https://js-cdn.music.apple.com" />
+    <link
+      rel="preconnect"
+      href="https://api.music.apple.com"
+      crossorigin="anonymous"
+    />
+    <link rel="preconnect" href="https://is1-ssl.mzstatic.com" />
     <script
       src="https://js-cdn.music.apple.com/musickit/v3/musickit.js"
       data-web-components

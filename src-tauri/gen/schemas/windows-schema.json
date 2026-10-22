@@ -291,6 +291,12 @@
           "markdownDescription": "Enables the load_settings command without any pre-configured scope."
         },
         {
+          "description": "Enables the open_about_link command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-open-about-link",
+          "markdownDescription": "Enables the open_about_link command without any pre-configured scope."
+        },
+        {
           "description": "Enables the open_music_diagnostic command without any pre-configured scope.",
           "type": "string",
           "const": "allow-open-music-diagnostic",
@@ -301,6 +307,12 @@
           "type": "string",
           "const": "allow-open-support-page",
           "markdownDescription": "Enables the open_support_page command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the quit_ready command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-quit-ready",
+          "markdownDescription": "Enables the quit_ready command without any pre-configured scope."
         },
         {
           "description": "Enables the reset_settings command without any pre-configured scope.",
@@ -325,6 +337,18 @@
           "type": "string",
           "const": "allow-save-settings",
           "markdownDescription": "Enables the save_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_mini_player command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-mini-player",
+          "markdownDescription": "Enables the set_mini_player command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_mini_player_on_top command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-mini-player-on-top",
+          "markdownDescription": "Enables the set_mini_player_on_top command without any pre-configured scope."
         },
         {
           "description": "Enables the set_snap_overlay_bounds command without any pre-configured scope.",
@@ -471,6 +495,12 @@
           "markdownDescription": "Denies the load_settings command without any pre-configured scope."
         },
         {
+          "description": "Denies the open_about_link command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-open-about-link",
+          "markdownDescription": "Denies the open_about_link command without any pre-configured scope."
+        },
+        {
           "description": "Denies the open_music_diagnostic command without any pre-configured scope.",
           "type": "string",
           "const": "deny-open-music-diagnostic",
@@ -481,6 +511,12 @@
           "type": "string",
           "const": "deny-open-support-page",
           "markdownDescription": "Denies the open_support_page command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the quit_ready command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-quit-ready",
+          "markdownDescription": "Denies the quit_ready command without any pre-configured scope."
         },
         {
           "description": "Denies the reset_settings command without any pre-configured scope.",
@@ -505,6 +541,18 @@
           "type": "string",
           "const": "deny-save-settings",
           "markdownDescription": "Denies the save_settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_mini_player command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-mini-player",
+          "markdownDescription": "Denies the set_mini_player command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_mini_player_on_top command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-mini-player-on-top",
+          "markdownDescription": "Denies the set_mini_player_on_top command without any pre-configured scope."
         },
         {
           "description": "Denies the set_snap_overlay_bounds command without any pre-configured scope.",
@@ -573,6 +621,12 @@
           "markdownDescription": "Enables the write_image command without any pre-configured scope."
         },
         {
+          "description": "Enables the write_secret command without any pre-configured scope.",
+          "type": "string",
+          "const": "clipboard-manager:allow-write-secret",
+          "markdownDescription": "Enables the write_secret command without any pre-configured scope."
+        },
+        {
           "description": "Enables the write_text command without any pre-configured scope.",
           "type": "string",
           "const": "clipboard-manager:allow-write-text",
@@ -607,6 +661,12 @@
           "type": "string",
           "const": "clipboard-manager:deny-write-image",
           "markdownDescription": "Denies the write_image command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the write_secret command without any pre-configured scope.",
+          "type": "string",
+          "const": "clipboard-manager:deny-write-secret",
+          "markdownDescription": "Denies the write_secret command without any pre-configured scope."
         },
         {
           "description": "Denies the write_text command without any pre-configured scope.",

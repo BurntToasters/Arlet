@@ -1,241 +1,43 @@
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { JSX } from "preact";
 import {
-  ArrowLeft,
-  ArrowRight,
-  Clipboard,
-  Copy,
-  Disc3,
-  FolderPlus,
-  Forward,
-  Heart,
-  LibraryBig,
-  ListPlus,
-  Music2,
-  Pin,
-  PinOff,
-  Play,
-  Plus,
-  Radio,
-  RefreshCw,
-  Search,
-  Scissors,
-  Settings,
-  Shuffle,
-  SkipForward,
-  SquareStack,
-  ThumbsDown,
-  UserRound,
-  X,
-} from "lucide-preact";
-import type { LucideIcon } from "lucide-preact";
-import { readText, writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { useAppController, useAppRouter } from "../app/context.tsx";
-import {
-  isLibraryTarget,
-  ratingResourceType,
-  type RatingTarget,
-} from "../app/ratings.ts";
-import type {
-  MusicEntityRef,
-  MusicSource,
-  RatingValue,
-  Track,
-} from "../domain/music.ts";
+  useAppController,
+  useAppRouter,
+  useAppSelector,
+} from "../app/context.tsx";
+import { ratingKeyOf } from "../app/ratings.ts";
 import type { TrackNavigation } from "../musickit/song-navigation.ts";
-import type { CollectionPlayOptions } from "../app/collection-playback.ts";
-import type { Route } from "../routing/router.ts";
-import { getState, ratingKey } from "../state.ts";
 import {
   CONTEXT_MENU_REQUEST,
   type ContextMenuRequestDetail,
 } from "./context-menu-events.ts";
-import { requestPlaylistDialog } from "./playlist-events.ts";
-import { reportActionError, reportQueueEdit } from "./action-errors.ts";
 import { safeErrorMessage } from "../app/controller-support.ts";
-import type { QueueEditTier } from "../musickit/queue-edit.ts";
-import type { StationTarget } from "../musickit/stations.ts";
-import { nameArtistLinks } from "./artist-links.ts";
-
-type ContextKind = "track" | "album" | "artist" | "playlist" | "folder";
-
-interface ContextTarget {
-  kind?: ContextKind;
-  id?: string;
-  title?: string;
-  artistName?: string;
-  albumTitle?: string;
-  artworkUrl?: string;
-  resourceType?: string;
-  catalogId?: string;
-  source?: "library" | "catalog";
-  route?: Route;
-  albumRef?: MusicEntityRef;
-  artistRefs?: MusicEntityRef[];
-  parentKind?: "album" | "playlist";
-  parentId?: string;
-  parentSource?: MusicSource;
-  parentIndex?: number;
-  queueIndex?: number;
-}
-
-interface MenuItem {
-  id: string;
-  label: string;
-  shortcut?: string;
-  icon: LucideIcon;
-  disabled?: boolean;
-  targetId?: string;
-  action: () => void;
-}
+import {
+  closestContextTarget,
+  parseTarget,
+  ratingTargetOf,
+  targetTrack,
+  type ContextTarget,
+} from "./context-target.ts";
+import {
+  buildItems,
+  isSeparator,
+  type MenuEntry,
+  type MenuItem,
+} from "./context-menu-items.ts";
+import { activeSelectionFor } from "./track-selection.ts";
 
 interface MenuState {
   x: number;
   y: number;
   requestId: number;
   target: ContextTarget;
-  items: MenuItem[];
-}
-
-function closestContextTarget(node: EventTarget | null): HTMLElement | null {
-  return node instanceof HTMLElement
-    ? node.closest<HTMLElement>("[data-context-kind], [data-context-track-id]")
-    : null;
-}
-
-function parseEntityRef(value: unknown): MusicEntityRef | undefined {
-  let candidate = value;
-  if (typeof candidate === "string") {
-    try {
-      candidate = JSON.parse(candidate) as unknown;
-    } catch {
-      return undefined;
-    }
-  }
-  if (!candidate || typeof candidate !== "object") return undefined;
-  const record = candidate as Record<string, unknown>;
-  if (typeof record.id !== "string" || !record.id.trim()) return undefined;
-  const type = typeof record.type === "string" ? record.type : "";
-  const source =
-    record.source === "catalog" || type.startsWith("catalog")
-      ? "catalog"
-      : "library";
-  const name =
-    typeof record.name === "string" && record.name.trim()
-      ? record.name.trim()
-      : undefined;
-  return { id: record.id, source, ...(name ? { name } : {}) };
-}
-
-function parseEntityRefs(value: unknown): MusicEntityRef[] {
-  let candidate = value;
-  if (typeof candidate === "string") {
-    try {
-      candidate = JSON.parse(candidate) as unknown;
-    } catch {
-      return [];
-    }
-  }
-  if (!Array.isArray(candidate)) return [];
-  return candidate
-    .map(parseEntityRef)
-    .filter((ref): ref is MusicEntityRef => ref !== undefined);
-}
-
-function parseTarget(node: HTMLElement | null): ContextTarget {
-  if (!node) return {};
-  const kind = node.dataset.contextKind as ContextKind | undefined;
-  const routeKind = node.dataset.contextRouteKind as Route["kind"] | undefined;
-  const source =
-    node.dataset.contextSource === "catalog"
-      ? "catalog"
-      : node.dataset.contextSource === "library"
-        ? "library"
-        : undefined;
-  const parentKind =
-    node.dataset.contextParentKind === "album" ||
-    node.dataset.contextParentKind === "playlist"
-      ? node.dataset.contextParentKind
-      : undefined;
-  const parentIndex = Number(node.dataset.contextParentIndex);
-  const queueIndex = Number(node.dataset.contextQueueIndex);
-  let route: Route | undefined;
-  if (
-    routeKind === "album" ||
-    routeKind === "artist" ||
-    routeKind === "playlist"
-  ) {
-    const id = node.dataset.contextId;
-    if (id) {
-      route =
-        source === "catalog"
-          ? { kind: routeKind, id, source }
-          : { kind: routeKind, id };
-    }
-  }
-  const rawAlbumRef = parseEntityRef(node.dataset.contextAlbumRef);
-  const albumRef =
-    rawAlbumRef ??
-    (node.dataset.contextAlbumId
-      ? parseEntityRef({
-          id: node.dataset.contextAlbumId,
-          name: node.dataset.contextAlbum,
-          source: node.dataset.contextAlbumSource,
-        })
-      : undefined);
-  return {
-    kind,
-    id: node.dataset.contextId ?? node.dataset.contextTrackId,
-    title: node.dataset.contextTitle,
-    artistName: node.dataset.contextArtist,
-    albumTitle: node.dataset.contextAlbum,
-    artworkUrl: node.dataset.contextArtwork,
-    resourceType: node.dataset.contextResourceType,
-    catalogId: node.dataset.contextCatalogId,
-    source,
-    route,
-    albumRef,
-    artistRefs: parseEntityRefs(node.dataset.contextArtistRefs),
-    parentKind,
-    parentId: node.dataset.contextParentId,
-    parentSource:
-      node.dataset.contextParentSource === "catalog" ? "catalog" : "library",
-    parentIndex:
-      Number.isInteger(parentIndex) && parentIndex >= 0
-        ? parentIndex
-        : undefined,
-    queueIndex:
-      Number.isInteger(queueIndex) && queueIndex >= 0 ? queueIndex : undefined,
-  };
-}
-
-const RATING_DEFAULT_TYPE: Partial<Record<ContextKind, string>> = {
-  track: "songs",
-  album: "albums",
-  playlist: "playlists",
-};
-
-function ratingTargetOf(target: ContextTarget): RatingTarget | undefined {
-  const fallback = target.kind ? RATING_DEFAULT_TYPE[target.kind] : undefined;
-  if (!target.id || !fallback) return undefined;
-  return { type: target.resourceType ?? fallback, id: target.id };
-}
-
-function targetTrack(target: ContextTarget): Track | undefined {
-  if (!target.id || target.kind !== "track") return undefined;
-  return {
-    id: target.id,
-    title: target.title ?? "Unknown song",
-    artistName: target.artistName ?? "Unknown artist",
-    albumTitle: target.albumTitle,
-    artwork: target.artworkUrl
-      ? { url: target.artworkUrl, width: 300, height: 300 }
-      : undefined,
-    resourceType: target.resourceType,
-    catalogId: target.catalogId,
-    albumRef: target.albumRef,
-    artistRefs: target.artistRefs,
-  };
+  items: MenuEntry[];
+  /** Resolved song navigation, kept so a rebuild does not drop it. */
+  navigation?: TrackNavigation;
+  /** Store key of the target rating; the open menu rebuilds when it changes. */
+  ratingKey?: string;
+  build: (navigation?: TrackNavigation) => MenuEntry[];
 }
 
 function isEditableTarget(target: EventTarget | null): boolean {
@@ -249,35 +51,6 @@ function isEditableTarget(target: EventTarget | null): boolean {
 
 function hasSelection(): boolean {
   return Boolean(window.getSelection()?.toString());
-}
-
-function executeCommand(command: "cut" | "copy" | "paste" | "selectAll"): void {
-  try {
-    document.execCommand(command);
-  } catch {
-    // WebView2 may reject execCommand for an unfocused target. Clipboard
-    // actions below still use the Tauri permissioned adapter where needed.
-  }
-}
-
-function insertClipboardText(text: string): void {
-  if (!text) return;
-  try {
-    if (document.execCommand("insertText", false, text)) return;
-  } catch {
-    // Fall through to the native input value path below.
-  }
-  const active = document.activeElement;
-  if (
-    active instanceof HTMLInputElement ||
-    active instanceof HTMLTextAreaElement
-  ) {
-    const start = active.selectionStart ?? active.value.length;
-    const end = active.selectionEnd ?? start;
-    active.value = `${active.value.slice(0, start)}${text}${active.value.slice(end)}`;
-    active.setSelectionRange(start + text.length, start + text.length);
-    active.dispatchEvent(new Event("input", { bubbles: true }));
-  }
 }
 
 function ContextMenuItem({ item }: { item: MenuItem }): JSX.Element {
@@ -307,7 +80,12 @@ export function ContextMenu(): JSX.Element | null {
   const menuRequestRef = useRef(0);
   const [menu, setMenu] = useState<MenuState | null>(null);
   const [position, setPosition] = useState({ x: 0, y: 0 });
-  const extendedController = controller as unknown as AppControllerWithContext;
+  /** The item that last had focus, so a rebuild can hand focus back to it. */
+  const focusedItemRef = useRef<string | undefined>(undefined);
+  /** The element the menu opened on, and where it sat at that moment. */
+  const anchorRef = useRef<
+    { element: HTMLElement; top: number; left: number } | undefined
+  >(undefined);
 
   useEffect(() => {
     const showMenu = (
@@ -321,8 +99,23 @@ export function ContextMenu(): JSX.Element | null {
       },
     ): void => {
       const contextNode = closestContextTarget(eventTarget) ?? eventTarget;
+      // The page body does not move when an inner pane scrolls, so it cannot
+      // serve as an anchor; without one, any scroll closes the menu as before.
+      const anchorRect = eventTarget.getBoundingClientRect();
+      anchorRef.current =
+        eventTarget === document.body
+          ? undefined
+          : {
+              element: eventTarget,
+              top: anchorRect.top,
+              left: anchorRect.left,
+            };
       const target = parseTarget(contextNode);
       const track = targetTrack(target);
+      // Set when the row is part of a 2+ selection; the menu then offers bulk actions.
+      const selectionTracks = track
+        ? activeSelectionFor(track.id, contextNode)
+        : undefined;
       restoreFocusRef.current =
         options.restoreFocus ??
         (document.activeElement instanceof HTMLElement
@@ -334,37 +127,41 @@ export function ContextMenu(): JSX.Element | null {
         setMenu(null);
       };
       const restoreFocus = (): void => restoreFocusRef.current?.focus();
-      const makeItems = (navigation?: TrackNavigation): MenuItem[] =>
+      const makeItems = (navigation?: TrackNavigation): MenuEntry[] =>
         buildItems({
-          controller: extendedController,
+          controller,
           router,
           target,
           track,
           navigation,
           editable: options.editable,
           selected: options.selected,
+          selectionTracks,
           close,
           restoreFocus,
           restoreTarget: restoreFocusRef.current ?? undefined,
         });
+      const ratingTarget = ratingTargetOf(target);
       setMenu({
         x,
         y,
         requestId,
         target,
         items: makeItems(),
+        ratingKey: ratingTarget ? ratingKeyOf(ratingTarget) : undefined,
+        build: makeItems,
       });
       setPosition({ x, y });
       let resolvedNavigation: TrackNavigation | undefined;
-      if (track && extendedController.resolveTrackNavigation) {
-        void extendedController
+      if (track) {
+        void controller
           .resolveTrackNavigation(track)
           .then((navigation) => {
             if (menuRequestRef.current !== requestId) return;
             resolvedNavigation = navigation;
             setMenu((current) =>
               current?.requestId === requestId
-                ? { ...current, items: makeItems(navigation) }
+                ? { ...current, navigation, items: makeItems(navigation) }
                 : current,
             );
           })
@@ -376,10 +173,9 @@ export function ContextMenu(): JSX.Element | null {
             );
           });
       }
-      // Rebuild once the rating is known so Love/Dislike labels are current.
-      const ratingTarget = ratingTargetOf(target);
-      if (ratingTarget && extendedController.loadRating) {
-        void extendedController.loadRating(ratingTarget).then(() => {
+      // Rebuild once the rating is known so Favorite/Dislike labels are current.
+      if (ratingTarget) {
+        void controller.loadRating(ratingTarget).then(() => {
           if (menuRequestRef.current !== requestId) return;
           setMenu((current) =>
             current?.requestId === requestId
@@ -425,13 +221,28 @@ export function ContextMenu(): JSX.Element | null {
       window.removeEventListener("contextmenu", onContextMenu);
       window.removeEventListener(CONTEXT_MENU_REQUEST, onRequest);
     };
-  }, [controller, extendedController, router]);
+  }, [controller, router]);
 
   // Keyed on the request, not the menu: items refresh as lookups finish and
   // must not re-register listeners or move focus.
   const openRequestId = menu?.requestId;
+  // The Favorite/Dislike labels read the store, so the open menu is rebuilt when
+  // the target's rating lands or changes, not only when the menu opens.
+  const menuRatingKey = menu?.ratingKey;
+  const liveRating = useAppSelector((state) =>
+    menuRatingKey === undefined ? undefined : state.ratings[menuRatingKey],
+  );
+  useEffect(() => {
+    if (menuRatingKey === undefined) return;
+    setMenu((current) =>
+      current?.ratingKey === menuRatingKey
+        ? { ...current, items: current.build(current.navigation) }
+        : current,
+    );
+  }, [menuRatingKey, liveRating]);
   useEffect(() => {
     if (openRequestId === undefined) return undefined;
+    focusedItemRef.current = undefined;
     const close = (): void => {
       menuRequestRef.current += 1;
       setMenu(null);
@@ -457,6 +268,7 @@ export function ContextMenu(): JSX.Element | null {
         close();
         return;
       }
+      // Separators are not buttons, so arrow keys and Home/End skip them.
       const items = Array.from(
         menuRef.current?.querySelectorAll<HTMLButtonElement>(
           "button.context-menu-item:not(:disabled)",
@@ -481,12 +293,20 @@ export function ContextMenu(): JSX.Element | null {
     };
     // Scrolling the page moves the anchor away; scrolling a menu that
     // overflows is just reading it.
+    // Only movement of the anchor counts. A scroll that began before the menu
+    // opened (for example the Tab that scrolled a card into view) can still
+    // deliver its event afterwards, and that must not close a fresh menu.
     const onScroll = (event: Event): void => {
       if (
         event.target instanceof Node &&
         menuRef.current?.contains(event.target)
       ) {
         return;
+      }
+      const anchor = anchorRef.current;
+      if (anchor?.element.isConnected) {
+        const rect = anchor.element.getBoundingClientRect();
+        if (rect.top === anchor.top && rect.left === anchor.left) return;
       }
       close();
     };
@@ -498,7 +318,12 @@ export function ContextMenu(): JSX.Element | null {
     const first = menuRef.current?.querySelector<HTMLButtonElement>(
       "button.context-menu-item:not(:disabled)",
     );
-    first?.focus();
+    // A caller may already have moved focus into the menu; the first-item focus
+    // must not take it back. preventScroll stops this focus from scrolling the
+    // page, and that scroll would close the menu.
+    if (!menuRef.current?.contains(document.activeElement)) {
+      first?.focus({ preventScroll: true });
+    }
     return () => {
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("pointerdown", onPointerDown);
@@ -507,6 +332,20 @@ export function ContextMenu(): JSX.Element | null {
       window.removeEventListener("blur", close);
     };
   }, [openRequestId]);
+
+  // Rebuilding the items can move a focused button, and the browser then drops
+  // its focus. Put focus back on the same item when that happens.
+  useLayoutEffect(() => {
+    const id = focusedItemRef.current;
+    const container = menuRef.current;
+    if (!menu || !id || !container) return;
+    if (container.contains(document.activeElement)) return;
+    container
+      .querySelector<HTMLButtonElement>(
+        `button.context-menu-item[data-menu-item="${CSS.escape(id)}"]:not(:disabled)`,
+      )
+      ?.focus({ preventScroll: true });
+  }, [menu]);
 
   useEffect(() => {
     if (!menu || !menuRef.current) return;
@@ -529,525 +368,26 @@ export function ContextMenu(): JSX.Element | null {
       role="menu"
       aria-label="Arlet context menu"
       style={{ left: `${position.x}px`, top: `${position.y}px` }}
+      onFocusIn={(event) => {
+        const id = (event.target as HTMLElement).dataset.menuItem;
+        if (id) focusedItemRef.current = id;
+      }}
       onContextMenu={(event) => {
         event.preventDefault();
         event.stopPropagation();
       }}
     >
-      {menu.items.map((item) => (
-        <ContextMenuItem key={item.id} item={item} />
-      ))}
+      {menu.items.map((entry) =>
+        isSeparator(entry) ? (
+          <div
+            key={entry.id}
+            className="context-menu-separator"
+            role="separator"
+          />
+        ) : (
+          <ContextMenuItem key={entry.id} item={entry} />
+        ),
+      )}
     </div>
   );
-}
-
-interface AppControllerWithContext extends Record<string, unknown> {
-  playTracks?: (tracks: readonly Track[], startIndex?: number) => Promise<void>;
-  playAlbum?: (
-    id: string,
-    source?: MusicSource,
-    startIndex?: number,
-    trackId?: string,
-  ) => Promise<void>;
-  playPlaylist?: (
-    id: string,
-    source?: MusicSource,
-    startIndex?: number,
-    trackId?: string,
-  ) => Promise<void>;
-  playCollection?: (
-    kind: "playlist" | "album",
-    id: string,
-    source?: MusicSource,
-    startIndex?: number,
-    options?: CollectionPlayOptions,
-  ) => Promise<void>;
-  playNextTracks?: (tracks: readonly Track[]) => Promise<void>;
-  playLaterTracks?: (tracks: readonly Track[]) => Promise<void>;
-  refreshCurrentData?: () => Promise<void>;
-  refreshCurrentView?: () => Promise<void>;
-  createPlaylist?: (...args: unknown[]) => Promise<unknown>;
-  createPlaylistFolder?: (name: string) => Promise<unknown>;
-  addTracksToPlaylist?: (
-    playlistId: string,
-    tracks: readonly Track[],
-  ) => Promise<unknown>;
-  isPinned?: (id: string) => boolean;
-  togglePin?: (id: string, source?: "library" | "catalog") => Promise<void>;
-  unpin?: (id: string) => Promise<void>;
-  resolveTrackNavigation?: (track: Track) => Promise<TrackNavigation>;
-  removeQueueItem?: (index: number, trackId?: string) => Promise<QueueEditTier>;
-  startStation?: (target: StationTarget) => Promise<void>;
-  queueCollection?: (
-    kind: "playlist" | "album",
-    id: string,
-    source: MusicSource,
-    where: "next" | "later",
-  ) => Promise<void>;
-  rate?: (target: RatingTarget, value: RatingValue) => Promise<void>;
-  loadRating?: (target: RatingTarget) => Promise<void>;
-  addToLibrary?: (target: RatingTarget) => Promise<void>;
-}
-
-function buildItems({
-  controller,
-  router,
-  target,
-  track,
-  navigation,
-  editable,
-  selected,
-  close,
-  restoreFocus,
-  restoreTarget,
-}: {
-  controller: AppControllerWithContext;
-  router: ReturnType<typeof useAppRouter>;
-  target: ContextTarget;
-  track?: Track;
-  navigation?: TrackNavigation;
-  editable: boolean;
-  selected: boolean;
-  close: () => void;
-  restoreFocus: () => void;
-  restoreTarget?: HTMLElement;
-}): MenuItem[] {
-  const run =
-    (action: () => void): (() => void) =>
-    () => {
-      action();
-      close();
-    };
-  const items: MenuItem[] = [
-    {
-      id: "back",
-      label: "Back",
-      shortcut: "Alt+Left",
-      icon: ArrowLeft,
-      action: run(router.back),
-    },
-    {
-      id: "forward",
-      label: "Forward",
-      shortcut: "Alt+Right",
-      icon: ArrowRight,
-      action: run(router.forward),
-    },
-    {
-      id: "refresh",
-      label: "Refresh current data",
-      shortcut: "Ctrl+R",
-      icon: RefreshCw,
-      action: run(() => {
-        const refresh =
-          controller.refreshCurrentData ?? controller.refreshCurrentView;
-        if (refresh) void refresh().catch(() => undefined);
-      }),
-    },
-  ];
-
-  if (editable || selected) {
-    items.push(
-      {
-        id: "cut",
-        label: "Cut",
-        shortcut: "Ctrl+X",
-        icon: Scissors,
-        disabled: !editable,
-        action: run(() => {
-          restoreFocus();
-          executeCommand("cut");
-        }),
-      },
-      {
-        id: "copy",
-        label: "Copy",
-        shortcut: "Ctrl+C",
-        icon: Copy,
-        action: run(() => {
-          restoreFocus();
-          const text = window.getSelection()?.toString();
-          if (text) void writeText(text).catch(() => executeCommand("copy"));
-          else executeCommand("copy");
-        }),
-      },
-      {
-        id: "paste",
-        label: "Paste",
-        shortcut: "Ctrl+V",
-        icon: Clipboard,
-        disabled: !editable,
-        action: run(() => {
-          void readText()
-            .then((text: string) => {
-              // execCommand lets WebView2 insert into the focused native input;
-              // the read is intentionally permissioned through the Tauri plugin.
-              if (editable) {
-                restoreFocus();
-                insertClipboardText(text);
-              }
-            })
-            .catch(() => undefined);
-        }),
-      },
-      {
-        id: "select-all",
-        label: "Select all",
-        shortcut: "Ctrl+A",
-        icon: SquareStack,
-        disabled: !editable,
-        action: run(() => {
-          restoreFocus();
-          executeCommand("selectAll");
-        }),
-      },
-    );
-  }
-
-  if (track) {
-    const playNow = (): void => {
-      const parentAction =
-        target.parentKind === "playlist"
-          ? controller.playPlaylist
-          : target.parentKind === "album"
-            ? controller.playAlbum
-            : undefined;
-      if (
-        target.parentId &&
-        target.parentIndex !== undefined &&
-        typeof parentAction === "function"
-      ) {
-        void parentAction(
-          target.parentId,
-          target.parentSource,
-          target.parentIndex,
-          track.id,
-        ).catch(reportActionError);
-        return;
-      }
-      void statefulPlay(controller, track).catch(reportActionError);
-    };
-    items.push(
-      {
-        id: "play-now",
-        label: "Play now",
-        icon: Play,
-        action: run(playNow),
-      },
-      {
-        id: "play-next",
-        label: "Play next",
-        icon: SkipForward,
-        action: run(() => {
-          const playNext = controller.playNextTracks;
-          if (playNext) void playNext([track]).catch(reportActionError);
-          else void statefulPlay(controller, track).catch(reportActionError);
-        }),
-      },
-      {
-        id: "play-later",
-        label: "Play later",
-        icon: Forward,
-        action: run(() => {
-          const playLater = controller.playLaterTracks;
-          if (playLater) void playLater([track]).catch(reportActionError);
-          else void statefulPlay(controller, track).catch(reportActionError);
-        }),
-      },
-      {
-        id: "start-station",
-        label: "Start Station",
-        icon: Radio,
-        disabled: !controller.startStation,
-        action: run(() => {
-          void controller
-            .startStation?.({
-              kind: "song",
-              id: track.id,
-              catalogId: track.catalogId,
-            })
-            .catch(reportActionError);
-        }),
-      },
-      {
-        id: "add-to-playlist",
-        label: "Add to playlist…",
-        icon: ListPlus,
-        disabled: !controller.addTracksToPlaylist,
-        action: run(() => {
-          if (controller.addTracksToPlaylist)
-            requestPlaylistDialog("picker", [track], restoreTarget);
-        }),
-      },
-    );
-    const removeQueueItem = controller.removeQueueItem;
-    const queueIndex = target.queueIndex;
-    if (queueIndex !== undefined) {
-      items.push({
-        id: "remove-from-queue",
-        label: "Remove from queue",
-        icon: X,
-        disabled: !removeQueueItem,
-        action: run(() => {
-          if (removeQueueItem)
-            reportQueueEdit(removeQueueItem(queueIndex, track.id));
-        }),
-      });
-    }
-
-    const trackNavigation = navigation ?? {
-      album: track.albumRef,
-      artists: track.artistRefs ?? [],
-    };
-    if (trackNavigation.album) {
-      const album = trackNavigation.album;
-      items.push({
-        id: "go-to-album",
-        label: album.name ? `Go to album: ${album.name}` : "Go to album",
-        icon: Disc3,
-        targetId: album.id,
-        action: run(() =>
-          router.navigate({
-            kind: "album",
-            id: album.id,
-            ...(album.source === "catalog" ? { source: "catalog" } : {}),
-          }),
-        ),
-      });
-    }
-    // The same artist can be listed twice with one source; one entry each.
-    const artists = nameArtistLinks(
-      trackNavigation.artists,
-      track.artistName,
-    ).filter(
-      (artist, index, all) =>
-        all.findIndex(
-          (other) => other.id === artist.id && other.source === artist.source,
-        ) === index,
-    );
-    const artistCounts = new Map<string, number>();
-    for (const artist of artists) {
-      artistCounts.set(artist.id, (artistCounts.get(artist.id) ?? 0) + 1);
-    }
-    for (const artist of artists) {
-      items.push({
-        id: `go-to-artist-${encodeURIComponent(artist.id)}${
-          artistCounts.get(artist.id) === 1 ? "" : `-${artist.source}`
-        }`,
-        label: artist.name ? `Go to artist: ${artist.name}` : "Go to artist",
-        icon: UserRound,
-        targetId: artist.id,
-        action: run(() =>
-          router.navigate({
-            kind: "artist",
-            id: artist.id,
-            ...(artist.source === "catalog" ? { source: "catalog" } : {}),
-          }),
-        ),
-      });
-    }
-  }
-
-  const ratingTarget = ratingTargetOf(target);
-  const ratingType = ratingTarget && ratingResourceType(ratingTarget);
-  if (ratingTarget && ratingType) {
-    const liked = getState().ratings[ratingKey(ratingType, ratingTarget.id)];
-    // Toggle against the value at click time, not at menu build time.
-    const toggle = (value: 1 | -1): (() => void) =>
-      run(() => {
-        const current =
-          getState().ratings[ratingKey(ratingType, ratingTarget.id)];
-        void controller.rate?.(ratingTarget, current === value ? 0 : value);
-      });
-    items.push(
-      {
-        id: "love",
-        label: liked === 1 ? "Unlove" : "Love",
-        icon: Heart,
-        action: toggle(1),
-      },
-      {
-        id: "dislike",
-        label: liked === -1 ? "Remove dislike" : "Dislike",
-        icon: ThumbsDown,
-        action: toggle(-1),
-      },
-    );
-    if (!isLibraryTarget(ratingTarget) && target.source !== "library") {
-      items.push({
-        id: "add-to-library",
-        label: "Add to Library",
-        icon: LibraryBig,
-        action: run(() => {
-          void controller.addToLibrary?.(ratingTarget);
-        }),
-      });
-    }
-  }
-
-  if (target.route) {
-    items.push({
-      id: "open-resource",
-      label: `Open ${target.route.kind}`,
-      icon: Music2,
-      action: run(() => router.navigate(target.route as Route)),
-    });
-  }
-
-  const playlistId =
-    target.kind === "playlist"
-      ? target.id
-      : target.route?.kind === "playlist"
-        ? target.route.id
-        : undefined;
-  if (playlistId && (controller.togglePin ?? controller.unpin)) {
-    const source =
-      target.source ??
-      (target.route?.kind === "playlist" ? target.route.source : undefined) ??
-      "library";
-    const pinned =
-      typeof controller.isPinned === "function"
-        ? controller.isPinned(playlistId)
-        : false;
-    items.push({
-      id: pinned ? "unpin-playlist" : "pin-playlist",
-      label: pinned ? "Unpin playlist" : "Pin playlist",
-      icon: pinned ? PinOff : Pin,
-      disabled: pinned ? !controller.unpin : !controller.togglePin,
-      action: run(() => {
-        if (pinned)
-          void controller.unpin?.(playlistId).catch(reportActionError);
-        else
-          void controller
-            .togglePin?.(playlistId, source)
-            .catch(reportActionError);
-      }),
-    });
-  }
-
-  if ((target.kind === "playlist" || target.kind === "album") && target.id) {
-    const kind = target.kind;
-    const collectionId = target.id;
-    const source =
-      target.source ??
-      (target.route?.kind === "playlist" || target.route?.kind === "album"
-        ? target.route.source
-        : undefined) ??
-      "library";
-    items.push(
-      {
-        id: "play-now",
-        label: "Play now",
-        icon: Play,
-        disabled: !controller.playCollection,
-        action: run(() => {
-          if (controller.playCollection)
-            void controller
-              .playCollection(kind, collectionId, source, 0)
-              .catch(reportActionError);
-        }),
-      },
-      {
-        id: "shuffle-collection",
-        label: "Shuffle",
-        icon: Shuffle,
-        disabled: !controller.playCollection,
-        action: run(() => {
-          if (controller.playCollection)
-            void controller
-              .playCollection(kind, collectionId, source, 0, { shuffle: true })
-              .catch(reportActionError);
-        }),
-      },
-      {
-        id: "play-next-collection",
-        label: "Play next",
-        icon: SkipForward,
-        disabled: !controller.queueCollection,
-        action: run(() => {
-          void controller
-            .queueCollection?.(kind, collectionId, source, "next")
-            .catch(reportActionError);
-        }),
-      },
-      {
-        id: "play-later-collection",
-        label: "Play later",
-        icon: Forward,
-        disabled: !controller.queueCollection,
-        action: run(() => {
-          void controller
-            .queueCollection?.(kind, collectionId, source, "later")
-            .catch(reportActionError);
-        }),
-      },
-    );
-  }
-
-  if (target.kind === "artist" && target.id) {
-    const artistId = target.id;
-    items.push({
-      id: "start-station",
-      label: "Start Station",
-      icon: Radio,
-      disabled: !controller.startStation,
-      action: run(() => {
-        void controller
-          .startStation?.({
-            kind: "artist",
-            id: artistId,
-            catalogId: target.catalogId,
-            source: target.source,
-          })
-          .catch(reportActionError);
-      }),
-    });
-  }
-
-  if (target.kind === "playlist" || target.kind === "folder" || !target.kind) {
-    items.push(
-      {
-        id: "new-playlist",
-        label: "New playlist",
-        icon: Plus,
-        disabled: !controller.createPlaylist,
-        action: run(() => {
-          if (controller.createPlaylist)
-            requestPlaylistDialog("create", [], restoreTarget);
-        }),
-      },
-      {
-        id: "new-folder",
-        label: "New playlist folder",
-        icon: FolderPlus,
-        disabled: !controller.createPlaylistFolder,
-        action: run(() => requestPlaylistDialog("folder")),
-      },
-    );
-  }
-
-  items.push(
-    {
-      id: "search",
-      label: "Search Apple Music",
-      shortcut: "Ctrl+K",
-      icon: Search,
-      action: run(() => router.navigate({ kind: "search", query: "" })),
-    },
-    {
-      id: "settings",
-      label: "Settings",
-      icon: Settings,
-      action: run(() => router.navigate({ kind: "settings" })),
-    },
-  );
-  return items;
-}
-
-async function statefulPlay(
-  controller: AppControllerWithContext,
-  track: Track,
-): Promise<void> {
-  const playTracks = controller.playTracks;
-  if (typeof playTracks === "function") await playTracks([track]);
 }

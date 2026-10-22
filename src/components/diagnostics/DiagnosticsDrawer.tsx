@@ -95,7 +95,6 @@ function mergeAppSnapshot(
       appSnapshot?.failures ?? storeSnapshot.failures,
     ),
     checklist,
-    consecutiveQueueReady: appSnapshot?.consecutiveQueueReady,
   };
 }
 
@@ -513,21 +512,6 @@ export function DiagnosticsDrawer({
                 }
               >
                 Open music.apple.com diagnostic
-              </button>
-              <button
-                type="button"
-                disabled={
-                  !controller?.onQueueConsecutive ||
-                  appSnapshot?.consecutiveQueueReady === false
-                }
-                onClick={() =>
-                  void runAction(
-                    controller?.onQueueConsecutive,
-                    "20-track queue started",
-                  )
-                }
-              >
-                Queue 20 consecutive
               </button>
             </div>
             {effectiveSnapshot.failures &&

@@ -46,7 +46,10 @@ Azure signing, and live updater feeds remain explicit release-environment gates.
    - With only some set, it fails rather than reuse a stale token.
 
    `build.rs` and `release:preflight` then refuse a missing token, a
-   non-ES256 JWT, fewer than 30 days left, or any `origin` claim. The
+   non-ES256 JWT, or any `origin` claim. `build.rs` needs 30 days left;
+   `release:preflight` needs 150, so the token outlives the canary's
+   150-day warning (mint a fresh 180-day token when a pasted one is older
+   than 30 days). The
    preflight then sends the token to Apple's catalog API and stops unless
    Apple answers 200.
 
@@ -161,10 +164,13 @@ npm run release:publish          # verifies, publishes, then syncs a beta feed a
 npm run release:verify:published # downloads live updater metadata and validates it
 ```
 
-For a beta, `release:publish` waits for GitHub's published-prerelease response
-before copying beta manifests to `/releases/latest`. If publication succeeds
-but that post-publish sync fails, retry it with
-`npm run release:sync-beta-manifests`.
+For a beta, `release:sign:gpg` (part of `release:win`) copies the beta
+manifests to `/releases/latest` as soon as the beta is signed and uploaded, as
+Zinnia does, so beta users see it without a separate step. Until the draft is
+published its installer URLs return 404; the app's beta updater retries
+briefly and then reports the failure, so publish the draft promptly.
+`release:publish` syncs again after GitHub confirms the published prerelease.
+If a sync fails, retry it with `npm run release:sync-beta-manifests`.
 
 ## Updater channels and manifest assets
 
@@ -189,9 +195,8 @@ tag.
 
 Stable releases upload all six files to the published stable release, which
 is GitHub's `/releases/latest` alias. Beta releases upload all six files to
-their prerelease tag. Only after the prerelease is published does
-`release:publish` transactionally copy the four beta manifests onto the latest
-stable release. A GitHub asset lock, staging names, adjacent rename swap,
+their prerelease tag, and the signing step then transactionally copies the
+four beta manifests onto the latest stable release (again after publishing). A GitHub asset lock, staging names, adjacent rename swap,
 rollback, and orphan cleanup protect the live beta feed while multiple release
 VMs are active. If publication or the post-publish sync loses connectivity,
 run:

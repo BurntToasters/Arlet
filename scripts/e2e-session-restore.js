@@ -8,6 +8,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { sleep, waitFor as pollFor } from "./e2e-helpers.js";
 
 const SESSION_FILE = "playback-session.json";
 const BACKUP_FILE = "playback-session.json.bak";
@@ -34,6 +35,9 @@ const SAVED_ITEMS = [
     albumTitle: "Fixture Album",
     resourceType: "library-songs",
     durationMs: 180_000,
+    // Restored songs are queued as details with no lookup, so the rating
+    // must survive the file (checked when the queue is saved again).
+    explicit: true,
   },
   {
     id: "song-e",
@@ -45,18 +49,8 @@ const SAVED_ITEMS = [
   },
 ];
 
-async function sleep(ms) {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitFor(page, expression, timeoutMs = 10_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await page.evaluate(`return Boolean(${expression});`)) return true;
-    await sleep(100);
-  }
-  return false;
-}
+const waitFor = (page, expression, timeoutMs = 10_000) =>
+  pollFor(page, expression, timeoutMs, 100);
 
 async function waitForFile(file, present, timeoutMs = 6_000) {
   const deadline = Date.now() + timeoutMs;
@@ -314,13 +308,15 @@ export async function runSessionRestore({ page, check, dataDir }) {
     `return document.querySelector(${JSON.stringify(NOW_PLAYING)})?.textContent ?? null;`,
   );
   check(
-    "turning Resume back on saves the queue after the next pause",
+    "turning Resume back on saves the whole queue, ratings included, after the next pause",
     savedAgain &&
-      // The saved queue is the current one: it starts at the song Next
-      // played.
+      // The saved queue is the whole one: the songs before the one Next
+      // played (kept by Arlet for Previous) and that song, selected.
       JSON.stringify(saved?.items?.map((item) => item.id)) ===
-        JSON.stringify(SAVED_IDS.slice(NEXT_INDEX)) &&
-      saved?.index === 0,
+        JSON.stringify(SAVED_IDS) &&
+      saved?.index === NEXT_INDEX &&
+      // Restored with its rating, and saved again with it.
+      saved?.items?.[1]?.explicit === true,
     {
       savedAgain,
       index: saved?.index,
