@@ -20,6 +20,8 @@ const TINT = "#1c2b3a";
 const ARTWORK_TEMPLATE =
   "https://is1-ssl.mzstatic.com/image/thumb/Music/e2e/{id}/{w}x{h}bb.jpg";
 const REDUCED_MOTION = [{ name: "prefers-reduced-motion", value: "reduce" }];
+/** A little longer than the 200 ms `.now-playing` exit transition. */
+const CLOSE_SETTLE_MS = 300;
 const KEY_CODES = {
   Tab: 9,
   Enter: 13,
@@ -162,7 +164,16 @@ async function closeNowPlaying(page) {
   await page.evaluate(
     `document.querySelector('.now-playing button[aria-label="Close Now Playing"]')?.click(); return true;`,
   );
-  return waitFor(page, `!document.querySelector(".now-playing")`, 3000);
+  const gone = await waitFor(
+    page,
+    `!document.querySelector(".now-playing")`,
+    3000,
+  );
+  if (!gone) return false;
+  // The dialog unmounts for one render before `useDialogPresence` remounts it
+  // for the exit animation, so a single absent poll is not enough.
+  await sleep(CLOSE_SETTLE_MS);
+  return page.evaluate(`return !document.querySelector(".now-playing");`);
 }
 
 function separatorProblems(shape) {
