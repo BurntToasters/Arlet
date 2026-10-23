@@ -24,8 +24,21 @@
   .search-results-panel,
   .welcome-card,
   .context-menu,
-  .playlist-dialog {
+  .playlist-dialog,
+  .search-suggestions,
+  .diagnostics-drawer,
+  .connection-popover,
+  .action-toast,
+  .token-expiry-notice,
+  .session-expired-notice,
+  .selection-bar,
+  .update-modal {
     background: Canvas;
+    backdrop-filter: none;
+  }
+  .update-modal-scrim,
+  .playlist-dialog-backdrop {
+    backdrop-filter: none;
   }
   .context-menu,
   .playlist-dialog,

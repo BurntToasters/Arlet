@@ -414,6 +414,7 @@
 }
 
 .library-detail-hero {
+  position: relative;
   display: flex;
   min-height: 190px;
   align-items: flex-end;
@@ -427,6 +428,35 @@
     color-mix(in srgb, var(--accent) 11%, var(--surface-raised)),
     var(--surface-raised) 76%
   );
+  isolation: isolate;
+  overflow: hidden;
+}
+
+/* Album, playlist and curator headers bloom behind their cover on the left,
+   then fade into a solid reading surface behind the copy on the right. */
+.detail-hero-backdrop {
+  position: absolute;
+  z-index: -2;
+  inset: -36px;
+  width: calc(100% + 72px);
+  height: calc(100% + 72px);
+  object-fit: cover;
+  filter: blur(44px) saturate(1.38);
+  opacity: 0.52;
+  pointer-events: none;
+}
+.library-detail-hero.has-hero-backdrop::after {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    color-mix(in srgb, var(--surface-base) 38%, transparent) 0%,
+    color-mix(in srgb, var(--surface-base) 78%, transparent) 48%,
+    color-mix(in srgb, var(--surface-base) 90%, transparent) 100%
+  );
+  content: "";
+  pointer-events: none;
 }
 
 .library-detail-art {

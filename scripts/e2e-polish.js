@@ -102,6 +102,33 @@ const FULLSCREEN_GEOMETRY =
   "window.outerWidth >= screen.width - 2 && window.outerHeight >= screen.height - 2";
 const DRAWER_CONTROLS = `[...document.querySelectorAll("aside.sidebar button, aside.sidebar input")].filter((node) => !node.matches(":disabled, [aria-disabled='true']"))`;
 const TINT_STATE = `const dialog = document.querySelector(".now-playing"); return { classed: dialog ? dialog.classList.contains("has-artwork-tint") : null, value: dialog ? dialog.style.getPropertyValue("--now-playing-tint") : null };`;
+// The two bloom layers read from the same artwork URL; their play state must
+// follow playback without the dialog remounting.
+const BLOOM_STATE = `const dialog = document.querySelector(".now-playing"); const backdrop = dialog?.querySelector("img.now-playing-backdrop"); const halo = dialog?.querySelector("img.now-playing-artwork-bloom"); const playState = (node) => node ? getComputedStyle(node).animationPlayState : null; const animationName = (node) => node ? getComputedStyle(node).animationName : null; return { classed: dialog?.classList.contains("has-artwork-bloom") ?? null, playing: dialog?.classList.contains("is-playing") ?? null, backdrop: Boolean(backdrop), halo: Boolean(halo), backdropAlt: backdrop?.getAttribute("alt") ?? null, backdropHidden: backdrop?.getAttribute("aria-hidden") ?? null, backdropUrl: backdrop?.getAttribute("src") ?? null, haloUrl: halo?.getAttribute("src") ?? null, backdropPlayState: playState(backdrop), haloPlayState: playState(halo), backdropAnimation: animationName(backdrop), haloAnimation: animationName(halo) };`;
+// Floating surfaces blur what is behind them; an opaque background hides the
+// blur and lets underlying text clash.
+const GLASS_STATE = (selector) => `
+  const node = document.querySelector(${q(selector)});
+  if (!node) return null;
+  const style = getComputedStyle(node);
+  const color = style.backgroundColor;
+  const alphaMatch =
+    color.match(/\\/\\s*([\\d.]+)\\s*\\)/u) ??
+    color.match(/rgba\\([^)]*,\\s*([\\d.]+)\\)/u);
+  return {
+    backdropFilter: style.backdropFilter,
+    background: color,
+    alpha: alphaMatch ? Number(alphaMatch[1]) : 1,
+  };
+`;
+/** True when the surface blurs and stays see-through. */
+const frosted = (state) =>
+  Boolean(state) &&
+  state.backdropFilter !== "none" &&
+  state.alpha > 0 &&
+  state.alpha < 1;
+// The detail header must glow without moving its copy or actions.
+const DETAIL_HERO_STATE = `const hero = document.querySelector("section.library-detail-hero, header.library-detail-hero"); const image = hero?.querySelector("img.detail-hero-backdrop"); const heroBox = hero?.getBoundingClientRect(); const copy = hero?.querySelector(".library-detail-copy")?.getBoundingClientRect(); const actions = hero?.querySelector(".library-detail-actions")?.getBoundingClientRect(); return { present: Boolean(image), classed: hero?.classList.contains("has-hero-backdrop") ?? null, alt: image?.getAttribute("alt") ?? null, hidden: image?.getAttribute("aria-hidden") ?? null, src: image?.getAttribute("src") ?? null, artistImages: document.querySelectorAll("img.artist-hero-backdrop, img.artist-hero-banner").length, insideHero: Boolean(heroBox && copy && actions) ? copy.right <= heroBox.right + 1 && actions.right <= heroBox.right + 1 : null, pageOverflowX: document.documentElement.scrollWidth - window.innerWidth };`;
 const TAB_STATE = `const tabs = [...document.querySelectorAll('[role="tab"]')]; const selected = tabs.find((tab) => tab.getAttribute("aria-selected") === "true"); return { selected: selected?.id.replace("search-source-tab-", "") ?? null, focused: document.activeElement?.id.replace("search-source-tab-", "") ?? null, panelLabelledBy: document.getElementById("search-source-panel")?.getAttribute("aria-labelledby") ?? null };`;
 const WINDOW_STATE = `return { outer: [window.outerWidth, window.outerHeight], screen: [screen.width, screen.height] };`;
 
@@ -367,9 +394,53 @@ async function albumDetail(page, check) {
     meta === ALBUM.meta.join(DOT),
     { expected: ALBUM.meta.join(DOT), actual: meta },
   );
+  const hero = await page.evaluate(DETAIL_HERO_STATE);
+  check(
+    "album header blooms its artwork behind a right-side reading scrim",
+    hero.present &&
+      hero.classed === true &&
+      hero.alt === "" &&
+      hero.hidden === "true" &&
+      hero.src?.includes("/64x64bb.jpg") === true &&
+      hero.artistImages === 0 &&
+      hero.insideHero === true &&
+      hero.pageOverflowX <= 0,
+    hero,
+  );
   await moreToggle(page, check);
   await discs(page, check);
   await favorite(page, check);
+
+  // Ctrl+click two rows to raise the multi-select bar, then Escape clears it.
+  const selected = await page.evaluate(`
+    const rows = [...document.querySelectorAll("button.library-track-row")].slice(0, 2);
+    for (const row of rows) {
+      row.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true }));
+    }
+    return rows.length;
+  `);
+  const barShown = await waitFor(
+    page,
+    `Boolean(document.querySelector(".selection-bar"))`,
+    3000,
+  );
+  const barGlass = barShown
+    ? await page.evaluate(GLASS_STATE(".selection-bar"))
+    : null;
+  await page.evaluate(
+    `document.querySelector("button.library-track-row")?.focus(); return true;`,
+  );
+  await pressKey(page, "Escape");
+  const barCleared = await waitFor(
+    page,
+    `!document.querySelector(".selection-bar")`,
+    3000,
+  );
+  check(
+    "the selection bar is a translucent frosted surface",
+    selected === 2 && frosted(barGlass) && barCleared,
+    { selected, barGlass, barCleared },
+  );
 }
 
 async function albumMenu(page, check) {
@@ -387,6 +458,12 @@ async function albumMenu(page, check) {
   // The menu focuses its first item in an effect after it renders.
   await sleep(150);
   const shape = await page.evaluate(MENU_SHAPE);
+  const menuGlass = await page.evaluate(GLASS_STATE(".context-menu"));
+  check(
+    "the context menu is a translucent frosted surface",
+    frosted(menuGlass),
+    menuGlass,
+  );
   const items = shape.filter((entry) => entry !== "|");
   check(
     "More actions opens the album menu and its target is the album",
@@ -476,6 +553,19 @@ async function otherDetails(page, check) {
   );
   const playlistMeta = await page.evaluate(
     `return document.querySelector("section.library-detail-hero p.library-detail-meta")?.textContent.trim() ?? null;`,
+  );
+  const playlistHero = await page.evaluate(DETAIL_HERO_STATE);
+  check(
+    "playlist header blooms its artwork behind a right-side reading scrim",
+    playlistHero.present &&
+      playlistHero.classed === true &&
+      playlistHero.alt === "" &&
+      playlistHero.hidden === "true" &&
+      playlistHero.src?.includes("/64x64bb.jpg") === true &&
+      playlistHero.artistImages === 0 &&
+      playlistHero.insideHero === true &&
+      playlistHero.pageOverflowX <= 0,
+    playlistHero,
   );
   const expectedPlaylistMeta = [
     "2 songs",
@@ -599,6 +689,98 @@ async function searchCards(page, check) {
   );
 }
 
+async function searchSuggestions(page, check) {
+  await openRoute(
+    page,
+    "#/search",
+    `Boolean(document.querySelector('.search-form input[role="combobox"]'))`,
+    12_000,
+  );
+  const typed = await page.evaluate(
+    `const input = document.querySelector('.search-form input[role="combobox"]'); if (!input) return false; input.focus(); input.select(); return true;`,
+  );
+  if (typed) await page.send("Input.insertText", { text: "polish" });
+  const suggestion = await waitFor(
+    page,
+    `[...document.querySelectorAll(".search-suggestions li[role=option]")].some((node) => node.querySelector(".search-suggestion-art"))`,
+    8000,
+  );
+  const rows = await page.evaluate(`
+    return [...document.querySelectorAll(".search-suggestions li[role='option']")].map((node) => {
+      const art = node.querySelector(".search-suggestion-art");
+      const box = art?.getBoundingClientRect();
+      return {
+        label: node.querySelector(".search-suggestion-copy > span")?.textContent ?? null,
+        detail: node.querySelector(".search-suggestion-copy > small")?.textContent ?? null,
+        art: Boolean(art),
+        alt: art?.querySelector("img")?.getAttribute("alt") ?? null,
+        src: art?.querySelector("img")?.getAttribute("src") ?? null,
+        size: box ? [Math.round(box.width), Math.round(box.height)] : null,
+      };
+    });
+  `);
+  const media = rows.find((row) => row.label === ALBUM.title);
+  const terms = rows.filter((row) =>
+    ["Polish Fixture", "Polka"].includes(row.label),
+  );
+  check(
+    "media suggestions show a 32 px thumbnail and their kind; text completions do not",
+    typed &&
+      suggestion &&
+      media?.art === true &&
+      media.alt === "" &&
+      media.src?.includes("/image/thumb/Music/e2e/album-polish/") === true &&
+      /\/\d+x\d+bb\.jpg$/u.test(media.src ?? "") &&
+      media.detail === `Album${DOT}Fixture Artist` &&
+      JSON.stringify(media.size) === JSON.stringify([32, 32]) &&
+      terms.length === 2 &&
+      terms.every((row) => row.art === false),
+    { rows, media, terms },
+  );
+  const suggestionsGlass = await page.evaluate(
+    GLASS_STATE(".search-suggestions"),
+  );
+  check(
+    "the search suggestion popup is a translucent frosted surface",
+    frosted(suggestionsGlass),
+    suggestionsGlass,
+  );
+
+  // Submit the term so it becomes a recent search, then reopen on empty text.
+  await page.evaluate(
+    `document.querySelector(".search-form")?.requestSubmit(); return true;`,
+  );
+  await waitFor(page, `location.hash.includes("q=polish")`, 4000);
+  await page.evaluate(`
+    const input = document.querySelector('.search-form input[role="combobox"]');
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setValue.call(input, "");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus();
+    return true;
+  `);
+  const recentShown = await waitFor(
+    page,
+    `document.querySelectorAll(".search-suggestions li[role=option] .search-suggestion-remove").length > 0`,
+    4000,
+  );
+  const recents = await page.evaluate(`
+    return [...document.querySelectorAll(".search-suggestions li[role='option']")].map((node) => ({
+      label: node.querySelector(".search-suggestion-copy > span")?.textContent ?? null,
+      art: Boolean(node.querySelector(".search-suggestion-art")),
+      removable: Boolean(node.querySelector(".search-suggestion-remove")),
+    }));
+  `);
+  check(
+    "recent searches stay text-only with no thumbnail",
+    recentShown &&
+      recents.length > 0 &&
+      recents.every((row) => row.art === false && row.removable),
+    recents,
+  );
+  await pressKey(page, "Escape");
+}
+
 async function searchTabs(page, check) {
   await openRoute(
     page,
@@ -647,6 +829,52 @@ async function nowPlaying(page, check) {
     "open animation moves the dialog when motion is allowed (baseline)",
     baseline.opened && baseline.animations.some((item) => item.transform),
     baseline,
+  );
+
+  const bloom = await page.evaluate(BLOOM_STATE);
+  check(
+    "Now Playing renders its artwork backdrop and cover bloom",
+    bloom.classed === true &&
+      bloom.backdrop === true &&
+      bloom.halo === true &&
+      bloom.backdropAlt === "" &&
+      bloom.backdropHidden === "true" &&
+      bloom.backdropUrl === bloom.haloUrl &&
+      bloom.backdropUrl?.includes("/64x64bb.jpg") === true,
+    bloom,
+  );
+  // Pausing playback pauses the ambient drift; resuming restarts it.
+  await page.evaluate(
+    `document.querySelector(".now-playing .play-button")?.click(); return true;`,
+  );
+  const paused = await waitFor(
+    page,
+    `!document.querySelector(".now-playing.is-playing")`,
+    4000,
+  );
+  const pausedBloom = await page.evaluate(BLOOM_STATE);
+  check(
+    "pausing playback holds the bloom still",
+    paused &&
+      pausedBloom.backdropPlayState === "paused" &&
+      pausedBloom.haloPlayState === "paused",
+    pausedBloom,
+  );
+  await page.evaluate(
+    `document.querySelector(".now-playing .play-button")?.click(); return true;`,
+  );
+  const resumed = await waitFor(
+    page,
+    `document.querySelector(".now-playing.is-playing")`,
+    4000,
+  );
+  const resumedBloom = await page.evaluate(BLOOM_STATE);
+  check(
+    "resuming playback runs the bloom again",
+    resumed &&
+      resumedBloom.backdropPlayState === "running" &&
+      resumedBloom.haloPlayState === "running",
+    resumedBloom,
   );
 
   const labels = await page.evaluate(
@@ -726,6 +954,31 @@ async function nowPlaying(page, check) {
     { plainTitle, ...plain },
   );
 
+  await fixtureCall(page, "setCurrentTrack", ["song-no-art"]);
+  const bareTitle = await waitFor(
+    page,
+    `document.querySelector(".now-playing h2")?.textContent === "Track Without Artwork"`,
+    4000,
+  );
+  const bloomGone = await waitFor(
+    page,
+    `!document.querySelector("img.now-playing-backdrop") && !document.querySelector("img.now-playing-artwork-bloom") && document.querySelector(".now-playing")?.classList.contains("has-artwork-bloom") === false`,
+    4000,
+  );
+  const stripped = await page.evaluate(
+    `return {
+      backdrop: Boolean(document.querySelector("img.now-playing-backdrop")),
+      halo: Boolean(document.querySelector("img.now-playing-artwork-bloom")),
+      className: document.querySelector(".now-playing")?.className ?? null,
+      images: [...document.querySelectorAll(".now-playing img")].map((node) => node.getAttribute("src")),
+    };`,
+  );
+  check(
+    "a track without artwork renders no bloom images",
+    bareTitle && bloomGone,
+    stripped,
+  );
+
   await page.evaluate(
     `document.querySelector("button.player-artwork-button")?.focus(); return true;`,
   );
@@ -742,12 +995,23 @@ async function nowPlaying(page, check) {
   );
 
   await page.send("Emulation.setEmulatedMedia", { features: REDUCED_MOTION });
+  // Put artwork back on the current track so the bloom layers exist to check.
+  await fixtureCall(page, "setCurrentTrack", [ALBUM.tracks[2]]);
   try {
     const reduced = await page.evaluate(OPEN_NOW_PLAYING);
     check(
       "reduced motion: opening Now Playing runs no transform animation",
       reduced.opened && !reduced.animations.some((item) => item.transform),
       reduced,
+    );
+    const reducedBloom = await page.evaluate(
+      `return [...document.querySelectorAll(".now-playing-backdrop, .now-playing-artwork-bloom")].map((node) => getComputedStyle(node).animationName);`,
+    );
+    check(
+      "reduced motion: the artwork bloom runs no animation",
+      reducedBloom.length === 2 &&
+        reducedBloom.every((name) => name === "none"),
+      { reducedBloom },
     );
     // Reduced motion unmounts at once; no exit transition is waited for.
     await page.evaluate(
@@ -777,6 +1041,12 @@ async function queueDrawer(page, check) {
     `document.querySelector('aside.queue-drawer[data-state="open"]')`,
     4000,
   );
+  // The focus effect runs after the drawer's first paint, so poll for it.
+  const focusMoved = await waitFor(
+    page,
+    `document.activeElement?.tagName === "H2" && Boolean(document.activeElement?.closest("aside.queue-drawer"))`,
+    2000,
+  );
   // The extra fields say what blocked the drawer when this check fails.
   const focus = await page.evaluate(
     `const node = document.activeElement; return { tag: node?.tagName ?? null, text: node?.textContent.trim() ?? null, label: node?.getAttribute("aria-label") ?? null, inDrawer: Boolean(node?.closest("aside.queue-drawer")), drawerState: document.querySelector("aside.queue-drawer")?.dataset.state ?? null, blockers: [...document.querySelectorAll('[role="dialog"], [role="menu"], dialog[open], .now-playing')].map((item) => item.className || item.tagName) };`,
@@ -784,10 +1054,17 @@ async function queueDrawer(page, check) {
   check(
     "opening Playing Next moves focus to its heading",
     open &&
+      focusMoved &&
       focus.tag === "H2" &&
       focus.text === "Playing Next" &&
       focus.inDrawer,
     { ...focus, open: Boolean(open) },
+  );
+  const drawerGlass = await page.evaluate(GLASS_STATE(".queue-drawer"));
+  check(
+    "the queue drawer is a translucent frosted surface",
+    frosted(drawerGlass),
+    drawerGlass,
   );
   await pressKey(page, "Escape");
   const focusBack = await waitFor(
@@ -841,6 +1118,12 @@ async function errorToast(page, check) {
       "a rejected rating shows the error style and rolls Favorite back",
       error && successStyled === false && pressed === "false",
       { error, successStyled, pressed },
+    );
+    const toastGlass = await page.evaluate(GLASS_STATE(".action-toast"));
+    check(
+      "the action toast is a translucent frosted surface",
+      frosted(toastGlass),
+      toastGlass,
     );
   } finally {
     await fixtureCall(page, "configure", [{ rejectPaths: [] }]);
@@ -1135,6 +1418,9 @@ export async function runPolish({ page, check }) {
       otherDetails(page, check),
     );
     await group(check, "search cards", () => searchCards(page, check));
+    await group(check, "search suggestions", () =>
+      searchSuggestions(page, check),
+    );
     await group(check, "search source tabs", () => searchTabs(page, check));
     await group(check, "now playing", () => nowPlaying(page, check));
     await group(check, "queue drawer", () => queueDrawer(page, check));

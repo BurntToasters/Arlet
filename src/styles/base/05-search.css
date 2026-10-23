@@ -84,10 +84,11 @@
   max-height: min(420px, 60vh);
   overflow-y: auto;
   padding: 6px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
-  background: var(--surface-raised);
-  box-shadow: 0 12px 32px rgb(0 0 0 / 0.22);
+  background: var(--surface-popover);
+  box-shadow: var(--shadow-popover);
+  backdrop-filter: var(--backdrop-popover);
 }
 .search-suggestions[hidden] {
   display: none;
@@ -132,7 +133,19 @@
 }
 .search-suggestion-copy {
   display: grid;
+  flex: 1 1 auto;
   min-width: 0;
+}
+/* Media rows carry a 32 px thumbnail; text completions and recents do not. */
+.search-suggestions-list li[role="option"] .artwork.search-suggestion-art {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-xs);
+}
+.search-suggestions-list
+  li[role="option"]
+  .artwork.search-suggestion-art.is-artist {
+  border-radius: 50%;
 }
 .search-suggestion-copy span,
 .search-suggestion-copy small {

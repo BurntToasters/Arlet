@@ -174,6 +174,71 @@ export async function runMiniPlayer({ page, check }) {
       title: await page.evaluate(`return ${MINI_TITLE};`),
     });
 
+    // The bloom radiates from the cover and must not add scrollbars, including
+    // at the 300x120 minimum size.
+    const miniBloomProbe = `
+      const mini = document.querySelector(".mini-player");
+      const image = mini?.querySelector("img.mini-player-backdrop");
+      const style = mini ? getComputedStyle(mini) : null;
+      const measure = () => ({
+        x: document.documentElement.scrollWidth - window.innerWidth,
+        y: document.documentElement.scrollHeight - window.innerHeight,
+      });
+      const withBloom = measure();
+      if (image) image.style.display = "none";
+      const withoutBloom = measure();
+      if (image) image.style.removeProperty("display");
+      return {
+        classed: mini?.classList.contains("has-artwork-bloom") ?? null,
+        present: Boolean(image),
+        alt: image?.getAttribute("alt") ?? null,
+        hidden: image?.getAttribute("aria-hidden") ?? null,
+        src: image?.getAttribute("src") ?? null,
+        overflow: style?.overflow ?? null,
+        background: style?.backgroundColor ?? null,
+        windowEffect:
+          document.documentElement.getAttribute("data-window-effect") ?? null,
+        withBloom,
+        withoutBloom,
+      };
+    `;
+    const miniBloom = await page.evaluate(miniBloomProbe);
+    check(
+      "the mini player radiates its artwork over the native window effect",
+      miniBloom.classed === true &&
+        miniBloom.present &&
+        miniBloom.alt === "" &&
+        miniBloom.hidden === "true" &&
+        miniBloom.src?.startsWith("https://") === true &&
+        !/\/\{[wh]\}/u.test(miniBloom.src ?? "") &&
+        miniBloom.overflow === "hidden" &&
+        (miniBloom.windowEffect !== "acrylic" &&
+        miniBloom.windowEffect !== "mica"
+          ? true
+          : miniBloom.background === "rgba(0, 0, 0, 0)") &&
+        miniBloom.withBloom.x <= 0 &&
+        miniBloom.withBloom.y <= 0,
+      miniBloom,
+    );
+    await page.send("Emulation.setDeviceMetricsOverride", {
+      width: 300,
+      height: 120,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    try {
+      const smallest = await page.evaluate(miniBloomProbe);
+      check(
+        "the mini player bloom adds no scrollbars at the 300x120 minimum",
+        smallest.present &&
+          smallest.withBloom.x === smallest.withoutBloom.x &&
+          smallest.withBloom.y === smallest.withoutBloom.y,
+        smallest,
+      );
+    } finally {
+      await page.send("Emulation.clearDeviceMetricsOverride", {});
+    }
+
     // Transport through the compact controls.
     const beforePause = await snapshot(page);
     await clickSelector(page, ".mini-player .mini-player-play");

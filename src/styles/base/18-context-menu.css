@@ -10,10 +10,10 @@
   padding: 6px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  background: var(--surface-solid);
+  background: var(--surface-popover);
   color: var(--text);
   box-shadow: var(--shadow-popover);
-  backdrop-filter: blur(22px) saturate(1.18);
+  backdrop-filter: var(--backdrop-popover);
 }
 
 .context-menu-item {

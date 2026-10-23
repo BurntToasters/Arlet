@@ -6,8 +6,8 @@
   display: grid;
   place-items: center;
   padding: 20px;
-  background: rgba(12, 13, 15, 0.42);
-  backdrop-filter: blur(4px);
+  background: var(--surface-scrim);
+  backdrop-filter: var(--backdrop-scrim);
 }
 
 .playlist-dialog {
@@ -19,8 +19,9 @@
   padding: 19px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
-  background: var(--surface-solid);
+  background: var(--surface-modal);
   box-shadow: var(--shadow-popover);
+  backdrop-filter: var(--backdrop-popover);
 }
 
 .playlist-dialog-header,

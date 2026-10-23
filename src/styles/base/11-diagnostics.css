@@ -18,9 +18,9 @@
   border: 1px solid var(--border-strong);
   border-bottom: 0;
   border-radius: var(--radius-md) var(--radius-md) 0 0;
-  background: color-mix(in srgb, var(--surface-solid) 94%, transparent);
+  background: var(--surface-popover);
   box-shadow: var(--shadow-popover);
-  backdrop-filter: blur(24px) saturate(1.15);
+  backdrop-filter: var(--backdrop-popover);
 }
 .diagnostics-header {
   display: flex;

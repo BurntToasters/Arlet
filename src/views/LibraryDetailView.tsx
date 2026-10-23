@@ -777,6 +777,12 @@ export function LibraryDetailView({
   const artist = resource?.artistName;
   const artworkTrack = resource ? toTrack(resource) : undefined;
   const isArtist = kind === "artist";
+  // Album and playlist headers glow behind their cover; artist pages keep
+  // their own banner/backdrop selectors (e2e-discovery checks those).
+  const detailBackdrop =
+    !isArtist && artworkTrack?.artwork?.url
+      ? artworkTrack.artwork.url
+      : undefined;
   // Totals only count songs that are all loaded; a partial list would under-state them.
   const complete = !detail.next && detail.status !== "loading";
   // Apple's editorial banner when it has one; otherwise the blurred portrait.
@@ -799,7 +805,9 @@ export function LibraryDetailView({
     <>
       {offline ? <OfflineBanner /> : null}
       <section
-        className={`library-detail-hero${isArtist ? " artist-hero" : ""}`}
+        className={`library-detail-hero${isArtist ? " artist-hero" : ""}${
+          detailBackdrop ? " has-hero-backdrop" : ""
+        }`}
         {...(resource ? detailContext(resource, kind) : {})}
       >
         {/* Images, not CSS url(): the artwork URL never enters CSS. */}
@@ -816,6 +824,15 @@ export function LibraryDetailView({
           <img
             className="artist-hero-backdrop"
             src={normalizeArtworkUrl(artistBackdrop, ARTWORK_BACKDROP_BUCKET)}
+            alt=""
+            aria-hidden="true"
+            decoding="async"
+          />
+        ) : null}
+        {detailBackdrop ? (
+          <img
+            className="detail-hero-backdrop"
+            src={normalizeArtworkUrl(detailBackdrop, ARTWORK_BACKDROP_BUCKET)}
             alt=""
             aria-hidden="true"
             decoding="async"
