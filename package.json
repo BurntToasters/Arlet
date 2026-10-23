@@ -115,15 +115,15 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.1",
-    "@types/node": "^24.19.1",
-    "@typescript-eslint/eslint-plugin": "^8.71.0",
+    "@types/node": "^26.6.5",
+    "@typescript-eslint/eslint-plugin": "^8.72.0",
     "@typescript-eslint/parser": "^8.71.0",
     "dotenv-cli": "^11.0.0",
     "eslint": "^10.12.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "license-checker-rseidelsohn": "^5.0.1",
     "prettier": "^3.9.9",
-    "typescript": "~6.0.3",
+    "typescript": "~7.0.2",
     "vite": "^8.3.3"
   }
 }
