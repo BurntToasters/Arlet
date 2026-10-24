@@ -1,8 +1,11 @@
+> [!NOTE]
+> 🅱️ This is a Beta build.
+
 # ⬇️ Downloads
 
-| <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                            | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
-| :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.3.0/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                                          | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
+| :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.1/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.1/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -18,6 +21,16 @@
 ### ℹ️ Enjoying Arlet? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
+
+## Changes in `v0.4.0-beta.1:`
+
+- **Ver:** Updated version to `v0.4.0-beta.1`.
+- **UI:** Artwork colors bloom behind Now Playing, the mini player, and album, playlist, and curator headers. Now Playing's bloom moves during playback and pauses when playback stops.
+- **UI:** Popovers, dialogs, drawers, notifications, and the song selection bar use consistent frosted surfaces in light and dark themes.
+- **UI:** Media search suggestions show artwork thumbnails and item types alongside their titles. Text suggestions and recent searches remain text-only.
+- **UI:** `Settings` > `About` keeps the installed version and active update channel visible, with runtime details and readable project links behind `Show More` / `Hide More`. Debug Mode and Reset are grouped in a collapsed `Advanced` section, and the layout fits narrow windows.
+- **UI:** Now Playing's bloom respects reduced-motion preferences. High-contrast mode hides player blooms and uses solid surfaces for popovers, dialogs, and notices.
+- **Testing:** Expanded native end-to-end checks cover artwork fallbacks, bloom playback state, reduced motion, frosted surfaces, and settings disclosures, including keyboard controls and narrow layouts. Runs save reports and screenshots for review.
 
 ## Changes in `v0.3.0:`
 
@@ -39,7 +52,6 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 - **Fix - Saving your place:** Quitting, installing an update, or resetting settings saves the latest playback position first. The window hides promptly while quitting.
 - **Fix - Updates and connectivity:** Arlet reconnects after an offline start. A newer downloaded update replaces an older pending one only when ready, and a failed background check keeps the ready update available. Expired Apple Music access tells you to install the latest version.
 - **UI:** Favorites use a star and Apple Music's wording. Artwork fills consistently sized cards, artist pictures load again, and Now Playing has artwork colors and fullscreen controls. Pages show loading placeholders, actions show confirmations, and keyboard and screen reader support is improved.
-- **UI:** `Settings` > `About` keeps the installed version and active update channel visible, with runtime details and readable project links behind `Show More` / `Hide More`. Debug Mode and Reset are grouped in a collapsed `Advanced` section, and the layout fits narrow windows.
 - **Improvement - Home and menus:** Home shows richer Apple Music content, cards have a menu and `Copy Apple Music link`, and Settings → About opens the project, release notes, and license in your browser without freezing Arlet.
 - **Fix - Clipboard and notices:** Copying Apple Music links and diagnostics retries a busy clipboard and responds sooner. Expired sign-in and update notices no longer overlap.
 - **Improvement - Speed and memory:** Long lists draw only visible rows, artwork downloads at its displayed size, ratings are requested together, and song details are reused. Library maintenance runs in the background and less-used views load when opened.
