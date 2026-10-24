@@ -662,8 +662,10 @@ against the `polish` fixture ids in `scripts/e2e-music-fixture.js`. It drives
 the real UI over CDP and reads the fixture's snapshot for requests, queue and
 volume. Each check is written to `report.json` with its observed values in
 `detail`. The runner also writes `screenshot-polish.png` (the state at the end
-of the scenario) and `polish-trace.json`; the per-check screenshots are not
-written.
+of the scenario), `polish-trace.json`, and `now-playing-bloom-results.json`.
+The latter records 20 frozen screenshots covering saturated blue and orange,
+dark, pale and missing artwork in dark and light themes at desktop and narrow
+widths. Compare files with the same name in the before and after run folders.
 
 A check that fails names the gap in its `detail`. The album header menu has no
 copy-link item (the hero carries no catalog URL), which is the one known gap at
@@ -742,6 +744,11 @@ Now Playing:
   formatted time or percentage.
 - With `prefers-reduced-motion: reduce`, open, close or transition animations
   still run.
+- The full-window bloom is too sharp or saturated, or its cover halo paints
+  above the shared readability scrim.
+- Blur, dither or scrim layers overlap the artwork, title, transport controls
+  or queue, block clicks, or create horizontal overflow at narrow width.
+- Forced-colors mode leaves either bloom image, scrim or dither visible.
 
 Context menu:
 
@@ -846,6 +853,10 @@ check name is the `report.json` name):
 | Now Playing renders its artwork backdrop and cover bloom                                                                                  | bloom layers missing; wrong alt or aria-hidden                              |
 | pausing playback holds the bloom still                                                                                                    | bloom drifts while paused                                                   |
 | resuming playback runs the bloom again                                                                                                    | bloom stops after pause and never restarts                                  |
+| Now Playing bloom capture covers artwork variants, themes and widths                                                                      | visual matrix missing an artwork, theme or viewport                         |
+| both bloom layers sit under the shared scrim with foreground content above                                                                | halo escapes the scrim or foreground is covered                            |
+| Now Playing has no horizontal overflow and its controls and queue stay reachable                                                          | narrow layout clips or blocks controls or queue                             |
+| forced colors hides the bloom decorations and keeps the track visible                                                                     | artwork, scrim or dither in forced colors                                   |
 | a track without artwork renders no bloom images                                                                                           | broken backdrop or halo `<img>`                                             |
 | reduced motion: the artwork bloom runs no animation                                                                                       | bloom animation with reduced motion                                         |
 

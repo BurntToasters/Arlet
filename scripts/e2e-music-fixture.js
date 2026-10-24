@@ -7,6 +7,8 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  * album-polish: 2 discs, 4 tracks (703 s), editorial notes with HTML and a
  * script that sets window.__ARLET_POLISH_XSS__, label, copyright, genres.
  * Its tracks carry artwork with bgColor, so Now Playing tints when they play.
+ * polish-bloom-blue, -orange, -dark and -pale carry deterministic artwork
+ * colors for the Now Playing bloom screenshots.
  * album-polish-sparse: no release date, genres, label, notes or durations.
  * pl.polish-fixture: 2 songs and a description with HTML-looking text.
  *
@@ -245,9 +247,12 @@ function installMusicKitFixture() {
     bigItems.find((item) => item.id === id) ??
     catalogPlaylistItems.find((item) => item.id === id) ??
     albumItems.find((item) => item.id === id) ??
-    [...polishAlbumTracks, ...polishSparseTracks, ...polishPlaylistTracks].find(
-      (item) => item.id === id,
-    ) ??
+    [
+      ...polishAlbumTracks,
+      ...polishSparseTracks,
+      ...polishPlaylistTracks,
+      ...polishBloomTracks,
+    ].find((item) => item.id === id) ??
     navResources[id] ??
     discoveryTrackItems.find((item) => item.id === id) ??
     (id === catalogSong.id ? catalogSong : undefined) ??
@@ -543,6 +548,19 @@ function installMusicKitFixture() {
     textColor2: "d1d1d6",
     textColor3: "aeaeb2",
     textColor4: "8e8e93",
+  });
+  const polishBloomTracks = [
+    { id: "polish-bloom-blue", name: "Bloom Blue", bgColor: "0756d8" },
+    { id: "polish-bloom-orange", name: "Bloom Orange", bgColor: "e84b08" },
+    { id: "polish-bloom-dark", name: "Bloom Dark", bgColor: "17191e" },
+    { id: "polish-bloom-pale", name: "Bloom Pale", bgColor: "f4ead7" },
+  ].map(({ id, name, bgColor }, index) => {
+    const item = polishTrack(id, name, {
+      number: index + 1,
+      album: "Now Playing Bloom Fixtures",
+    });
+    item.attributes.artwork = { ...polishArtwork(id), bgColor };
+    return item;
   });
   const POLISH_ALBUM_SLUG = "polish-fixture-album";
   const polishAlbumTracks = [
