@@ -19,6 +19,10 @@ import {
 import { ratingKeyOf, trackRatingTarget } from "../app/ratings.ts";
 import type { MusicEntityRef, Track } from "../domain/music.ts";
 import { useLiveMetadata } from "../musickit/live-metadata.ts";
+import {
+  ARTWORK_BACKDROP_BUCKET,
+  normalizeArtworkUrl,
+} from "../musickit/normalize.ts";
 import { setUiState } from "../state.ts";
 import { Artwork } from "./Artwork.tsx";
 import { IconButton } from "./IconButton.tsx";
@@ -212,12 +216,18 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
   );
   // Without Apple's bgColor the class and property are absent: the plain surface.
   const tint = current?.artwork?.bgColor;
+  // A tiny blurred source is enough for the full-canvas and cover blooms.
+  const backdropUrl = current?.artwork?.url
+    ? normalizeArtworkUrl(current.artwork.url, ARTWORK_BACKDROP_BUCKET)
+    : undefined;
 
   return (
     <div
       className={[
         "now-playing",
         tint ? "has-artwork-tint" : "",
+        backdropUrl ? "has-artwork-bloom" : "",
+        playing ? "is-playing" : "",
         closing ? "is-closing" : "",
       ]
         .filter(Boolean)
@@ -230,6 +240,15 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
       ref={dialogRef}
       onKeyDown={onKeyDown}
     >
+      {backdropUrl ? (
+        <img
+          className="now-playing-backdrop"
+          src={backdropUrl}
+          alt=""
+          aria-hidden="true"
+          decoding="async"
+        />
+      ) : null}
       <header className="now-playing-header">
         <span className="eyebrow">Now playing</span>
         <div className="now-playing-header-actions">
@@ -268,12 +287,23 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
       </header>
       <div className="now-playing-body">
         <section className="now-playing-hero">
-          <Artwork
-            track={current}
-            size="xl"
-            alt={current ? `${current.title} artwork` : "No song playing"}
-            priority
-          />
+          <div className="now-playing-artwork-stage">
+            {backdropUrl ? (
+              <img
+                className="now-playing-artwork-bloom"
+                src={backdropUrl}
+                alt=""
+                aria-hidden="true"
+                decoding="async"
+              />
+            ) : null}
+            <Artwork
+              track={current}
+              size="xl"
+              alt={current ? `${current.title} artwork` : "No song playing"}
+              priority
+            />
+          </div>
           <div className="now-playing-meta">
             <h2 title={current?.title}>
               {current?.title ?? "Nothing playing"}

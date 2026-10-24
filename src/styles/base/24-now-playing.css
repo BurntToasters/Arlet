@@ -30,8 +30,60 @@
   overflow: hidden;
   background: var(--surface-solid);
   color: var(--text);
+  /* Keeps the negative-z bloom layers above the dialog's own surface. */
+  isolation: isolate;
   animation: now-playing-enter var(--duration-normal) var(--ease-standard)
     backwards;
+}
+/* Cover art as a blurred full-canvas layer. It is an <img>, never a CSS
+   url(), and a scrim above it keeps --text and --text-muted readable. */
+.now-playing-backdrop {
+  position: absolute;
+  z-index: -2;
+  inset: -64px;
+  width: calc(100% + 128px);
+  height: calc(100% + 128px);
+  object-fit: cover;
+  filter: blur(64px) saturate(1.45);
+  opacity: 0.48;
+  pointer-events: none;
+}
+.now-playing.has-artwork-bloom::after {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background:
+    radial-gradient(
+      circle at 36% 42%,
+      color-mix(in srgb, var(--surface-solid) 26%, transparent),
+      color-mix(in srgb, var(--surface-solid) 74%, transparent) 60%,
+      color-mix(in srgb, var(--surface-solid) 90%, transparent) 100%
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--surface-solid) 52%, transparent),
+      color-mix(in srgb, var(--surface-solid) 80%, transparent)
+    );
+  content: "";
+  pointer-events: none;
+}
+@keyframes now-playing-bloom-drift {
+  0%,
+  100% {
+    transform: translate3d(-1.5%, 1%, 0) scale(1.02);
+  }
+  50% {
+    transform: translate3d(1.5%, -1.2%, 0) scale(1.07);
+  }
+}
+.now-playing-backdrop,
+.now-playing-artwork-bloom {
+  animation: now-playing-bloom-drift 18s ease-in-out infinite alternate;
+  animation-play-state: paused;
+}
+.now-playing.is-playing .now-playing-backdrop,
+.now-playing.is-playing .now-playing-artwork-bloom {
+  animation-play-state: running;
 }
 /* Leaving: focus has already moved back to the page, so the overlay must not
    take clicks while it fades out. It unmounts when the transition ends. */
@@ -119,6 +171,28 @@
   gap: 18px;
   text-align: center;
 }
+/* The cover's own colors bloom outward from behind it. The stage isolates the
+   bloom so it paints above the full-canvas scrim, not under it. */
+.now-playing-artwork-stage {
+  position: relative;
+  display: grid;
+  width: min(100%, 320px);
+  aspect-ratio: 1;
+  isolation: isolate;
+  place-items: center;
+}
+.now-playing-artwork-bloom {
+  position: absolute;
+  z-index: -1;
+  inset: -18%;
+  width: 136%;
+  height: 136%;
+  object-fit: cover;
+  border-radius: 28%;
+  filter: blur(46px) saturate(1.65);
+  opacity: 0.72;
+  pointer-events: none;
+}
 .now-playing-meta {
   display: grid;
   min-width: 0;
@@ -192,9 +266,10 @@
   gap: 12px;
   overflow: hidden;
   padding: 14px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
-  background: var(--surface-subtle);
+  background: color-mix(in srgb, var(--surface-solid) 62%, transparent);
+  backdrop-filter: blur(28px) saturate(1.18);
 }
 .now-playing-side-heading {
   margin: 0;
@@ -272,6 +347,10 @@
   .now-playing.has-artwork-tint {
     transition: none;
   }
+  .now-playing-backdrop,
+  .now-playing-artwork-bloom {
+    animation: none;
+  }
 }
 
 /* Forced colors take over the palette, so the artwork tint is ignored. */
@@ -279,6 +358,17 @@
   .now-playing.has-artwork-tint {
     --text-muted: unset;
     background: var(--surface-solid);
+  }
+  .now-playing-backdrop,
+  .now-playing-artwork-bloom {
+    display: none;
+  }
+  .now-playing.has-artwork-bloom::after {
+    display: none;
+  }
+  .now-playing-side {
+    background: Canvas;
+    backdrop-filter: none;
   }
 }
 
@@ -296,6 +386,9 @@
     min-height: 320px;
   }
   .artwork-xl {
+    width: min(100%, 220px);
+  }
+  .now-playing-artwork-stage {
     width: min(100%, 220px);
   }
 }

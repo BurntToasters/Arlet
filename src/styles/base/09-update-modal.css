@@ -9,8 +9,8 @@
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgba(10, 11, 13, 0.42);
-  backdrop-filter: blur(10px) saturate(1.08);
+  background: var(--surface-scrim);
+  backdrop-filter: var(--backdrop-scrim);
 }
 .update-modal {
   display: flex;
@@ -21,8 +21,9 @@
   padding: 28px 30px 25px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--surface-solid) 94%, transparent);
+  background: var(--surface-modal);
   box-shadow: var(--shadow-popover);
+  backdrop-filter: var(--backdrop-popover);
   text-align: left;
 }
 .update-modal-icon {

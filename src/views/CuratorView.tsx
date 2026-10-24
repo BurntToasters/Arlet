@@ -19,6 +19,10 @@ import { CardActions, CardShell } from "../components/CardActions.tsx";
 import { SkeletonCardGrid, SkeletonStatus } from "../components/Skeleton.tsx";
 import type { Playlist } from "../domain/music.ts";
 import type { CuratorPage } from "../musickit/curators.ts";
+import {
+  ARTWORK_BACKDROP_BUCKET,
+  normalizeArtworkUrl,
+} from "../musickit/normalize.ts";
 import type { CuratorKind } from "../routing/router.ts";
 import { EmptyState } from "./EmptyState.tsx";
 
@@ -277,6 +281,7 @@ export function CuratorView({
   }
 
   const { page } = current;
+  const curatorBackdrop = page.artwork?.url;
   // Apple's groups replace the flat list, so an empty group is not shown.
   const groups = page.groups.filter((group) => group.playlists.length > 0);
   const playlists = [...page.playlists, ...(moreFor?.playlists ?? [])];
@@ -285,7 +290,20 @@ export function CuratorView({
 
   return (
     <div className="curator-page" data-curator-kind={page.kind}>
-      <header className="library-detail-hero curator-header">
+      <header
+        className={`library-detail-hero curator-header${
+          curatorBackdrop ? " has-hero-backdrop" : ""
+        }`}
+      >
+        {curatorBackdrop ? (
+          <img
+            className="detail-hero-backdrop"
+            src={normalizeArtworkUrl(curatorBackdrop, ARTWORK_BACKDROP_BUCKET)}
+            alt=""
+            aria-hidden="true"
+            decoding="async"
+          />
+        ) : null}
         <div className="library-detail-art">
           <Artwork
             track={{

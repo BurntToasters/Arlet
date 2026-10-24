@@ -32,6 +32,8 @@ const LIVE_TEXT = ".player-track-links .live-metadata-text";
 const POP_STATION_URL =
   "https://music.apple.com/us/station/pop-station-one/ra.genre-pop-1";
 const BROWSE_SONGS = 'section[aria-labelledby="browse-songs-heading"]';
+// A curator header blooms behind its cover; its copy must stay inside the box.
+const CURATOR_HERO = `const hero = document.querySelector("header.library-detail-hero.curator-header"); const image = hero?.querySelector("img.detail-hero-backdrop"); const box = hero?.getBoundingClientRect(); const copy = hero?.querySelector(".library-detail-copy")?.getBoundingClientRect(); return { present: Boolean(image), classed: hero?.classList.contains("has-hero-backdrop") ?? null, alt: image?.getAttribute("alt") ?? null, hidden: image?.getAttribute("aria-hidden") ?? null, src: image?.getAttribute("src") ?? null, artistImages: document.querySelectorAll("img.artist-hero-backdrop, img.artist-hero-banner").length, copyInside: Boolean(box && copy) ? copy.right <= box.right + 1 : null, pageOverflowX: document.documentElement.scrollWidth - window.innerWidth };`;
 
 const q = (value) => JSON.stringify(value);
 const at = (hash) => `location.hash === ${q(hash)}`;
@@ -235,6 +237,14 @@ async function artistPage(page, check) {
     "artist banner comes from the editorial artwork",
     String(banner.src ?? "").includes("artist-views"),
     banner,
+  );
+  const detailBloom = await page.evaluate(
+    `return document.querySelectorAll("img.detail-hero-backdrop").length;`,
+  );
+  check(
+    "an artist header keeps its own banner selectors and no detail bloom",
+    detailBloom === 0,
+    { detailBloom },
   );
 }
 
@@ -459,6 +469,34 @@ async function searchSuggestions(page, check) {
     6000,
   );
   const labels = await textOf(page, SUGGESTION_OPTIONS);
+  const suggestionArt = await page.evaluate(`
+    return [...document.querySelectorAll(${q(SUGGESTION_OPTIONS)})].map((node) => {
+      const art = node.querySelector(".search-suggestion-art");
+      return {
+        label: node.querySelector(".search-suggestion-copy > span")?.textContent ?? null,
+        detail: node.querySelector(".search-suggestion-copy > small")?.textContent ?? null,
+        art: Boolean(art),
+        alt: art?.querySelector("img")?.getAttribute("alt") ?? null,
+        src: art?.querySelector("img")?.getAttribute("src") ?? null,
+      };
+    });
+  `);
+  const mediaRow = suggestionArt.find(
+    (row) => row.label === "Polish Fixture Album",
+  );
+  const termRows = suggestionArt.filter((row) =>
+    ["Polish Fixture", "Polka"].includes(row.label),
+  );
+  check(
+    "media suggestions carry a decorative thumbnail; term suggestions stay text-only",
+    mediaRow?.art === true &&
+      mediaRow.alt === "" &&
+      mediaRow.src?.includes("/image/thumb/Music/e2e/album-polish/") === true &&
+      mediaRow.detail === "Album · Fixture Artist" &&
+      termRows.length === 2 &&
+      termRows.every((row) => row.art === false),
+    suggestionArt,
+  );
   const openBefore = await page.evaluate(
     `return !document.querySelector(${q(SUGGESTION_POPUP)})?.hidden;`,
   );
@@ -879,6 +917,19 @@ async function curatorPages(page, check) {
   const apple = await page.evaluate(`
     return { groups: ${groupsOf}, kind: document.querySelector(".curator-page")?.getAttribute("data-curator-kind") ?? null };
   `);
+  const appleHero = await page.evaluate(CURATOR_HERO);
+  check(
+    "an Apple curator header blooms its artwork without leaking artist selectors",
+    appleHero.present &&
+      appleHero.classed === true &&
+      appleHero.alt === "" &&
+      appleHero.hidden === "true" &&
+      appleHero.src?.includes("/64x64bb.jpg") === true &&
+      appleHero.artistImages === 0 &&
+      appleHero.copyInside === true &&
+      appleHero.pageOverflowX <= 0,
+    appleHero,
+  );
   const appleBatch = (await snapshot(page)).requests.filter(
     (item) => pathOnly(item) === "/v1/catalog/us/playlists",
   );
@@ -911,6 +962,19 @@ async function curatorPages(page, check) {
   const flat = await textOf(
     page,
     '[data-curator-shelf="playlists"] .library-card-copy strong',
+  );
+  const flatHero = await page.evaluate(CURATOR_HERO);
+  check(
+    "a curator header blooms its artwork without leaking artist selectors",
+    flatHero.present &&
+      flatHero.classed === true &&
+      flatHero.alt === "" &&
+      flatHero.hidden === "true" &&
+      flatHero.src?.includes("/64x64bb.jpg") === true &&
+      flatHero.artistImages === 0 &&
+      flatHero.copyInside === true &&
+      flatHero.pageOverflowX <= 0,
+    flatHero,
   );
   const batches = (await snapshot(page)).requests.filter(
     (item) => pathOnly(item) === "/v1/catalog/us/playlists",
@@ -1162,6 +1226,34 @@ async function externalSignOut(page, check) {
     );
     const recentBefore = await page.evaluate(
       `return localStorage.getItem(${q(RECENT_KEY)});`,
+    );
+    // The saved term lists as a recent search, which stays text-only.
+    await page.evaluate(`
+      const input = document.querySelector(${q(SEARCH_INPUT)});
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+      setValue.call(input, "");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      input.focus();
+      return true;
+    `);
+    const recentShown = await waitFor(
+      page,
+      `document.querySelectorAll(${q(SUGGESTION_OPTIONS)}).length > 0`,
+      6000,
+    );
+    const recentRows = await page.evaluate(`
+      return [...document.querySelectorAll(${q(SUGGESTION_OPTIONS)})].map((node) => ({
+        label: node.querySelector(".search-suggestion-copy > span")?.textContent ?? null,
+        art: Boolean(node.querySelector(".search-suggestion-art")),
+        removable: Boolean(node.querySelector(".search-suggestion-remove")),
+      }));
+    `);
+    check(
+      "recent searches stay text-only with no thumbnail",
+      recentShown &&
+        recentRows.some((row) => row.label === "discovery") &&
+        recentRows.every((row) => row.art === false && row.removable),
+      recentRows,
     );
     await home(page);
     await fixtureCall(page, "emitAuthorizationStatus", [false]);

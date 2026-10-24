@@ -431,7 +431,12 @@ export function SearchView(): JSX.Element {
       popupOptions.push({
         id,
         label: display.title,
-        detail: display.subtitle,
+        detail:
+          display.subtitle === display.kindLabel
+            ? display.kindLabel
+            : `${display.kindLabel} · ${display.subtitle}`,
+        artwork: display.artwork,
+        mediaKind: suggestion.item.kind,
         run: () => openItem(suggestion.item),
       });
     });

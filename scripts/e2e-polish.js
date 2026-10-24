@@ -3,6 +3,8 @@
  * as strings inside the page, as in the other native scenarios. */
 
 import { fixtureCall, sleep, waitFor } from "./e2e-helpers.js";
+import fs from "node:fs";
+import path from "node:path";
 
 const ALBUM = {
   id: "album-polish",
@@ -20,6 +22,8 @@ const TINT = "#1c2b3a";
 const ARTWORK_TEMPLATE =
   "https://is1-ssl.mzstatic.com/image/thumb/Music/e2e/{id}/{w}x{h}bb.jpg";
 const REDUCED_MOTION = [{ name: "prefers-reduced-motion", value: "reduce" }];
+/** A little longer than the 200 ms `.now-playing` exit transition. */
+const CLOSE_SETTLE_MS = 300;
 const KEY_CODES = {
   Tab: 9,
   Enter: 13,
@@ -31,6 +35,7 @@ const KEY_CODES = {
   ArrowDown: 40,
   F11: 122,
   r: 82,
+  Space: 32,
 };
 
 const q = (value) => JSON.stringify(value);
@@ -39,8 +44,13 @@ const q = (value) => JSON.stringify(value);
 async function pressKey(page, key, { modifiers = 0, text } = {}) {
   const common = {
     key,
-    code: key.length === 1 ? `Key${key.toUpperCase()}` : key,
-    windowsVirtualKeyCode: KEY_CODES[key],
+    code:
+      key === " "
+        ? "Space"
+        : key.length === 1
+          ? `Key${key.toUpperCase()}`
+          : key,
+    windowsVirtualKeyCode: key === " " ? KEY_CODES.Space : KEY_CODES[key],
     modifiers,
   };
   await page.send("Input.dispatchKeyEvent", {
@@ -102,6 +112,33 @@ const FULLSCREEN_GEOMETRY =
   "window.outerWidth >= screen.width - 2 && window.outerHeight >= screen.height - 2";
 const DRAWER_CONTROLS = `[...document.querySelectorAll("aside.sidebar button, aside.sidebar input")].filter((node) => !node.matches(":disabled, [aria-disabled='true']"))`;
 const TINT_STATE = `const dialog = document.querySelector(".now-playing"); return { classed: dialog ? dialog.classList.contains("has-artwork-tint") : null, value: dialog ? dialog.style.getPropertyValue("--now-playing-tint") : null };`;
+// The two bloom layers read from the same artwork URL; their play state must
+// follow playback without the dialog remounting.
+const BLOOM_STATE = `const dialog = document.querySelector(".now-playing"); const backdrop = dialog?.querySelector("img.now-playing-backdrop"); const halo = dialog?.querySelector("img.now-playing-artwork-bloom"); const playState = (node) => node ? getComputedStyle(node).animationPlayState : null; const animationName = (node) => node ? getComputedStyle(node).animationName : null; return { classed: dialog?.classList.contains("has-artwork-bloom") ?? null, playing: dialog?.classList.contains("is-playing") ?? null, backdrop: Boolean(backdrop), halo: Boolean(halo), backdropAlt: backdrop?.getAttribute("alt") ?? null, backdropHidden: backdrop?.getAttribute("aria-hidden") ?? null, backdropUrl: backdrop?.getAttribute("src") ?? null, haloUrl: halo?.getAttribute("src") ?? null, backdropPlayState: playState(backdrop), haloPlayState: playState(halo), backdropAnimation: animationName(backdrop), haloAnimation: animationName(halo) };`;
+// Floating surfaces blur what is behind them; an opaque background hides the
+// blur and lets underlying text clash.
+const GLASS_STATE = (selector) => `
+  const node = document.querySelector(${q(selector)});
+  if (!node) return null;
+  const style = getComputedStyle(node);
+  const color = style.backgroundColor;
+  const alphaMatch =
+    color.match(/\\/\\s*([\\d.]+)\\s*\\)/u) ??
+    color.match(/rgba\\([^)]*,\\s*([\\d.]+)\\)/u);
+  return {
+    backdropFilter: style.backdropFilter,
+    background: color,
+    alpha: alphaMatch ? Number(alphaMatch[1]) : 1,
+  };
+`;
+/** True when the surface blurs and stays see-through. */
+const frosted = (state) =>
+  Boolean(state) &&
+  state.backdropFilter !== "none" &&
+  state.alpha > 0 &&
+  state.alpha < 1;
+// The detail header must glow without moving its copy or actions.
+const DETAIL_HERO_STATE = `const hero = document.querySelector("section.library-detail-hero, header.library-detail-hero"); const image = hero?.querySelector("img.detail-hero-backdrop"); const heroBox = hero?.getBoundingClientRect(); const copy = hero?.querySelector(".library-detail-copy")?.getBoundingClientRect(); const actions = hero?.querySelector(".library-detail-actions")?.getBoundingClientRect(); return { present: Boolean(image), classed: hero?.classList.contains("has-hero-backdrop") ?? null, alt: image?.getAttribute("alt") ?? null, hidden: image?.getAttribute("aria-hidden") ?? null, src: image?.getAttribute("src") ?? null, artistImages: document.querySelectorAll("img.artist-hero-backdrop, img.artist-hero-banner").length, insideHero: Boolean(heroBox && copy && actions) ? copy.right <= heroBox.right + 1 && actions.right <= heroBox.right + 1 : null, pageOverflowX: document.documentElement.scrollWidth - window.innerWidth };`;
 const TAB_STATE = `const tabs = [...document.querySelectorAll('[role="tab"]')]; const selected = tabs.find((tab) => tab.getAttribute("aria-selected") === "true"); return { selected: selected?.id.replace("search-source-tab-", "") ?? null, focused: document.activeElement?.id.replace("search-source-tab-", "") ?? null, panelLabelledBy: document.getElementById("search-source-panel")?.getAttribute("aria-labelledby") ?? null };`;
 const WINDOW_STATE = `return { outer: [window.outerWidth, window.outerHeight], screen: [screen.width, screen.height] };`;
 
@@ -135,7 +172,16 @@ async function closeNowPlaying(page) {
   await page.evaluate(
     `document.querySelector('.now-playing button[aria-label="Close Now Playing"]')?.click(); return true;`,
   );
-  return waitFor(page, `!document.querySelector(".now-playing")`, 3000);
+  const gone = await waitFor(
+    page,
+    `!document.querySelector(".now-playing")`,
+    3000,
+  );
+  if (!gone) return false;
+  // The dialog unmounts for one render before `useDialogPresence` remounts it
+  // for the exit animation, so a single absent poll is not enough.
+  await sleep(CLOSE_SETTLE_MS);
+  return page.evaluate(`return !document.querySelector(".now-playing");`);
 }
 
 function separatorProblems(shape) {
@@ -367,9 +413,53 @@ async function albumDetail(page, check) {
     meta === ALBUM.meta.join(DOT),
     { expected: ALBUM.meta.join(DOT), actual: meta },
   );
+  const hero = await page.evaluate(DETAIL_HERO_STATE);
+  check(
+    "album header blooms its artwork behind a right-side reading scrim",
+    hero.present &&
+      hero.classed === true &&
+      hero.alt === "" &&
+      hero.hidden === "true" &&
+      hero.src?.includes("/64x64bb.jpg") === true &&
+      hero.artistImages === 0 &&
+      hero.insideHero === true &&
+      hero.pageOverflowX <= 0,
+    hero,
+  );
   await moreToggle(page, check);
   await discs(page, check);
   await favorite(page, check);
+
+  // Ctrl+click two rows to raise the multi-select bar, then Escape clears it.
+  const selected = await page.evaluate(`
+    const rows = [...document.querySelectorAll("button.library-track-row")].slice(0, 2);
+    for (const row of rows) {
+      row.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true }));
+    }
+    return rows.length;
+  `);
+  const barShown = await waitFor(
+    page,
+    `Boolean(document.querySelector(".selection-bar"))`,
+    3000,
+  );
+  const barGlass = barShown
+    ? await page.evaluate(GLASS_STATE(".selection-bar"))
+    : null;
+  await page.evaluate(
+    `document.querySelector("button.library-track-row")?.focus(); return true;`,
+  );
+  await pressKey(page, "Escape");
+  const barCleared = await waitFor(
+    page,
+    `!document.querySelector(".selection-bar")`,
+    3000,
+  );
+  check(
+    "the selection bar is a translucent frosted surface",
+    selected === 2 && frosted(barGlass) && barCleared,
+    { selected, barGlass, barCleared },
+  );
 }
 
 async function albumMenu(page, check) {
@@ -387,6 +477,12 @@ async function albumMenu(page, check) {
   // The menu focuses its first item in an effect after it renders.
   await sleep(150);
   const shape = await page.evaluate(MENU_SHAPE);
+  const menuGlass = await page.evaluate(GLASS_STATE(".context-menu"));
+  check(
+    "the context menu is a translucent frosted surface",
+    frosted(menuGlass),
+    menuGlass,
+  );
   const items = shape.filter((entry) => entry !== "|");
   check(
     "More actions opens the album menu and its target is the album",
@@ -476,6 +572,19 @@ async function otherDetails(page, check) {
   );
   const playlistMeta = await page.evaluate(
     `return document.querySelector("section.library-detail-hero p.library-detail-meta")?.textContent.trim() ?? null;`,
+  );
+  const playlistHero = await page.evaluate(DETAIL_HERO_STATE);
+  check(
+    "playlist header blooms its artwork behind a right-side reading scrim",
+    playlistHero.present &&
+      playlistHero.classed === true &&
+      playlistHero.alt === "" &&
+      playlistHero.hidden === "true" &&
+      playlistHero.src?.includes("/64x64bb.jpg") === true &&
+      playlistHero.artistImages === 0 &&
+      playlistHero.insideHero === true &&
+      playlistHero.pageOverflowX <= 0,
+    playlistHero,
   );
   const expectedPlaylistMeta = [
     "2 songs",
@@ -599,6 +708,98 @@ async function searchCards(page, check) {
   );
 }
 
+async function searchSuggestions(page, check) {
+  await openRoute(
+    page,
+    "#/search",
+    `Boolean(document.querySelector('.search-form input[role="combobox"]'))`,
+    12_000,
+  );
+  const typed = await page.evaluate(
+    `const input = document.querySelector('.search-form input[role="combobox"]'); if (!input) return false; input.focus(); input.select(); return true;`,
+  );
+  if (typed) await page.send("Input.insertText", { text: "polish" });
+  const suggestion = await waitFor(
+    page,
+    `[...document.querySelectorAll(".search-suggestions li[role=option]")].some((node) => node.querySelector(".search-suggestion-art"))`,
+    8000,
+  );
+  const rows = await page.evaluate(`
+    return [...document.querySelectorAll(".search-suggestions li[role='option']")].map((node) => {
+      const art = node.querySelector(".search-suggestion-art");
+      const box = art?.getBoundingClientRect();
+      return {
+        label: node.querySelector(".search-suggestion-copy > span")?.textContent ?? null,
+        detail: node.querySelector(".search-suggestion-copy > small")?.textContent ?? null,
+        art: Boolean(art),
+        alt: art?.querySelector("img")?.getAttribute("alt") ?? null,
+        src: art?.querySelector("img")?.getAttribute("src") ?? null,
+        size: box ? [Math.round(box.width), Math.round(box.height)] : null,
+      };
+    });
+  `);
+  const media = rows.find((row) => row.label === ALBUM.title);
+  const terms = rows.filter((row) =>
+    ["Polish Fixture", "Polka"].includes(row.label),
+  );
+  check(
+    "media suggestions show a 32 px thumbnail and their kind; text completions do not",
+    typed &&
+      suggestion &&
+      media?.art === true &&
+      media.alt === "" &&
+      media.src?.includes("/image/thumb/Music/e2e/album-polish/") === true &&
+      /\/\d+x\d+bb\.jpg$/u.test(media.src ?? "") &&
+      media.detail === `Album${DOT}Fixture Artist` &&
+      JSON.stringify(media.size) === JSON.stringify([32, 32]) &&
+      terms.length === 2 &&
+      terms.every((row) => row.art === false),
+    { rows, media, terms },
+  );
+  const suggestionsGlass = await page.evaluate(
+    GLASS_STATE(".search-suggestions"),
+  );
+  check(
+    "the search suggestion popup is a translucent frosted surface",
+    frosted(suggestionsGlass),
+    suggestionsGlass,
+  );
+
+  // Submit the term so it becomes a recent search, then reopen on empty text.
+  await page.evaluate(
+    `document.querySelector(".search-form")?.requestSubmit(); return true;`,
+  );
+  await waitFor(page, `location.hash.includes("q=polish")`, 4000);
+  await page.evaluate(`
+    const input = document.querySelector('.search-form input[role="combobox"]');
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+    setValue.call(input, "");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.focus();
+    return true;
+  `);
+  const recentShown = await waitFor(
+    page,
+    `document.querySelectorAll(".search-suggestions li[role=option] .search-suggestion-remove").length > 0`,
+    4000,
+  );
+  const recents = await page.evaluate(`
+    return [...document.querySelectorAll(".search-suggestions li[role='option']")].map((node) => ({
+      label: node.querySelector(".search-suggestion-copy > span")?.textContent ?? null,
+      art: Boolean(node.querySelector(".search-suggestion-art")),
+      removable: Boolean(node.querySelector(".search-suggestion-remove")),
+    }));
+  `);
+  check(
+    "recent searches stay text-only with no thumbnail",
+    recentShown &&
+      recents.length > 0 &&
+      recents.every((row) => row.art === false && row.removable),
+    recents,
+  );
+  await pressKey(page, "Escape");
+}
+
 async function searchTabs(page, check) {
   await openRoute(
     page,
@@ -647,6 +848,52 @@ async function nowPlaying(page, check) {
     "open animation moves the dialog when motion is allowed (baseline)",
     baseline.opened && baseline.animations.some((item) => item.transform),
     baseline,
+  );
+
+  const bloom = await page.evaluate(BLOOM_STATE);
+  check(
+    "Now Playing renders its artwork backdrop and cover bloom",
+    bloom.classed === true &&
+      bloom.backdrop === true &&
+      bloom.halo === true &&
+      bloom.backdropAlt === "" &&
+      bloom.backdropHidden === "true" &&
+      bloom.backdropUrl === bloom.haloUrl &&
+      bloom.backdropUrl?.includes("/64x64bb.jpg") === true,
+    bloom,
+  );
+  // Pausing playback pauses the ambient drift; resuming restarts it.
+  await page.evaluate(
+    `document.querySelector(".now-playing .play-button")?.click(); return true;`,
+  );
+  const paused = await waitFor(
+    page,
+    `!document.querySelector(".now-playing.is-playing")`,
+    4000,
+  );
+  const pausedBloom = await page.evaluate(BLOOM_STATE);
+  check(
+    "pausing playback holds the bloom still",
+    paused &&
+      pausedBloom.backdropPlayState === "paused" &&
+      pausedBloom.haloPlayState === "paused",
+    pausedBloom,
+  );
+  await page.evaluate(
+    `document.querySelector(".now-playing .play-button")?.click(); return true;`,
+  );
+  const resumed = await waitFor(
+    page,
+    `document.querySelector(".now-playing.is-playing")`,
+    4000,
+  );
+  const resumedBloom = await page.evaluate(BLOOM_STATE);
+  check(
+    "resuming playback runs the bloom again",
+    resumed &&
+      resumedBloom.backdropPlayState === "running" &&
+      resumedBloom.haloPlayState === "running",
+    resumedBloom,
   );
 
   const labels = await page.evaluate(
@@ -726,6 +973,31 @@ async function nowPlaying(page, check) {
     { plainTitle, ...plain },
   );
 
+  await fixtureCall(page, "setCurrentTrack", ["song-no-art"]);
+  const bareTitle = await waitFor(
+    page,
+    `document.querySelector(".now-playing h2")?.textContent === "Track Without Artwork"`,
+    4000,
+  );
+  const bloomGone = await waitFor(
+    page,
+    `!document.querySelector("img.now-playing-backdrop") && !document.querySelector("img.now-playing-artwork-bloom") && document.querySelector(".now-playing")?.classList.contains("has-artwork-bloom") === false`,
+    4000,
+  );
+  const stripped = await page.evaluate(
+    `return {
+      backdrop: Boolean(document.querySelector("img.now-playing-backdrop")),
+      halo: Boolean(document.querySelector("img.now-playing-artwork-bloom")),
+      className: document.querySelector(".now-playing")?.className ?? null,
+      images: [...document.querySelectorAll(".now-playing img")].map((node) => node.getAttribute("src")),
+    };`,
+  );
+  check(
+    "a track without artwork renders no bloom images",
+    bareTitle && bloomGone,
+    stripped,
+  );
+
   await page.evaluate(
     `document.querySelector("button.player-artwork-button")?.focus(); return true;`,
   );
@@ -742,12 +1014,23 @@ async function nowPlaying(page, check) {
   );
 
   await page.send("Emulation.setEmulatedMedia", { features: REDUCED_MOTION });
+  // Put artwork back on the current track so the bloom layers exist to check.
+  await fixtureCall(page, "setCurrentTrack", [ALBUM.tracks[2]]);
   try {
     const reduced = await page.evaluate(OPEN_NOW_PLAYING);
     check(
       "reduced motion: opening Now Playing runs no transform animation",
       reduced.opened && !reduced.animations.some((item) => item.transform),
       reduced,
+    );
+    const reducedBloom = await page.evaluate(
+      `return [...document.querySelectorAll(".now-playing-backdrop, .now-playing-artwork-bloom")].map((node) => getComputedStyle(node).animationName);`,
+    );
+    check(
+      "reduced motion: the artwork bloom runs no animation",
+      reducedBloom.length === 2 &&
+        reducedBloom.every((name) => name === "none"),
+      { reducedBloom },
     );
     // Reduced motion unmounts at once; no exit transition is waited for.
     await page.evaluate(
@@ -777,6 +1060,12 @@ async function queueDrawer(page, check) {
     `document.querySelector('aside.queue-drawer[data-state="open"]')`,
     4000,
   );
+  // The focus effect runs after the drawer's first paint, so poll for it.
+  const focusMoved = await waitFor(
+    page,
+    `document.activeElement?.tagName === "H2" && Boolean(document.activeElement?.closest("aside.queue-drawer"))`,
+    2000,
+  );
   // The extra fields say what blocked the drawer when this check fails.
   const focus = await page.evaluate(
     `const node = document.activeElement; return { tag: node?.tagName ?? null, text: node?.textContent.trim() ?? null, label: node?.getAttribute("aria-label") ?? null, inDrawer: Boolean(node?.closest("aside.queue-drawer")), drawerState: document.querySelector("aside.queue-drawer")?.dataset.state ?? null, blockers: [...document.querySelectorAll('[role="dialog"], [role="menu"], dialog[open], .now-playing')].map((item) => item.className || item.tagName) };`,
@@ -784,10 +1073,17 @@ async function queueDrawer(page, check) {
   check(
     "opening Playing Next moves focus to its heading",
     open &&
+      focusMoved &&
       focus.tag === "H2" &&
       focus.text === "Playing Next" &&
       focus.inDrawer,
     { ...focus, open: Boolean(open) },
+  );
+  const drawerGlass = await page.evaluate(GLASS_STATE(".queue-drawer"));
+  check(
+    "the queue drawer is a translucent frosted surface",
+    frosted(drawerGlass),
+    drawerGlass,
   );
   await pressKey(page, "Escape");
   const focusBack = await waitFor(
@@ -841,6 +1137,12 @@ async function errorToast(page, check) {
       "a rejected rating shows the error style and rolls Favorite back",
       error && successStyled === false && pressed === "false",
       { error, successStyled, pressed },
+    );
+    const toastGlass = await page.evaluate(GLASS_STATE(".action-toast"));
+    check(
+      "the action toast is a translucent frosted surface",
+      frosted(toastGlass),
+      toastGlass,
     );
   } finally {
     await fixtureCall(page, "configure", [{ rejectPaths: [] }]);
@@ -919,42 +1221,437 @@ async function skeletons(page, check) {
   await fixtureCall(page, "configure", [{ delayPaths: [], librarySize: 0 }]);
 }
 
-async function aboutLinks(page, check) {
+async function aboutLinks(page, check, artifactDir) {
   await openRoute(
     page,
     "#/settings",
-    `document.querySelectorAll('.settings-section[aria-labelledby="about-heading"] button.about-link').length === 3`,
+    `document.querySelector('.settings-section[aria-labelledby="about-heading"] button[aria-controls="about-details"]') && document.querySelector('.settings-section[aria-labelledby="advanced-heading"] button[aria-controls="advanced-details"]')`,
     12_000,
   );
-  // Not clicked: each link runs ShellExecuteW on the tester's machine. Only the
-  // rendered markup is checked; the command's arguments are not observed.
-  const labels = ["Project page", "Release notes", "License"];
-  const releaseReady = await waitFor(
-    page,
-    `(() => { const button = [...document.querySelectorAll('.settings-section[aria-labelledby="about-heading"] button.about-link')].find((node) => node.querySelector("span")?.textContent.trim() === "Release notes"); return Boolean(button) && !button.disabled; })()`,
-    8000,
+  const originalTheme = await page.evaluate(
+    `return document.querySelector('.settings-section[aria-labelledby="appearance-heading"] select')?.value ?? "system";`,
   );
-  const links = await page.evaluate(
-    `return [...document.querySelectorAll('.settings-section[aria-labelledby="about-heading"] button.about-link')].map((node) => ({ label: node.querySelector("span")?.textContent.trim() ?? null, type: node.getAttribute("type"), href: node.hasAttribute("href"), target: node.hasAttribute("target"), disabled: node.disabled }));`,
-  );
-  const anchors = await page.evaluate(
-    `return document.querySelectorAll('.settings-section[aria-labelledby="about-heading"] a[href]').length;`,
-  );
-  check(
-    "About links are enabled type=button elements labelled Project page, Release notes and License, with no href or target (not clicked)",
-    releaseReady &&
-      anchors === 0 &&
-      JSON.stringify(links.map((link) => link.label)) ===
-        JSON.stringify(labels) &&
-      links.every(
-        (link) =>
-          link.type === "button" &&
-          !link.href &&
-          !link.target &&
-          !link.disabled,
-      ),
-    { links, anchors, releaseReady },
-  );
+  const saveScreenshot = async (name, headingId) => {
+    const selector = `.settings-section[aria-labelledby="${headingId}"]`;
+    const scrolled = await page.evaluate(`
+      const section = document.querySelector(${q(selector)});
+      section?.scrollIntoView({ block: "start" });
+      return Boolean(section);`);
+    const visibilityExpression = `(() => {
+        const section = document.querySelector(${q(selector)});
+        const scroller = document.querySelector(".content-scroll");
+        if (!section || !scroller) return false;
+        const sectionBox = section.getBoundingClientRect();
+        const viewport = scroller.getBoundingClientRect();
+        return sectionBox.left >= viewport.left - 1 &&
+          sectionBox.right <= viewport.right + 1 &&
+          sectionBox.top >= viewport.top - 1 &&
+          sectionBox.bottom <= viewport.bottom + 1;
+      })()`;
+    const visible = await waitFor(page, visibilityExpression, 3000);
+    const transitionsSettled = await waitFor(
+      page,
+      `(() => {
+        const section = document.querySelector(${q(selector)});
+        const scroller = document.querySelector(".content-scroll");
+        const sidebar = document.querySelector(".sidebar");
+        const compactDrawerClosed = window.innerWidth > 720 || (
+          sidebar &&
+          !sidebar.classList.contains("is-open") &&
+          !document.querySelector(".sidebar-scrim") &&
+          sidebar.getBoundingClientRect().right <= 1
+        );
+        const animations = [
+          ...(section?.getAnimations({ subtree: true }) ?? []),
+          ...(scroller?.getAnimations() ?? []),
+          ...(sidebar?.getAnimations() ?? []),
+        ];
+        return compactDrawerClosed && [...animations].every((animation) => animation.playState !== "running");
+      })()`,
+      3000,
+    );
+    await sleep(250);
+    await page.evaluate(
+      `return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));`,
+    );
+    const visibleAfterSettling = await waitFor(
+      page,
+      visibilityExpression,
+      1000,
+    );
+    check(
+      `screenshot ${name} shows a settled ${headingId} section`,
+      scrolled && visible && transitionsSettled && visibleAfterSettling,
+      { scrolled, visible, transitionsSettled, visibleAfterSettling },
+    );
+    const screenshot = await page.send("Page.captureScreenshot", {
+      format: "png",
+      captureBeyondViewport: true,
+    });
+    fs.writeFileSync(
+      path.join(artifactDir, name),
+      Buffer.from(screenshot.data, "base64"),
+    );
+  };
+  const setTheme = async (theme) => {
+    const changed = await page.evaluate(`
+      const select = document.querySelector('.settings-section[aria-labelledby="appearance-heading"] select');
+      if (!select) return false;
+      select.value = ${q(theme)};
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;`);
+    if (!changed) return false;
+    return waitFor(
+      page,
+      `document.documentElement.dataset.theme === ${q(theme)}`,
+      5000,
+    );
+  };
+  const settleSettingsViewport = async (width) => {
+    const viewportReady = await waitFor(
+      page,
+      `window.innerWidth === ${width} && document.querySelector(".sidebar")`,
+      3000,
+    );
+    const drawerCloseRequested = await page.evaluate(`
+      const sidebar = document.querySelector(".sidebar");
+      if (sidebar?.classList.contains("is-open")) {
+        const scrim = document.querySelector(".sidebar-scrim");
+        if (!scrim) return false;
+        scrim.click();
+      }
+      return Boolean(sidebar);`);
+    const expression = `(() => {
+      const sidebar = document.querySelector(".sidebar");
+      return window.innerWidth === ${width} &&
+        sidebar &&
+        !sidebar.classList.contains("is-open") &&
+        !document.querySelector(".sidebar-scrim") &&
+        (${width} > 720 || sidebar.getBoundingClientRect().right <= 1) &&
+        [...sidebar.getAnimations()].every((animation) => animation.playState !== "running");
+    })()`;
+    const settled = await waitFor(page, expression, 3000);
+    await sleep(250);
+    await page.evaluate(
+      `return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));`,
+    );
+    const stillSettled = await waitFor(page, expression, 1000);
+    return viewportReady && drawerCloseRequested && settled && stillSettled;
+  };
+  const aboutToggle = `document.querySelector('.settings-section[aria-labelledby="about-heading"] button[aria-controls="about-details"]')`;
+  const advancedToggle = `document.querySelector('.settings-section[aria-labelledby="advanced-heading"] button[aria-controls="advanced-details"]')`;
+  try {
+    await waitFor(
+      page,
+      `(() => { const version = [...document.querySelectorAll('.settings-section[aria-labelledby="about-heading"] .settings-field')].find((node) => node.querySelector("span")?.textContent.trim() === "Arlet version"); return Boolean(version) && !version.querySelector("strong")?.textContent.includes("Loading"); })()`,
+      8000,
+    );
+    const initial = await page.evaluate(`
+      const about = ${aboutToggle};
+      const advanced = ${advancedToggle};
+      const section = (id) => document.querySelector('.settings-section[aria-labelledby="' + id + '"]');
+      const valueFor = (id, label) => [...section(id).querySelectorAll(".settings-field")].find((node) => node.querySelector("span")?.textContent.trim() === label)?.querySelector("strong")?.textContent.trim() ?? null;
+      const hiddenStops = (id, selector) => {
+        const panel = document.getElementById(id);
+        return !panel || panel.hidden || [...panel.querySelectorAll(selector)].every((node) => node.disabled || node.getClientRects().length === 0);
+      };
+      return {
+        aboutExpanded: about?.getAttribute("aria-expanded"),
+        aboutControls: about?.getAttribute("aria-controls"),
+        advancedExpanded: advanced?.getAttribute("aria-expanded"),
+        advancedControls: advanced?.getAttribute("aria-controls"),
+        version: valueFor("about-heading", "Arlet version"),
+        channel: valueFor("about-heading", "Update channel in use"),
+        aboutHidden: hiddenStops("about-details", "button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])"),
+        advancedHidden: hiddenStops("advanced-details", "button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])"),
+      };`);
+    const validVersion = Boolean(
+      initial.version && !["Loading…", "Unknown"].includes(initial.version),
+    );
+    check(
+      "About shows installed version and active channel while both disclosures start collapsed",
+      validVersion &&
+        Boolean(initial.channel) &&
+        initial.aboutExpanded === "false" &&
+        initial.aboutControls === "about-details" &&
+        initial.advancedExpanded === "false" &&
+        initial.advancedControls === "advanced-details" &&
+        initial.aboutHidden &&
+        initial.advancedHidden,
+      initial,
+    );
+
+    const lightTheme = await setTheme("light");
+    await saveScreenshot("settings-about-collapsed-light.png", "about-heading");
+    await saveScreenshot(
+      "settings-advanced-collapsed-light.png",
+      "advanced-heading",
+    );
+    // A real button must open by keyboard. About uses Enter; Advanced uses Space.
+    await page.evaluate(
+      `document.querySelector('.settings-section[aria-labelledby="about-heading"]')?.scrollIntoView({ block: "start" }); return true;`,
+    );
+    await page.evaluate(`${aboutToggle}?.focus(); return true;`);
+    await pressKey(page, "Enter", { text: "\r" });
+    const aboutOpened = await waitFor(
+      page,
+      `${aboutToggle}?.getAttribute("aria-expanded") === "true" && document.getElementById("about-details")`,
+      3000,
+    );
+    const aboutDetails = await page.evaluate(`
+      const panel = document.getElementById("about-details");
+      const buttons = [...(panel?.querySelectorAll("button.about-link") ?? [])];
+      const value = (label) => buttons.find((button) => button.querySelector("span")?.textContent.trim() === label)?.querySelector("strong")?.textContent.trim() ?? null;
+      const version = [...document.querySelectorAll('.settings-section[aria-labelledby="about-heading"] .settings-field')].find((node) => node.querySelector("span")?.textContent.trim() === "Arlet version")?.querySelector("strong")?.textContent.trim();
+      return {
+        visible: Boolean(panel) && !panel.hidden,
+        runtime: Boolean([...panel.querySelectorAll(".settings-field")].find((node) => node.querySelector("span")?.textContent.trim() === "WebView2 runtime")),
+        labels: buttons.map((button) => button.querySelector("span")?.textContent.trim() ?? null),
+        project: value("Project page"),
+        releaseNotes: value("Release notes"),
+        license: value("License"),
+        releaseDisabled: buttons.find((button) => button.querySelector("span")?.textContent.trim() === "Release notes")?.disabled ?? null,
+        anchors: panel.querySelectorAll("a[href]").length,
+        buttonTypes: buttons.map((button) => button.getAttribute("type")),
+        buttonTargets: buttons.map((button) => button.hasAttribute("target")),
+        version,
+      };`);
+    // Not clicked: native link buttons run ShellExecuteW on the tester's machine.
+    // Only their rendered labels and button semantics are checked.
+    const expectedRelease = validVersion
+      ? `Version ${aboutDetails.version}`
+      : undefined;
+    const releaseAvailable = validVersion
+      ? aboutDetails.releaseDisabled === false &&
+        aboutDetails.releaseNotes === expectedRelease
+      : aboutDetails.releaseDisabled === true &&
+        ["Loading…", "Unavailable"].includes(aboutDetails.releaseNotes);
+    check(
+      "About reveals the runtime and friendly native link buttons without exposing URLs",
+      aboutOpened &&
+        aboutDetails.visible &&
+        aboutDetails.runtime &&
+        JSON.stringify(aboutDetails.labels) ===
+          JSON.stringify(["Project page", "Release notes", "License"]) &&
+        aboutDetails.project === "BurntToasters/Arlet" &&
+        releaseAvailable &&
+        aboutDetails.license === "GPL-3.0 license" &&
+        aboutDetails.anchors === 0 &&
+        aboutDetails.buttonTypes.every((type) => type === "button") &&
+        aboutDetails.buttonTargets.every((hasTarget) => !hasTarget),
+      aboutDetails,
+    );
+    await saveScreenshot("settings-about-expanded-light.png", "about-heading");
+
+    await page.evaluate(`${advancedToggle}?.focus(); return true;`);
+    await pressKey(page, " ", { text: " " });
+    const advancedOpened = await waitFor(
+      page,
+      `${advancedToggle}?.getAttribute("aria-expanded") === "true" && document.getElementById("advanced-details")`,
+      3000,
+    );
+    const bothExpanded = await page.evaluate(`
+      const about = ${aboutToggle};
+      const advanced = ${advancedToggle};
+      const panel = document.getElementById("advanced-details");
+      return {
+        about: about?.getAttribute("aria-expanded"),
+        advanced: advanced?.getAttribute("aria-expanded"),
+        debug: Boolean(panel?.querySelector('label.settings-toggle-field input[type="checkbox"]')),
+        reset: Boolean([...panel.querySelectorAll("button")].find((button) => button.textContent.trim() === "Reset settings…")),
+        positionAfterSupport: sectionOrder(),
+      };
+      function sectionOrder() {
+        const headings = [...document.querySelectorAll(".settings-layout > .settings-section > .settings-section-heading h2")].map((node) => node.textContent.trim());
+        return headings.indexOf("Advanced") > headings.indexOf("Support");
+      }`);
+    check(
+      "About and Advanced disclosures toggle independently by keyboard",
+      lightTheme &&
+        advancedOpened &&
+        bothExpanded.about === "true" &&
+        bothExpanded.advanced === "true" &&
+        bothExpanded.debug &&
+        bothExpanded.reset &&
+        bothExpanded.positionAfterSupport,
+      { lightTheme, advancedOpened, bothExpanded },
+    );
+    await saveScreenshot(
+      "settings-advanced-expanded-light.png",
+      "advanced-heading",
+    );
+
+    await page.evaluate(`${aboutToggle}?.click(); return true;`);
+    const aboutCollapsedIndependently = await waitFor(
+      page,
+      `${aboutToggle}?.getAttribute("aria-expanded") === "false" && ${advancedToggle}?.getAttribute("aria-expanded") === "true"`,
+      3000,
+    );
+    const aboutHiddenStops = await page.evaluate(`
+      const panel = document.getElementById("about-details");
+      const stops = [...(panel?.querySelectorAll("button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])") ?? [])];
+      return !panel || panel.hidden || stops.every((node) => node.disabled || node.getClientRects().length === 0);`);
+    await page.evaluate(`${advancedToggle}?.click(); return true;`);
+    const advancedCollapsed = await waitFor(
+      page,
+      `${advancedToggle}?.getAttribute("aria-expanded") === "false"`,
+      3000,
+    );
+    const advancedHiddenStops = await page.evaluate(`
+      const panel = document.getElementById("advanced-details");
+      const stops = [...(panel?.querySelectorAll("button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])") ?? [])];
+      return !panel || panel.hidden || stops.every((node) => node.disabled || node.getClientRects().length === 0);`);
+    check(
+      "collapsed About and Advanced contents leave no visible tab stops",
+      aboutCollapsedIndependently &&
+        aboutHiddenStops &&
+        advancedCollapsed &&
+        advancedHiddenStops,
+      {
+        aboutCollapsedIndependently,
+        aboutHiddenStops,
+        advancedCollapsed,
+        advancedHiddenStops,
+      },
+    );
+
+    await page.evaluate(
+      `${aboutToggle}?.click(); ${advancedToggle}?.click(); return true;`,
+    );
+    const expandedBeforeRemount = await waitFor(
+      page,
+      `${aboutToggle}?.getAttribute("aria-expanded") === "true" && ${advancedToggle}?.getAttribute("aria-expanded") === "true"`,
+      3000,
+    );
+    await page.evaluate(`location.hash = "#/home"; return true;`);
+    const settingsUnmounted = await waitFor(
+      page,
+      `!document.querySelector('.settings-section[aria-labelledby="about-heading"]') && !document.querySelector('.settings-section[aria-labelledby="advanced-heading"]')`,
+      5000,
+    );
+    await openRoute(
+      page,
+      "#/settings",
+      `${aboutToggle} && ${advancedToggle}`,
+      8000,
+    );
+    const remountCollapsed = await page.evaluate(`
+      return ${aboutToggle}?.getAttribute("aria-expanded") === "false" && ${advancedToggle}?.getAttribute("aria-expanded") === "false";`);
+    check(
+      "both disclosures reset to collapsed after Settings remounts",
+      expandedBeforeRemount && settingsUnmounted && remountCollapsed,
+      { expandedBeforeRemount, settingsUnmounted, remountCollapsed },
+    );
+
+    await page.send("Emulation.setDeviceMetricsOverride", {
+      width: 360,
+      height: 820,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await page.evaluate(
+      `${aboutToggle}?.click(); ${advancedToggle}?.click(); return true;`,
+    );
+    const narrowLayout = await waitFor(
+      page,
+      `${aboutToggle}?.getAttribute("aria-expanded") === "true" && ${advancedToggle}?.getAttribute("aria-expanded") === "true"`,
+      3000,
+    );
+    const narrowViewportSettled = await settleSettingsViewport(360);
+    const narrowGeometry = await page.evaluate(`
+      const sections = [
+        document.querySelector('.settings-section[aria-labelledby="about-heading"]'),
+        document.querySelector('.settings-section[aria-labelledby="advanced-heading"]'),
+      ].filter(Boolean);
+      const scroller = document.querySelector(".content-scroll");
+      const rows = sections.flatMap((section) => [...section.querySelectorAll(".settings-field")]);
+      const buttons = sections.flatMap((section) => [...section.querySelectorAll("button")]);
+      return {
+        viewport: window.innerWidth,
+        contained: Boolean(scroller) && sections.every((node) => {
+          const box = node.getBoundingClientRect();
+          const viewport = scroller.getBoundingClientRect();
+          return box.left >= viewport.left - 1 && box.right <= viewport.right + 1;
+        }),
+        cardsFit: sections.every((node) => node.scrollWidth <= node.clientWidth + 2),
+        rowsFit: rows.every((node) => node.scrollWidth <= node.clientWidth + 2),
+        buttonsFit: buttons.every((node) => node.scrollWidth <= node.clientWidth + 2),
+        scrollerBounds: scroller ? (() => {
+          const box = scroller.getBoundingClientRect();
+          return { left: box.left, right: box.right, width: box.width };
+        })() : null,
+        sectionBounds: sections.map((node) => {
+          const box = node.getBoundingClientRect();
+          return {
+            heading: node.getAttribute("aria-labelledby"),
+            left: box.left,
+            right: box.right,
+            width: box.width,
+          };
+        }),
+        sidebarBounds: document.querySelector(".sidebar") ? (() => {
+          const box = document.querySelector(".sidebar").getBoundingClientRect();
+          return { left: box.left, right: box.right, width: box.width };
+        })() : null,
+        sidebarOpen: document.querySelector(".sidebar")?.classList.contains("is-open") ?? null,
+        sidebarScrim: Boolean(document.querySelector(".sidebar-scrim")),
+      };`);
+    check(
+      "About and Advanced wrap within a narrow 360 px layout",
+      narrowLayout &&
+        narrowViewportSettled &&
+        narrowGeometry.contained &&
+        narrowGeometry.cardsFit &&
+        narrowGeometry.rowsFit &&
+        narrowGeometry.buttonsFit,
+      { narrowLayout, narrowViewportSettled, narrowGeometry },
+    );
+    await saveScreenshot(
+      "settings-about-expanded-narrow-light.png",
+      "about-heading",
+    );
+    await saveScreenshot(
+      "settings-advanced-expanded-narrow-light.png",
+      "advanced-heading",
+    );
+
+    const darkTheme = await setTheme("dark");
+    check(
+      "Settings disclosures render with the dark theme",
+      darkTheme &&
+        (await page.evaluate(
+          `return document.documentElement.dataset.theme === "dark";`,
+        )),
+    );
+    await saveScreenshot(
+      "settings-about-expanded-narrow-dark.png",
+      "about-heading",
+    );
+    await saveScreenshot(
+      "settings-advanced-expanded-narrow-dark.png",
+      "advanced-heading",
+    );
+    await page.send("Emulation.clearDeviceMetricsOverride", {});
+    await saveScreenshot("settings-about-expanded-dark.png", "about-heading");
+    await saveScreenshot(
+      "settings-advanced-expanded-dark.png",
+      "advanced-heading",
+    );
+  } finally {
+    await page.send("Emulation.clearDeviceMetricsOverride", {});
+    await page.evaluate(`
+      const select = document.querySelector('.settings-section[aria-labelledby="appearance-heading"] select');
+      if (select && select.value !== ${q(originalTheme)}) {
+        select.value = ${q(originalTheme)};
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      return true;`);
+    await waitFor(
+      page,
+      `document.querySelector('.settings-section[aria-labelledby="appearance-heading"] select')?.value === ${q(originalTheme)}`,
+      5000,
+    );
+  }
 }
 
 async function compactShell(page, check) {
@@ -1109,7 +1806,7 @@ async function cleanup(page) {
  * Runs the UI polish checks against the native WebView2 fixture. Called with
  * `{ page, check, dataDir }`; the data directory is not needed here.
  */
-export async function runPolish({ page, check }) {
+export async function runPolish({ page, check, artifactDir }) {
   await fixtureCall(page, "reset");
   // Queue items read their top-level artwork only with this template set; the
   // polish tracks then carry Apple's bgColor into Now Playing.
@@ -1135,12 +1832,17 @@ export async function runPolish({ page, check }) {
       otherDetails(page, check),
     );
     await group(check, "search cards", () => searchCards(page, check));
+    await group(check, "search suggestions", () =>
+      searchSuggestions(page, check),
+    );
     await group(check, "search source tabs", () => searchTabs(page, check));
     await group(check, "now playing", () => nowPlaying(page, check));
     await group(check, "queue drawer", () => queueDrawer(page, check));
     await group(check, "rating error toast", () => errorToast(page, check));
     await group(check, "skeletons", () => skeletons(page, check));
-    await group(check, "about links", () => aboutLinks(page, check));
+    await group(check, "about and advanced settings", () =>
+      aboutLinks(page, check, artifactDir),
+    );
     await group(check, "compact shell", () => compactShell(page, check));
     await group(check, "fullscreen", () => fullscreen(page, check));
   } finally {

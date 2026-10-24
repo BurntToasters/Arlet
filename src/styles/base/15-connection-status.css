@@ -45,9 +45,9 @@
   padding: 14px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--surface-solid) 96%, transparent);
+  background: var(--surface-popover);
   box-shadow: var(--shadow-popover);
-  backdrop-filter: blur(22px) saturate(1.15);
+  backdrop-filter: var(--backdrop-popover);
 }
 
 .connection-popover-heading {

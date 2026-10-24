@@ -26,6 +26,23 @@
   background: var(--surface-base);
 }
 
+/* A directional bloom from the 64 px cover on the left, fading right so the
+   native Acrylic/Mica surface still reads through. */
+.mini-player-backdrop {
+  position: absolute;
+  z-index: -2;
+  top: -24px;
+  bottom: -24px;
+  left: -24px;
+  width: 72%;
+  height: calc(100% + 48px);
+  object-fit: cover;
+  filter: blur(32px) saturate(1.45);
+  opacity: 0.45;
+  mask-image: linear-gradient(90deg, #000 15%, transparent 95%);
+  pointer-events: none;
+}
+
 .mini-player .mini-player-artwork {
   grid-column: 1;
   grid-row: 1 / span 2;
@@ -154,6 +171,9 @@
   .mini-player {
     background: Canvas;
     color: CanvasText;
+  }
+  .mini-player-backdrop {
+    display: none;
   }
   .mini-player .mini-player-button {
     border-color: ButtonText;

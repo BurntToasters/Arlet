@@ -17,6 +17,10 @@ import {
 import { exitMiniPlayer } from "../app/mini-player.ts";
 import { setMiniPlayerOnTop } from "../platform/mini-player.ts";
 import { startWindowDrag } from "../platform/window.ts";
+import {
+  ARTWORK_BACKDROP_BUCKET,
+  normalizeArtworkUrl,
+} from "../musickit/normalize.ts";
 import { Artwork } from "./Artwork.tsx";
 import { reportActionError } from "./action-errors.ts";
 
@@ -59,6 +63,10 @@ export function MiniPlayer(): JSX.Element {
     state.initialization.status === "ready" && Boolean(current);
   // Always on top is the default each time mini mode starts (native side).
   const [onTop, setOnTop] = useState(true);
+  // A blurred copy of the cover radiates from the artwork on the left.
+  const backdropUrl = current?.artwork?.url
+    ? normalizeArtworkUrl(current.artwork.url, ARTWORK_BACKDROP_BUCKET)
+    : undefined;
 
   const run = (action: () => Promise<void>): void => {
     void action().catch(reportActionError);
@@ -85,11 +93,20 @@ export function MiniPlayer(): JSX.Element {
 
   return (
     <div
-      className="mini-player"
+      className={`mini-player${backdropUrl ? " has-artwork-bloom" : ""}`}
       role="region"
       aria-label="Mini player"
       onMouseDown={onDragStart}
     >
+      {backdropUrl ? (
+        <img
+          className="mini-player-backdrop"
+          src={backdropUrl}
+          alt=""
+          aria-hidden="true"
+          decoding="async"
+        />
+      ) : null}
       <Artwork
         className="mini-player-artwork"
         track={current}

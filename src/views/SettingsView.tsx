@@ -46,9 +46,6 @@ import type {
 import { reportActionError } from "../components/action-errors.ts";
 import { openAboutLink } from "../platform/support.ts";
 
-const PROJECT_URL = "https://github.com/BurntToasters/Arlet";
-const LICENSE_URL = `${PROJECT_URL}/blob/main/LICENSE`;
-
 interface LicensesDialogProps {
   onClose: () => void;
 }
@@ -121,10 +118,6 @@ const LicensesDialogView = lazyView<LicensesDialogProps>(
   },
 );
 
-function releaseNotesUrl(version: string): string {
-  return `${PROJECT_URL}/releases/tag/v${version}`;
-}
-
 function updateStatusCopy(updates: UpdateState): string {
   switch (updates.status) {
     case "checking":
@@ -191,6 +184,8 @@ export function SettingsView(): JSX.Element {
   const account = state.account;
   const [licensesOpen, setLicensesOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
+  const [aboutExpanded, setAboutExpanded] = useState(false);
+  const [advancedExpanded, setAdvancedExpanded] = useState(false);
   // undefined while loading, null when app info is unavailable (browser dev).
   const [appInfo, setAppInfo] = useState<NativeDiagnosticsInfo | null>();
   useEffect(() => {
@@ -675,10 +670,10 @@ export function SettingsView(): JSX.Element {
             </span>
             <div>
               <h2 id="about-heading">About</h2>
-              <p>Installed version, update channel, and project links.</p>
+              <p>Installed version and active update channel.</p>
             </div>
           </div>
-          <div className="settings-fields">
+          <div className="settings-fields about-summary-fields">
             <div className="settings-field">
               <span>Arlet version</span>
               <strong>{versionCopy}</strong>
@@ -687,52 +682,69 @@ export function SettingsView(): JSX.Element {
               <span>Update channel in use</span>
               <strong>{channelInUse}</strong>
             </div>
-            {appInfo?.webview_version ? (
-              <div className="settings-field">
-                <span>WebView2 runtime</span>
-                <strong>{appInfo.webview_version}</strong>
-              </div>
-            ) : null}
-            <button
-              className="settings-field about-link"
-              type="button"
-              onClick={() =>
-                void openAboutLink("project").catch(reportActionError)
-              }
-            >
-              <span>Project page</span>
-              <strong>{PROJECT_URL}</strong>
-              <ExternalLink aria-hidden="true" size={14} strokeWidth={1.8} />
-            </button>
-            <button
-              className="settings-field about-link"
-              type="button"
-              disabled={!appVersion}
-              onClick={() =>
-                void openAboutLink("release_notes").catch(reportActionError)
-              }
-            >
-              <span>Release notes</span>
-              <strong>
-                {appVersion
-                  ? releaseNotesUrl(appVersion)
-                  : appInfo === undefined
-                    ? "Loading…"
-                    : "Unavailable"}
-              </strong>
-              <ExternalLink aria-hidden="true" size={14} strokeWidth={1.8} />
-            </button>
-            <button
-              className="settings-field about-link"
-              type="button"
-              onClick={() =>
-                void openAboutLink("license").catch(reportActionError)
-              }
-            >
-              <span>License</span>
-              <strong>{LICENSE_URL}</strong>
-              <ExternalLink aria-hidden="true" size={14} strokeWidth={1.8} />
-            </button>
+          </div>
+          <button
+            className="settings-disclosure-toggle"
+            type="button"
+            aria-expanded={aboutExpanded}
+            aria-controls="about-details"
+            onClick={() => setAboutExpanded((expanded) => !expanded)}
+          >
+            {aboutExpanded ? "Hide More" : "Show More"}
+          </button>
+          <div
+            id="about-details"
+            className="settings-disclosure-panel"
+            hidden={!aboutExpanded}
+          >
+            <div className="settings-fields about-details-fields">
+              {appInfo?.webview_version ? (
+                <div className="settings-field">
+                  <span>WebView2 runtime</span>
+                  <strong>{appInfo.webview_version}</strong>
+                </div>
+              ) : null}
+              <button
+                className="settings-field about-link"
+                type="button"
+                onClick={() =>
+                  void openAboutLink("project").catch(reportActionError)
+                }
+              >
+                <span>Project page</span>
+                <strong>BurntToasters/Arlet</strong>
+                <ExternalLink aria-hidden="true" size={14} strokeWidth={1.8} />
+              </button>
+              <button
+                className="settings-field about-link"
+                type="button"
+                disabled={!appVersion}
+                onClick={() =>
+                  void openAboutLink("release_notes").catch(reportActionError)
+                }
+              >
+                <span>Release notes</span>
+                <strong>
+                  {appVersion
+                    ? `Version ${appVersion}`
+                    : appInfo === undefined
+                      ? "Loading…"
+                      : "Unavailable"}
+                </strong>
+                <ExternalLink aria-hidden="true" size={14} strokeWidth={1.8} />
+              </button>
+              <button
+                className="settings-field about-link"
+                type="button"
+                onClick={() =>
+                  void openAboutLink("license").catch(reportActionError)
+                }
+              >
+                <span>License</span>
+                <strong>GPL-3.0 license</strong>
+                <ExternalLink aria-hidden="true" size={14} strokeWidth={1.8} />
+              </button>
+            </div>
           </div>
         </section>
 
@@ -773,62 +785,82 @@ export function SettingsView(): JSX.Element {
           </div>
         </section>
 
-        <section className="settings-section" aria-labelledby="reset-heading">
-          <div className="settings-section-heading">
-            <span className="settings-icon">
-              <RotateCcw aria-hidden="true" size={19} strokeWidth={1.8} />
-            </span>
-            <div>
-              <h2 id="reset-heading">Reset</h2>
-              <p>
-                Restore default settings and restart Arlet. You stay signed in,
-                and pinned playlists are kept.
-              </p>
-            </div>
-          </div>
-          <button
-            className="secondary-button"
-            type="button"
-            onClick={() => setResetOpen(true)}
-          >
-            <RotateCcw aria-hidden="true" size={15} strokeWidth={1.8} />
-            Reset settings…
-          </button>
-        </section>
-
-        <section className="settings-section" aria-labelledby="debug-heading">
+        <section
+          className="settings-section"
+          aria-labelledby="advanced-heading"
+        >
           <div className="settings-section-heading">
             <span className="settings-icon">
               <Bug aria-hidden="true" size={19} strokeWidth={1.8} />
             </span>
             <div>
-              <h2 id="debug-heading">Debug Mode</h2>
-              <p>Save a detailed log to help track down problems.</p>
+              <h2 id="advanced-heading">Advanced</h2>
+              <p>Optional diagnostic and reset controls.</p>
             </div>
           </div>
-          <div className="settings-fields">
-            <label className="settings-field settings-toggle-field">
-              <span>
-                <Bug aria-hidden="true" size={16} strokeWidth={1.8} /> Debug
-                Mode
-              </span>
-              <input
-                type="checkbox"
-                checked={settings.debugMode}
-                onChange={(event) =>
-                  void Promise.resolve(
-                    controller.setDebugMode(event.currentTarget.checked),
-                  ).catch(reportActionError)
-                }
-              />
-            </label>
+          <button
+            className="settings-disclosure-toggle"
+            type="button"
+            aria-expanded={advancedExpanded}
+            aria-controls="advanced-details"
+            onClick={() => setAdvancedExpanded((expanded) => !expanded)}
+          >
+            {advancedExpanded ? "Hide More" : "Show More"}
+          </button>
+          <div
+            id="advanced-details"
+            className="settings-disclosure-panel settings-advanced-panel"
+            hidden={!advancedExpanded}
+          >
+            <div className="settings-advanced-details">
+              <div className="settings-advanced-group">
+                <div className="settings-advanced-heading">
+                  <h3>Debug Mode</h3>
+                  <p>Save a detailed log to help track down problems.</p>
+                </div>
+                <div className="settings-fields">
+                  <label className="settings-field settings-toggle-field">
+                    <span>
+                      <Bug aria-hidden="true" size={16} strokeWidth={1.8} />
+                      Debug Mode
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={settings.debugMode}
+                      onChange={(event) =>
+                        void Promise.resolve(
+                          controller.setDebugMode(event.currentTarget.checked),
+                        ).catch(reportActionError)
+                      }
+                    />
+                  </label>
+                </div>
+                <p className="settings-field-help">
+                  With this on, Arlet writes its log, including how long each
+                  song takes to start, to arlet.log in its app data folder. The
+                  log never contains your Apple Music tokens. Leave it off
+                  unless you are looking into a problem.
+                </p>
+              </div>
+              <div className="settings-advanced-group">
+                <div className="settings-advanced-heading">
+                  <h3>Reset</h3>
+                  <p>
+                    Restore default settings and restart Arlet. You stay signed
+                    in, and pinned playlists are kept.
+                  </p>
+                </div>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={() => setResetOpen(true)}
+                >
+                  <RotateCcw aria-hidden="true" size={15} strokeWidth={1.8} />
+                  Reset settings…
+                </button>
+              </div>
+            </div>
           </div>
-          <p className="settings-field-help">
-            With this on, Arlet writes its log, including how long each song
-            takes to start, to arlet.log in its app data folder. The log never
-            contains your Apple Music tokens. Leave it off unless you are
-            looking into a problem.
-          </p>
         </section>
 
         {import.meta.env.DEV ? (

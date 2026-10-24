@@ -234,7 +234,12 @@ function installMusicKitFixture() {
     },
   }));
 
+  // Apple can serve a song without artwork; the bloom must then render nothing.
+  const trackWithoutArtwork = track("song-no-art", "Track Without Artwork");
+  delete trackWithoutArtwork.attributes.artwork;
+
   const resource = (id) =>
+    (id === "song-no-art" ? trackWithoutArtwork : undefined) ??
     playlistItems.find((item) => item.id === id) ??
     topSongItems.find((item) => item.id === id) ??
     bigItems.find((item) => item.id === id) ??
@@ -1410,7 +1415,7 @@ function installMusicKitFixture() {
     const resource = {
       id,
       type: curator.type,
-      attributes: { name: curator.name },
+      attributes: { name: curator.name, artwork: polishArtwork(id) },
     };
     const include = listParam(params.include);
     if (include.includes("playlists")) {

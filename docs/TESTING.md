@@ -241,6 +241,10 @@ are not playable. Failure scenarios:
 - A playlist with a large cover image pushes its title, Play all, and
   Shuffle out of the header to the far right (the art's wrapper took the
   image's natural width).
+- An album, playlist or curator hero backdrop pushes the copy or actions out
+  of the header, or adds horizontal overflow.
+- An artist page matches `img.detail-hero-backdrop` instead of its own
+  `artist-hero-banner` / `artist-hero-backdrop` selectors.
 
 ## Keyboard and transport
 
@@ -289,6 +293,27 @@ are not playable. Failure scenarios:
 - Up Next shows history or the current song, or choosing a row drops the
   songs before it.
 - Seeking from the overlay does not reach MusicKit.
+- The cover's bloom layers are missing, or a backdrop uses a CSS `url()`
+  instead of an `<img>`.
+- A track without `artwork.url` still renders a bloom `<img>`, so the src is
+  empty or broken.
+- The ambient bloom keeps drifting while playback is paused.
+- The bloom animation still runs under `prefers-reduced-motion: reduce`, or
+  the bloom images stay visible under `forced-colors: active`.
+
+## Mini player
+
+- The artwork bloom causes scrollbars at 360x132 or at the 300x120 minimum.
+- The mini player paints an opaque background over the native Acrylic/Mica
+  effect while the bloom is shown.
+- The bloom renders for a track without artwork.
+
+Checks in `scripts/e2e-mini-player.js`:
+
+| Check                                                              | Guards                                       |
+| ------------------------------------------------------------------ | -------------------------------------------- |
+| the mini player radiates its artwork over the native window effect | opaque background; bloom missing; scrollbars |
+| the mini player bloom adds no scrollbars at the 300x120 minimum    | bloom overflow at the minimum window size    |
 
 ## Desktop controls
 
@@ -657,7 +682,22 @@ the exact URL is checked on the card shell.
 F11 works while focus is in a text field or a dialog, by design: it has no
 text-editing meaning, so it is a window action everywhere (`src/app/shortcuts.ts`).
 
+Floating surfaces share the tokens in `src/styles/tokens.css`:
+`--surface-popover` and `--backdrop-popover` for popups, menus, drawers, sticky
+bars and toasts, and `--surface-modal` / `--surface-scrim` / `--backdrop-scrim`
+for modal panels and their scrims. A surface that overrides them must keep a
+see-through background and a real backdrop filter, while `forced-colors`
+settings stay opaque with `backdrop-filter: none`.
+
 Failure modes this pass must not have:
+
+Floating surfaces:
+
+- `.search-suggestions`, `.context-menu`, `.queue-drawer`, `.selection-bar` or
+  `.action-toast` renders with `backdrop-filter: none`, so the blur is gone.
+- One of those surfaces uses an opaque background, so text behind it clashes
+  instead of showing through the frosted glass.
+- A dialog scrim loses its blur, or a modal panel becomes fully opaque.
 
 Album and playlist headers:
 
@@ -794,6 +834,20 @@ check name is the `report.json` name):
 | Tab on the last drawer control wraps to the first one                                                                                     | compact drawer focus trap                                                   |
 | F11 enters window fullscreen; the Now Playing button then reads Exit full screen                                                          | fullscreen state disagrees with the window                                  |
 | Escape in Now Playing closes it and leaves fullscreen                                                                                     | fullscreen sticks after Esc                                                 |
+| album header blooms its artwork behind a right-side reading scrim                                                                         | detail hero backdrop missing; copy or actions outside the header            |
+| playlist header blooms its artwork behind a right-side reading scrim                                                                      | playlist backdrop missing; hero overflow                                    |
+| the search suggestion popup is a translucent frosted surface                                                                              | opaque popup or missing blur                                                |
+| media suggestions show a 32 px thumbnail and their kind; text completions do not                                                          | thumbnails missing on media, or shown on terms                              |
+| recent searches stay text-only with no thumbnail                                                                                          | recent rows grow a thumbnail                                                |
+| the selection bar is a translucent frosted surface                                                                                        | opaque selection bar or missing blur                                        |
+| the context menu is a translucent frosted surface                                                                                         | opaque context menu or missing blur                                         |
+| the queue drawer is a translucent frosted surface                                                                                         | opaque queue drawer or missing blur                                         |
+| the action toast is a translucent frosted surface                                                                                         | opaque toast or missing blur                                                |
+| Now Playing renders its artwork backdrop and cover bloom                                                                                  | bloom layers missing; wrong alt or aria-hidden                              |
+| pausing playback holds the bloom still                                                                                                    | bloom drifts while paused                                                   |
+| resuming playback runs the bloom again                                                                                                    | bloom stops after pause and never restarts                                  |
+| a track without artwork renders no bloom images                                                                                           | broken backdrop or halo `<img>`                                             |
+| reduced motion: the artwork bloom runs no animation                                                                                       | bloom animation with reduced motion                                         |
 
 Fullscreen is read from the window size against the screen, because the app
 uses window fullscreen and not DOM fullscreen (`document.fullscreenElement`
@@ -862,6 +916,9 @@ Search suggestions (`/search/suggestions`):
   focus]
 - Picking a term does not run that search. [picking a suggested term runs that
   search]
+- A media suggestion has no thumbnail, or a text completion or recent search
+  grows one. [media suggestions carry a decorative thumbnail; term suggestions
+  stay text-only]
 
 Search results (`with=topResults`, `types`, `limit`, `offset`):
 
@@ -906,6 +963,12 @@ Curators (`curators/{id}`, `apple-curators/{id}` with `views=grouped-playlists`,
 - A playlist's curator link is missing, reads a different curator name, or
   opens the wrong kind of curator. [a playlist's curator link opens the curator
   page]
+- A curator header has no artwork bloom, or its image matches an artist-only
+  selector. [an Apple curator header blooms its artwork without leaking artist
+  selectors; a curator header blooms its artwork without leaking artist
+  selectors]
+- A recent search grows an artwork thumbnail. [recent searches stay text-only
+  with no thumbnail]
 
 Home (`recent/played`, `history/heavy-rotation`, `recommendations`):
 
