@@ -352,6 +352,22 @@ async function waitFor(page, expression, timeoutMs) {
   return false;
 }
 
+async function openAdvancedSettings(page) {
+  const toggle =
+    'document.querySelector(\'.settings-section[aria-labelledby="advanced-heading"] button[aria-controls="advanced-details"]\')';
+  const found = await waitFor(page, toggle, 10_000);
+  if (!found) return false;
+  await page.evaluate(`
+    const button = ${toggle};
+    if (button?.getAttribute("aria-expanded") !== "true") button?.click();
+    return true;`);
+  return waitFor(
+    page,
+    `${toggle}?.getAttribute("aria-expanded") === "true" && document.getElementById("advanced-details")`,
+    3000,
+  );
+}
+
 // Mirrors DEFAULT_SETTINGS in src/state.ts.
 const DEFAULT_SETTINGS_FOR_E2E = {
   schemaVersion: 1,
@@ -995,6 +1011,7 @@ async function run() {
       { logOffBytes },
     );
     await page.evaluate('location.hash = "#/settings"; return true;');
+    const debugAdvancedOpen = await openAdvancedSettings(page);
     const debugToggled = await page.evaluate(`
       const deadline = Date.now() + 8000;
       let input;
@@ -1024,7 +1041,8 @@ async function run() {
     }
     check(
       "turning Debug Mode on saves it and starts arlet.log without a restart",
-      debugToggled &&
+      debugAdvancedOpen &&
+        debugToggled &&
         savedDebugMode &&
         debugLog.includes("Debug Mode turned on."),
       { debugToggled, savedDebugMode, logBytes: debugLog.length },
@@ -1419,6 +1437,7 @@ async function run() {
     await page.evaluate(
       "document.querySelector('button[aria-label=Settings]').click(); return true;",
     );
+    const resetAdvancedOpen = await openAdvancedSettings(page);
     const openReset = `
       const button = [...document.querySelectorAll("button")].find(
         (candidate) => candidate.textContent.trim() === "Reset settings…",
@@ -1452,7 +1471,8 @@ async function run() {
     };
     check(
       "reset settings dialog opens and Cancel changes nothing",
-      resetButtonFound &&
+      resetAdvancedOpen &&
+        resetButtonFound &&
         dialogShown &&
         afterCancel.dialogClosed &&
         afterCancel.settingsKept,
@@ -1520,6 +1540,7 @@ async function run() {
     // Reset turned Debug Mode off with the other defaults. The scenarios
     // below read arlet.log, so turn it back on the way a user would.
     await page.evaluate('location.hash = "#/settings"; return true;');
+    const resetDebugAdvancedOpen = await openAdvancedSettings(page);
     await waitFor(
       page,
       `[...document.querySelectorAll("label.settings-toggle-field")].some((label) => label.textContent.includes("Debug Mode"))`,
@@ -1533,8 +1554,8 @@ async function run() {
     const debugOnAfterReset = await waitForSavedDebugMode(true);
     check(
       "reset turns Debug Mode off, and it can be turned on again",
-      debugOffAfterReset && debugOnAfterReset,
-      { debugOffAfterReset, debugOnAfterReset },
+      resetDebugAdvancedOpen && debugOffAfterReset && debugOnAfterReset,
+      { resetDebugAdvancedOpen, debugOffAfterReset, debugOnAfterReset },
     );
     await page.evaluate('location.hash = "#/home"; return true;');
 

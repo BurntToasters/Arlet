@@ -3,6 +3,8 @@
  * as strings inside the page, as in the other native scenarios. */
 
 import { fixtureCall, sleep, waitFor } from "./e2e-helpers.js";
+import fs from "node:fs";
+import path from "node:path";
 
 const ALBUM = {
   id: "album-polish",
@@ -33,6 +35,7 @@ const KEY_CODES = {
   ArrowDown: 40,
   F11: 122,
   r: 82,
+  Space: 32,
 };
 
 const q = (value) => JSON.stringify(value);
@@ -41,8 +44,13 @@ const q = (value) => JSON.stringify(value);
 async function pressKey(page, key, { modifiers = 0, text } = {}) {
   const common = {
     key,
-    code: key.length === 1 ? `Key${key.toUpperCase()}` : key,
-    windowsVirtualKeyCode: KEY_CODES[key],
+    code:
+      key === " "
+        ? "Space"
+        : key.length === 1
+          ? `Key${key.toUpperCase()}`
+          : key,
+    windowsVirtualKeyCode: key === " " ? KEY_CODES.Space : KEY_CODES[key],
     modifiers,
   };
   await page.send("Input.dispatchKeyEvent", {
@@ -1213,42 +1221,437 @@ async function skeletons(page, check) {
   await fixtureCall(page, "configure", [{ delayPaths: [], librarySize: 0 }]);
 }
 
-async function aboutLinks(page, check) {
+async function aboutLinks(page, check, artifactDir) {
   await openRoute(
     page,
     "#/settings",
-    `document.querySelectorAll('.settings-section[aria-labelledby="about-heading"] button.about-link').length === 3`,
+    `document.querySelector('.settings-section[aria-labelledby="about-heading"] button[aria-controls="about-details"]') && document.querySelector('.settings-section[aria-labelledby="advanced-heading"] button[aria-controls="advanced-details"]')`,
     12_000,
   );
-  // Not clicked: each link runs ShellExecuteW on the tester's machine. Only the
-  // rendered markup is checked; the command's arguments are not observed.
-  const labels = ["Project page", "Release notes", "License"];
-  const releaseReady = await waitFor(
-    page,
-    `(() => { const button = [...document.querySelectorAll('.settings-section[aria-labelledby="about-heading"] button.about-link')].find((node) => node.querySelector("span")?.textContent.trim() === "Release notes"); return Boolean(button) && !button.disabled; })()`,
-    8000,
+  const originalTheme = await page.evaluate(
+    `return document.querySelector('.settings-section[aria-labelledby="appearance-heading"] select')?.value ?? "system";`,
   );
-  const links = await page.evaluate(
-    `return [...document.querySelectorAll('.settings-section[aria-labelledby="about-heading"] button.about-link')].map((node) => ({ label: node.querySelector("span")?.textContent.trim() ?? null, type: node.getAttribute("type"), href: node.hasAttribute("href"), target: node.hasAttribute("target"), disabled: node.disabled }));`,
-  );
-  const anchors = await page.evaluate(
-    `return document.querySelectorAll('.settings-section[aria-labelledby="about-heading"] a[href]').length;`,
-  );
-  check(
-    "About links are enabled type=button elements labelled Project page, Release notes and License, with no href or target (not clicked)",
-    releaseReady &&
-      anchors === 0 &&
-      JSON.stringify(links.map((link) => link.label)) ===
-        JSON.stringify(labels) &&
-      links.every(
-        (link) =>
-          link.type === "button" &&
-          !link.href &&
-          !link.target &&
-          !link.disabled,
-      ),
-    { links, anchors, releaseReady },
-  );
+  const saveScreenshot = async (name, headingId) => {
+    const selector = `.settings-section[aria-labelledby="${headingId}"]`;
+    const scrolled = await page.evaluate(`
+      const section = document.querySelector(${q(selector)});
+      section?.scrollIntoView({ block: "start" });
+      return Boolean(section);`);
+    const visibilityExpression = `(() => {
+        const section = document.querySelector(${q(selector)});
+        const scroller = document.querySelector(".content-scroll");
+        if (!section || !scroller) return false;
+        const sectionBox = section.getBoundingClientRect();
+        const viewport = scroller.getBoundingClientRect();
+        return sectionBox.left >= viewport.left - 1 &&
+          sectionBox.right <= viewport.right + 1 &&
+          sectionBox.top >= viewport.top - 1 &&
+          sectionBox.bottom <= viewport.bottom + 1;
+      })()`;
+    const visible = await waitFor(page, visibilityExpression, 3000);
+    const transitionsSettled = await waitFor(
+      page,
+      `(() => {
+        const section = document.querySelector(${q(selector)});
+        const scroller = document.querySelector(".content-scroll");
+        const sidebar = document.querySelector(".sidebar");
+        const compactDrawerClosed = window.innerWidth > 720 || (
+          sidebar &&
+          !sidebar.classList.contains("is-open") &&
+          !document.querySelector(".sidebar-scrim") &&
+          sidebar.getBoundingClientRect().right <= 1
+        );
+        const animations = [
+          ...(section?.getAnimations({ subtree: true }) ?? []),
+          ...(scroller?.getAnimations() ?? []),
+          ...(sidebar?.getAnimations() ?? []),
+        ];
+        return compactDrawerClosed && [...animations].every((animation) => animation.playState !== "running");
+      })()`,
+      3000,
+    );
+    await sleep(250);
+    await page.evaluate(
+      `return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));`,
+    );
+    const visibleAfterSettling = await waitFor(
+      page,
+      visibilityExpression,
+      1000,
+    );
+    check(
+      `screenshot ${name} shows a settled ${headingId} section`,
+      scrolled && visible && transitionsSettled && visibleAfterSettling,
+      { scrolled, visible, transitionsSettled, visibleAfterSettling },
+    );
+    const screenshot = await page.send("Page.captureScreenshot", {
+      format: "png",
+      captureBeyondViewport: true,
+    });
+    fs.writeFileSync(
+      path.join(artifactDir, name),
+      Buffer.from(screenshot.data, "base64"),
+    );
+  };
+  const setTheme = async (theme) => {
+    const changed = await page.evaluate(`
+      const select = document.querySelector('.settings-section[aria-labelledby="appearance-heading"] select');
+      if (!select) return false;
+      select.value = ${q(theme)};
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;`);
+    if (!changed) return false;
+    return waitFor(
+      page,
+      `document.documentElement.dataset.theme === ${q(theme)}`,
+      5000,
+    );
+  };
+  const settleSettingsViewport = async (width) => {
+    const viewportReady = await waitFor(
+      page,
+      `window.innerWidth === ${width} && document.querySelector(".sidebar")`,
+      3000,
+    );
+    const drawerCloseRequested = await page.evaluate(`
+      const sidebar = document.querySelector(".sidebar");
+      if (sidebar?.classList.contains("is-open")) {
+        const scrim = document.querySelector(".sidebar-scrim");
+        if (!scrim) return false;
+        scrim.click();
+      }
+      return Boolean(sidebar);`);
+    const expression = `(() => {
+      const sidebar = document.querySelector(".sidebar");
+      return window.innerWidth === ${width} &&
+        sidebar &&
+        !sidebar.classList.contains("is-open") &&
+        !document.querySelector(".sidebar-scrim") &&
+        (${width} > 720 || sidebar.getBoundingClientRect().right <= 1) &&
+        [...sidebar.getAnimations()].every((animation) => animation.playState !== "running");
+    })()`;
+    const settled = await waitFor(page, expression, 3000);
+    await sleep(250);
+    await page.evaluate(
+      `return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));`,
+    );
+    const stillSettled = await waitFor(page, expression, 1000);
+    return viewportReady && drawerCloseRequested && settled && stillSettled;
+  };
+  const aboutToggle = `document.querySelector('.settings-section[aria-labelledby="about-heading"] button[aria-controls="about-details"]')`;
+  const advancedToggle = `document.querySelector('.settings-section[aria-labelledby="advanced-heading"] button[aria-controls="advanced-details"]')`;
+  try {
+    await waitFor(
+      page,
+      `(() => { const version = [...document.querySelectorAll('.settings-section[aria-labelledby="about-heading"] .settings-field')].find((node) => node.querySelector("span")?.textContent.trim() === "Arlet version"); return Boolean(version) && !version.querySelector("strong")?.textContent.includes("Loading"); })()`,
+      8000,
+    );
+    const initial = await page.evaluate(`
+      const about = ${aboutToggle};
+      const advanced = ${advancedToggle};
+      const section = (id) => document.querySelector('.settings-section[aria-labelledby="' + id + '"]');
+      const valueFor = (id, label) => [...section(id).querySelectorAll(".settings-field")].find((node) => node.querySelector("span")?.textContent.trim() === label)?.querySelector("strong")?.textContent.trim() ?? null;
+      const hiddenStops = (id, selector) => {
+        const panel = document.getElementById(id);
+        return !panel || panel.hidden || [...panel.querySelectorAll(selector)].every((node) => node.disabled || node.getClientRects().length === 0);
+      };
+      return {
+        aboutExpanded: about?.getAttribute("aria-expanded"),
+        aboutControls: about?.getAttribute("aria-controls"),
+        advancedExpanded: advanced?.getAttribute("aria-expanded"),
+        advancedControls: advanced?.getAttribute("aria-controls"),
+        version: valueFor("about-heading", "Arlet version"),
+        channel: valueFor("about-heading", "Update channel in use"),
+        aboutHidden: hiddenStops("about-details", "button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])"),
+        advancedHidden: hiddenStops("advanced-details", "button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])"),
+      };`);
+    const validVersion = Boolean(
+      initial.version && !["Loading…", "Unknown"].includes(initial.version),
+    );
+    check(
+      "About shows installed version and active channel while both disclosures start collapsed",
+      validVersion &&
+        Boolean(initial.channel) &&
+        initial.aboutExpanded === "false" &&
+        initial.aboutControls === "about-details" &&
+        initial.advancedExpanded === "false" &&
+        initial.advancedControls === "advanced-details" &&
+        initial.aboutHidden &&
+        initial.advancedHidden,
+      initial,
+    );
+
+    const lightTheme = await setTheme("light");
+    await saveScreenshot("settings-about-collapsed-light.png", "about-heading");
+    await saveScreenshot(
+      "settings-advanced-collapsed-light.png",
+      "advanced-heading",
+    );
+    // A real button must open by keyboard. About uses Enter; Advanced uses Space.
+    await page.evaluate(
+      `document.querySelector('.settings-section[aria-labelledby="about-heading"]')?.scrollIntoView({ block: "start" }); return true;`,
+    );
+    await page.evaluate(`${aboutToggle}?.focus(); return true;`);
+    await pressKey(page, "Enter", { text: "\r" });
+    const aboutOpened = await waitFor(
+      page,
+      `${aboutToggle}?.getAttribute("aria-expanded") === "true" && document.getElementById("about-details")`,
+      3000,
+    );
+    const aboutDetails = await page.evaluate(`
+      const panel = document.getElementById("about-details");
+      const buttons = [...(panel?.querySelectorAll("button.about-link") ?? [])];
+      const value = (label) => buttons.find((button) => button.querySelector("span")?.textContent.trim() === label)?.querySelector("strong")?.textContent.trim() ?? null;
+      const version = [...document.querySelectorAll('.settings-section[aria-labelledby="about-heading"] .settings-field')].find((node) => node.querySelector("span")?.textContent.trim() === "Arlet version")?.querySelector("strong")?.textContent.trim();
+      return {
+        visible: Boolean(panel) && !panel.hidden,
+        runtime: Boolean([...panel.querySelectorAll(".settings-field")].find((node) => node.querySelector("span")?.textContent.trim() === "WebView2 runtime")),
+        labels: buttons.map((button) => button.querySelector("span")?.textContent.trim() ?? null),
+        project: value("Project page"),
+        releaseNotes: value("Release notes"),
+        license: value("License"),
+        releaseDisabled: buttons.find((button) => button.querySelector("span")?.textContent.trim() === "Release notes")?.disabled ?? null,
+        anchors: panel.querySelectorAll("a[href]").length,
+        buttonTypes: buttons.map((button) => button.getAttribute("type")),
+        buttonTargets: buttons.map((button) => button.hasAttribute("target")),
+        version,
+      };`);
+    // Not clicked: native link buttons run ShellExecuteW on the tester's machine.
+    // Only their rendered labels and button semantics are checked.
+    const expectedRelease = validVersion
+      ? `Version ${aboutDetails.version}`
+      : undefined;
+    const releaseAvailable = validVersion
+      ? aboutDetails.releaseDisabled === false &&
+        aboutDetails.releaseNotes === expectedRelease
+      : aboutDetails.releaseDisabled === true &&
+        ["Loading…", "Unavailable"].includes(aboutDetails.releaseNotes);
+    check(
+      "About reveals the runtime and friendly native link buttons without exposing URLs",
+      aboutOpened &&
+        aboutDetails.visible &&
+        aboutDetails.runtime &&
+        JSON.stringify(aboutDetails.labels) ===
+          JSON.stringify(["Project page", "Release notes", "License"]) &&
+        aboutDetails.project === "BurntToasters/Arlet" &&
+        releaseAvailable &&
+        aboutDetails.license === "GPL-3.0 license" &&
+        aboutDetails.anchors === 0 &&
+        aboutDetails.buttonTypes.every((type) => type === "button") &&
+        aboutDetails.buttonTargets.every((hasTarget) => !hasTarget),
+      aboutDetails,
+    );
+    await saveScreenshot("settings-about-expanded-light.png", "about-heading");
+
+    await page.evaluate(`${advancedToggle}?.focus(); return true;`);
+    await pressKey(page, " ", { text: " " });
+    const advancedOpened = await waitFor(
+      page,
+      `${advancedToggle}?.getAttribute("aria-expanded") === "true" && document.getElementById("advanced-details")`,
+      3000,
+    );
+    const bothExpanded = await page.evaluate(`
+      const about = ${aboutToggle};
+      const advanced = ${advancedToggle};
+      const panel = document.getElementById("advanced-details");
+      return {
+        about: about?.getAttribute("aria-expanded"),
+        advanced: advanced?.getAttribute("aria-expanded"),
+        debug: Boolean(panel?.querySelector('label.settings-toggle-field input[type="checkbox"]')),
+        reset: Boolean([...panel.querySelectorAll("button")].find((button) => button.textContent.trim() === "Reset settings…")),
+        positionAfterSupport: sectionOrder(),
+      };
+      function sectionOrder() {
+        const headings = [...document.querySelectorAll(".settings-layout > .settings-section > .settings-section-heading h2")].map((node) => node.textContent.trim());
+        return headings.indexOf("Advanced") > headings.indexOf("Support");
+      }`);
+    check(
+      "About and Advanced disclosures toggle independently by keyboard",
+      lightTheme &&
+        advancedOpened &&
+        bothExpanded.about === "true" &&
+        bothExpanded.advanced === "true" &&
+        bothExpanded.debug &&
+        bothExpanded.reset &&
+        bothExpanded.positionAfterSupport,
+      { lightTheme, advancedOpened, bothExpanded },
+    );
+    await saveScreenshot(
+      "settings-advanced-expanded-light.png",
+      "advanced-heading",
+    );
+
+    await page.evaluate(`${aboutToggle}?.click(); return true;`);
+    const aboutCollapsedIndependently = await waitFor(
+      page,
+      `${aboutToggle}?.getAttribute("aria-expanded") === "false" && ${advancedToggle}?.getAttribute("aria-expanded") === "true"`,
+      3000,
+    );
+    const aboutHiddenStops = await page.evaluate(`
+      const panel = document.getElementById("about-details");
+      const stops = [...(panel?.querySelectorAll("button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])") ?? [])];
+      return !panel || panel.hidden || stops.every((node) => node.disabled || node.getClientRects().length === 0);`);
+    await page.evaluate(`${advancedToggle}?.click(); return true;`);
+    const advancedCollapsed = await waitFor(
+      page,
+      `${advancedToggle}?.getAttribute("aria-expanded") === "false"`,
+      3000,
+    );
+    const advancedHiddenStops = await page.evaluate(`
+      const panel = document.getElementById("advanced-details");
+      const stops = [...(panel?.querySelectorAll("button, a[href], input, select, textarea, [tabindex]:not([tabindex='-1'])") ?? [])];
+      return !panel || panel.hidden || stops.every((node) => node.disabled || node.getClientRects().length === 0);`);
+    check(
+      "collapsed About and Advanced contents leave no visible tab stops",
+      aboutCollapsedIndependently &&
+        aboutHiddenStops &&
+        advancedCollapsed &&
+        advancedHiddenStops,
+      {
+        aboutCollapsedIndependently,
+        aboutHiddenStops,
+        advancedCollapsed,
+        advancedHiddenStops,
+      },
+    );
+
+    await page.evaluate(
+      `${aboutToggle}?.click(); ${advancedToggle}?.click(); return true;`,
+    );
+    const expandedBeforeRemount = await waitFor(
+      page,
+      `${aboutToggle}?.getAttribute("aria-expanded") === "true" && ${advancedToggle}?.getAttribute("aria-expanded") === "true"`,
+      3000,
+    );
+    await page.evaluate(`location.hash = "#/home"; return true;`);
+    const settingsUnmounted = await waitFor(
+      page,
+      `!document.querySelector('.settings-section[aria-labelledby="about-heading"]') && !document.querySelector('.settings-section[aria-labelledby="advanced-heading"]')`,
+      5000,
+    );
+    await openRoute(
+      page,
+      "#/settings",
+      `${aboutToggle} && ${advancedToggle}`,
+      8000,
+    );
+    const remountCollapsed = await page.evaluate(`
+      return ${aboutToggle}?.getAttribute("aria-expanded") === "false" && ${advancedToggle}?.getAttribute("aria-expanded") === "false";`);
+    check(
+      "both disclosures reset to collapsed after Settings remounts",
+      expandedBeforeRemount && settingsUnmounted && remountCollapsed,
+      { expandedBeforeRemount, settingsUnmounted, remountCollapsed },
+    );
+
+    await page.send("Emulation.setDeviceMetricsOverride", {
+      width: 360,
+      height: 820,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    await page.evaluate(
+      `${aboutToggle}?.click(); ${advancedToggle}?.click(); return true;`,
+    );
+    const narrowLayout = await waitFor(
+      page,
+      `${aboutToggle}?.getAttribute("aria-expanded") === "true" && ${advancedToggle}?.getAttribute("aria-expanded") === "true"`,
+      3000,
+    );
+    const narrowViewportSettled = await settleSettingsViewport(360);
+    const narrowGeometry = await page.evaluate(`
+      const sections = [
+        document.querySelector('.settings-section[aria-labelledby="about-heading"]'),
+        document.querySelector('.settings-section[aria-labelledby="advanced-heading"]'),
+      ].filter(Boolean);
+      const scroller = document.querySelector(".content-scroll");
+      const rows = sections.flatMap((section) => [...section.querySelectorAll(".settings-field")]);
+      const buttons = sections.flatMap((section) => [...section.querySelectorAll("button")]);
+      return {
+        viewport: window.innerWidth,
+        contained: Boolean(scroller) && sections.every((node) => {
+          const box = node.getBoundingClientRect();
+          const viewport = scroller.getBoundingClientRect();
+          return box.left >= viewport.left - 1 && box.right <= viewport.right + 1;
+        }),
+        cardsFit: sections.every((node) => node.scrollWidth <= node.clientWidth + 2),
+        rowsFit: rows.every((node) => node.scrollWidth <= node.clientWidth + 2),
+        buttonsFit: buttons.every((node) => node.scrollWidth <= node.clientWidth + 2),
+        scrollerBounds: scroller ? (() => {
+          const box = scroller.getBoundingClientRect();
+          return { left: box.left, right: box.right, width: box.width };
+        })() : null,
+        sectionBounds: sections.map((node) => {
+          const box = node.getBoundingClientRect();
+          return {
+            heading: node.getAttribute("aria-labelledby"),
+            left: box.left,
+            right: box.right,
+            width: box.width,
+          };
+        }),
+        sidebarBounds: document.querySelector(".sidebar") ? (() => {
+          const box = document.querySelector(".sidebar").getBoundingClientRect();
+          return { left: box.left, right: box.right, width: box.width };
+        })() : null,
+        sidebarOpen: document.querySelector(".sidebar")?.classList.contains("is-open") ?? null,
+        sidebarScrim: Boolean(document.querySelector(".sidebar-scrim")),
+      };`);
+    check(
+      "About and Advanced wrap within a narrow 360 px layout",
+      narrowLayout &&
+        narrowViewportSettled &&
+        narrowGeometry.contained &&
+        narrowGeometry.cardsFit &&
+        narrowGeometry.rowsFit &&
+        narrowGeometry.buttonsFit,
+      { narrowLayout, narrowViewportSettled, narrowGeometry },
+    );
+    await saveScreenshot(
+      "settings-about-expanded-narrow-light.png",
+      "about-heading",
+    );
+    await saveScreenshot(
+      "settings-advanced-expanded-narrow-light.png",
+      "advanced-heading",
+    );
+
+    const darkTheme = await setTheme("dark");
+    check(
+      "Settings disclosures render with the dark theme",
+      darkTheme &&
+        (await page.evaluate(
+          `return document.documentElement.dataset.theme === "dark";`,
+        )),
+    );
+    await saveScreenshot(
+      "settings-about-expanded-narrow-dark.png",
+      "about-heading",
+    );
+    await saveScreenshot(
+      "settings-advanced-expanded-narrow-dark.png",
+      "advanced-heading",
+    );
+    await page.send("Emulation.clearDeviceMetricsOverride", {});
+    await saveScreenshot("settings-about-expanded-dark.png", "about-heading");
+    await saveScreenshot(
+      "settings-advanced-expanded-dark.png",
+      "advanced-heading",
+    );
+  } finally {
+    await page.send("Emulation.clearDeviceMetricsOverride", {});
+    await page.evaluate(`
+      const select = document.querySelector('.settings-section[aria-labelledby="appearance-heading"] select');
+      if (select && select.value !== ${q(originalTheme)}) {
+        select.value = ${q(originalTheme)};
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      return true;`);
+    await waitFor(
+      page,
+      `document.querySelector('.settings-section[aria-labelledby="appearance-heading"] select')?.value === ${q(originalTheme)}`,
+      5000,
+    );
+  }
 }
 
 async function compactShell(page, check) {
@@ -1403,7 +1806,7 @@ async function cleanup(page) {
  * Runs the UI polish checks against the native WebView2 fixture. Called with
  * `{ page, check, dataDir }`; the data directory is not needed here.
  */
-export async function runPolish({ page, check }) {
+export async function runPolish({ page, check, artifactDir }) {
   await fixtureCall(page, "reset");
   // Queue items read their top-level artwork only with this template set; the
   // polish tracks then carry Apple's bgColor into Now Playing.
@@ -1437,7 +1840,9 @@ export async function runPolish({ page, check }) {
     await group(check, "queue drawer", () => queueDrawer(page, check));
     await group(check, "rating error toast", () => errorToast(page, check));
     await group(check, "skeletons", () => skeletons(page, check));
-    await group(check, "about links", () => aboutLinks(page, check));
+    await group(check, "about and advanced settings", () =>
+      aboutLinks(page, check, artifactDir),
+    );
     await group(check, "compact shell", () => compactShell(page, check));
     await group(check, "fullscreen", () => fullscreen(page, check));
   } finally {
