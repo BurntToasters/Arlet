@@ -20,6 +20,10 @@ const NOTICE = ".session-expired-notice";
 const STATUS = ".titlebar-status";
 const PINS = '.sidebar-group[aria-label="Pinned playlists"] .sidebar-link';
 const RECENT_KEY = "arlet.search.recent";
+const ACCOUNT_DATA_FENCE_KEY = "arlet.account-data-invalidated";
+const ACCOUNT_DATA_CATEGORIES = ["library", "pins", "queue"];
+const ACCOUNT_CLEAR_FAULT_FILE = "e2e-account-clear-fault.json";
+const ACCOUNT_CLEAR_TRACE_FILE = "e2e-account-clear-trace.jsonl";
 const SONG_STATION_URL =
   "https://music.apple.com/us/station/navigation-song-station/ra.song-one";
 const SONGS = ["song-a", "song-c"];
@@ -140,10 +144,127 @@ const pinsOf = (page) =>
 const recentsOf = (page) =>
   page.evaluate(`return localStorage.getItem(${q(RECENT_KEY)});`);
 
+function readAccountClearTrace(dataDir) {
+  const tracePath = path.join(dataDir, ACCOUNT_CLEAR_TRACE_FILE);
+  if (!fs.existsSync(tracePath)) return { records: [], error: "trace missing" };
+  try {
+    const text = fs.readFileSync(tracePath, "utf8");
+    const records = text
+      .split(/\r?\n/u)
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line));
+    return { records };
+  } catch (error) {
+    return { records: [], error: String(error?.message ?? error) };
+  }
+}
+
+async function waitForAccountDataClearSettlement(
+  page,
+  dataDir,
+  category,
+  command,
+) {
+  const retryCount = command === "library_cache_clear" ? 2 : 1;
+  const deadline = Date.now() + 15_000;
+  let last = { settled: false, trace: readAccountClearTrace(dataDir) };
+  while (Date.now() < deadline) {
+    const trace = readAccountClearTrace(dataDir);
+    const state = await page.evaluate(`
+      const blocked = (() => {
+        try {
+          const value = JSON.parse(localStorage.getItem(${q(ACCOUNT_DATA_FENCE_KEY)}));
+          return Array.isArray(value?.blocked) ? value.blocked : null;
+        } catch {
+          return null;
+        }
+      })();
+      const toastShown = [...document.querySelectorAll(".action-toast-message")]
+        .some((node) => node.textContent.includes("Account data clear failed"));
+      return { blocked, toastShown };
+    `);
+    const records = trace.records;
+    const count = (name, outcome) =>
+      records.filter(
+        (record) => record.command === name && record.outcome === outcome,
+      ).length;
+    const traceSettled =
+      count(command, "injected_failure") >= retryCount &&
+      ACCOUNT_DATA_CATEGORIES.filter((item) => item !== category).every(
+        (item) => {
+          const otherCommand =
+            item === "library"
+              ? "library_cache_clear"
+              : item === "pins"
+                ? "delete_pins"
+                : "delete_playback_session";
+          return count(otherCommand, "success") >= 1;
+        },
+      );
+    const fenceSettled =
+      Array.isArray(state.blocked) &&
+      state.blocked.length === 1 &&
+      state.blocked.includes(category);
+    last = {
+      settled: traceSettled && fenceSettled && state.toastShown,
+      trace,
+      blocked: state.blocked,
+      toastShown: state.toastShown,
+      expectedFaults: retryCount,
+      observedFaults: count(command, "injected_failure"),
+      successfulCommands: Object.fromEntries(
+        ["library_cache_clear", "delete_pins", "delete_playback_session"].map(
+          (name) => [name, count(name, "success")],
+        ),
+      ),
+    };
+    if (last.settled) return last;
+    await sleep(50);
+  }
+  return last;
+}
+
+async function clickSignOut(page) {
+  const hasNotice = await page.evaluate(
+    `return Boolean(document.querySelector(${q(NOTICE)}));`,
+  );
+  if (hasNotice) return clickNotice(page, "Sign out");
+  const ready = await openHash(
+    page,
+    "#/settings",
+    `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign out")`,
+  );
+  if (!ready) return false;
+  return page.evaluate(`
+    const button = [...document.querySelectorAll("button")]
+      .find((node) => node.textContent.trim() === "Sign out");
+    button?.click();
+    return Boolean(button);`);
+}
+
 const openHash = async (page, hash, ready, timeoutMs = 10_000) => {
   await page.evaluate(`location.hash = ${q(hash)}; return true;`);
   return ready ? waitFor(page, ready, timeoutMs) : true;
 };
+
+/** Reloads with /v1/me rejected so only account-local cached data could render. */
+async function reloadWithOfflineAccountData(page) {
+  const injection = await page.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: "window.__ARLET_E2E_MUSIC__?.configure({ rejectMeStatus: 403 });",
+  });
+  try {
+    await page.send("Page.reload", { ignoreCache: true });
+    return await waitFor(
+      page,
+      `${FIXTURE} && document.querySelector('.app-shell .player-bar')`,
+      30_000,
+    );
+  } finally {
+    await page.send("Page.removeScriptToEvaluateOnNewDocument", {
+      identifier: injection.identifier,
+    });
+  }
+}
 
 /** Queues and plays the two fixture songs, and reports 0:42 elapsed. */
 async function startPlayback(page) {
@@ -261,6 +382,15 @@ async function cachedLibraryShown(page) {
     `document.body.innerText.includes("Fixture Playlist")`,
     8000,
   );
+}
+
+/** Recreates persisted library, pin, and queue data before another clear case. */
+async function seedAccountData(page) {
+  const library = await cachedLibraryShown(page);
+  const pinned = await pinFixturePlaylist(page);
+  const playing = await startPlayback(page);
+  await sleep(2500);
+  return { library, pinned, playing };
 }
 
 async function saveScreenshot(page, artifactDir, name) {
@@ -601,8 +731,14 @@ async function licenseError(page, check, lastProbeAt) {
 const pageNow = (page) => page.evaluate("return Date.now();");
 
 /** MusicKit revokes the token: banner, a closed window, then Sign out. */
-async function revocation(page, check) {
+async function revocation(page, check, artifactDir, dataDir) {
   await openHash(page, "#/home");
+  const initialSeed = await seedAccountData(page);
+  check(
+    "persisted library, pins, and queue are seeded before the first clear failure",
+    initialSeed.library && initialSeed.pinned && initialSeed.playing,
+    initialSeed,
+  );
   await fixtureCall(page, "emitAuthorizationStatus", [false]);
   const shown = await noticeShown(page);
   const recents = await recentsOf(page);
@@ -639,29 +775,162 @@ async function revocation(page, check) {
   );
   await fixtureCall(page, "configure", [{ rejectAuthorize: false }]);
 
-  // Sign out from the banner is the full local sign-out.
-  const clicked = await clickNotice(page, "Sign out");
-  const signedOut = await openHash(
-    page,
-    "#/library/recent",
-    `document.body.innerText.includes("Sign in to view your library")`,
-    15_000,
-  );
-  const finalUi = await uiOf(page);
-  const finalRecents = await recentsOf(page);
-  const finalTrace = await snapshot(page);
-  check(
-    "Sign out from the banner runs the full local sign-out",
-    clicked &&
-      signedOut &&
-      !finalUi.notice &&
-      (await pinsOf(page)).length === 0 &&
-      (finalRecents === null || JSON.parse(finalRecents).length === 0) &&
-      finalUi.title === "Nothing playing" &&
-      finalTrace.authorized === false &&
-      finalTrace.transitions.some((item) => item.type === "unauthorize"),
-    { clicked, signedOut, finalUi, finalRecents, pins: await pinsOf(page) },
-  );
+  // Failure modes: each rejected clear leaves only its category fenced, and
+  // the fence still hides its data after WebView startup reads the same profile.
+  const failureCases = [
+    { category: "library", command: "library_cache_clear" },
+    { category: "pins", command: "delete_pins" },
+    { category: "queue", command: "delete_playback_session" },
+  ];
+  for (let index = 0; index < failureCases.length; index += 1) {
+    const failureCase = failureCases[index];
+    if (!failureCase) continue;
+    if (index > 0) {
+      await restoreSignedIn(page, check);
+      const clearedFence = await page.evaluate(`
+        try {
+          const value = JSON.parse(localStorage.getItem(${q(ACCOUNT_DATA_FENCE_KEY)}));
+          return Array.isArray(value?.blocked) ? value.blocked : null;
+        } catch {
+          return null;
+        }`);
+      check(
+        `successful fresh sign-in clears the prior ${failureCase.category} fence`,
+        Array.isArray(clearedFence) && clearedFence.length === 0,
+        { fence: clearedFence },
+      );
+      const seeded = await seedAccountData(page);
+      check(
+        `persisted account data is ready before the ${failureCase.category} clear failure`,
+        seeded.library && seeded.pinned && seeded.playing,
+        seeded,
+      );
+    }
+
+    const faultPath = path.join(dataDir, ACCOUNT_CLEAR_FAULT_FILE);
+    const tracePath = path.join(dataDir, ACCOUNT_CLEAR_TRACE_FILE);
+    fs.rmSync(tracePath, { force: true });
+    fs.writeFileSync(
+      faultPath,
+      JSON.stringify({ command: failureCase.command }),
+    );
+    let clicked = false;
+    let settlement;
+    try {
+      clicked = await clickSignOut(page);
+      settlement = await waitForAccountDataClearSettlement(
+        page,
+        dataDir,
+        failureCase.category,
+        failureCase.command,
+      );
+      check(
+        `${failureCase.category} native rejection is observed after all category clears settle`,
+        clicked && settlement.settled,
+        { clicked, settlement },
+      );
+      if (fs.existsSync(tracePath)) {
+        fs.copyFileSync(
+          tracePath,
+          path.join(artifactDir, `account-clear-${failureCase.category}.jsonl`),
+        );
+      }
+      if (!settlement.settled) break;
+    } finally {
+      fs.rmSync(faultPath, { force: true });
+    }
+    if (!settlement?.settled) break;
+
+    const signedOut = await openHash(
+      page,
+      "#/library/recent",
+      `document.body.innerText.includes("Sign in to view your library")`,
+      15_000,
+    );
+    const finalUi = await uiOf(page);
+    const finalRecents = await recentsOf(page);
+    const fence = await page.evaluate(`
+      try {
+        const value = JSON.parse(localStorage.getItem(${q(ACCOUNT_DATA_FENCE_KEY)}));
+        return Array.isArray(value?.blocked) ? value.blocked : null;
+      } catch {
+        return null;
+      }`);
+    const finalTrace = await snapshot(page);
+    check(
+      `${failureCase.category} clear failure leaves only that account category fenced`,
+      clicked &&
+        signedOut &&
+        !finalUi.notice &&
+        Array.isArray(fence) &&
+        ACCOUNT_DATA_CATEGORIES.every((category) =>
+          category === failureCase.category
+            ? fence.includes(category)
+            : !fence.includes(category),
+        ) &&
+        settlement.trace.records.filter(
+          (record) =>
+            record.command === failureCase.command &&
+            record.outcome === "injected_failure",
+        ).length >= settlement.expectedFaults &&
+        settlement.successfulCommands[failureCase.command] === 0 &&
+        settlement.successfulCommands["library_cache_clear"] >=
+          (failureCase.category === "library" ? 0 : 1) &&
+        settlement.successfulCommands.delete_pins >=
+          (failureCase.category === "pins" ? 0 : 1) &&
+        settlement.successfulCommands.delete_playback_session >=
+          (failureCase.category === "queue" ? 0 : 1) &&
+        (finalRecents === null || JSON.parse(finalRecents).length === 0) &&
+        finalUi.title === "Nothing playing" &&
+        finalTrace.authorized === false &&
+        finalTrace.transitions.some((item) => item.type === "unauthorize"),
+      {
+        clicked,
+        signedOut,
+        finalUi,
+        finalRecents,
+        fence,
+        settlement,
+      },
+    );
+
+    const restarted = await reloadWithOfflineAccountData(page);
+    await openHash(page, "#/library/playlists");
+    const libraryHidden = !(await waitFor(
+      page,
+      `document.body.innerText.includes("Fixture Playlist")`,
+      1500,
+    ));
+    const restartedPins = await pinsOf(page);
+    const restartedUi = await uiOf(page);
+    const restartedFence = await page.evaluate(`
+      try {
+        const value = JSON.parse(localStorage.getItem(${q(ACCOUNT_DATA_FENCE_KEY)}));
+        return Array.isArray(value?.blocked) ? value.blocked : null;
+      } catch {
+        return null;
+      }`);
+    check(
+      `restart does not restore data while the ${failureCase.category} clear is outstanding`,
+      restarted &&
+        libraryHidden &&
+        restartedPins.length === 0 &&
+        restartedUi.title === "Nothing playing" &&
+        Array.isArray(restartedFence) &&
+        ACCOUNT_DATA_CATEGORIES.every((category) =>
+          category === failureCase.category
+            ? restartedFence.includes(category)
+            : !restartedFence.includes(category),
+        ),
+      {
+        restarted,
+        libraryHidden,
+        pins: restartedPins,
+        ui: restartedUi,
+        fence: restartedFence,
+      },
+    );
+  }
 }
 
 /** Leaves the app signed in with the fixture authorized and unrejected. */
@@ -669,12 +938,22 @@ async function restoreSignedIn(page, check) {
   await fixtureCall(page, "configure", [
     { rejectMeStatus: 0, rejectAuthorize: false },
   ]);
-  const signedOut = await page.evaluate(`
+  await openHash(page, "#/settings");
+  const wasSignedOut = await page.evaluate(`
     return !document.querySelector(${q(NOTICE)}) &&
       ![...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign out");`);
-  await openHash(
+  let signedOut = wasSignedOut;
+  if (!wasSignedOut) {
+    const clickedOut = await clickSignOut(page);
+    const signInReady = await waitFor(
+      page,
+      `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign in")`,
+      15_000,
+    );
+    signedOut = clickedOut && signInReady;
+  }
+  await waitFor(
     page,
-    "#/settings",
     `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign in")`,
     15_000,
   );
@@ -698,7 +977,7 @@ async function restoreSignedIn(page, check) {
 }
 
 /** Stream handoff and expired sign-in checks (see the header). */
-export async function runAccountSession({ page, check, artifactDir }) {
+export async function runAccountSession({ page, check, artifactDir, dataDir }) {
   try {
     await group(check, "account session setup", () => prepare(page, check));
     await group(check, "stream handoff", () => handoff(page, check));
@@ -719,9 +998,12 @@ export async function runAccountSession({ page, check, artifactDir }) {
     await group(check, "license error with a healthy token", () =>
       licenseError(page, check, lastProbeAt),
     );
-    await group(check, "revocation", () => revocation(page, check));
+    await group(check, "revocation", () =>
+      revocation(page, check, artifactDir, dataDir),
+    );
   } finally {
     await restoreTimeouts(page);
+    fs.rmSync(path.join(dataDir, ACCOUNT_CLEAR_FAULT_FILE), { force: true });
     await group(check, "account session cleanup", () =>
       restoreSignedIn(page, check),
     );

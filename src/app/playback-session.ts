@@ -6,6 +6,7 @@ import {
   savePlaybackSessionPayload,
   type InvokeFunction,
 } from "../platform/playback-session.ts";
+import { isAccountDataBlocked } from "../platform/account-data.ts";
 import {
   getState,
   setPendingRestore,
@@ -501,7 +502,10 @@ export function createPlaybackSession(
     prefetched = undefined;
     void payload
       .then((raw) => {
-        if (restoreGeneration === generation) {
+        if (
+          restoreGeneration === generation &&
+          !isAccountDataBlocked("queue")
+        ) {
           applySnapshot(parsePlaybackSession(raw));
         }
       })
@@ -629,6 +633,7 @@ export function createPlaybackSession(
         dependencies.log(
           `Playback session clear failed: ${safeErrorMessage(error)}`,
         );
+        throw error;
       }
     },
   };

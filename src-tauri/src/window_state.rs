@@ -96,8 +96,7 @@ pub fn parse_state(text: &str) -> Option<WindowState> {
 }
 
 fn state_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
-    app.path()
-        .app_data_dir()
+    crate::app_paths::data_dir(app)
         .ok()
         .map(|dir| dir.join(FILE_NAME))
 }

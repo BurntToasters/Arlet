@@ -60,6 +60,7 @@ minisign-verify = "0.2.5"
 
 [features]
 default = []
+e2e = []
 
 [profile.release]
 panic = "abort"

@@ -1,7 +1,6 @@
 //! Local-only playback queue snapshot, restored paused after restart.
 
 use serde_json::Value;
-use tauri::Manager;
 
 static SESSION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -16,7 +15,7 @@ fn lock_session() -> Result<std::sync::MutexGuard<'static, ()>, String> {
 }
 
 fn session_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = crate::app_paths::data_dir(app)?;
     Ok(dir.join("playback-session.json"))
 }
 
@@ -87,11 +86,20 @@ fn write_session_text(path: &std::path::Path, json: &str) -> Result<(), String> 
     crate::settings::atomic_write_text(path, json)
 }
 
-fn remove_session_files(path: &std::path::Path) {
-    for file in [path.to_path_buf(), backup_path(path)] {
-        if file.exists() {
-            let _ = std::fs::remove_file(&file);
+fn remove_session_files(path: &std::path::Path) -> Result<(), String> {
+    let backup = backup_path(path);
+    let mut failures = Vec::new();
+    for file in [path, backup.as_path()] {
+        if let Err(error) = std::fs::remove_file(file) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                failures.push(error.to_string());
+            }
         }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
     }
 }
 
@@ -109,9 +117,10 @@ pub fn save_playback_session(app: tauri::AppHandle, json: String) -> Result<(), 
 
 #[tauri::command(async)]
 pub fn delete_playback_session(app: tauri::AppHandle) -> Result<(), String> {
-    let _guard = lock_session()?;
-    remove_session_files(&session_path(&app)?);
-    Ok(())
+    crate::app_paths::run_account_data_clear(&app, "delete_playback_session", || {
+        let _guard = lock_session()?;
+        remove_session_files(&session_path(&app)?)
+    })
 }
 
 #[cfg(test)]

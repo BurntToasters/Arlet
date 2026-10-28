@@ -47,9 +47,10 @@ Azure signing, and live updater feeds remain explicit release-environment gates.
 
    `build.rs` and `release:preflight` then refuse a missing token, a
    non-ES256 JWT, or any `origin` claim. `build.rs` needs 30 days left;
-   `release:preflight` needs 150, so the token outlives the canary's
-   150-day warning (mint a fresh 180-day token when a pasted one is older
-   than 30 days). The
+   `release:preflight` needs 170 days. The weekly canary warns at 130 days of
+   release age: the 40-day gap leaves at least 33 days after a weekly check
+   delay, assuming the release is published promptly after preflight. Mint a
+   fresh 180-day token when a pasted one has less than 170 days left. The
    preflight then sends the token to Apple's catalog API and stops unless
    Apple answers 200.
 
@@ -232,10 +233,12 @@ These fail silently if nobody watches them, so they are scheduled or
 written down here.
 
 - **Ship before the token expires.** Each release embeds a developer token
-  minted at release time, which Apple caps at 180 days. When it expires,
+  with at least 170 days remaining at release preflight; it may reuse an
+  existing token. Apple caps token lifetime at 180 days. When it expires,
   every installed copy stops playing. The `Canary` workflow
-  (`.github/workflows/musickit-canary.yml`) fails every Monday once the latest
-  stable release is more than 150 days old.
+  (`.github/workflows/musickit-canary.yml`) warns every Monday once the latest
+  stable release reaches 130 days old. Preflight requires at least 170 days
+  remaining, leaving about 33 days after one weekly-check delay.
 - **Watch for MusicKit changes.** Apple updates MusicKit JS in place. The same
   workflow runs the native E2E weekly; its "live MusicKit keeps every API
   Arlet relies on" check lists anything Apple removed.

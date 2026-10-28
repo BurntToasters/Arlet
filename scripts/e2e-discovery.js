@@ -1210,50 +1210,159 @@ async function playbackEvents(page, check, dataDir) {
 async function externalSignOut(page, check) {
   try {
     await fixtureCall(page, "reset");
-    // Recent searches are saved on submit, so the term is typed and submitted.
+    // Recent-search suggestions require authorization and the catalog source.
+    // Establish both explicitly because earlier scenarios change auth state.
+    await fixtureCall(page, "emitAuthorizationStatus", [true]);
     await home(page);
-    await openHash(
+    const searchReady = await openHash(
       page,
       "#/search",
-      `Boolean(document.querySelector(${q(SEARCH_INPUT)}))`,
+      "Boolean(document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ")) && Boolean(document.querySelector('#search-source-tab-catalog'))",
+    );
+    let catalogSelected = await page.evaluate(
+      "return document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true';",
+    );
+    if (searchReady && !catalogSelected) {
+      await page.evaluate(
+        "document.querySelector('#search-source-tab-catalog')?.click(); return true;",
+      );
+      catalogSelected = await waitFor(
+        page,
+        "document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true'",
+        5000,
+      );
+    }
+    const authorizationReady = await waitFor(
+      page,
+      FIXTURE +
+        ".snapshot().authorized === true && Boolean(document.querySelector('#search-source-tab-catalog'))",
+      5000,
     );
     await typeInto(page, SEARCH_INPUT, "discovery");
-    await pressKey(page, "Enter", "Enter", 13, "\r");
-    await waitFor(
+    await page.evaluate(
+      "window.__ARLET_E2E_DISCOVERY_SUBMITTED__ = false;" +
+        "const form = document.querySelector('.search-form');" +
+        "form?.addEventListener('submit', () => { window.__ARLET_E2E_DISCOVERY_SUBMITTED__ = true; }, { once: true });" +
+        "form?.requestSubmit(); return true;",
+    );
+    const searchSettled = await waitFor(
       page,
-      `Boolean(document.querySelector(".search-top-section .search-tile-featured"))`,
+      "window.__ARLET_E2E_DISCOVERY_SUBMITTED__ === true && " +
+        "location.hash.includes('q=discovery') && " +
+        "document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ")?.value === 'discovery' && " +
+        "(() => { try { return JSON.parse(localStorage.getItem(" +
+        q(RECENT_KEY) +
+        ") ?? '[]').includes('discovery'); } catch { return false; } })() && " +
+        "document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true' && " +
+        "Boolean(document.querySelector('.search-top-section .search-tile-featured'))",
       15_000,
     );
-    const recentBefore = await page.evaluate(
-      `return localStorage.getItem(${q(RECENT_KEY)});`,
+    const settledSearch = await page.evaluate(
+      "let recents = []; try { recents = JSON.parse(localStorage.getItem(" +
+        q(RECENT_KEY) +
+        ") ?? '[]'); } catch {} return {" +
+        " submitted: window.__ARLET_E2E_DISCOVERY_SUBMITTED__ === true," +
+        " route: location.hash," +
+        " input: document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ")?.value ?? null," +
+        " storedTerm: recents.includes('discovery')," +
+        " authorization: " +
+        FIXTURE +
+        ".snapshot().authorized === true," +
+        " catalogSelected: document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true'," +
+        " resultReady: Boolean(document.querySelector('.search-top-section .search-tile-featured')) };",
     );
-    // The saved term lists as a recent search, which stays text-only.
-    await page.evaluate(`
-      const input = document.querySelector(${q(SEARCH_INPUT)});
-      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-      setValue.call(input, "");
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.focus();
-      return true;
-    `);
+    const recentBefore = await page.evaluate(
+      "return localStorage.getItem(" + q(RECENT_KEY) + ");",
+    );
+    // Clear through SearchView and verify its route and input are both empty
+    // before reopening recent searches through the focus path.
+    const clearClicked = await page.evaluate(
+      "const button = document.querySelector('.search-form .clear-search[aria-label=\"Clear search\"]'); " +
+        "if (!button || button.disabled) return false; button.click(); return true;",
+    );
+    const clearSettled = await waitFor(
+      page,
+      "location.hash === '#/search' && " +
+        "document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ")?.value === '' && " +
+        FIXTURE +
+        ".snapshot().authorized === true && " +
+        "document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true' && " +
+        "(() => { try { return JSON.parse(localStorage.getItem(" +
+        q(RECENT_KEY) +
+        ") ?? '[]').includes('discovery'); } catch { return false; } })()",
+      10_000,
+    );
+    const clearState = await page.evaluate(
+      "let recents = []; try { recents = JSON.parse(localStorage.getItem(" +
+        q(RECENT_KEY) +
+        ") ?? '[]'); } catch {} const input = document.querySelector(" +
+        q(SEARCH_INPUT) +
+        "); return { route: location.hash, input: input?.value ?? null, " +
+        "authorized: " +
+        FIXTURE +
+        ".snapshot().authorized === true, catalogSelected: document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true', storedTerm: recents.includes('discovery') };",
+    );
+    const focusReopened = await page.evaluate(
+      "const input = document.querySelector(" +
+        q(SEARCH_INPUT) +
+        "); if (!input || input.value !== '') return false; " +
+        "input.blur(); input.focus(); return document.activeElement === input;",
+    );
     const recentShown = await waitFor(
       page,
-      `document.querySelectorAll(${q(SUGGESTION_OPTIONS)}).length > 0`,
+      "document.activeElement === document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ") && document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ")?.value === '' && document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ")?.getAttribute('aria-expanded') === 'true' && " +
+        "[...document.querySelectorAll(" +
+        q(SUGGESTION_OPTIONS) +
+        ")].some((node) => node.querySelector('.search-suggestion-copy > span')?.textContent === 'discovery' && node.querySelector('.search-suggestion-remove'))",
       6000,
     );
-    const recentRows = await page.evaluate(`
-      return [...document.querySelectorAll(${q(SUGGESTION_OPTIONS)})].map((node) => ({
-        label: node.querySelector(".search-suggestion-copy > span")?.textContent ?? null,
-        art: Boolean(node.querySelector(".search-suggestion-art")),
-        removable: Boolean(node.querySelector(".search-suggestion-remove")),
-      }));
-    `);
+    const recentRows = await page.evaluate(
+      "return [...document.querySelectorAll(" +
+        q(SUGGESTION_OPTIONS) +
+        ")].map((node) => ({ " +
+        "label: node.querySelector('.search-suggestion-copy > span')?.textContent ?? null, " +
+        "art: Boolean(node.querySelector('.search-suggestion-art')), " +
+        "removable: Boolean(node.querySelector('.search-suggestion-remove')) }));",
+    );
     check(
       "recent searches stay text-only with no thumbnail",
-      recentShown &&
+      searchReady &&
+        authorizationReady &&
+        catalogSelected &&
+        searchSettled &&
+        clearClicked &&
+        clearSettled &&
+        focusReopened &&
+        recentShown &&
         recentRows.some((row) => row.label === "discovery") &&
         recentRows.every((row) => row.art === false && row.removable),
-      recentRows,
+      {
+        searchReady,
+        authorizationReady,
+        catalogSelected,
+        searchSettled,
+        settledSearch,
+        clearClicked,
+        clearSettled,
+        clearState,
+        focusReopened,
+        recentShown,
+        recentRows,
+      },
     );
     await home(page);
     await fixtureCall(page, "emitAuthorizationStatus", [false]);

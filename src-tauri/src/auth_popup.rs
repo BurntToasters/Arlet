@@ -61,7 +61,18 @@ pub fn create_main_window(app: &App) -> Result<WebviewWindow, Box<dyn std::error
     } else {
         None
     };
-    Ok(WebviewWindowBuilder::from_config(app.handle(), &config)?
+    let builder = WebviewWindowBuilder::from_config(app.handle(), &config)?;
+    #[cfg(feature = "e2e")]
+    let builder = if let Some(directory) =
+        crate::app_paths::webview_data_dir().map_err(std::io::Error::other)?
+    {
+        std::fs::create_dir_all(&directory)?;
+        builder.data_directory(directory)
+    } else {
+        builder
+    };
+
+    Ok(builder
         // Keep the window hidden through webview creation. Startup applies the
         // saved native material and custom chrome before the first show.
         .visible(false)

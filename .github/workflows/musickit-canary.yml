@@ -20,9 +20,9 @@ env:
   NODE_VERSION: "24.16.0"
   NPM_VERSION: "12.0.2"
   RUST_VERSION: "1.98.1"
-  # 30 days before a freshly minted 180-day token in the latest release
-  # expires. Ship a release before then.
-  MAX_RELEASE_AGE_DAYS: "150"
+  # Start warning at 130 days. Release preflight requires 170 days left,
+  # leaving 40 days at the threshold and at least 33 after a weekly delay.
+  MAX_RELEASE_AGE_DAYS: "130"
 
 jobs:
   live-musickit:
@@ -67,7 +67,7 @@ jobs:
           published=$(gh api "repos/$REPO/releases/latest" --jq .published_at)
           age_days=$(( ( $(date -u +%s) - $(date -u -d "$published" +%s) ) / 86400 ))
           echo "Latest stable release published $published ($age_days days ago)."
-          if [ "$age_days" -gt "$MAX_RELEASE_AGE_DAYS" ]; then
-            echo "::error::The latest release is $age_days days old. Its MusicKit developer token expires about 180 days after release, which stops playback for every install. Mint a new token and ship a release."
+          if [ "$age_days" -ge "$MAX_RELEASE_AGE_DAYS" ]; then
+            echo "::error::The latest release is $age_days days old. Release preflight requires at least 170 days remaining on its MusicKit developer token; this 130-day warning leaves about 40 days to renew (about 33 after a weekly check delay). Mint a new token and ship a release."
             exit 1
           fi

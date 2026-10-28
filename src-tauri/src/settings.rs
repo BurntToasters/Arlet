@@ -2,7 +2,7 @@
 
 use crate::window_fx::WindowEffectPreference;
 use serde_json::Value;
-use tauri::{Manager, Theme, WebviewWindow};
+use tauri::{Theme, WebviewWindow};
 
 static SETTINGS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Set once settings are reset; the old in-memory settings must not be
@@ -175,7 +175,7 @@ fn lock_settings() -> Result<std::sync::MutexGuard<'static, ()>, String> {
 }
 
 fn settings_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = crate::app_paths::data_dir(app)?;
     Ok(dir.join("settings.json"))
 }
 

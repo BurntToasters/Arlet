@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import test from "node:test";
 import { checkMusicKitToken } from "./release-preflight.js";
 
@@ -13,8 +14,10 @@ function token(payload, header = { alg: "ES256", kid: "KEYID12345" }) {
 
 // Failure modes: a release starts (and a draft is created) with a missing,
 // skipped, non-ES256, nearly expired, or wrongly origin-scoped token, which
-// build.rs would only reject later; a token with under 150 days left, which
-// expires before the canary's release-age warning; error text echoes the token.
+// build.rs would only reject later; a token expires too close to the weekly
+// canary warning; the exact minimum boundary drifts; or an error echoes the
+// token. Policy leaves 40 days after the 130-day canary age threshold and at
+// least 33 days after the next weekly check.
 test("checkMusicKitToken rejects tokens build.rs would refuse", () => {
   const cases = [
     {},
@@ -31,7 +34,7 @@ test("checkMusicKitToken rejects tokens build.rs would refuse", () => {
       ),
     },
     { MUSICKIT_DEVELOPER_TOKEN: token({ exp: NOW + 29 * DAY }) },
-    { MUSICKIT_DEVELOPER_TOKEN: token({ exp: NOW + 149 * DAY }) },
+    { MUSICKIT_DEVELOPER_TOKEN: token({ exp: NOW + 170 * DAY - 1 }) },
     {
       MUSICKIT_DEVELOPER_TOKEN: token({
         exp: NOW + 170 * DAY,
@@ -75,4 +78,19 @@ test("checkMusicKitToken accepts a token without an origin claim", () => {
     NOW,
   );
   assert.deepEqual(open, { exp: NOW + 170 * DAY });
+});
+
+test("release token policy preserves a weekly canary safety margin", () => {
+  const workflow = fs.readFileSync(
+    new URL("../.github/workflows/musickit-canary.yml", import.meta.url),
+    "utf8",
+  );
+  const guide = fs.readFileSync(
+    new URL("../docs/RELEASE.md", import.meta.url),
+    "utf8",
+  );
+  assert.match(workflow, /MAX_RELEASE_AGE_DAYS: "130"/);
+  assert.match(workflow, /if \[ "\$age_days" -ge "\$MAX_RELEASE_AGE_DAYS" \]/);
+  assert.match(guide, /at least 170 days/);
+  assert.match(guide, /weekly canary warns at 130 days/);
 });

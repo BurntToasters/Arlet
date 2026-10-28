@@ -124,7 +124,7 @@ jobs:
         with:
           name: e2e-report
           path: e2e-artifacts/
-          if-no-files-found: ignore
+          if-no-files-found: error
 
   security-audit:
     runs-on: ubuntu-latest

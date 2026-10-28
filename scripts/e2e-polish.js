@@ -802,22 +802,59 @@ async function searchSuggestions(page, check) {
     suggestionsGlass,
   );
 
-  // Submit the term so it becomes a recent search, then reopen on empty text.
-  await page.evaluate(
-    `document.querySelector(".search-form")?.requestSubmit(); return true;`,
-  );
-  await waitFor(page, `location.hash.includes("q=polish")`, 4000);
+  // Submit the term so it becomes recent, then clear it through the app's
+  // button after its route effect has settled and reopen on focus.
   await page.evaluate(`
-    const input = document.querySelector('.search-form input[role="combobox"]');
-    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-    setValue.call(input, "");
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    input.focus();
+    window.__ARLET_E2E_SEARCH_SUBMITTED__ = false;
+    const form = document.querySelector(".search-form");
+    form?.addEventListener("submit", () => {
+      window.__ARLET_E2E_SEARCH_SUBMITTED__ = true;
+    }, { once: true });
+    form?.requestSubmit();
     return true;
+  `);
+  const submitSettled = await waitFor(
+    page,
+    `window.__ARLET_E2E_SEARCH_SUBMITTED__ === true &&
+      location.hash === "#/search?q=polish" &&
+      document.querySelector('.search-form input[role="combobox"]')?.value === "polish" &&
+      window.__ARLET_E2E_MUSIC__?.snapshot().authorized === true &&
+      document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true' &&
+      (() => { try { return JSON.parse(localStorage.getItem("arlet.search.recent") ?? "[]").includes("polish"); } catch { return false; } })()`,
+    5000,
+  );
+  const clearClicked = await page.evaluate(`
+    const button = document.querySelector('.search-form .clear-search[aria-label="Clear search"]');
+    if (!button || button.disabled) return false;
+    button.click();
+    return true;
+  `);
+  const clearSettled = await waitFor(
+    page,
+    `location.hash === "#/search" &&
+      document.querySelector('.search-form input[role="combobox"]')?.value === "" &&
+      window.__ARLET_E2E_MUSIC__?.snapshot().authorized === true &&
+      document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true' &&
+      (() => { try { return JSON.parse(localStorage.getItem("arlet.search.recent") ?? "[]").includes("polish"); } catch { return false; } })()`,
+    5000,
+  );
+  const focusReopened = await page.evaluate(`
+    const input = document.querySelector('.search-form input[role="combobox"]');
+    if (!input || input.value !== "") return false;
+    input.blur();
+    input.focus();
+    return document.activeElement === input;
   `);
   const recentShown = await waitFor(
     page,
-    `document.querySelectorAll(".search-suggestions li[role=option] .search-suggestion-remove").length > 0`,
+    `(() => {
+      const input = document.querySelector('.search-form input[role="combobox"]');
+      const row = [...document.querySelectorAll('.search-suggestions li[role="option"]')]
+        .find((node) => node.querySelector('.search-suggestion-copy > span')?.textContent === "polish");
+      return document.activeElement === input && input?.value === "" &&
+        input?.getAttribute('aria-expanded') === 'true' &&
+        Boolean(row?.querySelector('.search-suggestion-remove'));
+    })()`,
     4000,
   );
   const recents = await page.evaluate(`
@@ -829,23 +866,72 @@ async function searchSuggestions(page, check) {
   `);
   check(
     "recent searches stay text-only with no thumbnail",
-    recentShown &&
-      recents.length > 0 &&
+    submitSettled &&
+      clearClicked &&
+      clearSettled &&
+      focusReopened &&
+      recentShown &&
+      recents.some((row) => row.label === "polish" && row.removable) &&
       recents.every((row) => row.art === false && row.removable),
-    recents,
+    {
+      submitSettled,
+      clearClicked,
+      clearSettled,
+      focusReopened,
+      recentShown,
+      recents,
+    },
   );
   await pressKey(page, "Escape");
 }
 
 async function searchTabs(page, check) {
+  const blurBeforeNavigation = await page.evaluate(`
+    const input = document.querySelector('.search-form input[role="combobox"]');
+    const hadInputFocus = document.activeElement === input;
+    input?.blur();
+    return {
+      hadInputFocus,
+      blurred: !input || document.activeElement !== input,
+      activeId: document.activeElement?.id ?? null,
+      activeTag: document.activeElement?.tagName ?? null,
+    };
+  `);
   await openRoute(
     page,
     "#/search?q=polish",
     `Boolean(document.getElementById("search-source-tab-catalog"))`,
   );
-  await page.evaluate(
-    `document.getElementById("search-source-tab-catalog").focus(); return true;`,
+  const navigationReady = await waitFor(
+    page,
+    `location.hash === "#/search?q=polish" &&
+      document.activeElement === document.querySelector(".page-heading.search-heading h1") &&
+      document.querySelector('.search-form input[role="combobox"]')?.value === "polish" &&
+      Boolean(document.getElementById("search-source-tab-catalog"))`,
+    6000,
   );
+  const navigationState = await page.evaluate(`
+    const heading = document.querySelector(".page-heading.search-heading h1");
+    const input = document.querySelector('.search-form input[role="combobox"]');
+    return {
+      hash: location.hash,
+      headingFocused: document.activeElement === heading,
+      headingText: heading?.textContent.trim() ?? null,
+      inputValue: input?.value ?? null,
+      tabPresent: Boolean(document.getElementById("search-source-tab-catalog")),
+      activeId: document.activeElement?.id ?? null,
+      activeTag: document.activeElement?.tagName ?? null,
+    };
+  `);
+  const tabFocusState = await page.evaluate(`
+    const tab = document.getElementById("search-source-tab-catalog");
+    tab?.focus();
+    return {
+      tabFocused: document.activeElement === tab,
+      activeId: document.activeElement?.id ?? null,
+      activeTag: document.activeElement?.tagName ?? null,
+    };
+  `);
   const steps = [
     ["Home", "catalog"],
     ["ArrowRight", "library"],
@@ -861,13 +947,24 @@ async function searchTabs(page, check) {
   }
   check(
     "Arrow, Home and End keys move selection, focus and the tabpanel label together",
-    seen.every(
-      (step) =>
-        step.selected === step.expected &&
-        step.focused === step.expected &&
-        step.panelLabelledBy === `search-source-tab-${step.expected}`,
-    ),
-    seen,
+    blurBeforeNavigation.blurred &&
+      navigationReady &&
+      navigationState.headingFocused &&
+      navigationState.inputValue === "polish" &&
+      tabFocusState.tabFocused &&
+      seen.every(
+        (step) =>
+          step.selected === step.expected &&
+          step.focused === step.expected &&
+          step.panelLabelledBy === `search-source-tab-${step.expected}`,
+      ),
+    {
+      blurBeforeNavigation,
+      navigationReady,
+      navigationState,
+      tabFocusState,
+      steps: seen,
+    },
   );
   await pressKey(page, "Home");
 }

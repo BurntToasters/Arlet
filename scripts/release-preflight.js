@@ -153,11 +153,12 @@ function checkCredentialLeaks() {
 }
 
 /**
- * Stricter than build.rs (30 days): the weekly canary warns 150 days after a
- * release, so a release token must outlive that, or playback stops for every
- * install before anyone is warned. A freshly minted token has 180 days.
+ * Stricter than build.rs (30 days): preflight requires 170 days remaining.
+ * The weekly canary starts warning at 130 days of release age, leaving 40
+ * days at the threshold and at least 33 days after one weekly-check delay.
+ * A freshly minted token has at most 180 days.
  */
-const MIN_TOKEN_REMAINING_SECONDS = 150 * 24 * 60 * 60;
+const MIN_TOKEN_REMAINING_SECONDS = 170 * 24 * 60 * 60;
 
 /**
  * Early copy of the build.rs embed gate so an expiring token fails before a
@@ -196,7 +197,7 @@ function checkMusicKitToken(
   const remaining = payload.exp - nowSeconds;
   if (remaining < MIN_TOKEN_REMAINING_SECONDS) {
     throw new Error(
-      `MUSICKIT_DEVELOPER_TOKEN expires in ${Math.max(0, Math.floor(remaining / 86400))} day(s); releases need at least 150 so it outlives the canary's warning. Mint a new one (npm run phase0:mint-token).`,
+      `MUSICKIT_DEVELOPER_TOKEN expires in ${Math.max(0, Math.floor(remaining / 86400))} day(s); releases need at least 170 so it outlives the canary warning with a weekly-check margin. Mint a new one (npm run phase0:mint-token).`,
     );
   }
   // Apple refuses library (/v1/me) requests from an origin-restricted token,

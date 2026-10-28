@@ -170,11 +170,8 @@ export function createControllerPins(
    * next account to sign in on this PC must not see them. A failure is logged.
    */
   const clearStored = async (): Promise<void> => {
-    try {
-      await deletePersistedPins(invokeFn);
-    } catch (error) {
-      log(`Pinned playlists clear failed: ${safeErrorMessage(error)}`);
-    }
+    setPins([]);
+    await deletePersistedPins(invokeFn);
   };
 
   return { reload, resolveDetails, togglePin, unpin, clearStored };
