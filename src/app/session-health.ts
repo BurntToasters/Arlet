@@ -20,6 +20,8 @@ export interface SessionHealthDependencies {
   onExpired(reason: string): void;
   /** False when expiry is already known or sign-in is in flux. */
   active(): boolean;
+  /** Account ownership for probes and deferred checks. */
+  epoch(): number;
   /** MusicKit's own `isAuthorized`; false means it holds no user token. */
   musicKitAuthorized(): boolean;
   now(): number;
@@ -45,31 +47,51 @@ export interface SessionHealth {
 export function createSessionHealth(
   dependencies: SessionHealthDependencies,
 ): SessionHealth {
-  let inFlight: Promise<void> | undefined;
+  let inFlight: { epoch: number; promise: Promise<void> } | undefined;
   let lastProbeAt = Number.NEGATIVE_INFINITY;
+  let lastProbeEpoch = dependencies.epoch();
   /** A suspect error arrived while a sign-in was still in progress. */
-  let deferred = false;
+  let deferredEpoch: number | undefined;
+
+  const syncEpoch = (epoch: number): void => {
+    if (lastProbeEpoch !== epoch) {
+      lastProbeEpoch = epoch;
+      lastProbeAt = Number.NEGATIVE_INFINITY;
+    }
+    if (deferredEpoch !== undefined && deferredEpoch !== epoch) {
+      deferredEpoch = undefined;
+    }
+  };
 
   const verify = (): Promise<void> => {
-    if (inFlight) return inFlight;
+    const epoch = dependencies.epoch();
+    syncEpoch(epoch);
+    if (inFlight?.epoch === epoch) return inFlight.promise;
     if (!dependencies.active()) {
-      deferred = true;
+      deferredEpoch = epoch;
       return Promise.resolve();
     }
-    deferred = false;
+    deferredEpoch = undefined;
     if (!dependencies.musicKitAuthorized()) {
       // MusicKit already dropped the token, so no probe can succeed.
-      dependencies.onExpired("MusicKit no longer holds a user token");
+      if (dependencies.epoch() === epoch && dependencies.active()) {
+        dependencies.onExpired("MusicKit no longer holds a user token");
+      }
       return Promise.resolve();
     }
     const at = dependencies.now();
     if (at - lastProbeAt < PROBE_COOLDOWN_MS) return Promise.resolve();
     lastProbeAt = at;
-    inFlight = (async () => {
+    const flight = { epoch, promise: Promise.resolve() };
+    inFlight = flight;
+    flight.promise = (async () => {
       try {
         await dependencies.probe();
-        dependencies.log("Sign-in check passed.");
+        if (dependencies.epoch() === epoch && dependencies.active()) {
+          dependencies.log("Sign-in check passed.");
+        }
       } catch (error) {
+        if (dependencies.epoch() !== epoch || !dependencies.active()) return;
         const status = httpStatusOf(error);
         const reason = musicKitReasonOf(error);
         if (
@@ -84,10 +106,11 @@ export function createSessionHealth(
           dependencies.log("Sign-in check inconclusive; keeping the session.");
         }
       } finally {
-        inFlight = undefined;
+        // An older request must not clear a newer epoch's deduplication slot.
+        if (inFlight === flight) inFlight = undefined;
       }
     })();
-    return inFlight;
+    return flight.promise;
   };
 
   return {
@@ -102,10 +125,13 @@ export function createSessionHealth(
     },
     verify,
     afterTransition(): Promise<void> {
-      if (!deferred) return Promise.resolve();
+      const epoch = dependencies.epoch();
+      syncEpoch(epoch);
+      if (deferredEpoch !== epoch) return Promise.resolve();
       // The deferred errors came from the new sign-in; an older probe's
       // cooldown must not hide them.
       lastProbeAt = Number.NEGATIVE_INFINITY;
+      deferredEpoch = undefined;
       return verify();
     },
   };

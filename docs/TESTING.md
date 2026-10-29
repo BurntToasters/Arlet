@@ -488,6 +488,38 @@ session` and handoff/expiry checks in `report.json`,
 (the banner), and `account-session-trace.json` (every fixture request and
 transition, including the single `/v1/me/storefront` probe).
 
+## Audit regressions
+
+Failure scenarios covered by `scripts/e2e-audit-regressions.js`:
+
+- A held `/v1/me/storefront` probe from the previous account completes with a
+  403 after a new sign-in and expires the healthy session, or prevents the new
+  account epoch from starting its own probe.
+- An authorization still pending when the user explicitly signs out restores
+  the old account when it finishes, or blocks a fresh sign-in after it settles.
+  The separate `audit-fixes` scenario covers cancellation, which does not
+  invalidate a late authorization.
+- An old Play retries `setQueue` with the remaining IDs after a newer Play has
+  already installed and started its queue.
+- Release notes with a 65,527-byte unmatched inline-code run take excessive
+  time or lose the literal backticks; ordinary emphasis, code spans, and
+  non-navigable links regress.
+- A native settings write failure has no visible error or changes the saved
+  value. A failed volume write becomes an unhandled input rejection, or saving
+  remains broken after the owned fault path is removed.
+
+Run only this scenario with
+`npm run test:e2e:app -- --skip-build --scenarios audit-regressions` after a
+matching E2E-feature build is available. It reloads the fixture between cases
+and ends signed in and healthy. The marked run artifacts include
+`audit-regressions-observations.json` and
+`screenshot-audit-regressions-<case>.png`; the settings case also saves the
+volume and theme failure screenshots while their errors are visible. Its
+native settings fault is an empty `settings.json.tmp` directory inside the
+scenario's owned data directory; cleanup removes only that empty directory,
+then the scenario confirms that a later settings save changes the persisted
+theme.
+
 ## Radio and artist pages
 
 - Start Station on a library song with no catalog ID, or an artist with none,

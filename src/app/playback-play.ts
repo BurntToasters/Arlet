@@ -213,6 +213,14 @@ export function createPlayTracks(
     clearContinuation();
     const generation = session.restGeneration;
     const request = beginPlayRequest();
+    const setProviderQueue = async (
+      options: MusicKit.QueueOptions,
+    ): Promise<void> => {
+      if (!request.current()) {
+        throw new Error("Play request is no longer current.");
+      }
+      await instance.setQueue(options);
+    };
     if (rest.length) {
       log(
         `Queued ${batch.length} of ${requestedTracks.length} songs; the rest load as the queue plays.`,
@@ -234,41 +242,47 @@ export function createPlayTracks(
       const skippedBefore: Track[] = [];
       for (let attempt = 1; ; attempt += 1) {
         try {
-          resolved = await withResolvableTracks(batch, async (entries) => {
-            const queued = entries.map((entry) => entry.track);
-            const startWith = keptStartIndex(entries, batchStart);
-            const options = { ...queueOptionsForTracks(queued), startWith };
-            // Song details skip MusicKit's lookup; IDs are the fallback.
-            const detailed = queueDescriptorsForTracks(queued);
-            if (detailed) {
+          resolved = await withResolvableTracks(
+            batch,
+            async (entries) => {
+              const queued = entries.map((entry) => entry.track);
+              const startWith = keptStartIndex(entries, batchStart);
+              const options = { ...queueOptionsForTracks(queued), startWith };
+              // Song details skip MusicKit's lookup; IDs are the fallback.
+              const detailed = queueDescriptorsForTracks(queued);
+              if (detailed) {
+                try {
+                  await setProviderQueue({ ...detailed, startWith });
+                  usedDetails = true;
+                  return;
+                } catch (error) {
+                  // Named unavailable songs go to the skip logic as with IDs.
+                  if (!request.current() || unresolvedIds(error)) throw error;
+                  log(
+                    `Queue setup with song details failed; using IDs: ${errorMessage(error)}`,
+                  );
+                }
+              }
+              usedDetails = false;
               try {
-                await instance.setQueue({ ...detailed, startWith });
-                usedDetails = true;
-                return;
+                await setProviderQueue(options);
               } catch (error) {
-                // Named unavailable songs go to the skip logic as with IDs.
-                if (!request.current() || unresolvedIds(error)) throw error;
+                // One of MusicKit's song lookups can fail with an empty or
+                // HTML body (Apple throttling); try once more.
+                if (!isTransientLookupFailure(error) || !request.current()) {
+                  throw error;
+                }
                 log(
-                  `Queue setup with song details failed; using IDs: ${errorMessage(error)}`,
+                  `Queue setup failed once; retrying: ${errorMessage(error)}`,
                 );
+                await delay(SET_QUEUE_RETRY_DELAY_MS);
+                // A newer Play during the pause owns MusicKit's queue now.
+                if (!request.current()) throw error;
+                await setProviderQueue(options);
               }
-            }
-            usedDetails = false;
-            try {
-              await instance.setQueue(options);
-            } catch (error) {
-              // One of MusicKit's song lookups can fail with an empty or
-              // HTML body (Apple throttling); try once more.
-              if (!isTransientLookupFailure(error) || !request.current()) {
-                throw error;
-              }
-              log(`Queue setup failed once; retrying: ${errorMessage(error)}`);
-              await delay(SET_QUEUE_RETRY_DELAY_MS);
-              // A newer Play during the pause owns MusicKit's queue now.
-              if (!request.current()) throw error;
-              await instance.setQueue(options);
-            }
-          });
+            },
+            request.current,
+          );
           break;
         } catch (error) {
           const unavailable =
@@ -332,12 +346,16 @@ export function createPlayTracks(
         retriedById = true;
         // By ID MusicKit looks the songs up, so one it cannot resolve is
         // dropped (or retried by its library ID) as on the first setup.
-        const retried = await withResolvableTracks(queue, async (entries) => {
-          await instance.setQueue({
-            ...queueOptionsForTracks(entries.map((entry) => entry.track)),
-            startWith: keptStartIndex(entries, start),
-          });
-        });
+        const retried = await withResolvableTracks(
+          queue,
+          async (entries) => {
+            await setProviderQueue({
+              ...queueOptionsForTracks(entries.map((entry) => entry.track)),
+              startWith: keptStartIndex(entries, start),
+            });
+          },
+          request.current,
+        );
         const retriedStart = keptStartIndex(retried.entries, start);
         queue = retried.entries.map((entry) => entry.track);
         start = retriedStart;

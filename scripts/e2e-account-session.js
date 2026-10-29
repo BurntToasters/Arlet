@@ -947,21 +947,26 @@ async function restoreSignedIn(page, check) {
     const clickedOut = await clickSignOut(page);
     const signInReady = await waitFor(
       page,
-      `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign in")`,
+      `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign in" && !node.disabled)`,
       15_000,
     );
     signedOut = clickedOut && signInReady;
   }
-  await waitFor(
+  const signInReady = await waitFor(
     page,
-    `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign in")`,
+    `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign in" && !node.disabled)`,
     15_000,
   );
-  const clicked = await page.evaluate(`
+  const signInAction = signInReady
+    ? await page.evaluate(`
     const button = [...document.querySelectorAll("button")]
-      .find((node) => node.textContent.trim() === "Sign in");
-    button?.click();
-    return Boolean(button);`);
+      .find((node) => node.textContent.trim() === "Sign in" && !node.disabled);
+    const label = button?.textContent.trim() ?? null;
+    const disabled = button?.disabled ?? null;
+    const accepted = Boolean(button && !disabled);
+    if (accepted) button.click();
+    return { accepted, label, disabled };`)
+    : { accepted: false, label: null, disabled: null };
   const signedIn =
     (await waitFor(
       page,
@@ -971,8 +976,14 @@ async function restoreSignedIn(page, check) {
   const trace = await snapshot(page);
   check(
     "account session ends signed in and healthy for the next suite",
-    signedIn && trace.authorized === true,
-    { signedOut, clicked, signedIn, authorized: trace.authorized },
+    signedOut && signInAction.accepted && signedIn && trace.authorized === true,
+    {
+      signedOut,
+      signInReady,
+      signInAction,
+      signedIn,
+      authorized: trace.authorized,
+    },
   );
 }
 
