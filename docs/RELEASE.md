@@ -160,10 +160,13 @@ npm run release:publish          # verifies, publishes, then syncs a beta feed a
 npm run release:verify:published # downloads live updater metadata and validates it
 ```
 
-For a beta, `release:sign:gpg` uploads signed assets to the draft without
-changing public beta feeds. `release:publish` syncs beta manifests to
-`/releases/latest` only after GitHub confirms the prerelease is published. If
-that sync fails, retry it with `npm run release:sync-beta-manifests`.
+For a beta, `release:sign:gpg` (part of `release:win`) copies the beta
+manifests to `/releases/latest` as soon as the beta is signed and uploaded, as
+Zinnia does, so beta users see it without a separate step. Until the draft is
+published its installer URLs return 404; the app's beta updater retries
+briefly and then reports the failure, so publish the draft promptly.
+`release:publish` syncs again after GitHub confirms the published prerelease.
+If a sync fails, retry it with `npm run release:sync-beta-manifests`.
 
 ## Updater channels and manifest assets
 
@@ -188,9 +191,9 @@ tag.
 
 Stable releases upload all six files to the published stable release, which
 is GitHub's `/releases/latest` alias. Beta releases upload all six files to
-their prerelease tag; after GitHub confirms publication, the publish step
-transactionally copies the four beta manifests onto the latest stable
-release. A GitHub asset lock, staging names, adjacent rename swap,
+their prerelease tag, and the signing step then transactionally copies the
+four beta manifests onto the latest stable release (again after publishing).
+A GitHub asset lock, staging names, adjacent rename swap,
 rollback, and orphan cleanup protect the live beta feed while multiple release
 VMs are active. If publication or the post-publish sync loses connectivity,
 run:

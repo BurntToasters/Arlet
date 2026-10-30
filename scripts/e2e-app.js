@@ -30,6 +30,7 @@ import { runMultiSelect } from "./e2e-multi-select.js";
 import { runMiniPlayer } from "./e2e-mini-player.js";
 import { runSongNavigation } from "./e2e-song-navigation.js";
 import { runTransport } from "./e2e-transport.js";
+import { runSeek } from "./e2e-seek.js";
 import { runQueueEdit } from "./e2e-queue-edit.js";
 import { runNowPlaying } from "./e2e-now-playing.js";
 import { runRadioArtist } from "./e2e-radio-artist.js";
@@ -100,6 +101,7 @@ const SCENARIO_REGISTRY = [
   ["playlist-playback", runPlaylistPlayback],
   ["song-navigation", runSongNavigation],
   ["transport", runTransport],
+  ["seek", runSeek],
   ["queue-edit", runQueueEdit],
   ["library-actions", runLibraryActions],
   ["now-playing", runNowPlaying],
@@ -135,6 +137,7 @@ const SCENARIOS_ENDING_SIGNED_OUT = new Set(["session-restore"]);
 // matters while delayPaths is set, so it is not judged on its own.
 const FIXTURE_CONTROL_DEFAULTS = {
   holdSetQueue: false,
+  holdSeek: false,
   hangAuthorize: false,
   delayPaths: [],
   delayTerms: {},
@@ -172,6 +175,7 @@ async function checkScenarioIsolation(page, name, check) {
         shellVisible: Boolean(document.querySelector(".app-shell")),
         miniPlayerVisible: Boolean(document.querySelector(".mini-player")),
         setQueueHeld: snapshot.queueEdit.setQueueHeld,
+        seekHeld: snapshot.seekHeld,
         authorizeHeld: snapshot.authorizeHeld,
         controls: snapshot.controls,
       };`);
@@ -188,7 +192,10 @@ async function checkScenarioIsolation(page, name, check) {
       observed.fixtureAuthorized;
     const signedInOk = signedOutAllowed || signedIn;
     const shellOk = observed.shellVisible && !observed.miniPlayerVisible;
-    const holdsOk = observed.setQueueHeld === 0 && observed.authorizeHeld === 0;
+    const holdsOk =
+      observed.setQueueHeld === 0 &&
+      observed.seekHeld === 0 &&
+      observed.authorizeHeld === 0;
     const leftoversOk = Object.keys(leftoverControls).length === 0;
     passed = signedInOk && shellOk && holdsOk && leftoversOk;
     detail = {
@@ -199,6 +206,7 @@ async function checkScenarioIsolation(page, name, check) {
       miniPlayerVisible: observed.miniPlayerVisible,
       heldCalls: {
         setQueue: observed.setQueueHeld,
+        seek: observed.seekHeld,
         authorize: observed.authorizeHeld,
       },
       leftoverControls,
@@ -212,6 +220,7 @@ async function checkScenarioIsolation(page, name, check) {
       const fixture = window.__ARLET_E2E_MUSIC__;
       fixture.configure(${JSON.stringify({ ...FIXTURE_CONTROL_DEFAULTS, delayMs: 800 })});
       fixture.releaseSetQueue();
+      fixture.releaseSeek();
       fixture.releaseAuthorize();
       return true;`);
   } catch (error) {

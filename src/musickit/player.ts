@@ -54,6 +54,61 @@ export function latestTransportIntent(): TransportIntent {
   return transportIntent;
 }
 
+/** A tick this close to a seek target confirms that the seek landed. */
+const SEEK_CONFIRM_SECONDS = 1.5;
+/** Longest wait for that tick before ticks are trusted again. */
+const SEEK_HOLD_MS = 3_000;
+
+interface PendingSeek {
+  generation: number;
+  seconds: number;
+  holdUntil: number;
+}
+
+let seekGeneration = 0;
+let pendingSeek: PendingSeek | undefined;
+
+/**
+ * Starts a seek. Until a tick lands near `seconds` (or the hold runs out),
+ * `seekAwarePosition` reports the target, because MusicKit keeps ticking the
+ * old position while the seek is in flight. Returns the seek's generation.
+ */
+export function beginSeek(seconds: number, now = Date.now()): number {
+  seekGeneration += 1;
+  pendingSeek = {
+    generation: seekGeneration,
+    seconds,
+    holdUntil: now + SEEK_HOLD_MS,
+  };
+  return seekGeneration;
+}
+
+/**
+ * Stops holding ticks; with a generation, only if that seek is still the
+ * pending one. Returns whether it ended an unconfirmed seek.
+ */
+export function endSeek(generation?: number): boolean {
+  if (!pendingSeek) return false;
+  if (generation !== undefined && pendingSeek.generation !== generation) {
+    return false;
+  }
+  pendingSeek = undefined;
+  return true;
+}
+
+/** The position to show for a playback tick at `position`. */
+export function seekAwarePosition(position: number, now = Date.now()): number {
+  if (!pendingSeek) return position;
+  if (
+    now > pendingSeek.holdUntil ||
+    Math.abs(position - pendingSeek.seconds) <= SEEK_CONFIRM_SECONDS
+  ) {
+    pendingSeek = undefined;
+    return position;
+  }
+  return pendingSeek.seconds;
+}
+
 function playerRecord(
   instance: MusicKit.MusicKitInstance,
 ): Record<string, unknown> {
