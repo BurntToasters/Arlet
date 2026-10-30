@@ -2,7 +2,7 @@
  * scripts/e2e-music-fixture.js. Each check names its failure mode in
  * docs/TESTING.md ("Apple Music discovery features"). Browser code runs as
  * strings inside the page, as in the other native scenarios. External sign-out
- * runs last and is undone in `finally`, so Session restore starts signed in. */
+ * runs last and is restored through the app's sign-in flow in `finally`. */
 
 import fs from "node:fs";
 import path from "node:path";
@@ -717,6 +717,122 @@ async function searchResults(page, check) {
       hash: await page.evaluate("return location.hash"),
     },
   );
+  // Hold the See all songs page after catalog results are ready. Switching to
+  // Your Library must keep both its visible row and its playback source when
+  // that catalog response lands.
+  await fixtureCall(page, "reset");
+  await home(page);
+  try {
+    // Rows left from the earlier search make the readiness check pass at once,
+    // while this mount's own debounced search is still pending. Wait for that
+    // overview request to finish, then let the debounce window pass, before
+    // the delay is configured.
+    const mountMark = await requestCount(page);
+    const sourceSearchReady = await openHash(
+      page,
+      "#/search?q=discovery",
+      `Boolean(document.querySelector('#search-source-tab-catalog')) && Boolean(document.querySelector('.search-results-panel .search-row'))`,
+      15_000,
+    );
+    const mountSearchDone = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().requests.some((item, index) => index >= ${mountMark} && item.path.split("?")[0] === "/v1/catalog/us/search" && item.query?.term === "discovery" && item.query?.with === "topResults" && item.completedAt !== undefined)`,
+      5000,
+    );
+    await sleep(300);
+    await fixtureCall(page, "configure", [
+      { delayPaths: ["/v1/catalog/us/search"], delayMs: 1200 },
+    ]);
+    const seeAllSongs = await page.evaluate(`
+      const button = document.querySelector('button[aria-label="See all songs"]');
+      if (!button) return false;
+      button.click();
+      return true;
+    `);
+    const catalogPageStarted = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().requests.some((item) => item.path.split("?")[0] === "/v1/catalog/us/search" && item.query?.types === "songs" && Number(item.query?.offset) === 10)`,
+      5000,
+    );
+    const libraryTabClicked = await page.evaluate(`
+      const button = document.querySelector("#search-source-tab-library");
+      if (!button) return false;
+      button.click();
+      return true;
+    `);
+    const libraryRowReady = await waitFor(
+      page,
+      `document.querySelector('#search-source-tab-library')?.getAttribute('aria-selected') === 'true' && [...document.querySelectorAll('.search-results-panel .search-row')].some((button) => button.getAttribute('aria-label')?.includes('Discovery Library Song'))`,
+      10_000,
+    );
+    const catalogPageCompletedWhileLibrary = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().requests.some((item) => item.path.split("?")[0] === "/v1/catalog/us/search" && item.query?.types === "songs" && Number(item.query?.offset) === 10 && item.completedAt !== undefined) && document.querySelector('#search-source-tab-library')?.getAttribute('aria-selected') === 'true'`,
+      10_000,
+    );
+    const libraryRowClicked = await page.evaluate(`
+      const button = [...document.querySelectorAll('.search-results-panel .search-row')]
+        .find((item) => item.getAttribute('aria-label')?.includes('Discovery Library Song'));
+      if (!button || button.disabled) return false;
+      button.click();
+      return true;
+    `);
+    const librarySongPlayed = await waitFor(
+      page,
+      `document.querySelector('.player-bar .player-track-copy strong')?.textContent === 'Discovery Library Song' && ${FIXTURE}.snapshot().queue.items[0]?.id === 'library-discovery-song'`,
+      10_000,
+    );
+    const catalogTabClicked = await page.evaluate(`
+      const button = document.querySelector("#search-source-tab-catalog");
+      if (!button) return false;
+      button.click();
+      return true;
+    `);
+    const catalogPageMerged = await waitFor(
+      page,
+      `document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true' && document.querySelectorAll('.search-see-all-view .search-row').length === 12`,
+      10_000,
+    );
+    const switchResult = await page.evaluate(`
+      return {
+        librarySelected: document.querySelector('#search-source-tab-library')?.getAttribute('aria-selected') === 'true',
+        visibleRows: [...document.querySelectorAll('.search-see-all-view .search-row')].map((button) => button.getAttribute('aria-label')),
+        catalogSongs: document.querySelectorAll('.search-see-all-view .search-row').length,
+        playerTitle: document.querySelector('.player-bar .player-track-copy strong')?.textContent ?? null,
+        queueIds: ${FIXTURE}.snapshot().queue.items.map((item) => item.id),
+      };
+    `);
+    check(
+      "a delayed catalog songs page leaves Library playback authoritative and remains cached",
+      sourceSearchReady &&
+        mountSearchDone &&
+        seeAllSongs &&
+        catalogPageStarted &&
+        libraryTabClicked &&
+        libraryRowReady &&
+        catalogPageCompletedWhileLibrary &&
+        libraryRowClicked &&
+        librarySongPlayed &&
+        catalogTabClicked &&
+        catalogPageMerged,
+      {
+        sourceSearchReady,
+        mountSearchDone,
+        seeAllSongs,
+        catalogPageStarted,
+        libraryTabClicked,
+        libraryRowReady,
+        catalogPageCompletedWhileLibrary,
+        libraryRowClicked,
+        librarySongPlayed,
+        catalogTabClicked,
+        catalogPageMerged,
+        switchResult,
+      },
+    );
+  } finally {
+    await fixtureCall(page, "configure", [{ delayPaths: [], delayMs: 800 }]);
+  }
 }
 
 async function browseCharts(page, check) {
@@ -1207,53 +1323,207 @@ async function playbackEvents(page, check, dataDir) {
   );
 }
 
+const SIGNED_IN_BUTTON = `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign out")`;
+const SIGN_IN_BUTTON_READY = `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign in" && !node.disabled)`;
+
+/**
+ * Restores the fixture's authorization, then signs the app back in through
+ * Settings as a user would. Skips the click when already signed in. Never
+ * throws: a failure is returned in `error` for the check in `finally`.
+ */
+async function restoreSignedIn(page) {
+  const detail = {
+    alreadySignedIn: false,
+    signInClicked: false,
+    signedIn: false,
+    authorized: null,
+    error: null,
+  };
+  try {
+    await fixtureCall(page, "emitAuthorizationStatus", [true]);
+    await fixtureCall(page, "reset");
+    await openHash(
+      page,
+      "#/settings",
+      `${SIGN_IN_BUTTON_READY} || ${SIGNED_IN_BUTTON}`,
+      10_000,
+    );
+    detail.alreadySignedIn = await page.evaluate(`return ${SIGNED_IN_BUTTON};`);
+    if (!detail.alreadySignedIn) {
+      detail.signInClicked = await page.evaluate(`
+        const button = [...document.querySelectorAll("button")]
+          .find((node) => node.textContent.trim() === "Sign in" && !node.disabled);
+        if (!button) return false;
+        button.click();
+        return true;`);
+      detail.signedIn =
+        detail.signInClicked && (await waitFor(page, SIGNED_IN_BUTTON, 15_000));
+    } else {
+      detail.signedIn = true;
+    }
+    detail.authorized = (await snapshot(page)).authorized === true;
+  } catch (error) {
+    detail.error = String(error?.message ?? error);
+  }
+  return detail;
+}
+
 async function externalSignOut(page, check) {
   try {
     await fixtureCall(page, "reset");
-    // Recent searches are saved on submit, so the term is typed and submitted.
+    // Recent-search suggestions require authorization and the catalog source.
+    // Establish both explicitly because earlier scenarios change auth state.
+    await fixtureCall(page, "emitAuthorizationStatus", [true]);
     await home(page);
-    await openHash(
+    const searchReady = await openHash(
       page,
       "#/search",
-      `Boolean(document.querySelector(${q(SEARCH_INPUT)}))`,
+      "Boolean(document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ")) && Boolean(document.querySelector('#search-source-tab-catalog'))",
+    );
+    let catalogSelected = await page.evaluate(
+      "return document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true';",
+    );
+    if (searchReady && !catalogSelected) {
+      await page.evaluate(
+        "document.querySelector('#search-source-tab-catalog')?.click(); return true;",
+      );
+      catalogSelected = await waitFor(
+        page,
+        "document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true'",
+        5000,
+      );
+    }
+    const authorizationReady = await waitFor(
+      page,
+      FIXTURE +
+        ".snapshot().authorized === true && Boolean(document.querySelector('#search-source-tab-catalog'))",
+      5000,
     );
     await typeInto(page, SEARCH_INPUT, "discovery");
-    await pressKey(page, "Enter", "Enter", 13, "\r");
-    await waitFor(
+    await page.evaluate(
+      "window.__ARLET_E2E_DISCOVERY_SUBMITTED__ = false;" +
+        "const form = document.querySelector('.search-form');" +
+        "form?.addEventListener('submit', () => { window.__ARLET_E2E_DISCOVERY_SUBMITTED__ = true; }, { once: true });" +
+        "form?.requestSubmit(); return true;",
+    );
+    const searchSettled = await waitFor(
       page,
-      `Boolean(document.querySelector(".search-top-section .search-tile-featured"))`,
+      "window.__ARLET_E2E_DISCOVERY_SUBMITTED__ === true && " +
+        "location.hash.includes('q=discovery') && " +
+        "document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ")?.value === 'discovery' && " +
+        "(() => { try { return JSON.parse(localStorage.getItem(" +
+        q(RECENT_KEY) +
+        ") ?? '[]').includes('discovery'); } catch { return false; } })() && " +
+        "document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true' && " +
+        "Boolean(document.querySelector('.search-top-section .search-tile-featured'))",
       15_000,
     );
-    const recentBefore = await page.evaluate(
-      `return localStorage.getItem(${q(RECENT_KEY)});`,
+    const settledSearch = await page.evaluate(
+      "let recents = []; try { recents = JSON.parse(localStorage.getItem(" +
+        q(RECENT_KEY) +
+        ") ?? '[]'); } catch {} return {" +
+        " submitted: window.__ARLET_E2E_DISCOVERY_SUBMITTED__ === true," +
+        " route: location.hash," +
+        " input: document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ")?.value ?? null," +
+        " storedTerm: recents.includes('discovery')," +
+        " authorization: " +
+        FIXTURE +
+        ".snapshot().authorized === true," +
+        " catalogSelected: document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true'," +
+        " resultReady: Boolean(document.querySelector('.search-top-section .search-tile-featured')) };",
     );
-    // The saved term lists as a recent search, which stays text-only.
-    await page.evaluate(`
-      const input = document.querySelector(${q(SEARCH_INPUT)});
-      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-      setValue.call(input, "");
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.focus();
-      return true;
-    `);
+    const recentBefore = await page.evaluate(
+      "return localStorage.getItem(" + q(RECENT_KEY) + ");",
+    );
+    // Clear through SearchView and verify its route and input are both empty
+    // before reopening recent searches through the focus path.
+    const clearClicked = await page.evaluate(
+      "const button = document.querySelector('.search-form .clear-search[aria-label=\"Clear search\"]'); " +
+        "if (!button || button.disabled) return false; button.click(); return true;",
+    );
+    const clearSettled = await waitFor(
+      page,
+      "location.hash === '#/search' && " +
+        "document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ")?.value === '' && " +
+        FIXTURE +
+        ".snapshot().authorized === true && " +
+        "document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true' && " +
+        "(() => { try { return JSON.parse(localStorage.getItem(" +
+        q(RECENT_KEY) +
+        ") ?? '[]').includes('discovery'); } catch { return false; } })()",
+      10_000,
+    );
+    const clearState = await page.evaluate(
+      "let recents = []; try { recents = JSON.parse(localStorage.getItem(" +
+        q(RECENT_KEY) +
+        ") ?? '[]'); } catch {} const input = document.querySelector(" +
+        q(SEARCH_INPUT) +
+        "); return { route: location.hash, input: input?.value ?? null, " +
+        "authorized: " +
+        FIXTURE +
+        ".snapshot().authorized === true, catalogSelected: document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true', storedTerm: recents.includes('discovery') };",
+    );
+    const focusReopened = await page.evaluate(
+      "const input = document.querySelector(" +
+        q(SEARCH_INPUT) +
+        "); if (!input || input.value !== '') return false; " +
+        "input.blur(); input.focus(); return document.activeElement === input;",
+    );
     const recentShown = await waitFor(
       page,
-      `document.querySelectorAll(${q(SUGGESTION_OPTIONS)}).length > 0`,
+      "document.activeElement === document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ") && document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ")?.value === '' && document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ")?.getAttribute('aria-expanded') === 'true' && " +
+        "[...document.querySelectorAll(" +
+        q(SUGGESTION_OPTIONS) +
+        ")].some((node) => node.querySelector('.search-suggestion-copy > span')?.textContent === 'discovery' && node.querySelector('.search-suggestion-remove'))",
       6000,
     );
-    const recentRows = await page.evaluate(`
-      return [...document.querySelectorAll(${q(SUGGESTION_OPTIONS)})].map((node) => ({
-        label: node.querySelector(".search-suggestion-copy > span")?.textContent ?? null,
-        art: Boolean(node.querySelector(".search-suggestion-art")),
-        removable: Boolean(node.querySelector(".search-suggestion-remove")),
-      }));
-    `);
+    const recentRows = await page.evaluate(
+      "return [...document.querySelectorAll(" +
+        q(SUGGESTION_OPTIONS) +
+        ")].map((node) => ({ " +
+        "label: node.querySelector('.search-suggestion-copy > span')?.textContent ?? null, " +
+        "art: Boolean(node.querySelector('.search-suggestion-art')), " +
+        "removable: Boolean(node.querySelector('.search-suggestion-remove')) }));",
+    );
     check(
       "recent searches stay text-only with no thumbnail",
-      recentShown &&
+      searchReady &&
+        authorizationReady &&
+        catalogSelected &&
+        searchSettled &&
+        clearClicked &&
+        clearSettled &&
+        focusReopened &&
+        recentShown &&
         recentRows.some((row) => row.label === "discovery") &&
         recentRows.every((row) => row.art === false && row.removable),
-      recentRows,
+      {
+        searchReady,
+        authorizationReady,
+        catalogSelected,
+        searchSettled,
+        settledSearch,
+        clearClicked,
+        clearSettled,
+        clearState,
+        focusReopened,
+        recentShown,
+        recentRows,
+      },
     );
     await home(page);
     await fixtureCall(page, "emitAuthorizationStatus", [false]);
@@ -1306,8 +1576,13 @@ async function externalSignOut(page, check) {
       },
     );
   } finally {
-    await fixtureCall(page, "emitAuthorizationStatus", [true]);
-    await fixtureCall(page, "reset");
+    // Fixture first, then the app's own sign-in, so the next scenario starts signed in.
+    const restored = await restoreSignedIn(page);
+    check(
+      "discovery ends signed in for the next scenario",
+      restored.signedIn && restored.authorized && restored.error === null,
+      restored,
+    );
   }
 }
 

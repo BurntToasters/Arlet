@@ -7,6 +7,8 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  * album-polish: 2 discs, 4 tracks (703 s), editorial notes with HTML and a
  * script that sets window.__ARLET_POLISH_XSS__, label, copyright, genres.
  * Its tracks carry artwork with bgColor, so Now Playing tints when they play.
+ * polish-bloom-blue, -orange, -dark and -pale carry deterministic artwork
+ * colors for the Now Playing bloom screenshots.
  * album-polish-sparse: no release date, genres, label, notes or durations.
  * pl.polish-fixture: 2 songs and a description with HTML-looking text.
  *
@@ -35,7 +37,9 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  * Request controls: configure({ delayTerms: { pol: 1200 } }) delays a
  *   suggestions term; configure({ rejectQueryKeys: ["views"] }) rejects any
  *   request carrying that query key; configure({ repeatViewCursor: true })
- *   makes every page after the first point at itself.
+ *   makes every page after the first point at itself. configure({
+ *   holdSetQueue: true }) holds queue rebuilds until releaseSetQueue() resolves
+ *   them.
  * Event controls (payloads as the app's MusicKit events reader expects them):
  *   emitAuthorizationStatus(false) sets isAuthorized = false, then emits
  *     authorizationStatusDidChange {}; true sets it back the same way.
@@ -166,6 +170,14 @@ function installMusicKitFixture() {
       },
     },
   };
+  const libraryDiscoverySong = track(
+    "library-discovery-song",
+    "Discovery Library Song",
+  );
+  libraryDiscoverySong.attributes.playParams = {
+    id: libraryDiscoverySong.id,
+    kind: "song",
+  };
   const navTrack = (id, name, relationships) => {
     const resource = track(id, name, "Navigation Album");
     resource.attributes.playParams = { id, kind: "song", catalogId: id };
@@ -245,9 +257,12 @@ function installMusicKitFixture() {
     bigItems.find((item) => item.id === id) ??
     catalogPlaylistItems.find((item) => item.id === id) ??
     albumItems.find((item) => item.id === id) ??
-    [...polishAlbumTracks, ...polishSparseTracks, ...polishPlaylistTracks].find(
-      (item) => item.id === id,
-    ) ??
+    [
+      ...polishAlbumTracks,
+      ...polishSparseTracks,
+      ...polishPlaylistTracks,
+      ...polishBloomTracks,
+    ].find((item) => item.id === id) ??
     navResources[id] ??
     discoveryTrackItems.find((item) => item.id === id) ??
     (id === catalogSong.id ? catalogSong : undefined) ??
@@ -296,6 +311,8 @@ function installMusicKitFixture() {
     unplayableIds: [],
     nativeQueueEdit: false,
     queueEditDelayMs: 0,
+    holdSetQueue: false,
+    setQueueReleases: [],
     // Keyed `${type}:${id}`, e.g. `library-songs:song-a`; values are 1 or -1.
     ratings: {},
     libraryAdds: [],
@@ -324,6 +341,11 @@ function installMusicKitFixture() {
   // Lets every held authorize() call finish through the normal path.
   const releaseHeldAuthorize = () => {
     const releases = state.authorizeReleases.splice(0);
+    for (const release of releases) release();
+    return releases.length;
+  };
+  const releaseHeldSetQueue = () => {
+    const releases = state.setQueueReleases.splice(0);
     for (const release of releases) release();
     return releases.length;
   };
@@ -543,6 +565,19 @@ function installMusicKitFixture() {
     textColor2: "d1d1d6",
     textColor3: "aeaeb2",
     textColor4: "8e8e93",
+  });
+  const polishBloomTracks = [
+    { id: "polish-bloom-blue", name: "Bloom Blue", bgColor: "0756d8" },
+    { id: "polish-bloom-orange", name: "Bloom Orange", bgColor: "e84b08" },
+    { id: "polish-bloom-dark", name: "Bloom Dark", bgColor: "17191e" },
+    { id: "polish-bloom-pale", name: "Bloom Pale", bgColor: "f4ead7" },
+  ].map(({ id, name, bgColor }, index) => {
+    const item = polishTrack(id, name, {
+      number: index + 1,
+      album: "Now Playing Bloom Fixtures",
+    });
+    item.attributes.artwork = { ...polishArtwork(id), bgColor };
+    return item;
   });
   const POLISH_ALBUM_SLUG = "polish-fixture-album";
   const polishAlbumTracks = [
@@ -1337,6 +1372,7 @@ function installMusicKitFixture() {
 
   // Every discovery track, so queued items get their names.
   const discoveryTrackItems = [
+    libraryDiscoverySong,
     ...discoverAlbumTracks,
     ...artistTopSongs,
     ...sparseTopSongs,
@@ -1629,6 +1665,16 @@ function installMusicKitFixture() {
             },
           },
         ],
+      };
+    }
+    if (
+      pathname === "/v1/me/library/search" &&
+      /discovery/iu.test(String(params.term ?? ""))
+    ) {
+      return {
+        results: {
+          "library-songs": { data: [clone(libraryDiscoverySong)] },
+        },
       };
     }
     if (pathname === "/v1/me/recent/played") {
@@ -2567,6 +2613,9 @@ function installMusicKitFixture() {
       emit(events.authorizationStatusDidChange, {});
     },
     async setQueue(options) {
+      if (state.holdSetQueue) {
+        await new Promise((resolve) => state.setQueueReleases.push(resolve));
+      }
       const itemIds = loadQueueItems(
         "setQueue",
         idsFromOptions(options),
@@ -2718,6 +2767,10 @@ function installMusicKitFixture() {
     releaseAuthorize() {
       return releaseHeldAuthorize();
     },
+    /** Lets every held setQueue() call finish; returns how many it released. */
+    releaseSetQueue() {
+      return releaseHeldSetQueue();
+    },
     configure(options = {}) {
       if (Object.prototype.hasOwnProperty.call(options, "delayPaths")) {
         state.delayPaths = [...(options.delayPaths ?? [])];
@@ -2786,6 +2839,9 @@ function installMusicKitFixture() {
           Number(options.queueEditDelayMs) || 0,
         );
       }
+      if (Object.prototype.hasOwnProperty.call(options, "holdSetQueue")) {
+        state.holdSetQueue = options.holdSetQueue === true;
+      }
       if (Object.prototype.hasOwnProperty.call(options, "delayTerms")) {
         state.delayTerms = Object.fromEntries(
           Object.entries(options.delayTerms ?? {}).map(([term, ms]) => [
@@ -2829,6 +2885,8 @@ function installMusicKitFixture() {
       state.unplayableIds = [];
       state.nativeQueueEdit = false;
       state.queueEditDelayMs = 0;
+      state.holdSetQueue = false;
+      releaseHeldSetQueue();
       state.ratings = {};
       state.libraryAdds = [];
       state.librarySize = 0;
@@ -3104,6 +3162,7 @@ function installMusicKitFixture() {
         queueEdit: {
           native: state.nativeQueueEdit,
           delayMs: state.queueEditDelayMs,
+          setQueueHeld: state.setQueueReleases.length,
         },
         queue: captureQueue(),
         modes: {
@@ -3114,6 +3173,24 @@ function installMusicKitFixture() {
         authorized: instance.isAuthorized === true,
         apiGeneration,
         authorizeHeld: state.authorizeReleases.length,
+        // Request controls a scenario can leave set; the runner's isolation
+        // guard compares them with the defaults after each scenario.
+        controls: {
+          holdSetQueue: state.holdSetQueue,
+          hangAuthorize: state.hangAuthorize,
+          delayPaths: clone(state.delayPaths),
+          delayMs: state.delayMs,
+          delayTerms: clone(state.delayTerms),
+          queueEditDelayMs: state.queueEditDelayMs,
+          rejectPaths: clone(state.rejectPaths),
+          rejectQueryKeys: clone(state.rejectQueryKeys),
+          rejectMeStatus: state.rejectMeStatus,
+          rejectAuthorize: state.rejectAuthorize,
+          rejectPlay: state.rejectPlay,
+          rejectPlayTimes: state.rejectPlayTimes,
+          repeatPlaylistCursor: state.repeatPlaylistCursor,
+          repeatViewCursor: state.repeatViewCursor,
+        },
         configure: state.configureOptions
           ? clone(state.configureOptions)
           : null,

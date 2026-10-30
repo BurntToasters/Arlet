@@ -1,4 +1,5 @@
 import { setNativeLogDebugMode } from "../diagnostics/native.ts";
+import { reportActionError } from "../components/action-errors.ts";
 import { setAutoplayEnabled } from "../musickit/player.ts";
 import {
   getState,
@@ -65,12 +66,20 @@ export function createControllerSettings(
    * runs, so an older snapshot can never land after a newer one.
    */
   const queueSettingsSave = (): Promise<void> => {
-    volumeSaveQueue = volumeSaveQueue
-      .then(() => savePersistedSettings(getState().settings, invokeFn))
-      .catch((error: unknown) => {
-        log(`Settings save failed: ${errorMessage(error)}`);
-      });
-    return volumeSaveQueue;
+    const save = volumeSaveQueue.then(() =>
+      savePersistedSettings(getState().settings, invokeFn),
+    );
+    volumeSaveQueue = save.then(
+      () => undefined,
+      (error: unknown) => {
+        try {
+          log(`Settings save failed: ${errorMessage(error)}`);
+        } catch {
+          return;
+        }
+      },
+    );
+    return save;
   };
 
   const persistSettings = async (settings: AppSettings): Promise<void> => {
@@ -100,9 +109,22 @@ export function createControllerSettings(
     if (getState().settings.volume !== volume) {
       setSettings({ ...getState().settings, volume });
     }
-    void queueSettingsSave().then(() => {
-      for (const resolve of waiters) resolve();
-    });
+    void queueSettingsSave().then(
+      () => {
+        for (const resolve of waiters) resolve();
+      },
+      (error: unknown) => {
+        try {
+          reportActionError(error);
+        } catch (reportError) {
+          log(
+            `Could not report volume save failure: ${errorMessage(reportError)}`,
+          );
+        } finally {
+          for (const resolve of waiters) resolve();
+        }
+      },
+    );
   };
 
   /** Restarts the debounce, so the save waits until the input settles. */

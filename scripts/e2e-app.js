@@ -2,10 +2,11 @@
 // Native end-to-end gate (Windows, opt-in). Builds a release binary with a
 // synthetic MusicKit token, drives the real app over WebView2's DevTools
 // Protocol, and writes e2e-artifacts/<timestamp>/{report.json,screenshot.png,
-// arlet.log}. Per-user Arlet data folders are moved aside and restored.
+// arlet.log}. Each run uses an isolated marked data and WebView2 profile.
 // The failure modes it covers are listed in docs/TESTING.md.
 //
 // Usage: node scripts/e2e-app.js [--skip-build] [--real-token] [--foreground]
+//   [--scenarios name1,name2]
 // --real-token embeds MUSICKIT_DEVELOPER_TOKEN from the environment and checks
 // that Apple accepts it from the release origin (catalog request, no sign-in).
 // Arlet launches in the background (never the active window, behind other
@@ -15,6 +16,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,15 +42,24 @@ import { runDiscovery } from "./e2e-discovery.js";
 import { runArtwork } from "./e2e-artwork.js";
 import { runAccountSession } from "./e2e-account-session.js";
 import { runAuditFixes } from "./e2e-audit-fixes.js";
+import { runAuditRegressions } from "./e2e-audit-regressions.js";
+import { runDeepRegressions } from "./e2e-deep-regressions.js";
+import { runHandoffSettingsRegressions } from "./e2e-handoff-settings-regressions.js";
 import { runSessionRestore } from "./e2e-session-restore.js";
 import { sleep } from "./e2e-helpers.js";
+import { connectCdp, findPageTarget } from "./e2e-cdp.js";
+import { withE2eProfileSetup } from "./e2e-profile.js";
 import { startForegroundMonitor } from "./e2e-foreground.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const IDENTIFIER = "run.rosie.arlet";
 const TARGET_DIR = path.join(root, "src-tauri", "target", "e2e");
 const EXE = path.join(TARGET_DIR, "release", "arlet.exe");
-const DEBUG_PORT = 9333;
+const E2E_BUILD_PROOF = path.join(TARGET_DIR, "e2e-feature-build.json");
+let DEBUG_PORT;
+let e2eProfileRoot;
+let e2eProfileOwnership;
+let processVerificationFailed = false;
+const ownedAppPids = new Set();
 // Launch-at-startup writes its Run value here, never to the real Run key:
 // the app reads ARLET_E2E_RUN_KEY (Rust side) and the whole key is removed
 // before and after each run.
@@ -85,6 +96,205 @@ const LIVE_SCRIPT_MARKERS = [
   ["userTokenIsValid"],
 ];
 const USER_TOKEN = "AqmL0f7xY2/Zp+Q9wR3kT8vN1bC4dE6gH5jK7mP0sU2yW==";
+const SCENARIO_REGISTRY = [
+  ["playlist-playback", runPlaylistPlayback],
+  ["song-navigation", runSongNavigation],
+  ["transport", runTransport],
+  ["queue-edit", runQueueEdit],
+  ["library-actions", runLibraryActions],
+  ["now-playing", runNowPlaying],
+  ["radio-artist", runRadioArtist],
+  ["unavailable", runUnavailable],
+  ["layout", runLayout],
+  ["desktop", runDesktop],
+  ["flows", runFlows],
+  ["library-view", runLibraryView],
+  ["shortcuts", runShortcuts],
+  ["multi-select", runMultiSelect],
+  ["mini-player", runMiniPlayer],
+  ["performance", runPerformance],
+  ["polish", runPolish],
+  ["discovery", runDiscovery],
+  ["artwork", runArtwork],
+  ["audit-fixes", runAuditFixes],
+  ["audit-regressions", runAuditRegressions],
+  ["deep-regressions", runDeepRegressions],
+  ["handoff-settings-regressions", runHandoffSettingsRegressions],
+  ["account-session", runAccountSession],
+  // Last in the full suite because it signs out at the end.
+  ["session-restore", runSessionRestore],
+];
+
+// Scenarios that intentionally end signed out. The isolation guard skips the
+// signed-in invariant for these only.
+const SCENARIOS_ENDING_SIGNED_OUT = new Set(["session-restore"]);
+
+// Fixture request controls and their defaults (reset() in
+// scripts/e2e-music-fixture.js). The isolation guard reports any that a
+// scenario left set, then restores them. delayMs is restored too, but only
+// matters while delayPaths is set, so it is not judged on its own.
+const FIXTURE_CONTROL_DEFAULTS = {
+  holdSetQueue: false,
+  hangAuthorize: false,
+  delayPaths: [],
+  delayTerms: {},
+  queueEditDelayMs: 0,
+  rejectPaths: [],
+  rejectQueryKeys: [],
+  rejectMeStatus: 0,
+  rejectAuthorize: false,
+  rejectPlay: false,
+  rejectPlayTimes: 0,
+  repeatPlaylistCursor: false,
+  repeatViewCursor: false,
+};
+
+/**
+ * Post-scenario isolation guard. Records one check per scenario that the app
+ * is signed in (unless the scenario is in SCENARIOS_ENDING_SIGNED_OUT), on the
+ * shell rather than the mini player, and has no fixture hold, delay or
+ * rejection left set. It then restores the fixture request controls to
+ * defaults, releasing held calls, but does not repair app state: the failing
+ * check names the scenario that leaked. Never throws.
+ */
+async function checkScenarioIsolation(page, name, check) {
+  const checkName = `${name} leaves the app ready for the next scenario`;
+  const signedOutAllowed = SCENARIOS_ENDING_SIGNED_OUT.has(name);
+  let detail;
+  let passed = false;
+  try {
+    const observed = await page.evaluate(`
+      const fixture = window.__ARLET_E2E_MUSIC__;
+      const snapshot = fixture.snapshot();
+      return {
+        signedInUi: document.querySelector(".titlebar-status")?.textContent.trim() ?? null,
+        fixtureAuthorized: snapshot.authorized === true,
+        shellVisible: Boolean(document.querySelector(".app-shell")),
+        miniPlayerVisible: Boolean(document.querySelector(".mini-player")),
+        setQueueHeld: snapshot.queueEdit.setQueueHeld,
+        authorizeHeld: snapshot.authorizeHeld,
+        controls: snapshot.controls,
+      };`);
+    const leftoverControls = Object.fromEntries(
+      Object.entries(FIXTURE_CONTROL_DEFAULTS)
+        .filter(
+          ([key, value]) =>
+            JSON.stringify(observed.controls?.[key]) !== JSON.stringify(value),
+        )
+        .map(([key]) => [key, observed.controls?.[key]]),
+    );
+    const signedIn =
+      observed.signedInUi?.includes("Connected") === true &&
+      observed.fixtureAuthorized;
+    const signedInOk = signedOutAllowed || signedIn;
+    const shellOk = observed.shellVisible && !observed.miniPlayerVisible;
+    const holdsOk = observed.setQueueHeld === 0 && observed.authorizeHeld === 0;
+    const leftoversOk = Object.keys(leftoverControls).length === 0;
+    passed = signedInOk && shellOk && holdsOk && leftoversOk;
+    detail = {
+      signedOutAllowed,
+      signedInUi: observed.signedInUi,
+      fixtureAuthorized: observed.fixtureAuthorized,
+      shellVisible: observed.shellVisible,
+      miniPlayerVisible: observed.miniPlayerVisible,
+      heldCalls: {
+        setQueue: observed.setQueueHeld,
+        authorize: observed.authorizeHeld,
+      },
+      leftoverControls,
+    };
+  } catch (error) {
+    detail = { error: String(error?.message ?? error) };
+  }
+  let restoreError;
+  try {
+    await page.evaluate(`
+      const fixture = window.__ARLET_E2E_MUSIC__;
+      fixture.configure(${JSON.stringify({ ...FIXTURE_CONTROL_DEFAULTS, delayMs: 800 })});
+      fixture.releaseSetQueue();
+      fixture.releaseAuthorize();
+      return true;`);
+  } catch (error) {
+    restoreError = String(error?.message ?? error);
+  }
+  check(checkName, passed, {
+    ...detail,
+    ...(restoreError === undefined ? {} : { restoreError }),
+  });
+}
+
+function selectScenarios(argv) {
+  const selectedValues = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === "--scenarios") {
+      if (selectedValues.length) {
+        return {
+          selectedScenarios: [],
+          fullSuite: false,
+          error: "use --scenarios once",
+        };
+      }
+      const value = argv[index + 1];
+      if (!value || value.startsWith("--")) {
+        return {
+          selectedScenarios: [],
+          fullSuite: false,
+          error: "--scenarios needs a comma-separated scenario list",
+        };
+      }
+      selectedValues.push(value);
+      index += 1;
+    } else if (argument.startsWith("--scenarios=")) {
+      if (selectedValues.length) {
+        return {
+          selectedScenarios: [],
+          fullSuite: false,
+          error: "use --scenarios once",
+        };
+      }
+      selectedValues.push(argument.slice("--scenarios=".length));
+    }
+  }
+
+  if (!selectedValues.length) {
+    return {
+      selectedScenarios: SCENARIO_REGISTRY.map(([name]) => name),
+      fullSuite: true,
+      error: null,
+    };
+  }
+
+  const names = selectedValues[0].split(",").map((name) => name.trim());
+  if (names.some((name) => !name)) {
+    return {
+      selectedScenarios: [],
+      fullSuite: false,
+      error: "scenario names must not be empty",
+    };
+  }
+  if (new Set(names).size !== names.length) {
+    return {
+      selectedScenarios: [],
+      fullSuite: false,
+      error: "scenario names must be unique",
+    };
+  }
+  const available = new Set(SCENARIO_REGISTRY.map(([name]) => name));
+  const unknown = names.filter((name) => !available.has(name));
+  if (unknown.length) {
+    return {
+      selectedScenarios: [],
+      fullSuite: false,
+      error:
+        "unknown scenario(s): " +
+        unknown.join(", ") +
+        "; available: " +
+        [...available].join(", "),
+    };
+  }
+  return { selectedScenarios: names, fullSuite: false, error: null };
+}
 
 function fail(message) {
   throw new Error(`[e2e-app] ${message}`);
@@ -94,10 +304,29 @@ function fail(message) {
 // extra switches. Feature lists are merged into one switch each so no list
 // silently replaces another; other switches are kept once, first-seen order.
 function buildWebView2Args(...extraSwitches) {
-  const tokens = [
-    ...(process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS ?? "").split(/\s+/),
-    ...extraSwitches,
-  ];
+  const inherited = (
+    process.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS ?? ""
+  ).split(/\s+/u);
+  const safeInherited = [];
+  for (let index = 0; index < inherited.length; index += 1) {
+    const token = inherited[index];
+    if (
+      /^--(?:remote-debugging-port|remote-debugging-address|user-data-dir)(?:=|$)/iu.test(
+        token,
+      )
+    ) {
+      if (!token.includes("=")) index += 1;
+    } else if (
+      /^--(?:no-sandbox|disable-web-security|allow-running-insecure-content)(?:=|$)/iu.test(
+        token,
+      )
+    ) {
+      continue;
+    } else if (token) {
+      safeInherited.push(token);
+    }
+  }
+  const tokens = [...safeInherited, ...extraSwitches];
   const ordered = [];
   const featureLists = new Map();
   const addFeatures = (prefix, names) => {
@@ -140,31 +369,106 @@ function syntheticToken() {
   return `${encode({ alg: "ES256", kid: "E2ETEST" })}.${encode({ iss: "E2E", iat: 0, exp })}.${Buffer.from("e2e-signature").toString("base64url")}`;
 }
 
-function build(token) {
+function tokenFingerprint(token) {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+function detectTokenMode(token) {
+  try {
+    const [headerPart, payloadPart] = String(token).split(".");
+    const header = JSON.parse(Buffer.from(headerPart, "base64url").toString());
+    const payload = JSON.parse(
+      Buffer.from(payloadPart, "base64url").toString(),
+    );
+    return header.kid === "E2ETEST" && payload.iss === "E2E"
+      ? "synthetic"
+      : "real";
+  } catch {
+    return "unknown";
+  }
+}
+
+function build(token, tokenMode) {
   const env = { ...process.env, CARGO_TARGET_DIR: TARGET_DIR };
   env.MUSICKIT_DEVELOPER_TOKEN = token;
   delete env.ARLET_SKIP_MUSICKIT_TOKEN;
   const result = spawnSync(
     "cmd.exe",
-    ["/d", "/s", "/c", "npx tauri build --no-bundle"],
+    ["/d", "/s", "/c", "npx tauri build --no-bundle --features e2e"],
     { cwd: root, env, stdio: "inherit", windowsHide: true },
   );
-  if (result.status !== 0) fail(`release build failed (${result.status})`);
+  if (result.error || result.status !== 0) {
+    fail(
+      `E2E release build failed (${result.error?.message ?? result.status})`,
+    );
+  }
+  if (!fs.existsSync(EXE)) fail(`E2E build did not produce ${EXE}`);
+  const sha256 = crypto
+    .createHash("sha256")
+    .update(fs.readFileSync(EXE))
+    .digest("hex");
+  fs.writeFileSync(
+    E2E_BUILD_PROOF,
+    `${JSON.stringify(
+      {
+        feature: "e2e",
+        tokenMode,
+        tokenFingerprint: tokenFingerprint(token),
+        builtAt: new Date().toISOString(),
+        sha256,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
+function verifyE2eBuildProof(
+  token,
+  tokenMode,
+  { allowRefreshedSyntheticToken = false } = {},
+) {
+  if (!fs.existsSync(EXE)) fail(`missing ${EXE}`);
+  let proof;
+  try {
+    proof = JSON.parse(fs.readFileSync(E2E_BUILD_PROOF, "utf8"));
+  } catch {
+    fail(
+      "--skip-build requires a prior E2E-feature build recorded by this harness",
+    );
+  }
+  const sha256 = crypto
+    .createHash("sha256")
+    .update(fs.readFileSync(EXE))
+    .digest("hex");
+  if (
+    proof?.feature !== "e2e" ||
+    proof.sha256 !== sha256 ||
+    proof.tokenMode !== tokenMode ||
+    !/^[a-f0-9]{64}$/u.test(proof.tokenFingerprint ?? "")
+  ) {
+    fail("--skip-build binary does not match the verified E2E-feature build");
+  }
+  if (
+    (!allowRefreshedSyntheticToken || tokenMode !== "synthetic") &&
+    proof.tokenFingerprint !== tokenFingerprint(token)
+  ) {
+    fail("E2E build token does not match the requested token mode and value");
+  }
+  return proof;
 }
 
 function dataDirs() {
-  return ["APPDATA", "LOCALAPPDATA"].map((name) => {
-    const parent = process.env[name];
-    if (!parent || !path.isAbsolute(parent)) fail(`${name} must be absolute`);
-    const target = path.resolve(parent, IDENTIFIER);
-    if (
-      path.dirname(target) !== path.resolve(parent) ||
-      path.basename(target) !== IDENTIFIER
-    ) {
-      fail(`unsafe E2E data directory: ${target}`);
-    }
-    return target;
-  });
+  if (!e2eProfileRoot || !path.isAbsolute(e2eProfileRoot)) {
+    fail("the isolated E2E profile root has not been initialized");
+  }
+  return {
+    root: e2eProfileRoot,
+    data: path.join(e2eProfileRoot, "data"),
+    local: path.join(e2eProfileRoot, "local"),
+    logs: path.join(e2eProfileRoot, "logs"),
+    webview: path.join(e2eProfileRoot, "webview"),
+  };
 }
 
 /**
@@ -193,99 +497,19 @@ const EXPIRED_TOKEN_SOURCE = `(() => {
   };
 })();`;
 
-// Written into the test profile so a later run can tell it from real data.
-const TEST_PROFILE_MARKER = ".arlet-e2e-test-profile";
+// All files seeded by the harness stay below its fresh marked profile root.
 
-function isTestProfile(dir) {
-  return fs.existsSync(path.join(dir, TEST_PROFILE_MARKER));
-}
-
-/**
- * A run that was killed (a timeout, a closed terminal) cannot restore in
- * `finally`, and Windows gives no signal to catch. It leaves the real data in
- * a backup and the marked test profile in place; put the real data back
- * before anything else. Real data without a marker is never deleted.
- */
-function recoverInterruptedRun() {
-  for (const dir of dataDirs()) {
-    const parent = path.dirname(dir);
-    const backups = fs.existsSync(parent)
-      ? fs
-          .readdirSync(parent)
-          .filter((name) => name.startsWith(`${IDENTIFIER}.e2e-backup-`))
-          .sort()
-      : [];
-    if (backups.length === 0) {
-      // A run with no real data to move leaves only the test profile.
-      if (isTestProfile(dir)) {
-        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
-      }
-      continue;
-    }
-    if (backups.length > 1 || (fs.existsSync(dir) && !isTestProfile(dir))) {
-      fail(
-        `previous E2E backup found: ${path.join(parent, backups[0])}. ${dir} holds data this run did not create, so it is left alone. Restore the backup by hand first.`,
-      );
-    }
-    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
-    fs.renameSync(path.join(parent, backups[0]), dir);
-    console.log(
-      `[e2e-app] Restored ${dir} from an interrupted run (${backups[0]}).`,
-    );
-  }
-}
-
-function moveAside(stamp) {
-  recoverInterruptedRun();
-  const moved = [];
-  for (const dir of dataDirs()) {
-    if (fs.existsSync(dir)) {
-      const backup = `${dir}.e2e-backup-${stamp}`;
-      fs.renameSync(dir, backup);
-      moved.push({ dir, backup });
-    }
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, TEST_PROFILE_MARKER), "");
-  }
-  return moved;
-}
-
-function restore(moved) {
-  // One profile that cannot be deleted must not stop the other restores.
-  for (const dir of dataDirs()) {
-    try {
-      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10 });
-    } catch (error) {
-      console.error(
-        `[e2e-app] Could not remove the test profile at ${dir}: ${error.message}`,
-      );
-    }
-  }
-  for (const { dir, backup } of moved) {
-    try {
-      fs.renameSync(backup, dir);
-    } catch (error) {
-      console.error(
-        `[e2e-app] Could not restore ${dir}; your data is at ${backup}: ${error.message}`,
-      );
-    }
-  }
-}
-
-/** The test profile's arlet.log (Tauri's app log dir), or "" when absent. */
+/** The isolated profile's arlet.log (Tauri's app log dir), or "" when absent. */
 function readTestLog() {
   try {
-    return fs.readFileSync(
-      path.join(dataDirs()[1], "logs", "arlet.log"),
-      "utf8",
-    );
+    return fs.readFileSync(path.join(dataDirs().logs, "arlet.log"), "utf8");
   } catch {
     return "";
   }
 }
 
 function seedCorruptSettings() {
-  const roaming = dataDirs()[0];
+  const roaming = dataDirs().data;
   fs.mkdirSync(roaming, { recursive: true });
   fs.writeFileSync(path.join(roaming, "settings.json"), '{"theme":');
   fs.writeFileSync(
@@ -303,7 +527,7 @@ const CACHE_SCOPE = "current-account";
 
 /** A cache written by the former SQL plugin: same tables, user_version 0. */
 function seedLegacyCache() {
-  const db = new DatabaseSync(path.join(dataDirs()[0], "arlet-library.db"));
+  const db = new DatabaseSync(path.join(dataDirs().data, "arlet-library.db"));
   try {
     db.exec(`
       CREATE TABLE music_resources (scope TEXT NOT NULL, resource_type TEXT NOT NULL,
@@ -393,28 +617,72 @@ async function waitUntil(condition, timeoutMs) {
   return condition();
 }
 
-/** Waits until no Arlet process is left, so files are no longer locked. */
+/** Waits until this run's isolated app process has exited. */
 function waitForArletExit(timeoutMs = 15_000) {
-  return waitUntil(() => runningArletPid() === undefined, timeoutMs);
+  return waitUntil(
+    () => ownedProcessPids().every((pid) => !processAlive(pid)),
+    timeoutMs,
+  );
 }
 
 function processAlive(pid) {
-  const out = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/NH"], {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  const result = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/NH"], {
     encoding: "utf8",
-  }).stdout;
-  return new RegExp(`\\b${pid}\\b`, "u").test(out);
+    windowsHide: true,
+    timeout: 5000,
+  });
+  if (
+    result.error ||
+    result.status !== 0 ||
+    typeof result.stdout !== "string" ||
+    !result.stdout.trim()
+  ) {
+    processVerificationFailed = true;
+    throw new Error(
+      `could not verify process ${pid}: ${result.error?.message ?? result.stderr?.trim() ?? result.status ?? "missing tasklist output"}`,
+    );
+  }
+  return new RegExp(`\\b${pid}\\b`, "u").test(result.stdout);
 }
 
-// PID of the running Arlet. After the settings reset restart this differs
-// from the spawned child's PID.
+function readAppProcessRecord() {
+  if (!e2eProfileRoot) return undefined;
+  try {
+    const value = JSON.parse(
+      fs.readFileSync(path.join(e2eProfileRoot, "app.pid"), "utf8"),
+    );
+    if (
+      !Number.isInteger(value.pid) ||
+      value.pid <= 0 ||
+      !Number.isFinite(value.startedAtUnixMs) ||
+      !e2eProfileOwnership ||
+      value.runId !== e2eProfileOwnership.runId ||
+      value.ownerToken !== e2eProfileOwnership.ownerToken
+    ) {
+      return undefined;
+    }
+    return value;
+  } catch {
+    return undefined;
+  }
+}
+
+// PID and start time recorded by the isolated app for safe restart tracking.
+function runningArletInfo() {
+  const value = readAppProcessRecord();
+  return value && processAlive(value.pid) ? value : undefined;
+}
+
 function runningArletPid() {
-  const out = spawnSync(
-    "tasklist",
-    ["/FI", "IMAGENAME eq arlet.exe", "/FO", "CSV", "/NH"],
-    { encoding: "utf8" },
-  ).stdout;
-  const match = /^"arlet\.exe","(\d+)"/imu.exec(out ?? "");
-  return match ? Number(match[1]) : undefined;
+  return runningArletInfo()?.pid;
+}
+
+function ownedProcessPids() {
+  const candidates = new Set(ownedAppPids);
+  const profileProcess = readAppProcessRecord();
+  if (profileProcess?.pid) candidates.add(profileProcess.pid);
+  return [...candidates];
 }
 
 // The settings reset restarts Arlet as a new process outside the original
@@ -433,14 +701,107 @@ const BACKGROUND_SWITCHES = FOREGROUND
     ];
 
 function clearE2eRunKey() {
-  spawnSync("reg", ["delete", E2E_REG_ROOT, "/f"], {
-    stdio: "ignore",
+  const result = spawnSync("reg", ["delete", E2E_REG_ROOT, "/f"], {
+    encoding: "utf8",
     windowsHide: true,
+    timeout: 5000,
   });
+  if (result.error) throw result.error;
+  if (
+    result.status !== 0 &&
+    !/unable to find the specified registry key|cannot find the specified registry key/iu.test(
+      `${result.stdout ?? ""}\n${result.stderr ?? ""}`,
+    )
+  ) {
+    throw new Error(
+      `registry cleanup failed (${result.status}): ${(result.stdout ?? result.stderr ?? "").trim()}`,
+    );
+  }
 }
 
-function killArlet() {
-  spawnSync("taskkill", ["/IM", "arlet.exe", "/T", "/F"], { stdio: "ignore" });
+function isE2eExecutable(pid, startedAtUnixMs) {
+  const result = spawnSync(
+    "powershell.exe",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      '$ErrorActionPreference = "Stop"; try { $p = Get-CimInstance Win32_Process -Filter "ProcessId = $env:ARLET_E2E_PID" -ErrorAction Stop } catch { exit 2 }; if (-not $p -or -not $p.ExecutablePath -or -not [String]::Equals($p.ExecutablePath, $env:ARLET_E2E_EXE, [StringComparison]::OrdinalIgnoreCase)) { exit 1 }; if ($env:ARLET_E2E_STARTED_AT) { if (-not $p.CreationDate) { exit 1 }; $actual = ([DateTime]$p.CreationDate).ToUniversalTime(); $expected = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$env:ARLET_E2E_STARTED_AT).UtcDateTime; if ([Math]::Abs(($actual - $expected).TotalSeconds) -gt 30) { exit 1 } }; exit 0',
+    ],
+    {
+      env: {
+        ...process.env,
+        ARLET_E2E_PID: String(pid),
+        ARLET_E2E_EXE: EXE,
+        ARLET_E2E_STARTED_AT: startedAtUnixMs ? String(startedAtUnixMs) : "",
+      },
+      stdio: "ignore",
+      windowsHide: true,
+      timeout: 5000,
+    },
+  );
+  if (result.error || result.status === null || result.status === undefined) {
+    processVerificationFailed = true;
+    throw new Error(
+      `could not verify E2E process identity for ${pid}: ${result.error?.message ?? result.stderr?.trim() ?? "PowerShell did not return a status"}`,
+    );
+  }
+  if (result.status === 2 || (result.status !== 0 && result.status !== 1)) {
+    processVerificationFailed = true;
+    throw new Error(
+      `could not verify E2E process identity for ${pid}: PowerShell exited with status ${result.status}`,
+    );
+  }
+  return result.status === 0;
+}
+
+function killOwnedArlet() {
+  const candidates = new Set(ownedAppPids);
+  const profileProcess = runningArletInfo();
+  if (profileProcess?.pid) candidates.add(profileProcess.pid);
+  const failures = [];
+  for (const pid of candidates) {
+    let alive;
+    try {
+      alive = processAlive(pid);
+    } catch (error) {
+      failures.push({ pid, error: error.message });
+      continue;
+    }
+    if (!alive) continue;
+    const profileStart =
+      profileProcess?.pid === pid ? profileProcess.startedAtUnixMs : undefined;
+    let isOwned;
+    try {
+      isOwned = isE2eExecutable(pid, profileStart);
+    } catch (error) {
+      failures.push({ pid, error: error.message });
+      continue;
+    }
+    if (!isOwned) continue;
+    const result = spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      stdio: "ignore",
+      windowsHide: true,
+      timeout: 10_000,
+    });
+    let stillAlive;
+    try {
+      stillAlive = processAlive(pid);
+    } catch (error) {
+      failures.push({
+        pid,
+        error: `could not verify taskkill result: ${error.message}`,
+      });
+      continue;
+    }
+    if ((result.error || result.status !== 0) && stillAlive) {
+      failures.push({
+        pid,
+        error: result.error?.message ?? `taskkill ${result.status}`,
+      });
+    }
+  }
+  return { candidates: [...candidates], failures };
 }
 
 // Physical pixels; deliberately not the 1000x700 default window.
@@ -545,87 +906,6 @@ public static class ArletE2eVisibility {
 
 const near = (actual, expected) => Math.abs(actual - expected) <= 2;
 
-/**
- * Waits for the app page on the debugging port. `launched` is the process
- * just started; its early exit is reported instead of a 60-second timeout.
- */
-async function findPageTarget(deadline, launched) {
-  let lastSeen = "port never answered";
-  while (Date.now() < deadline) {
-    if (launched && launched.exitCode !== null) {
-      fail(`Arlet exited during startup (exit code ${launched.exitCode})`);
-    }
-    try {
-      const response = await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/list`);
-      const targets = await response.json();
-      lastSeen = `targets: ${JSON.stringify(
-        targets.map((target) => ({ type: target.type, url: target.url })),
-      ).slice(0, 300)}`;
-      const page = targets.find(
-        (target) =>
-          target.type === "page" &&
-          /^(https?:\/\/tauri\.localhost|tauri:\/\/localhost)/u.test(
-            target.url,
-          ),
-      );
-      if (page) return page;
-    } catch (error) {
-      // WebView2 has not opened the debugging port yet.
-      lastSeen = String(error?.cause?.code ?? error?.message ?? error);
-    }
-    await sleep(250);
-  }
-  // A port that never answers usually means WebView2 ignored
-  // WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS (policy) or another app holds it.
-  fail(
-    `app webview never exposed a debugging target on port ${DEBUG_PORT} (${lastSeen})`,
-  );
-}
-
-function connect(url) {
-  const socket = new WebSocket(url);
-  const pending = new Map();
-  let nextId = 0;
-  socket.addEventListener("message", (event) => {
-    const message = JSON.parse(String(event.data));
-    const waiter = pending.get(message.id);
-    if (!waiter) return;
-    pending.delete(message.id);
-    if (message.error) waiter.reject(new Error(message.error.message));
-    else waiter.resolve(message.result);
-  });
-  const opened = new Promise((resolve, reject) => {
-    socket.addEventListener("open", resolve, { once: true });
-    socket.addEventListener("error", reject, { once: true });
-  });
-  // A background window is never focused; the page still behaves as focused.
-  if (!FOREGROUND) {
-    void opened
-      .then(() => send("Emulation.setFocusEmulationEnabled", { enabled: true }))
-      .catch(() => undefined);
-  }
-  const send = (method, params = {}) =>
-    new Promise((resolve, reject) => {
-      const id = ++nextId;
-      pending.set(id, { resolve, reject });
-      socket.send(JSON.stringify({ id, method, params }));
-    });
-  const evaluate = async (expression) => {
-    const result = await send("Runtime.evaluate", {
-      expression: `(async () => { ${expression} })()`,
-      awaitPromise: true,
-      returnByValue: true,
-    });
-    if (result.exceptionDetails) {
-      fail(
-        `page script threw: ${result.exceptionDetails.exception?.description ?? result.exceptionDetails.text}`,
-      );
-    }
-    return result.result.value;
-  };
-  return { opened, send, evaluate, close: () => socket.close() };
-}
-
 const invoke = (command, args = {}) =>
   `window.__TAURI_INTERNALS__.invoke(${JSON.stringify(command)}, ${JSON.stringify(args)})`;
 
@@ -694,35 +974,142 @@ function pruneOldRuns(artifactsRoot, currentStamp, keep) {
   }
 }
 
-async function run() {
-  if (process.platform !== "win32") fail("Windows only");
-  // Windows OpenSSH sessions are elevated and have no interactive desktop;
-  // WebView2 fails there with "Invalid window handle" after a long wait.
-  if (process.env.SSH_CONNECTION || process.env.SSH_CLIENT) {
-    fail(
-      "cannot run in an SSH session (WebView2 has no desktop there); run it from a terminal at the machine's desktop",
-    );
-  }
-  const running = spawnSync("tasklist", ["/FI", "IMAGENAME eq arlet.exe"], {
-    encoding: "utf8",
-  }).stdout;
-  if (/arlet\.exe/iu.test(running)) {
-    fail("close every running Arlet instance first (single-instance app)");
-  }
+async function allocateDebugPort() {
+  const server = createServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  await new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+  return address.port;
+}
 
+function retainTail(previous, chunk, maxBytes = 256 * 1024) {
+  const next = previous + chunk;
+  const bytes = Buffer.from(next, "utf8");
+  return bytes.length <= maxBytes
+    ? next
+    : bytes.subarray(bytes.length - maxBytes).toString("utf8");
+}
+
+function captureChildOutput(child, output, onSpawnError) {
+  for (const [stream, key] of [
+    [child.stdout, "stdout"],
+    [child.stderr, "stderr"],
+  ]) {
+    stream?.setEncoding("utf8");
+    stream?.on("data", (chunk) => {
+      output[key] = retainTail(output[key], chunk);
+    });
+  }
+  child.on("error", (error) => {
+    child.spawnError = error;
+    onSpawnError(error);
+  });
+  child.on("exit", (code, signal) => {
+    child.exitInfo = { code, signal, at: new Date().toISOString() };
+    if (child.pid) ownedAppPids.delete(child.pid);
+  });
+}
+
+function collectWebViewDiagnostics(startedAt) {
+  const script = String.raw`
+$ErrorActionPreference = "SilentlyContinue"
+$start = [DateTimeOffset]::Parse($env:ARLET_E2E_STARTED_AT).LocalDateTime
+$programFilesX86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+$roots = @(
+  (Join-Path $programFilesX86 "Microsoft\EdgeWebView\Application"),
+  (Join-Path $env:ProgramFiles "Microsoft\EdgeWebView\Application")
+)
+$runtimes = @()
+foreach ($root in $roots) {
+  foreach ($directory in (Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue)) {
+    $exe = Join-Path $directory.FullName "msedgewebview2.exe"
+    if (Test-Path -LiteralPath $exe) {
+      $file = Get-Item -LiteralPath $exe
+      $runtimes += [pscustomobject]@{ path = $exe; fileVersion = $file.VersionInfo.FileVersion; productVersion = $file.VersionInfo.ProductVersion }
+    }
+  }
+}
+$processCandidates = @(Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($env:ARLET_E2E_DATA_ROOT, [StringComparison]::OrdinalIgnoreCase) -ge 0 })
+foreach ($process in $processCandidates) {
+  if ($process.ExecutablePath -and (Test-Path -LiteralPath $process.ExecutablePath) -and -not ($runtimes | Where-Object { $_.path -eq $process.ExecutablePath })) {
+    $file = Get-Item -LiteralPath $process.ExecutablePath
+    $runtimes += [pscustomobject]@{ path = $process.ExecutablePath; fileVersion = $file.VersionInfo.FileVersion; productVersion = $file.VersionInfo.ProductVersion }
+  }
+}
+$processes = @($processCandidates | Select-Object ProcessId, ParentProcessId, ExecutablePath, CommandLine)
+$webViewLogs = @(Get-WinEvent -ListLog '*WebView*' -ErrorAction SilentlyContinue | Where-Object { $_.IsEnabled } | Select-Object -ExpandProperty LogName)
+$events = @()
+foreach ($logName in $webViewLogs) {
+  $events += Get-WinEvent -FilterHashtable @{ LogName = $logName; StartTime = $start } -MaxEvents 40 -ErrorAction SilentlyContinue | ForEach-Object {
+    [pscustomobject]@{ time = $_.TimeCreated; id = $_.Id; level = $_.LevelDisplayName; provider = $_.ProviderName; log = $logName; message = $_.Message }
+  }
+}
+$applicationEvents = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $start } -MaxEvents 200 -ErrorAction SilentlyContinue | Where-Object { $_.ProviderName -match 'WebView|Edge|Application Error|Windows Error Reporting' } | Select-Object -First 40 | ForEach-Object {
+  [pscustomobject]@{ time = $_.TimeCreated; id = $_.Id; level = $_.LevelDisplayName; provider = $_.ProviderName; log = 'Application'; message = $_.Message }
+})
+[pscustomobject]@{ runtimes = $runtimes; processes = $processes; eventLogs = $webViewLogs; events = @($events) + $applicationEvents } | ConvertTo-Json -Depth 6 -Compress
+`;
+  const result = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 20_000,
+      maxBuffer: 4 * 1024 * 1024,
+      env: {
+        ...process.env,
+        ARLET_E2E_STARTED_AT: startedAt,
+        ARLET_E2E_DATA_ROOT: e2eProfileRoot ?? "",
+      },
+    },
+  );
+  let collected;
+  try {
+    collected = JSON.parse(result.stdout ?? "{}");
+  } catch {
+    collected = undefined;
+  }
+  return {
+    collectedAt: new Date().toISOString(),
+    startedAt,
+    status: result.status,
+    error: result.error?.message ?? result.stderr?.trim() ?? null,
+    runtimes: collected?.runtimes ?? [],
+    processes: collected?.processes ?? [],
+    eventLogs: collected?.eventLogs ?? [],
+    events: collected?.events ?? [],
+    rawOutput: collected
+      ? undefined
+      : String(result.stdout ?? "").slice(-32_000),
+  };
+}
+
+function saveJson(artifactDir, name, value) {
+  fs.writeFileSync(
+    path.join(artifactDir, name),
+    `${JSON.stringify(value, null, 2)}\n`,
+  );
+}
+
+async function run() {
+  processVerificationFailed = false;
   const realToken = process.argv.includes("--real-token");
   const token = realToken
     ? String(process.env.MUSICKIT_DEVELOPER_TOKEN ?? "").trim()
     : syntheticToken();
-  if (!token)
-    fail("--real-token needs MUSICKIT_DEVELOPER_TOKEN (run via dotenv)");
-  if (!process.argv.includes("--skip-build")) build(token);
-  if (!fs.existsSync(EXE)) fail(`missing ${EXE}`);
-
+  const tokenMode = realToken ? "real" : "synthetic";
   const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
   const artifactDir = path.join(root, "e2e-artifacts", stamp);
-  fs.mkdirSync(artifactDir, { recursive: true });
   const checks = [];
+  let selectedScenarios = [];
+  let fullSuite = false;
+  let scenarioSelectionError = null;
   const check = (name, passed, detail) => {
     checks.push({ name, passed: Boolean(passed), detail });
     console.log(`[e2e-app] ${passed ? "PASS" : "FAIL"} ${name}`);
@@ -732,48 +1119,143 @@ async function run() {
       console.log(`[e2e-app]   ${String(text).slice(0, 600)}`);
     }
   };
-
-  const moved = moveAside(stamp);
-  // Ctrl+C skips `finally`; put the real data back before exiting. A hard
-  // kill is recovered by the next run instead (recoverInterruptedRun).
+  let profile;
+  let child;
+  let page;
+  let foreground;
+  let runKeyMayExist = false;
+  let musicRuntimeCapabilities;
+  let buildProof;
+  let childSpawnError;
+  let startupArguments = [];
+  let webviewBrowserArguments = "";
+  let interrupted = false;
+  let webviewDiagnostics;
+  let appProcessRecord;
+  let childOutput = { stdout: "", stderr: "" };
+  const startedAt = new Date().toISOString();
   const onInterrupt = () => {
-    console.error("[e2e-app] Interrupted; restoring your Arlet data.");
-    killArlet();
-    clearE2eRunKey();
-    restore(moved);
-    process.exit(130);
+    interrupted = true;
+    console.error("[e2e-app] Interrupted; stopping this isolated E2E process.");
+    try {
+      page?.close();
+    } catch {
+      // The transport cleanup is retried in finally.
+    }
+    try {
+      const stopped = killOwnedArlet();
+      if (stopped.failures.length) {
+        console.error(
+          `[e2e-app] Process cleanup pending: ${JSON.stringify(stopped)}`,
+        );
+      }
+    } catch (error) {
+      console.error(`[e2e-app] Process cleanup failed: ${error.message}`);
+    }
   };
   process.once("SIGINT", onInterrupt);
   process.once("SIGBREAK", onInterrupt);
-  let child;
-  let page;
-  let musicRuntimeCapabilities;
-  const foreground = FOREGROUND ? undefined : startForegroundMonitor();
   try {
-    // A previous aborted run must not leak a launch-at-startup entry in.
+    fs.mkdirSync(artifactDir, { recursive: true });
+    const scenarioSelection = selectScenarios(process.argv.slice(2));
+    selectedScenarios = scenarioSelection.selectedScenarios;
+    fullSuite = scenarioSelection.fullSuite;
+    scenarioSelectionError = scenarioSelection.error;
+    check("scenario selection is valid", !scenarioSelectionError, {
+      selectedScenarios,
+      fullSuite,
+      error: scenarioSelectionError,
+    });
+    if (scenarioSelectionError) fail(scenarioSelectionError);
+    if (process.platform !== "win32") fail("Windows only");
+    // Windows OpenSSH sessions are elevated and have no interactive desktop;
+    // WebView2 fails there with "Invalid window handle" after a long wait.
+    if (process.env.SSH_CONNECTION || process.env.SSH_CLIENT) {
+      fail(
+        "cannot run in an SSH session (WebView2 has no desktop there); run it from a terminal at the machine's desktop",
+      );
+    }
+    if (!token) {
+      fail("--real-token needs MUSICKIT_DEVELOPER_TOKEN (run via dotenv)");
+    }
+    const skipBuild = process.argv.includes("--skip-build");
+    if (!skipBuild) build(token, tokenMode);
+    buildProof = verifyE2eBuildProof(token, tokenMode, {
+      allowRefreshedSyntheticToken: skipBuild,
+    });
+
+    const running = spawnSync("tasklist", ["/FI", "IMAGENAME eq arlet.exe"], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 5000,
+    });
+    if (running.error || running.status !== 0) {
+      fail(
+        `could not verify Arlet process state: ${running.error?.message ?? running.status}`,
+      );
+    }
+    if (/arlet\.exe/iu.test(running.stdout ?? "")) {
+      fail("close every running Arlet instance first (single-instance app)");
+    }
+
+    DEBUG_PORT = await allocateDebugPort();
+    runKeyMayExist = true;
     clearE2eRunKey();
-    seedCorruptSettings();
-    seedLegacyCache();
-    fs.writeFileSync(
-      path.join(dataDirs()[0], "window-state.json"),
-      JSON.stringify(SEEDED_WINDOW_STATE),
+    profile = await withE2eProfileSetup(
+      { runId: crypto.randomUUID() },
+      async (created) => {
+        profile = created;
+        e2eProfileRoot = created.root;
+        e2eProfileOwnership = {
+          runId: created.runId,
+          ownerToken: created.ownerToken,
+        };
+        for (const directory of Object.values(dataDirs()).slice(1)) {
+          fs.mkdirSync(directory, { recursive: true });
+        }
+        seedCorruptSettings();
+        seedLegacyCache();
+        fs.writeFileSync(
+          path.join(dataDirs().data, "window-state.json"),
+          JSON.stringify(SEEDED_WINDOW_STATE),
+        );
+      },
     );
+    foreground = FOREGROUND ? undefined : startForegroundMonitor();
+    startupArguments = [
+      `--remote-debugging-port=${DEBUG_PORT}`,
+      "--remote-debugging-address=127.0.0.1",
+      ...BACKGROUND_SWITCHES,
+    ];
+    webviewBrowserArguments = buildWebView2Args(...startupArguments);
     child = spawn(EXE, [], {
       env: {
         ...process.env,
         MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN,
         ARLET_E2E_RUN_KEY: E2E_RUN_KEY,
+        ARLET_E2E_DATA_ROOT: profile.root,
+        WEBVIEW2_USER_DATA_FOLDER: path.join(profile.root, "webview"),
         ...BACKGROUND_ENV,
-        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: buildWebView2Args(
-          `--remote-debugging-port=${DEBUG_PORT}`,
-          ...BACKGROUND_SWITCHES,
-        ),
+        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: webviewBrowserArguments,
       },
-      stdio: "ignore",
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
-    const target = await findPageTarget(Date.now() + 60_000, child);
-    page = connect(target.webSocketDebuggerUrl);
+    if (child.pid) ownedAppPids.add(child.pid);
+    captureChildOutput(child, childOutput, (error) => {
+      childSpawnError = error;
+    });
+    const target = await findPageTarget({
+      port: DEBUG_PORT,
+      timeoutMs: 60_000,
+      launched: child,
+    });
+    page = connectCdp(target.webSocketDebuggerUrl);
     await page.opened;
+    appProcessRecord = readAppProcessRecord();
+    if (!FOREGROUND) {
+      await page.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    }
 
     // 2. Shell renders.
     let shell = false;
@@ -1024,7 +1506,7 @@ async function run() {
       if (!input || input.checked) return false;
       input.click();
       return true;`);
-    const settingsFile = path.join(dataDirs()[0], "settings.json");
+    const settingsFile = path.join(dataDirs().data, "settings.json");
     let savedDebugMode = false;
     let debugLog = "";
     const debugDeadline = Date.now() + 8000;
@@ -1093,10 +1575,25 @@ async function run() {
 
     // 1. Release serves the embedded token, never the runtime env.
     const served = await settle(page, "get_developer_token");
+    const embeddedTokenMatchesBuild =
+      served.ok &&
+      typeof served.value === "string" &&
+      tokenFingerprint(served.value) === buildProof.tokenFingerprint;
+    const embeddedTokenMode =
+      typeof served.value === "string"
+        ? detectTokenMode(served.value)
+        : "unknown";
     check(
       "release serves build-embedded token",
-      served.ok && served.value === token && served.value !== RUNTIME_ENV_TOKEN,
-      { ok: served.ok, matchesEmbedded: served.value === token },
+      embeddedTokenMatchesBuild &&
+        embeddedTokenMode === buildProof.tokenMode &&
+        served.value !== RUNTIME_ENV_TOKEN,
+      {
+        ok: served.ok,
+        matchesEmbedded: embeddedTokenMatchesBuild,
+        tokenMode: embeddedTokenMode,
+        matchesTokenMode: embeddedTokenMode === buildProof.tokenMode,
+      },
     );
     // Apple refuses library (/v1/me) requests from an origin-restricted
     // token (0.1.0), so the shipped token must carry none.
@@ -1396,9 +1893,16 @@ async function run() {
     void page.send("Page.crash").catch(() => undefined);
     page.close();
     await sleep(3000);
-    const revived = await findPageTarget(Date.now() + 30_000);
-    page = connect(revived.webSocketDebuggerUrl);
+    const revived = await findPageTarget({
+      port: DEBUG_PORT,
+      timeoutMs: 30_000,
+    });
+    page = connectCdp(revived.webSocketDebuggerUrl);
     await page.opened;
+    appProcessRecord = readAppProcessRecord();
+    if (!FOREGROUND) {
+      await page.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    }
     const recovered = await waitFor(
       page,
       `document.querySelector(".app-shell .player-bar")`,
@@ -1492,9 +1996,16 @@ async function run() {
     }
     const oldProcessExited = !processAlive(child.pid);
     await sleep(1000);
-    const restarted = await findPageTarget(Date.now() + 30_000);
-    page = connect(restarted.webSocketDebuggerUrl);
+    const restarted = await findPageTarget({
+      port: DEBUG_PORT,
+      timeoutMs: 30_000,
+    });
+    page = connectCdp(restarted.webSocketDebuggerUrl);
     await page.opened;
+    appProcessRecord = readAppProcessRecord();
+    if (!FOREGROUND) {
+      await page.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    }
     const restartedShell = await waitFor(
       page,
       `document.querySelector(".app-shell .player-bar")`,
@@ -1561,7 +2072,7 @@ async function run() {
 
     // Reset deleted the saved geometry, and the closing window (reset
     // pending) must not have written it back.
-    const windowStateFile = path.join(dataDirs()[0], "window-state.json");
+    const windowStateFile = path.join(dataDirs().data, "window-state.json");
     const resetGeometry = nativeWindowGeometry();
     check(
       "reset forgets the saved window size and position",
@@ -1601,31 +2112,10 @@ async function run() {
           ),
     });
     if (fixtureReady) {
-      for (const [name, scenario] of [
-        ["playlist-playback", runPlaylistPlayback],
-        ["song-navigation", runSongNavigation],
-        ["transport", runTransport],
-        ["queue-edit", runQueueEdit],
-        ["library-actions", runLibraryActions],
-        ["now-playing", runNowPlaying],
-        ["radio-artist", runRadioArtist],
-        ["unavailable", runUnavailable],
-        ["layout", runLayout],
-        ["desktop", runDesktop],
-        ["flows", runFlows],
-        ["library-view", runLibraryView],
-        ["shortcuts", runShortcuts],
-        ["multi-select", runMultiSelect],
-        ["mini-player", runMiniPlayer],
-        ["performance", runPerformance],
-        ["polish", runPolish],
-        ["discovery", runDiscovery],
-        ["artwork", runArtwork],
-        ["audit-fixes", runAuditFixes],
-        ["account-session", runAccountSession],
-        // Last: it signs out at the end.
-        ["session-restore", runSessionRestore],
-      ]) {
+      const scenarioByName = new Map(SCENARIO_REGISTRY);
+      for (const name of selectedScenarios) {
+        const scenario = scenarioByName.get(name);
+        if (!scenario) continue;
         try {
           // A menu left open by the previous scenario would intercept clicks.
           await page.evaluate(
@@ -1634,7 +2124,8 @@ async function run() {
           await scenario({
             page,
             check,
-            dataDir: dataDirs()[0],
+            dataDir: dataDirs().data,
+            logDir: dataDirs().logs,
             artifactDir,
           });
         } catch (error) {
@@ -1654,6 +2145,7 @@ async function run() {
             path.join(artifactDir, `${name}-trace.json`),
             `${JSON.stringify(trace, null, 2)}\n`,
           );
+          await checkScenarioIsolation(page, name, check);
         }
       }
     }
@@ -1689,18 +2181,32 @@ async function run() {
         ...process.env,
         MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN,
         ARLET_E2E_RUN_KEY: E2E_RUN_KEY,
+        ARLET_E2E_DATA_ROOT: profile.root,
+        WEBVIEW2_USER_DATA_FOLDER: path.join(profile.root, "webview"),
         ...BACKGROUND_ENV,
         ...(relaunchWebView2Args && {
           WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: relaunchWebView2Args,
         }),
       },
       stdio: "ignore",
+      windowsHide: true,
     });
-    await new Promise((resolve) => {
-      const timer = setTimeout(resolve, 20_000);
+    if (relaunch.pid) ownedAppPids.add(relaunch.pid);
+    relaunch.once("exit", () => {
+      if (relaunch.pid) ownedAppPids.delete(relaunch.pid);
+    });
+    relaunch.once("error", () => {
+      if (relaunch.pid) ownedAppPids.delete(relaunch.pid);
+    });
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => resolve(false), 20_000);
       relaunch.once("exit", () => {
         clearTimeout(timer);
-        resolve();
+        resolve(true);
+      });
+      relaunch.once("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
       });
     });
     const trayDeadline = Date.now() + 15_000;
@@ -1766,7 +2272,7 @@ async function run() {
       window.__ARLET_E2E_MUSIC__.emitPlaybackTime(123);
       return true;`);
     await sleep(300);
-    const sessionFile = path.join(dataDirs()[0], "playback-session.json");
+    const sessionFile = path.join(dataDirs().data, "playback-session.json");
 
     // Resize, then close normally: the new geometry is saved for next launch.
     const resized = await settle(page, "plugin:window|set_size", {
@@ -1828,18 +2334,25 @@ async function run() {
       },
     );
 
-    // Stop the app, then confirm the roaming cache moved to the local data
-    // dir and migrated to the current schema.
-    killArlet();
-    await waitForArletExit();
-    const legacyDb = path.join(dataDirs()[0], "arlet-library.db");
-    const db = new DatabaseSync(path.join(dataDirs()[1], "arlet-library.db"), {
-      readOnly: true,
-    });
+    // Stop this isolated app, then confirm the seeded legacy cache migrated.
+    const stopped = killOwnedArlet();
+    const appExited = await waitForArletExit();
+    check(
+      "isolated app process stops before cache verification",
+      appExited && stopped.failures.length === 0,
+      { appExited, ...stopped },
+    );
+    const legacyDb = path.join(dataDirs().data, "arlet-library.db");
+    const db = new DatabaseSync(
+      path.join(dataDirs().local, "arlet-library.db"),
+      {
+        readOnly: true,
+      },
+    );
     const version = db.prepare("PRAGMA user_version").get().user_version;
     db.close();
     check(
-      "legacy roaming cache moved to local data and migrated to schema 2",
+      "isolated legacy cache moved to local data and migrated to schema 2",
       version === 2 && !fs.existsSync(legacyDb),
       {
         version,
@@ -1847,76 +2360,244 @@ async function run() {
       },
     );
   } catch (error) {
-    // Startup failures and panics are written to the test profile's log,
-    // which restore() deletes; carry the last of them into the report.
-    const native = readTestLog()
-      .split(/\r?\n/u)
-      .filter((line) => line.includes("[native] "))
-      .slice(-2);
-    check(
-      "native E2E completes",
-      false,
-      [String(error?.message ?? error), ...native].join(" | "),
-    );
-  } finally {
-    page?.close();
-    if (child?.pid) {
-      killArlet();
-      await waitForArletExit();
-    }
-    clearE2eRunKey();
-    if (foreground) {
-      const summary = foreground.stop();
-      fs.writeFileSync(
-        path.join(artifactDir, "foreground.json"),
-        `${JSON.stringify(summary, null, 2)}\n`,
-      );
+    const native = profile
+      ? readTestLog()
+          .split(/\r?\n/u)
+          .filter((line) => line.includes("[native] "))
+          .slice(-4)
+      : [];
+    if (interrupted) {
       check(
-        "background launch: Arlet never became the active window or covered it",
-        summary.samples > 0 &&
-          summary.arletSamples === 0 &&
-          summary.aboveSamples === 0,
-        summary,
+        "native E2E was not interrupted",
+        false,
+        "run interrupted by the user",
       );
     }
-    const testLog = readTestLog();
-    if (testLog && !fs.existsSync(path.join(artifactDir, "arlet.log"))) {
-      fs.writeFileSync(path.join(artifactDir, "arlet.log"), testLog);
+    check("native E2E completes", false, {
+      error: String(error?.stack ?? error?.message ?? error),
+      native,
+      spawnError: childSpawnError?.message ?? null,
+      childExit: child?.exitInfo ?? null,
+    });
+  } finally {
+    process.off("SIGINT", onInterrupt);
+    process.off("SIGBREAK", onInterrupt);
+    try {
+      page?.close();
+    } catch (error) {
+      check(
+        "DevTools connection closes",
+        false,
+        String(error?.message ?? error),
+      );
     }
-    restore(moved);
+    if (profile) {
+      try {
+        webviewDiagnostics = collectWebViewDiagnostics(startedAt);
+        saveJson(artifactDir, "webview-diagnostics.json", webviewDiagnostics);
+        check(
+          "WebView2 runtime and startup diagnostics are collected",
+          webviewDiagnostics.status === 0 &&
+            webviewDiagnostics.runtimes.length > 0,
+          {
+            status: webviewDiagnostics.status,
+            runtimeCount: webviewDiagnostics.runtimes.length,
+            isolatedProcessCount: webviewDiagnostics.processes.length,
+            eventLogCount: webviewDiagnostics.eventLogs.length,
+            eventCount: webviewDiagnostics.events.length,
+            error: webviewDiagnostics.error,
+          },
+        );
+      } catch (error) {
+        webviewDiagnostics = {
+          error: String(error?.message ?? error),
+          collectedAt: new Date().toISOString(),
+        };
+        check(
+          "WebView2 diagnostics collected",
+          false,
+          webviewDiagnostics.error,
+        );
+      }
+    }
+    if (child) {
+      try {
+        appProcessRecord = readAppProcessRecord() ?? appProcessRecord;
+        const stopped = killOwnedArlet();
+        const appExited = await waitForArletExit();
+        if (!appExited || stopped.failures.length) {
+          check("isolated app process stops before profile cleanup", false, {
+            appExited,
+            ...stopped,
+          });
+        }
+      } catch (error) {
+        check("isolated app process stops before profile cleanup", false, {
+          error: String(error?.message ?? error),
+        });
+      }
+    }
+    if (runKeyMayExist) {
+      try {
+        clearE2eRunKey();
+      } catch (error) {
+        check(
+          "E2E startup registry key is cleared",
+          false,
+          String(error?.message ?? error),
+        );
+      }
+    }
+    if (foreground) {
+      try {
+        const summary = foreground.stop();
+        saveJson(artifactDir, "foreground.json", summary);
+        check(
+          "background launch: Arlet never became the active window or covered it",
+          summary.samples > 0 &&
+            summary.arletSamples === 0 &&
+            summary.aboveSamples === 0,
+          summary,
+        );
+      } catch (error) {
+        check(
+          "foreground monitor stops and reports",
+          false,
+          String(error?.message ?? error),
+        );
+      }
+    }
+    if (profile) {
+      try {
+        const testLog = readTestLog();
+        if (testLog)
+          fs.writeFileSync(path.join(artifactDir, "arlet.log"), testLog);
+      } catch (error) {
+        check(
+          "native log is copied to artifacts",
+          false,
+          String(error?.message ?? error),
+        );
+      }
+    }
+    try {
+      fs.writeFileSync(
+        path.join(artifactDir, "browser-process.log"),
+        `STDOUT\n${childOutput.stdout}\nSTDERR\n${childOutput.stderr}\n`,
+      );
+    } catch (error) {
+      check(
+        "browser process output is saved",
+        false,
+        String(error?.message ?? error),
+      );
+    }
+    if (profile) {
+      let livePids;
+      let processCheckError;
+      try {
+        livePids = ownedProcessPids().filter((pid) => processAlive(pid));
+      } catch (error) {
+        processCheckError = String(error?.message ?? error);
+      }
+      if (processVerificationFailed || processCheckError) {
+        check(
+          "isolated profile is removed after app exit",
+          false,
+          `unable to verify app processes; marked profile retained at ${profile.root}: ${processCheckError ?? "a tasklist or CIM identity check failed earlier"}`,
+        );
+      } else if (livePids.length) {
+        check(
+          "isolated profile is removed after app exit",
+          false,
+          `Arlet process(es) ${livePids.join(", ")} are still running; marked profile retained at ${profile.root}`,
+        );
+      } else {
+        try {
+          profile.cleanup();
+          check("isolated profile is removed after app exit", true);
+        } catch (error) {
+          check(
+            "isolated profile is removed after app exit",
+            false,
+            `${String(error?.message ?? error)}; marked profile retained at ${profile.root}`,
+          );
+        }
+      }
+    }
   }
 
-  const exeHash = crypto
-    .createHash("sha256")
-    .update(fs.readFileSync(EXE))
-    .digest("hex");
-  const commit = spawnSync("git", ["rev-parse", "HEAD"], {
+  if (
+    interrupted &&
+    !checks.some((entry) => entry.name === "native E2E was not interrupted")
+  ) {
+    check(
+      "native E2E was not interrupted",
+      false,
+      "run interrupted by the user",
+    );
+  }
+
+  let binary = { path: path.relative(root, EXE), sha256: null };
+  try {
+    binary.sha256 = crypto
+      .createHash("sha256")
+      .update(fs.readFileSync(EXE))
+      .digest("hex");
+  } catch (error) {
+    check(
+      "release binary is available for report",
+      false,
+      String(error?.message ?? error),
+    );
+  }
+  const commitResult = spawnSync("git", ["rev-parse", "HEAD"], {
     cwd: root,
     encoding: "utf8",
-  }).stdout.trim();
-  const dirty =
-    spawnSync("git", ["status", "--porcelain"], {
-      cwd: root,
-      encoding: "utf8",
-    }).stdout.trim().length > 0;
+  });
+  const status = spawnSync("git", ["status", "--porcelain"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  const dirty = (status.stdout ?? "").trim().length > 0;
   const report = {
-    passed: checks.every((entry) => entry.passed),
+    passed: checks.length > 0 && checks.every((entry) => entry.passed),
     finishedAt: new Date().toISOString(),
-    commit,
+    startedAt,
+    commit: commitResult.stdout?.trim() ?? "",
     dirtyWorktree: dirty,
     host: `${os.type()} ${os.release()} ${os.arch()}`,
-    binary: { path: path.relative(root, EXE), sha256: exeHash },
-    tokenMode: realToken ? "real" : "synthetic",
+    binary,
+    e2eBuild: buildProof ?? null,
+    tokenMode,
+    selectedScenarios,
+    fullSuite,
+    releaseProofEligible: fullSuite,
+    scenarioSelectionError,
     musicFixtureSeed: MUSIC_FIXTURE_SEED,
     musicRuntimeCapabilities,
+    startup: {
+      debugPort: DEBUG_PORT ?? null,
+      browserArguments: startupArguments,
+      webviewBrowserArguments,
+      webviewDataDirectory: profile ? path.join(profile.root, "webview") : null,
+      profileRoot: profile?.root ?? null,
+      childPid: child?.pid ?? null,
+      appProcessRecord: appProcessRecord ?? null,
+      spawnError: childSpawnError?.message ?? null,
+      childExit: child?.exitInfo ?? null,
+      webviewDiagnostics: webviewDiagnostics
+        ? "webview-diagnostics.json"
+        : null,
+      processOutput: "browser-process.log",
+    },
     checks,
   };
-  fs.writeFileSync(
-    path.join(artifactDir, "report.json"),
-    `${JSON.stringify(report, null, 2)}\n`,
-  );
+  saveJson(artifactDir, "report.json", report);
   console.log(`[e2e-app] artifact: ${path.relative(root, artifactDir)}`);
-  pruneOldRuns(path.join(root, "e2e-artifacts"), stamp, keepRunCount());
+  if (!scenarioSelectionError) {
+    pruneOldRuns(path.join(root, "e2e-artifacts"), stamp, keepRunCount());
+  }
   if (!report.passed) fail("one or more checks failed");
 }
 

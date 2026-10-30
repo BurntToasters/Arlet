@@ -59,6 +59,7 @@ function queuedId(track: Track): string {
 export async function withResolvableTracks(
   tracks: readonly Track[],
   run: (entries: readonly ResolvableEntry[]) => Promise<void>,
+  isCurrent: () => boolean = () => true,
 ): Promise<ResolvedTracks> {
   const skipped: Track[] = [];
   // Songs Apple already marks unstreamable never reach MusicKit.
@@ -71,10 +72,14 @@ export async function withResolvableTracks(
     throw new Error(NONE_AVAILABLE_MESSAGE);
   }
   for (let attempt = 1; ; attempt += 1) {
+    if (!isCurrent()) throw new Error("Queue request is no longer current.");
     try {
       await run(entries);
       return { entries, skipped };
     } catch (error) {
+      // A replacement request owns the provider queue now; never retry an
+      // unresolved item from this request after its provider call settles.
+      if (!isCurrent()) throw error;
       const missing = unresolvedIds(error);
       if (!missing || attempt >= MAX_ATTEMPTS) throw error;
       const next: ResolvableEntry[] = [];

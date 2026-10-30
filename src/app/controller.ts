@@ -565,6 +565,7 @@ export function createAppController(
     // Play waits for a handoff's stop() still in flight.
     beforeResume: () => streamRelease.settled(),
     playIntent: playback.playIntent,
+    pauseCount: playback.pauseCount,
     fullQueue: playback.fullQueue,
   });
   const streamRelease = createStreamRelease({

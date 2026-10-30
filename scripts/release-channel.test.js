@@ -433,10 +433,12 @@ test("beta manifest publication is deferred until the GitHub publish response", 
     ),
     "utf8",
   );
-  assert.doesNotMatch(
-    signer,
-    /await uploadAll\(release, staged\);\s*if \(IS_PRERELEASE\)/,
+  const draftUpload = signer.match(
+    /async function main\(\)[\s\S]*?await uploadAll\(release, staged\);([\s\S]*?)console\.log\(\`\[gpg-sign\] Done:/,
   );
+  assert.ok(draftUpload, "draft signing flow should upload its staged files");
+  assert.doesNotMatch(draftUpload[1], /syncBetaManifests/);
+  assert.match(signer, /async function syncBetaManifestsAfterPublish\(/);
   assert.match(publisher, /await syncBetaManifestsAfterPublish\(\)/);
 });
 

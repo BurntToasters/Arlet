@@ -33,7 +33,9 @@ export function createControllerPins(
     try {
       await savePersistedPins(pins, invokeFn);
     } catch (error) {
-      log(`Pinned playlists save failed: ${safeErrorMessage(error)}`);
+      const message = safeErrorMessage(error);
+      log(`Pinned playlists save failed: ${message}`);
+      throw new Error(`Pinned playlists could not be saved: ${message}`);
     }
   };
 
@@ -132,7 +134,12 @@ export function createControllerPins(
         return update ? { ...pin, ...update } : pin;
       });
       setPins(next);
-      await persistPins(next);
+      try {
+        await persistPins(next);
+      } catch {
+        // Resolution is best-effort. The next pin write persists current
+        // details, and reload resolves them again from the saved pins.
+      }
     } finally {
       resolvingPins = false;
       if (resolvePinsAgain) {
@@ -170,11 +177,8 @@ export function createControllerPins(
    * next account to sign in on this PC must not see them. A failure is logged.
    */
   const clearStored = async (): Promise<void> => {
-    try {
-      await deletePersistedPins(invokeFn);
-    } catch (error) {
-      log(`Pinned playlists clear failed: ${safeErrorMessage(error)}`);
-    }
+    setPins([]);
+    await deletePersistedPins(invokeFn);
   };
 
   return { reload, resolveDetails, togglePin, unpin, clearStored };

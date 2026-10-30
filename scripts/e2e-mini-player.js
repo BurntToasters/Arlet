@@ -19,6 +19,7 @@ const SHIFT = 8;
 const CTRL_SHIFT = CTRL | SHIFT;
 const SIZE_TOLERANCE_PX = 40;
 const RESIZE_TIMEOUT_MS = 3000;
+const RECOVERY_TIMEOUT_MS = 30000;
 
 const KEY = {
   m: { key: "M", code: "KeyM", keyCode: 77 },
@@ -92,6 +93,26 @@ function waitForSizeNear(page, start, timeoutMs = RESIZE_TIMEOUT_MS) {
   );
 }
 
+/** Allows Runtime.evaluate to fail briefly while WebView2 replaces a renderer. */
+async function waitForRecoveredShell(page, timeoutMs = RECOVERY_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      if (
+        await page.evaluate(
+          `return Boolean(${SHELL}) && !${MINI} && Boolean(window.__ARLET_E2E_MUSIC__);`,
+        )
+      ) {
+        return true;
+      }
+    } catch {
+      // Runtime.evaluate has no execution context while WebView2 reloads.
+    }
+    await sleep(100);
+  }
+  return false;
+}
+
 /**
  * Counts IPC commands the desktop recorder saw. Tauri's invoke is not
  * writable, so wrapping it records nothing; the recorder counts every call.
@@ -123,6 +144,8 @@ export async function runMiniPlayer({ page, check }) {
   check("mini player scenario renders the album detail", albumReady);
   if (!albumReady) return;
 
+  // Set inside the try once playback has started; the final check reads it.
+  let start = null;
   try {
     await clickButtonByText(page, "Play all");
     const started = await waitFor(
@@ -133,7 +156,7 @@ export async function runMiniPlayer({ page, check }) {
     check("Play all starts the album before the mini player opens", started);
     if (!started) return;
 
-    const start = await windowSize(page);
+    start = await windowSize(page);
     // Transitions recorded only while a layout switch runs. Transport steps
     // inside the mini player pause on purpose, so they are not in this list.
     const switchTransitions = [];
@@ -403,6 +426,63 @@ export async function runMiniPlayer({ page, check }) {
         (await page.evaluate(`return ${PLAYING};`)),
       { transitions: switchTransitions },
     );
+
+    // Runs last: a renderer recovery reload resets the frontend mini flag,
+    // playback, and the IPC recorder. Enter mini here so the crash happens in
+    // native mini mode, and measure the size to restore against at this point.
+    const recoveryStart = await windowSize(page);
+    await clickSelector(page, "[data-mini-player-toggle]");
+    const recoveryMini = await waitFor(
+      page,
+      `Boolean(${MINI}) && !${SHELL} && window.innerWidth <= 400 && window.innerHeight <= 200`,
+      RESIZE_TIMEOUT_MS,
+    );
+    void page.send("Page.crash").catch(() => undefined);
+    const recoveredShell = await waitForRecoveredShell(page);
+    const recoveredNearStart =
+      recoveredShell && (await waitForSizeNear(page, recoveryStart));
+    const recoveredSize = recoveredShell ? await windowSize(page) : null;
+    check(
+      "a renderer crash restores the normal shell and window geometry",
+      recoveryMini &&
+        recoveredShell &&
+        recoveredNearStart &&
+        recoveredSize.width >= 500 &&
+        recoveredSize.height >= 480,
+      {
+        recoveryMini,
+        recoveredShell,
+        recoveredNearStart,
+        start: recoveryStart,
+        recoveredSize,
+      },
+    );
+    if (!recoveredShell) return;
+
+    await clickSelector(page, "[data-mini-player-toggle]");
+    const miniWorksAfterRecovery = await waitFor(
+      page,
+      `Boolean(${MINI}) && !${SHELL} && window.innerWidth <= 400`,
+      RESIZE_TIMEOUT_MS,
+    );
+    await clickSelector(page, "[data-mini-expand]");
+    const expandedAfterRecovery = await waitFor(
+      page,
+      `Boolean(${SHELL}) && !${MINI}`,
+      RESIZE_TIMEOUT_MS,
+    );
+    const restoredAfterRecovery =
+      expandedAfterRecovery && (await waitForSizeNear(page, recoveryStart));
+    check(
+      "the mini player can be toggled again after renderer recovery",
+      miniWorksAfterRecovery && restoredAfterRecovery,
+      {
+        miniWorksAfterRecovery,
+        expandedAfterRecovery,
+        restoredAfterRecovery,
+        final: await windowSize(page),
+      },
+    );
   } finally {
     await leaveMiniIfActive(page);
     if (await page.evaluate(`return ${FULLSCREEN};`)) {
@@ -421,5 +501,12 @@ export async function runMiniPlayer({ page, check }) {
   const endedNormal = await page.evaluate(
     `return Boolean(${SHELL}) && !${MINI} && ${PAUSED};`,
   );
-  check("mini player scenario ends in the normal shell, paused", endedNormal);
+  // A null start means the scenario never reached its starting size, so the
+  // geometry half fails visibly instead of throwing.
+  const endedAtStart = start ? await waitForSizeNear(page, start) : false;
+  check(
+    "mini player scenario ends in the normal shell, paused",
+    endedNormal && endedAtStart,
+    { endedNormal, start, final: await windowSize(page) },
+  );
 }

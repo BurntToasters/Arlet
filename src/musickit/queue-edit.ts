@@ -1,11 +1,12 @@
 import type { Track } from "../domain/music.ts";
 import { getState, setQueueSnapshot } from "../state.ts";
 import {
+  acquireShuffleModeOverride,
   changeToMediaAtIndex,
+  latestTransportIntent,
   queueOptionsForTracks,
   readPlaybackModes,
   seekToTime,
-  setShuffleMode,
   syncMusicKitQueue,
 } from "./player.ts";
 import { keptStartIndex, withResolvableTracks } from "./unresolved.ts";
@@ -29,7 +30,7 @@ interface NativeQueue {
 export interface QueueEditPlan {
   /** Queue after the edit. The current index never changes. */
   next: Track[];
-  native?: (queue: NativeQueue) => Promise<void>;
+  native?: (queue: NativeQueue, isCurrent: () => boolean) => Promise<void>;
 }
 
 function assertUpcoming(
@@ -72,8 +73,11 @@ export function planMove(
   next.splice(to, 0, moved);
   return {
     next,
-    native: async (native) => {
+    native: async (native, isCurrent) => {
       const removed = await native.splice(from, 1);
+      if (!isCurrent()) {
+        throw new Error("Queue edit is no longer current.");
+      }
       if (!Array.isArray(removed) || removed.length !== 1) {
         throw new Error("The queue did not return the moved song.");
       }
@@ -136,7 +140,8 @@ function sameQueue(
 /**
  * Replaces the provider queue, reselects the current song, and resumes.
  * Returns the queue MusicKit actually received: songs it cannot resolve are
- * dropped, which can also move the current song's index.
+ * dropped, which can also move the current song's index. A Play or Pause the
+ * user presses during the rebuild wins over the state captured at the start.
  */
 async function rebuildQueue(
   instance: MusicKit.MusicKitInstance,
@@ -144,17 +149,23 @@ async function rebuildQueue(
   index: number,
   positionSeconds: number,
   onSkipped?: (count: number) => void,
+  isCurrent: () => boolean = () => true,
 ): Promise<{ queue: Track[]; index: number }> {
+  if (!isCurrent()) throw new Error("Queue edit is no longer current.");
   if (!canSelectIndex(instance)) {
     throw new Error(
       "Editing the queue is not available in this MusicKit runtime.",
     );
   }
   const wasPlaying = instance.playbackState === MusicKit.PlaybackStates.playing;
+  const intentAtStart = latestTransportIntent().generation;
   const shuffled = readPlaybackModes(instance).shuffleMode === "songs";
   // Shuffle reorders upcoming songs on setQueue, which would corrupt the
-  // explicit order. Turn it off for the rebuild and restore it afterwards.
-  if (shuffled && !setShuffleMode(instance, false)) {
+  // explicit order. The lease keeps the user's desired mode separate.
+  const releaseShuffleOverride = shuffled
+    ? acquireShuffleModeOverride(instance, false)
+    : undefined;
+  if (shuffled && !releaseShuffleOverride) {
     throw new Error("Shuffle must be off to edit the queue in this runtime.");
   }
   let applied: { queue: Track[]; index: number } = { queue: [...next], index };
@@ -162,11 +173,16 @@ async function rebuildQueue(
     const { entries, skipped } = await withResolvableTracks(
       next,
       async (attempt) => {
+        if (!isCurrent()) {
+          throw new Error("Queue edit is no longer current.");
+        }
         await instance.setQueue(
           queueOptionsForTracks(attempt.map((entry) => entry.track)),
         );
       },
+      isCurrent,
     );
+    if (!isCurrent()) throw new Error("Queue edit is no longer current.");
     if (skipped.length) onSkipped?.(skipped.length);
     applied = {
       queue: entries.map((entry) => entry.track),
@@ -177,14 +193,24 @@ async function rebuildQueue(
         "Selecting a song in the MusicKit queue is not available in this runtime.",
       );
     }
+    if (!isCurrent()) throw new Error("Queue edit is no longer current.");
     await seekToTime(instance, positionSeconds);
   } finally {
-    if (shuffled) setShuffleMode(instance, true);
+    releaseShuffleOverride?.();
   }
-  if (wasPlaying) await instance.play();
-  else if (instance.playbackState === MusicKit.PlaybackStates.playing) {
+  if (!isCurrent()) throw new Error("Queue edit is no longer current.");
+  // Without a press during the rebuild, the state captured at the start stands.
+  const intent = latestTransportIntent();
+  const wantsPlaying =
+    intent.generation === intentAtStart ? wasPlaying : intent.playing;
+  if (wantsPlaying) await instance.play();
+  else if (
+    isCurrent() &&
+    instance.playbackState === MusicKit.PlaybackStates.playing
+  ) {
     instance.pause();
   }
+  if (!isCurrent()) throw new Error("Queue edit is no longer current.");
   return applied;
 }
 
@@ -199,8 +225,11 @@ export async function editQueue(
   plan: (queue: readonly Track[], current: number) => QueueEditPlan | undefined,
   /** Told how many unplayable songs a rebuild dropped, so it can say so. */
   onSkipped?: (count: number) => void,
+  isCurrent: () => boolean = () => true,
 ): Promise<QueueEditTier> {
+  if (!isCurrent()) return "noop";
   syncMusicKitQueue(instance);
+  if (!isCurrent()) return "noop";
   const playback = getState().playback;
   const before = { queue: [...playback.queue], index: playback.queueIndex };
   const edit = plan(before.queue, before.index);
@@ -211,20 +240,24 @@ export async function editQueue(
   // songs, so it reports what was actually set.
   let applied = { queue: edit.next, index: before.index };
   try {
-    if (native && edit.native) await edit.native(native);
-    else {
+    if (native && edit.native) {
+      if (!isCurrent()) return "noop";
+      await edit.native(native, isCurrent);
+    } else {
       applied = await rebuildQueue(
         instance,
         edit.next,
         before.index,
         playback.positionSeconds,
         onSkipped,
+        isCurrent,
       );
     }
   } catch (error) {
-    syncMusicKitQueue(instance);
+    if (isCurrent()) syncMusicKitQueue(instance);
     throw error;
   }
+  if (!isCurrent()) return "noop";
   const now = getState().playback;
   const current = { queue: now.queue, index: now.queueIndex };
   if (sameQueue(current, before) || sameQueue(current, applied)) {

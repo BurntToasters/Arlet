@@ -669,8 +669,7 @@ pub struct LibraryCacheState {
 }
 
 fn database_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    use tauri::Manager;
-    let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let dir = crate::app_paths::local_data_dir(app)?;
     Ok(dir.join(DATABASE_FILE))
 }
 
@@ -685,11 +684,27 @@ fn with_conn<T>(
         .lock()
         .map_err(|_| "Library cache lock poisoned".to_string())?;
     if guard.is_none() {
-        let dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+        let dir = crate::app_paths::local_data_dir(app)?;
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join(DATABASE_FILE);
-        if let Ok(legacy_dir) = app.path().app_config_dir() {
-            move_legacy_cache(&legacy_dir.join(DATABASE_FILE), &path);
+        let legacy_path: Result<Option<std::path::PathBuf>, String> =
+            match crate::app_paths::config_dir(app) {
+                Ok(legacy_dir) => Ok(Some(legacy_dir.join(DATABASE_FILE))),
+                Err(error) => {
+                    #[cfg(feature = "e2e")]
+                    {
+                        Err(error)
+                    }
+                    #[cfg(not(feature = "e2e"))]
+                    {
+                        let _ = error;
+                        Ok(None)
+                    }
+                }
+            };
+        let legacy_path = legacy_path?;
+        if let Some(legacy_path) = legacy_path {
+            move_legacy_cache(&legacy_path, &path);
         }
         // A reader must never outlive the file it was opened on.
         *state
@@ -804,7 +819,9 @@ pub fn library_cache_get_meta(
 
 #[tauri::command(async)]
 pub fn library_cache_clear(app: tauri::AppHandle, scope: String) -> Result<(), String> {
-    with_conn(&app, |conn| clear(conn, &scope))
+    crate::app_paths::run_account_data_clear(&app, "library_cache_clear", || {
+        with_conn(&app, |conn| clear(conn, &scope))
+    })
 }
 
 #[cfg(test)]

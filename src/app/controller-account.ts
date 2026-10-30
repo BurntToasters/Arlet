@@ -1,6 +1,11 @@
 import { authorize, isAuthorized, unauthorize } from "../musickit/auth.ts";
 import { probeUserToken } from "../musickit/catalog.ts";
 import type { AppleMusicLibraryClient } from "../musickit/library.ts";
+import {
+  beginAccountDataInvalidation,
+  cancelAccountDataInvalidation,
+  completeAccountDataClear,
+} from "../platform/account-data.ts";
 import { registerSensitiveValue } from "../platform/redact.ts";
 import {
   clearRecentSearches,
@@ -87,6 +92,12 @@ export interface ControllerAccount {
   generation(): number;
 }
 
+interface SignInAttempt {
+  abandoned: boolean;
+  /** Explicit Sign out invalidates this attempt, even if its popup finishes later. */
+  invalidatedBySignOut: boolean;
+}
+
 /**
  * Sign-in, re-auth, sign-out, session expiry, and MusicKit authorization
  * changes. Local data is cleared only by a sign-out or a new account's
@@ -112,10 +123,14 @@ export function createControllerAccount(
 
   /** Bumped on sign-in and sign-out; work started earlier must not land. */
   let accountGeneration = 0;
+  /** Explicit logout intent; re-auth continuations started earlier must stop. */
+  let signOutGeneration = 0;
   /** Sign-out work in progress, whose MusicKit auth events are our own. */
   let accountTransitions = 0;
   /** The attempt the user is waiting on; cancelSignIn abandons it. */
-  let signInAttempt: { abandoned: boolean } | undefined;
+  let signInAttempt: SignInAttempt | undefined;
+  /** Includes cancelled popups that may still authorize after their UI attempt ends. */
+  const activeSignInAttempts = new Set<SignInAttempt>();
 
   /**
    * True while Arlet itself is signing in, out, or re-authorizing. An
@@ -145,23 +160,62 @@ export function createControllerAccount(
     trackNavigation.clear();
   };
 
+  /** Clears each persisted category independently and releases its fence only on success. */
+  const clearPersistedAccountData = async (
+    ownsClear: () => boolean = () => true,
+  ): Promise<void> => {
+    const failures: string[] = [];
+    const clearCategory = async (
+      category: "library" | "pins" | "queue",
+      label: string,
+      clear: () => Promise<void>,
+    ): Promise<void> => {
+      try {
+        await clear();
+        // A later sign-out may have installed a newer durable fence while
+        // this clear was in flight. Only its owning transition may release it.
+        if (ownsClear()) completeAccountDataClear(category);
+      } catch (error) {
+        const message = safeErrorMessage(error);
+        log(`${label}: ${message}`);
+        failures.push(`${label}: ${message}`);
+      }
+    };
+    await Promise.all([
+      clearCategory("library", "Library cache clear failed", () =>
+        library.clearLibraryCache(),
+      ),
+      clearCategory("pins", "Pinned playlists clear failed", () =>
+        pinning.clearStored(),
+      ),
+      clearCategory("queue", "Playback session clear failed", () =>
+        playbackSession.clear(),
+      ),
+    ]);
+    if (failures.length > 0) {
+      throw new Error(`Account data clear failed: ${failures.join("; ")}`);
+    }
+  };
+
   /**
    * Local sign-out: drops the account's cached library, pins, and saved queue.
    * It never calls Apple, so it also serves a session Apple already ended.
    */
-  const clearSignedInData = async (): Promise<void> => {
-    await library.clearLibraryCache();
-    // Pins are local and not tied to an Apple ID; the next account to
-    // sign in on this PC must not see them.
-    await pinning.clearStored();
-    await playbackSession.clear();
-    // Recent searches belong to the signed-in account, so sign-out (and a
-    // revoked session) is what clears them; sign-in does not.
-    clearRecentSearches();
-    discovery.resetAccount();
-    resetState();
-    setPins([]);
-    setInitializationState({ status: "ready" });
+  const clearSignedInData = async (
+    persistedClear: Promise<void>,
+  ): Promise<void> => {
+    let clearError: unknown;
+    try {
+      await persistedClear;
+    } catch (error) {
+      clearError = error;
+    } finally {
+      discovery.resetAccount();
+      resetState();
+      setPins([]);
+      setInitializationState({ status: "ready" });
+    }
+    if (clearError) throw clearError;
   };
 
   /**
@@ -212,6 +266,7 @@ export function createControllerAccount(
   const sessionHealth = createSessionHealth({
     probe: () => probeUserToken(requireMusic()),
     onExpired: handleSessionExpired,
+    epoch: () => accountGeneration,
     active: () => {
       const { auth } = getState();
       return (
@@ -234,29 +289,87 @@ export function createControllerAccount(
   };
 
   const signIn = async (options: { reauth: boolean }): Promise<void> => {
-    if (getState().auth.pending) return;
-    const attempt = { abandoned: false };
+    if (
+      getState().auth.pending ||
+      signInAttempt !== undefined ||
+      accountTransitions > 0 ||
+      [...activeSignInAttempts].some((attempt) => attempt.invalidatedBySignOut)
+    ) {
+      return;
+    }
+    const attempt: SignInAttempt = {
+      abandoned: false,
+      invalidatedBySignOut: false,
+    };
     let authorizationStarted = false;
+    let authorized = false;
+    let instance: MusicKit.MusicKitInstance | undefined;
+    let invalidation:
+      ReturnType<typeof beginAccountDataInvalidation> | undefined;
+    const cleanUpSignedOutAuthorization = async (
+      musicInstance: MusicKit.MusicKitInstance,
+    ): Promise<void> => {
+      try {
+        await unauthorize(musicInstance);
+      } catch (error) {
+        log(
+          `Late authorization cleanup after sign-out failed: ${safeErrorMessage(error)}`,
+        );
+      }
+    };
+    const stopIfSignedOut = async (): Promise<boolean> => {
+      if (!attempt.invalidatedBySignOut) return false;
+      if (authorized && instance) {
+        await cleanUpSignedOutAuthorization(instance);
+      }
+      return true;
+    };
     try {
-      const instance = requireMusic();
+      instance = requireMusic();
+      // A fresh authorization may select another Apple ID. Fence old data
+      // before opening the popup; re-auth is the same account and keeps its
+      // saved queue by design.
+      if (!options.reauth) invalidation = beginAccountDataInvalidation();
       authorizationStarted = true;
       signInAttempt = attempt;
+      activeSignInAttempts.add(attempt);
       setAuthPending(true);
       resetAccountScope();
-      // A fresh authorization may belong to a different Apple account. Drop
-      // the previous session's metadata before MusicKit opens its popup.
       log("Authorizing… waiting for Apple Music sign-in window.");
       const userToken = await authorize(instance);
+      authorized = true;
       registerSensitiveValue(userToken);
-      // The cached library and saved queue may belong to the previous
-      // account. They are dropped only once sign-in succeeds, so closing
-      // the sign-in window keeps them; the new account's data loads after
-      // this, once auth is marked authorized below.
-      await Promise.all([
-        library.clearLibraryCache(),
-        // Re-auth is the same account; its parked queue stays.
-        options.reauth ? undefined : playbackSession.clear(),
-      ]);
+      if (await stopIfSignedOut()) return;
+      if (options.reauth) {
+        try {
+          await library.clearLibraryCache();
+        } catch (error) {
+          log(
+            `Library cache clear after re-auth failed: ${safeErrorMessage(error)}`,
+          );
+        }
+        if (await stopIfSignedOut()) return;
+      } else {
+        // MusicKit may have switched accounts while the popup was open. Drop
+        // the old in-memory view before any new account data can load.
+        const initialization = getState().initialization;
+        resetState();
+        setPins([]);
+        setAuthPending(true);
+        setInitializationState(initialization);
+        try {
+          await clearPersistedAccountData(() => !attempt.invalidatedBySignOut);
+        } catch (error) {
+          // Categories whose clear failed stay fenced, while the new sign-in
+          // can continue without reading or writing those files.
+          log(
+            `Account data clear after authorization failed: ${safeErrorMessage(error)}`,
+          );
+        }
+        if (await stopIfSignedOut()) return;
+        setInitializationState({ status: "ready" });
+      }
+      if (await stopIfSignedOut()) return;
       // Keep the user token private to MusicKit; only expose auth status.
       setAuthState({ status: "authorized" });
       // A lookup made while the popup was open used the old sign-in; look
@@ -274,10 +387,29 @@ export function createControllerAccount(
         );
       }
       await Promise.all([library.ensureLibraryCache(), pinning.reload()]);
+      if (await stopIfSignedOut()) return;
       const storefront = String(instance.storefrontId ?? "").trim();
       if (storefront) setAccountSummary({ storefront, connectedAt: now() });
       log("Authorization successful.");
     } catch (error) {
+      if (!authorized && invalidation && !attempt.invalidatedBySignOut) {
+        try {
+          cancelAccountDataInvalidation(invalidation);
+        } catch (fenceError) {
+          log(
+            `Account data remains fenced after sign-in ended: ${safeErrorMessage(fenceError)}`,
+          );
+        }
+      }
+      if (attempt.invalidatedBySignOut) {
+        if (authorized && instance) {
+          await cleanUpSignedOutAuthorization(instance);
+        }
+        log(
+          `Sign-in ended after explicit sign-out: ${safeErrorMessage(error)}`,
+        );
+        return;
+      }
       if (attempt.abandoned) {
         // The user moved on; a rejection from the old popup is not an error.
         log(`Abandoned sign-in ended: ${safeErrorMessage(error)}`);
@@ -287,6 +419,7 @@ export function createControllerAccount(
       log(`Authorization failed: ${message}`);
       throw error;
     } finally {
+      if (authorizationStarted) activeSignInAttempts.delete(attempt);
       // A newer attempt may own the pending flag now; only the current one
       // clears it.
       if (authorizationStarted && signInAttempt === attempt) {
@@ -300,7 +433,8 @@ export function createControllerAccount(
   const authorizeAccount = (): Promise<void> => signIn({ reauth: false });
 
   const reauthorize = async (): Promise<void> => {
-    if (getState().auth.pending) return;
+    if (getState().auth.pending || accountTransitions > 0) return;
+    const signOutAtStart = signOutGeneration;
     const instance = requireMusic();
     // MusicKit hands back the stale token without a popup while it still
     // looks valid, so it is dropped first; its own event is not a revocation.
@@ -310,13 +444,17 @@ export function createControllerAccount(
     } finally {
       accountTransitions -= 1;
     }
+    if (signOutAtStart !== signOutGeneration) return;
     try {
       await signIn({ reauth: true });
     } finally {
       // A closed, cancelled, or rejected re-auth leaves MusicKit without a
       // token while Arlet still says "Connected". Expire it even mid-transition.
-      expireUnlessAuthorized("re-auth did not finish with a user token");
+      if (signOutAtStart === signOutGeneration) {
+        expireUnlessAuthorized("re-auth did not finish with a user token");
+      }
     }
+    if (signOutAtStart !== signOutGeneration) return;
     // A cancelled or failed re-auth leaves the session expired; refresh only
     // once it is healthy again.
     const { auth } = getState();
@@ -329,12 +467,33 @@ export function createControllerAccount(
   };
 
   const signOut = async (): Promise<void> => {
+    // Establish the durable fence before resetting state or dropping Apple's
+    // token. If storage cannot verify it, no destructive transition proceeds.
+    beginAccountDataInvalidation();
+    signOutGeneration += 1;
+    // Explicit sign-out revokes every still-running popup, including one the
+    // user previously cancelled. Cancel alone does not invalidate success.
+    for (const attempt of activeSignInAttempts) {
+      attempt.invalidatedBySignOut = true;
+    }
     accountTransitions += 1;
     try {
       // Late responses from this account must not land after sign-out.
       resetAccountScope();
+      // Recents are synchronous local storage. Clear them before publishing
+      // the signed-out state, even while native data clears are still pending.
+      clearRecentSearches();
+      resetState();
+      setPins([]);
+      const persistedClear = clearPersistedAccountData();
+      // The clear is also awaited below; this handler prevents an early
+      // rejection from becoming unhandled while MusicKit is unauthorizing.
+      void persistedClear.catch(() => undefined);
+      const failures: unknown[] = [];
+      let unauthorizeFailed = false;
+      let instance: MusicKit.MusicKitInstance | undefined;
       try {
-        const instance = requireMusic();
+        instance = requireMusic();
         // Sign-out resets the UI to idle; audio must not keep playing.
         try {
           instance.stop?.();
@@ -342,13 +501,38 @@ export function createControllerAccount(
           log(`Stop before sign-out failed: ${safeErrorMessage(error)}`);
         }
         await unauthorize(instance);
-        await clearSignedInData();
-        log("Signed out.");
       } catch (error) {
-        const message = safeErrorMessage(error);
-        log(`Sign out failed: ${message}`);
-        throw error;
+        unauthorizeFailed = true;
+        failures.push(error);
       }
+      try {
+        await clearSignedInData(persistedClear);
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length > 0) {
+        // MusicKit may still have the old account if unauthorize failed. Its
+        // persisted data is empty or remains fenced, so restoring auth state
+        // cannot reveal an old cache, pin list, or saved queue.
+        let stillAuthorized = false;
+        try {
+          stillAuthorized =
+            unauthorizeFailed &&
+            instance !== undefined &&
+            isAuthorized(instance);
+        } catch {
+          // An unreadable MusicKit state stays signed out in the UI.
+        }
+        if (stillAuthorized) {
+          setAuthState({ status: "authorized" });
+        }
+        throw new Error(failures.map(safeErrorMessage).join("; "));
+      }
+      log("Signed out.");
+    } catch (error) {
+      const message = safeErrorMessage(error);
+      log(`Sign out failed: ${message}`);
+      throw error;
     } finally {
       accountTransitions -= 1;
     }

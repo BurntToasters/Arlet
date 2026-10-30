@@ -22,6 +22,39 @@ const TINT = "#1c2b3a";
 const ARTWORK_TEMPLATE =
   "https://is1-ssl.mzstatic.com/image/thumb/Music/e2e/{id}/{w}x{h}bb.jpg";
 const REDUCED_MOTION = [{ name: "prefers-reduced-motion", value: "reduce" }];
+const BLOOM_FIXTURES = [
+  {
+    label: "blue",
+    id: "polish-bloom-blue",
+    colors: ["#0756d8", "#12d5ff", "#061b69"],
+  },
+  {
+    label: "orange",
+    id: "polish-bloom-orange",
+    colors: ["#f04400", "#ffc247", "#6f1905"],
+  },
+  {
+    label: "dark",
+    id: "polish-bloom-dark",
+    colors: ["#080a10", "#323944", "#15171c"],
+  },
+  {
+    label: "pale",
+    id: "polish-bloom-pale",
+    colors: ["#fff8e8", "#e7d9c5", "#fbfaf6"],
+  },
+  { label: "missing", id: "song-no-art" },
+];
+const BLOOM_VIEWPORTS = [
+  { label: "desktop", width: 1280, height: 850 },
+  { label: "narrow", width: 390, height: 1200 },
+];
+const BLOOM_THEMES = ["dark", "light"];
+const BLOOM_QUEUE_IDS = [
+  ...BLOOM_FIXTURES.filter((fixture) => fixture.colors).map(
+    (fixture) => fixture.id,
+  ),
+];
 /** A little longer than the 200 ms `.now-playing` exit transition. */
 const CLOSE_SETTLE_MS = 300;
 const KEY_CODES = {
@@ -115,6 +148,10 @@ const TINT_STATE = `const dialog = document.querySelector(".now-playing"); retur
 // The two bloom layers read from the same artwork URL; their play state must
 // follow playback without the dialog remounting.
 const BLOOM_STATE = `const dialog = document.querySelector(".now-playing"); const backdrop = dialog?.querySelector("img.now-playing-backdrop"); const halo = dialog?.querySelector("img.now-playing-artwork-bloom"); const playState = (node) => node ? getComputedStyle(node).animationPlayState : null; const animationName = (node) => node ? getComputedStyle(node).animationName : null; return { classed: dialog?.classList.contains("has-artwork-bloom") ?? null, playing: dialog?.classList.contains("is-playing") ?? null, backdrop: Boolean(backdrop), halo: Boolean(halo), backdropAlt: backdrop?.getAttribute("alt") ?? null, backdropHidden: backdrop?.getAttribute("aria-hidden") ?? null, backdropUrl: backdrop?.getAttribute("src") ?? null, haloUrl: halo?.getAttribute("src") ?? null, backdropPlayState: playState(backdrop), haloPlayState: playState(halo), backdropAnimation: animationName(backdrop), haloAnimation: animationName(halo) };`;
+const BLOOM_SVG = (colors) =>
+  `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="640" viewBox="0 0 640 640"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="${colors[0]}"/><stop offset=".56" stop-color="${colors[1]}"/><stop offset="1" stop-color="${colors[2]}"/></linearGradient><radialGradient id="r"><stop stop-color="${colors[1]}" stop-opacity=".9"/><stop offset="1" stop-color="${colors[0]}" stop-opacity="0"/></radialGradient></defs><rect width="640" height="640" fill="url(#g)"/><circle cx="200" cy="210" r="280" fill="url(#r)"/><path d="M0 500 640 260v380H0Z" fill="${colors[2]}" opacity=".45"/><circle cx="465" cy="120" r="94" fill="${colors[1]}" opacity=".42"/></svg>`,
+  )}`;
 // Floating surfaces blur what is behind them; an opaque background hides the
 // blur and lets underlying text clash.
 const GLASS_STATE = (selector) => `
@@ -765,22 +802,59 @@ async function searchSuggestions(page, check) {
     suggestionsGlass,
   );
 
-  // Submit the term so it becomes a recent search, then reopen on empty text.
-  await page.evaluate(
-    `document.querySelector(".search-form")?.requestSubmit(); return true;`,
-  );
-  await waitFor(page, `location.hash.includes("q=polish")`, 4000);
+  // Submit the term so it becomes recent, then clear it through the app's
+  // button after its route effect has settled and reopen on focus.
   await page.evaluate(`
-    const input = document.querySelector('.search-form input[role="combobox"]');
-    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
-    setValue.call(input, "");
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    input.focus();
+    window.__ARLET_E2E_SEARCH_SUBMITTED__ = false;
+    const form = document.querySelector(".search-form");
+    form?.addEventListener("submit", () => {
+      window.__ARLET_E2E_SEARCH_SUBMITTED__ = true;
+    }, { once: true });
+    form?.requestSubmit();
     return true;
+  `);
+  const submitSettled = await waitFor(
+    page,
+    `window.__ARLET_E2E_SEARCH_SUBMITTED__ === true &&
+      location.hash === "#/search?q=polish" &&
+      document.querySelector('.search-form input[role="combobox"]')?.value === "polish" &&
+      window.__ARLET_E2E_MUSIC__?.snapshot().authorized === true &&
+      document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true' &&
+      (() => { try { return JSON.parse(localStorage.getItem("arlet.search.recent") ?? "[]").includes("polish"); } catch { return false; } })()`,
+    5000,
+  );
+  const clearClicked = await page.evaluate(`
+    const button = document.querySelector('.search-form .clear-search[aria-label="Clear search"]');
+    if (!button || button.disabled) return false;
+    button.click();
+    return true;
+  `);
+  const clearSettled = await waitFor(
+    page,
+    `location.hash === "#/search" &&
+      document.querySelector('.search-form input[role="combobox"]')?.value === "" &&
+      window.__ARLET_E2E_MUSIC__?.snapshot().authorized === true &&
+      document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true' &&
+      (() => { try { return JSON.parse(localStorage.getItem("arlet.search.recent") ?? "[]").includes("polish"); } catch { return false; } })()`,
+    5000,
+  );
+  const focusReopened = await page.evaluate(`
+    const input = document.querySelector('.search-form input[role="combobox"]');
+    if (!input || input.value !== "") return false;
+    input.blur();
+    input.focus();
+    return document.activeElement === input;
   `);
   const recentShown = await waitFor(
     page,
-    `document.querySelectorAll(".search-suggestions li[role=option] .search-suggestion-remove").length > 0`,
+    `(() => {
+      const input = document.querySelector('.search-form input[role="combobox"]');
+      const row = [...document.querySelectorAll('.search-suggestions li[role="option"]')]
+        .find((node) => node.querySelector('.search-suggestion-copy > span')?.textContent === "polish");
+      return document.activeElement === input && input?.value === "" &&
+        input?.getAttribute('aria-expanded') === 'true' &&
+        Boolean(row?.querySelector('.search-suggestion-remove'));
+    })()`,
     4000,
   );
   const recents = await page.evaluate(`
@@ -792,23 +866,72 @@ async function searchSuggestions(page, check) {
   `);
   check(
     "recent searches stay text-only with no thumbnail",
-    recentShown &&
-      recents.length > 0 &&
+    submitSettled &&
+      clearClicked &&
+      clearSettled &&
+      focusReopened &&
+      recentShown &&
+      recents.some((row) => row.label === "polish" && row.removable) &&
       recents.every((row) => row.art === false && row.removable),
-    recents,
+    {
+      submitSettled,
+      clearClicked,
+      clearSettled,
+      focusReopened,
+      recentShown,
+      recents,
+    },
   );
   await pressKey(page, "Escape");
 }
 
 async function searchTabs(page, check) {
+  const blurBeforeNavigation = await page.evaluate(`
+    const input = document.querySelector('.search-form input[role="combobox"]');
+    const hadInputFocus = document.activeElement === input;
+    input?.blur();
+    return {
+      hadInputFocus,
+      blurred: !input || document.activeElement !== input,
+      activeId: document.activeElement?.id ?? null,
+      activeTag: document.activeElement?.tagName ?? null,
+    };
+  `);
   await openRoute(
     page,
     "#/search?q=polish",
     `Boolean(document.getElementById("search-source-tab-catalog"))`,
   );
-  await page.evaluate(
-    `document.getElementById("search-source-tab-catalog").focus(); return true;`,
+  const navigationReady = await waitFor(
+    page,
+    `location.hash === "#/search?q=polish" &&
+      document.activeElement === document.querySelector(".page-heading.search-heading h1") &&
+      document.querySelector('.search-form input[role="combobox"]')?.value === "polish" &&
+      Boolean(document.getElementById("search-source-tab-catalog"))`,
+    6000,
   );
+  const navigationState = await page.evaluate(`
+    const heading = document.querySelector(".page-heading.search-heading h1");
+    const input = document.querySelector('.search-form input[role="combobox"]');
+    return {
+      hash: location.hash,
+      headingFocused: document.activeElement === heading,
+      headingText: heading?.textContent.trim() ?? null,
+      inputValue: input?.value ?? null,
+      tabPresent: Boolean(document.getElementById("search-source-tab-catalog")),
+      activeId: document.activeElement?.id ?? null,
+      activeTag: document.activeElement?.tagName ?? null,
+    };
+  `);
+  const tabFocusState = await page.evaluate(`
+    const tab = document.getElementById("search-source-tab-catalog");
+    tab?.focus();
+    return {
+      tabFocused: document.activeElement === tab,
+      activeId: document.activeElement?.id ?? null,
+      activeTag: document.activeElement?.tagName ?? null,
+    };
+  `);
   const steps = [
     ["Home", "catalog"],
     ["ArrowRight", "library"],
@@ -824,18 +947,353 @@ async function searchTabs(page, check) {
   }
   check(
     "Arrow, Home and End keys move selection, focus and the tabpanel label together",
-    seen.every(
-      (step) =>
-        step.selected === step.expected &&
-        step.focused === step.expected &&
-        step.panelLabelledBy === `search-source-tab-${step.expected}`,
-    ),
-    seen,
+    blurBeforeNavigation.blurred &&
+      navigationReady &&
+      navigationState.headingFocused &&
+      navigationState.inputValue === "polish" &&
+      tabFocusState.tabFocused &&
+      seen.every(
+        (step) =>
+          step.selected === step.expected &&
+          step.focused === step.expected &&
+          step.panelLabelledBy === `search-source-tab-${step.expected}`,
+      ),
+    {
+      blurBeforeNavigation,
+      navigationReady,
+      navigationState,
+      tabFocusState,
+      steps: seen,
+    },
   );
   await pressKey(page, "Home");
 }
 
-async function nowPlaying(page, check) {
+async function captureBloomMatrix(page, check, artifactDir) {
+  const originalTheme = await page.evaluate(
+    `return document.documentElement.getAttribute("data-theme");`,
+  );
+  const iconUrl = await page.evaluate(
+    `return document.querySelector("img.brand-mark")?.src ?? null;`,
+  );
+  const screenshotFiles = [];
+  const results = [];
+  if (iconUrl) {
+    await fixtureCall(page, "configure", [
+      { artworkTemplate: `${iconUrl}?bloom={id}` },
+    ]);
+  }
+
+  try {
+    await page.evaluate(`
+      document.querySelectorAll(".action-toast").forEach((toast) => toast.remove());
+      const style = document.createElement("style");
+      style.id = "arlet-e2e-bloom-freeze";
+      style.textContent = ".arlet-e2e-bloom-freeze .now-playing { animation: none !important; transition: none !important; } .arlet-e2e-bloom-freeze .now-playing-backdrop, .arlet-e2e-bloom-freeze .now-playing-artwork-bloom { animation-delay: -4.5s !important; animation-play-state: paused !important; }";
+      document.head.append(style);
+      document.documentElement.classList.add("arlet-e2e-bloom-freeze");
+      document.activeElement?.blur();
+      return true;
+    `);
+
+    for (const fixture of BLOOM_FIXTURES) {
+      await fixtureCall(page, "setCurrentTrack", [fixture.id]);
+      const titleReady = await waitFor(
+        page,
+        `document.querySelector(".now-playing h2")?.textContent === ${q(fixture.label === "missing" ? "Track Without Artwork" : `Bloom ${fixture.label[0].toUpperCase()}${fixture.label.slice(1)}`)}`,
+        4000,
+      );
+      const queueIds = [
+        fixture.id,
+        ...BLOOM_QUEUE_IDS.filter((id) => id !== fixture.id),
+      ];
+      await page.evaluate(`
+        await window.MusicKit.getInstance().setQueue({ songs: ${q(queueIds)} });
+        return true;
+      `);
+      const queueReady = await waitFor(
+        page,
+        `document.querySelectorAll(".now-playing-queue button").length === ${Math.max(0, queueIds.length - 1)}`,
+        4000,
+      );
+
+      for (const theme of BLOOM_THEMES) {
+        await page.send("Emulation.setEmulatedMedia", {
+          features: [{ name: "prefers-color-scheme", value: theme }],
+        });
+        await page.evaluate(
+          `document.documentElement.dataset.theme = ${q(theme)}; return true;`,
+        );
+
+        for (const viewport of BLOOM_VIEWPORTS) {
+          await page.send("Emulation.setDeviceMetricsOverride", {
+            width: viewport.width,
+            height: viewport.height,
+            deviceScaleFactor: 1,
+            mobile: false,
+          });
+          await sleep(120);
+          const imageUrl = fixture.colors ? BLOOM_SVG(fixture.colors) : null;
+          if (imageUrl) {
+            await page.evaluate(`
+              const src = ${q(imageUrl)};
+              for (const selector of [
+                "img.now-playing-backdrop",
+                "img.now-playing-artwork-bloom",
+                ".now-playing-artwork-stage .artwork img",
+              ]) {
+                const image = document.querySelector(selector);
+                if (image) image.src = src;
+              }
+              return true;
+            `);
+          }
+          const imagesReady = fixture.colors
+            ? await waitFor(
+                page,
+                `[...document.querySelectorAll(".now-playing-backdrop, .now-playing-artwork-bloom, .now-playing-artwork-stage .artwork img")].every((image) => image.complete && image.naturalWidth > 0)`,
+                4000,
+              )
+            : true;
+          const state = await page.evaluate(`
+            const dialog = document.querySelector(".now-playing");
+            const stage = document.querySelector(".now-playing-artwork-stage");
+            const backdrop = document.querySelector(".now-playing-backdrop");
+            const halo = document.querySelector(".now-playing-artwork-bloom");
+            const box = (node) => {
+              if (!node) return null;
+              const rect = node.getBoundingClientRect();
+              return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+            };
+            const hit = (selector) => {
+              const target = document.querySelector(selector);
+              if (!target) return { present: false, visible: false, reachable: false };
+              const rect = target.getBoundingClientRect();
+              const x = rect.left + rect.width / 2;
+              const y = rect.top + rect.height / 2;
+              const point = x >= 0 && x < innerWidth && y >= 0 && y < innerHeight
+                ? document.elementFromPoint(x, y)
+                : null;
+              return {
+                present: true,
+                visible: rect.width > 0 && rect.height > 0 && x >= 0 && x < innerWidth && y >= 0 && y < innerHeight,
+                reachable: Boolean(point && (point === target || target.contains(point))),
+              };
+            };
+            const after = getComputedStyle(dialog, "::after");
+            const before = getComputedStyle(dialog, "::before");
+            const z = (node) => node ? Number(getComputedStyle(node).zIndex) : null;
+            const layering = backdrop && halo
+              ? z(backdrop) < z(halo) && z(halo) < Number(after.zIndex) && Number(after.zIndex) < Number(before.zIndex) && getComputedStyle(stage).isolation === "auto"
+              : !backdrop && !halo && !dialog.classList.contains("has-artwork-bloom");
+            const pageOverflowX = Math.max(
+              0,
+              document.documentElement.scrollWidth - innerWidth,
+            );
+            const body = document.querySelector(".now-playing-body");
+            const bodyOverflowX = Math.max(
+              0,
+              body.scrollWidth - body.clientWidth,
+            );
+            return {
+              viewport: [innerWidth, innerHeight],
+              title: document.querySelector(".now-playing h2")?.textContent ?? null,
+              artwork: box(document.querySelector(".now-playing-artwork-stage .artwork")),
+              titleBox: box(document.querySelector(".now-playing h2")),
+              controlsBox: box(document.querySelector(".now-playing-controls")),
+              queueBox: box(document.querySelector(".now-playing-side")),
+              queueRows: document.querySelectorAll(".now-playing-queue button").length,
+              overflowX: Math.max(pageOverflowX, bodyOverflowX),
+              clippedBloomWidth: Math.max(0, dialog.scrollWidth - dialog.clientWidth),
+              dialogOverflowX: getComputedStyle(dialog).overflowX,
+              bodyOverflowX,
+              layering,
+              layers: {
+                stageIsolation: getComputedStyle(stage).isolation,
+                backdropZ: z(backdrop),
+                haloZ: z(halo),
+                scrimZ: after.zIndex,
+                noiseZ: before.zIndex,
+                backdropOpacity: backdrop ? getComputedStyle(backdrop).opacity : null,
+                haloOpacity: halo ? getComputedStyle(halo).opacity : null,
+                backdropFilter: backdrop ? getComputedStyle(backdrop).filter : null,
+                haloFilter: halo ? getComputedStyle(halo).filter : null,
+                backdropAnimation: backdrop ? getComputedStyle(backdrop).animationPlayState : null,
+                haloAnimation: halo ? getComputedStyle(halo).animationPlayState : null,
+                scrim: after.backgroundImage,
+                noise: before.backgroundImage,
+              },
+              hits: {
+                artwork: hit(".now-playing-artwork-stage .artwork"),
+                title: hit(".now-playing h2"),
+                play: hit(".now-playing .play-button"),
+                favorite: hit('.now-playing button[aria-label="Favorite"]'),
+                volume: hit('.now-playing input[aria-label="Volume"]'),
+                queue: hit(".now-playing-queue button"),
+                station: hit(".now-playing-header .secondary-button"),
+                fullscreen: hit('.now-playing-header button[aria-label$="full screen"]'),
+                close: hit('.now-playing-header button[aria-label="Close Now Playing"]'),
+              },
+            };
+          `);
+          const name = `now-playing-bloom-${fixture.label}-${theme}-${viewport.label}.png`;
+          screenshotFiles.push(name);
+          if (artifactDir) {
+            const screenshot = await page.send("Page.captureScreenshot", {
+              format: "png",
+            });
+            fs.writeFileSync(
+              path.join(artifactDir, name),
+              Buffer.from(screenshot.data, "base64"),
+            );
+          }
+          results.push({
+            fixture: fixture.label,
+            theme,
+            viewport: viewport.label,
+            screenshot: name,
+            titleReady,
+            queueReady,
+            imagesReady,
+            ...state,
+          });
+        }
+      }
+    }
+
+    const expectedCount =
+      BLOOM_FIXTURES.length * BLOOM_THEMES.length * BLOOM_VIEWPORTS.length;
+    const layersReady = results.every((result) => result.layering);
+    const foregroundReady = results.every(
+      (result) =>
+        result.titleReady &&
+        result.queueReady &&
+        result.imagesReady &&
+        result.overflowX === 0 &&
+        result.dialogOverflowX === "hidden" &&
+        Object.values(result.hits).every(
+          (hit) => hit.present && hit.visible && hit.reachable,
+        ),
+    );
+    check(
+      "Now Playing bloom capture covers artwork variants, themes and widths",
+      results.length === expectedCount &&
+        screenshotFiles.length === expectedCount,
+      { expectedCount, screenshotFiles },
+    );
+    check(
+      "both bloom layers sit under the shared scrim with foreground content above",
+      layersReady,
+      results.map(({ fixture, theme, viewport, layering, layers }) => ({
+        fixture,
+        theme,
+        viewport,
+        layering,
+        layers,
+      })),
+    );
+    check(
+      "Now Playing has no horizontal overflow and its controls and queue stay reachable",
+      foregroundReady,
+      results.map(
+        ({
+          fixture,
+          theme,
+          viewport,
+          overflowX,
+          clippedBloomWidth,
+          dialogOverflowX,
+          bodyOverflowX,
+          queueRows,
+          hits,
+        }) => ({
+          fixture,
+          theme,
+          viewport,
+          overflowX,
+          clippedBloomWidth,
+          dialogOverflowX,
+          bodyOverflowX,
+          queueRows,
+          hits,
+        }),
+      ),
+    );
+
+    if (artifactDir) {
+      fs.writeFileSync(
+        path.join(artifactDir, "now-playing-bloom-results.json"),
+        `${JSON.stringify(
+          {
+            screenshots: screenshotFiles,
+            fixtures: BLOOM_FIXTURES.map(({ label, id, colors }) => ({
+              label,
+              id,
+              colors: colors ?? null,
+            })),
+            themes: BLOOM_THEMES,
+            viewports: BLOOM_VIEWPORTS,
+            animations:
+              "Frozen at -4.5s for both bloom images before each capture.",
+            results,
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    }
+  } finally {
+    await page.evaluate(`
+      document.documentElement.classList.remove("arlet-e2e-bloom-freeze");
+      document.getElementById("arlet-e2e-bloom-freeze")?.remove();
+      if (${q(originalTheme)} === null) delete document.documentElement.dataset.theme;
+      else document.documentElement.dataset.theme = ${q(originalTheme)};
+      return true;
+    `);
+    await page.send("Emulation.clearDeviceMetricsOverride", {});
+    await page.send("Emulation.setEmulatedMedia", { features: [] });
+  }
+
+  await fixtureCall(page, "setCurrentTrack", [BLOOM_FIXTURES[0].id]);
+  await waitFor(
+    page,
+    `document.querySelector(".now-playing h2")?.textContent === "Bloom Blue"`,
+    4000,
+  );
+  await page.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "forced-colors", value: "active" }],
+  });
+  const forcedColors = await page.evaluate(`
+    const dialog = document.querySelector(".now-playing");
+    const backdrop = document.querySelector(".now-playing-backdrop");
+    const halo = document.querySelector(".now-playing-artwork-bloom");
+    return {
+      backdropDisplay: backdrop ? getComputedStyle(backdrop).display : null,
+      haloDisplay: halo ? getComputedStyle(halo).display : null,
+      scrimDisplay: getComputedStyle(dialog, "::after").display,
+      noiseDisplay: getComputedStyle(dialog, "::before").display,
+      text: document.querySelector(".now-playing h2")?.textContent ?? null,
+    };
+  `);
+  check(
+    "forced colors hides the bloom decorations and keeps the track visible",
+    forcedColors.backdropDisplay === "none" &&
+      forcedColors.haloDisplay === "none" &&
+      forcedColors.scrimDisplay === "none" &&
+      forcedColors.noiseDisplay === "none" &&
+      forcedColors.text !== null,
+    forcedColors,
+  );
+  await page.send("Emulation.setEmulatedMedia", { features: [] });
+  await fixtureCall(page, "setCurrentTrack", [ALBUM.tracks[0]]);
+  await waitFor(
+    page,
+    `document.querySelector(".now-playing h2")?.textContent === "Polish Disc One Track One"`,
+    4000,
+  );
+}
+
+async function nowPlaying(page, check, artifactDir) {
   await fixtureCall(page, "setCurrentTrack", [ALBUM.tracks[0]]);
   await waitFor(
     page,
@@ -895,6 +1353,8 @@ async function nowPlaying(page, check) {
       resumedBloom.haloPlayState === "running",
     resumedBloom,
   );
+
+  await captureBloomMatrix(page, check, artifactDir);
 
   const labels = await page.evaluate(
     `return [...document.querySelectorAll(".now-playing button")].map((node) => node.getAttribute("aria-label")).filter(Boolean);`,
@@ -1836,7 +2296,9 @@ export async function runPolish({ page, check, artifactDir }) {
       searchSuggestions(page, check),
     );
     await group(check, "search source tabs", () => searchTabs(page, check));
-    await group(check, "now playing", () => nowPlaying(page, check));
+    await group(check, "now playing", () =>
+      nowPlaying(page, check, artifactDir),
+    );
     await group(check, "queue drawer", () => queueDrawer(page, check));
     await group(check, "rating error toast", () => errorToast(page, check));
     await group(check, "skeletons", () => skeletons(page, check));

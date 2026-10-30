@@ -282,7 +282,7 @@ async function onlineWithoutOutage(page, check) {
  * The diagnostics copy must answer within 6 s: "Copied", or the busy error
  * when the plugin and the browser clipboard both fail. The log names the path.
  */
-async function clipboardCopy(page, check, dataDir) {
+async function clipboardCopy(page, check, logDir) {
   const shown = await openHash(
     page,
     "#/settings",
@@ -315,12 +315,7 @@ async function clipboardCopy(page, check, dataDir) {
   // Best effort, and kept out of clipboard history (e2e-clipboard.js).
   restoreClipboard(previous);
   // Observed, not asserted: the log names the path that ran, when readable.
-  const logFile = path.join(
-    process.env.LOCALAPPDATA ?? "",
-    path.basename(dataDir),
-    "logs",
-    "arlet.log",
-  );
+  const logFile = path.join(logDir, "arlet.log");
   let paths = [];
   for (let attempt = 0; attempt < 10 && paths.length === 0; attempt += 1) {
     await sleep(300);
@@ -605,14 +600,9 @@ const PARKED_ALBUM = "album-1";
 const PARKED_QUEUE = ["album-a", "album-b", "album-c", "album-d"];
 const PARKED_START = 1;
 
-/** Lines of arlet.log containing text (the local-app-data copy, as the clipboard check reads it). */
-function logCount(dataDir, text) {
-  const logFile = path.join(
-    process.env.LOCALAPPDATA ?? "",
-    path.basename(dataDir),
-    "logs",
-    "arlet.log",
-  );
+/** Lines of arlet.log containing text in this E2E run's explicit log directory. */
+function logCount(logDir, text) {
+  const logFile = path.join(logDir, "arlet.log");
   try {
     return fs.readFileSync(logFile, "utf8").split(text).length - 1;
   } catch {
@@ -621,9 +611,9 @@ function logCount(dataDir, text) {
 }
 
 /** Waits until arlet.log holds more copies of text than before. */
-async function logGrew(dataDir, text, before) {
+async function logGrew(logDir, text, before) {
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (logCount(dataDir, text) > before) return true;
+    if (logCount(logDir, text) > before) return true;
     await sleep(250);
   }
   return false;
@@ -672,7 +662,7 @@ async function queuedSince(page, at) {
  * it unless MusicKit still holds a token; a failed attempt expires it and the
  * notice signs in again. An abandoned attempt that completes clears it.
  */
-async function reauthFailures(page, check, dataDir) {
+async function reauthFailures(page, check, logDir) {
   await ensureSignedIn(page);
   await openHash(
     page,
@@ -682,7 +672,7 @@ async function reauthFailures(page, check, dataDir) {
   );
 
   // A cancel while MusicKit is unauthorized expires the session.
-  const cancelBefore = logCount(dataDir, CANCEL_LINE);
+  const cancelBefore = logCount(logDir, CANCEL_LINE);
   await fixtureCall(page, "configure", [{ hangAuthorize: true }]);
   await clickSettingsSignIn(page);
   const pending = await waitFor(
@@ -693,7 +683,7 @@ async function reauthFailures(page, check, dataDir) {
   const held = (await snapshot(page)).authorizeHeld;
   await clickSettingsCancel(page);
   const expired = await noticeShown(page, 8000);
-  const logged = await logGrew(dataDir, CANCEL_LINE, cancelBefore);
+  const logged = await logGrew(logDir, CANCEL_LINE, cancelBefore);
   const unauthorized = (await snapshot(page)).authorized === false;
   check(
     "a cancelled Sign in again on a healthy session shows the expired notice",
@@ -737,11 +727,11 @@ async function reauthFailures(page, check, dataDir) {
   );
 
   // A rejected or closed sign-in expires the session; the notice signs in again.
-  const rejectBefore = logCount(dataDir, REAUTH_LINE);
+  const rejectBefore = logCount(logDir, REAUTH_LINE);
   await fixtureCall(page, "configure", [{ rejectAuthorize: true }]);
   await clickSettingsSignIn(page);
   const rejected = await noticeShown(page, 10_000);
-  const rejectLogged = await logGrew(dataDir, REAUTH_LINE, rejectBefore);
+  const rejectLogged = await logGrew(logDir, REAUTH_LINE, rejectBefore);
   check(
     "a rejected Sign in again shows the expired notice and logs the reason",
     rejected && rejectLogged,
@@ -761,7 +751,7 @@ async function reauthFailures(page, check, dataDir) {
  * MusicKit drops its token without an event. The next suspect error must
  * expire the session from MusicKit's state, with no /v1/me/storefront probe.
  */
-async function lostToken(page, check, dataDir) {
+async function lostToken(page, check, logDir) {
   await openHash(page, "#/home");
   // The sign-in that ended the previous check may still run its follow-up
   // probe; let it finish so it is not counted against this check.
@@ -772,7 +762,7 @@ async function lostToken(page, check, dataDir) {
     10_000,
   );
   const at = await mark(page);
-  const logBefore = logCount(dataDir, TOKEN_LINE);
+  const logBefore = logCount(logDir, TOKEN_LINE);
   await fixtureCall(page, "configure", [{ rejectMeStatus: 403 }]);
   await page.evaluate(
     `window.MusicKit.getInstance().isAuthorized = false; return true;`,
@@ -786,7 +776,7 @@ async function lostToken(page, check, dataDir) {
       .find((node) => node.textContent.trim() === "Refresh current view")?.click();
     return true;`);
   const expired = await noticeShown(page, 10_000);
-  const logged = await logGrew(dataDir, TOKEN_LINE, logBefore);
+  const logged = await logGrew(logDir, TOKEN_LINE, logBefore);
   const probes = (await snapshot(page)).requests
     .slice(at.requests)
     .filter(
@@ -810,12 +800,15 @@ const EXPIRED_TEXT =
   "Your Apple Music sign-in expired. Sign in again to load your library.";
 
 /** Clicks a Settings button by its exact text. */
-function clickSettingsButton(page, text) {
+async function clickSettingsButton(page, text) {
   return page.evaluate(`
     const button = [...document.querySelectorAll("button")]
       .find((node) => node.textContent.trim() === ${q(text)});
-    button?.click();
-    return Boolean(button);`);
+    if (!button) return { found: false, disabled: null, clicked: false };
+    const disabled = button.disabled || button.getAttribute("aria-disabled") === "true";
+    if (disabled) return { found: true, disabled: true, clicked: false };
+    button.click();
+    return { found: true, disabled: false, clicked: true };`);
 }
 
 /** True when some element's own text is exactly the bare status code. */
@@ -831,6 +824,8 @@ function bareStatusShown(page, status) {
  * fix they kept the old object and its dead token, and every /v1/me request
  * failed with a bare "403" while the titlebar said Connected. Then a refused
  * library request must show readable text, never the bare status.
+ * Failure modes also include clicking a visible-but-disabled Sign in button
+ * while sign-out's async persisted-data clears are still finishing.
  */
 async function signOutThenIn(page, check) {
   await openHash(
@@ -840,18 +835,70 @@ async function signOutThenIn(page, check) {
     15_000,
   );
   const generationBefore = (await snapshot(page)).apiGeneration;
-  await clickSettingsButton(page, "Sign out");
-  const signedOut = await waitFor(
+  const signOutClick = await clickSettingsButton(page, "Sign out");
+  const signInVisible = await waitFor(
     page,
     `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign in")`,
     15_000,
   );
-  await clickSettingsButton(page, "Sign in");
-  const signedIn = await waitFor(
-    page,
-    `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign out")`,
-    15_000,
+  const signInInitialState = await page.evaluate(`
+    const button = [...document.querySelectorAll("button")]
+      .find((node) => node.textContent.trim() === "Sign in");
+    return {
+      found: Boolean(button),
+      disabled: button ? button.disabled : null,
+      ariaDisabled: button?.getAttribute("aria-disabled") ?? null,
+      status: document.querySelector(${q(STATUS)})?.textContent.trim() ?? null,
+    };`);
+  const signInReady =
+    signInVisible &&
+    (await waitFor(
+      page,
+      `[...document.querySelectorAll("button")].some((node) =>
+      node.textContent.trim() === "Sign in" &&
+      !node.disabled && node.getAttribute("aria-disabled") !== "true")`,
+      15_000,
+    ));
+  const signInButtonState = await page.evaluate(`
+    const button = [...document.querySelectorAll("button")]
+      .find((node) => node.textContent.trim() === "Sign in");
+    return {
+      found: Boolean(button),
+      disabled: button ? button.disabled : null,
+      ariaDisabled: button?.getAttribute("aria-disabled") ?? null,
+      status: document.querySelector(${q(STATUS)})?.textContent.trim() ?? null,
+    };`);
+  check(
+    "sign-out cleanup enables Settings Sign in before the test clicks it",
+    signOutClick.clicked &&
+      signInVisible &&
+      signInReady &&
+      signInButtonState.found &&
+      !signInButtonState.disabled &&
+      signInButtonState.ariaDisabled !== "true",
+    {
+      signOutClick,
+      signInVisible,
+      signInInitialState,
+      signInReady,
+      signInButtonState,
+    },
   );
+  const signInClick = signInReady
+    ? await clickSettingsButton(page, "Sign in")
+    : {
+        found: signInButtonState.found,
+        disabled: signInButtonState.disabled,
+        clicked: false,
+      };
+  const signedOut = signOutClick.clicked && signInVisible;
+  const signedIn =
+    signInClick.clicked &&
+    (await waitFor(
+      page,
+      `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign out")`,
+      15_000,
+    ));
   await openHash(page, "#/home");
   const at = await mark(page);
   await page.evaluate(
@@ -881,6 +928,8 @@ async function signOutThenIn(page, check) {
   check(
     "after Sign out and Sign in without a restart, library requests use the new sign-in",
     signedOut &&
+      signInReady &&
+      signInClick.clicked &&
       signedIn &&
       loaded &&
       trace.apiGeneration > generationBefore &&
@@ -890,6 +939,12 @@ async function signOutThenIn(page, check) {
       !banner,
     {
       signedOut,
+      signOutClick,
+      signInVisible,
+      signInInitialState,
+      signInReady,
+      signInButtonState,
+      signInClick,
       signedIn,
       loaded,
       generationBefore,
@@ -1077,7 +1132,7 @@ async function restoreHealthy(page, check) {
 }
 
 /** Audit-fix checks (see the header and docs/TESTING.md "Audit fixes"). */
-export async function runAuditFixes({ page, check, dataDir, artifactDir }) {
+export async function runAuditFixes({ page, check, logDir, artifactDir }) {
   try {
     await group(check, "audit fixes setup", async () => {
       await fixtureCall(page, "reset");
@@ -1091,15 +1146,15 @@ export async function runAuditFixes({ page, check, dataDir, artifactDir }) {
       onlineWithoutOutage(page, check),
     );
     await group(check, "clipboard copy", () =>
-      clipboardCopy(page, check, dataDir),
+      clipboardCopy(page, check, logDir),
     );
     await group(check, "cancel sign-in", () =>
       cancelSignIn(page, check, artifactDir),
     );
     await group(check, "re-auth failures", () =>
-      reauthFailures(page, check, dataDir),
+      reauthFailures(page, check, logDir),
     );
-    await group(check, "lost token", () => lostToken(page, check, dataDir));
+    await group(check, "lost token", () => lostToken(page, check, logDir));
     await group(check, "sign out then in", () => signOutThenIn(page, check));
     await group(check, "parked queue order", () =>
       parkedQueueOrder(page, check),

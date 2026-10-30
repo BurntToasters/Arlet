@@ -18,14 +18,46 @@ reachable.
 ## Native app E2E
 
 `npm run test:e2e:app` (Windows only) builds a release binary into
-`src-tauri/target/e2e` with a synthetic MusicKit token, moves the per-user
-Arlet data folders aside, launches the app with WebView2 remote debugging, and
-drives it over the DevTools Protocol. It restores the data folders afterwards
-and writes `e2e-artifacts/<timestamp>/report.json` (binary SHA-256, commit,
-per-check results), `screenshot.png`, and the run's `arlet.log`. Close every
-running Arlet first; the app is single-instance. `--skip-build` reuses the
-last E2E binary. `npm run test:all -- --require-clean-proof` (every release
-proof) runs this suite on Windows, so no release is recorded without it.
+`src-tauri/target/e2e` with the `e2e` Cargo feature and a synthetic MusicKit
+token, launches the app with WebView2 remote debugging, and drives it over the
+DevTools Protocol. Every run gets a new marked root under the system temp
+folder. The harness passes that exact root through `ARLET_E2E_DATA_ROOT`; Rust
+stores app data, local cache, logs, and WebView2 storage in separate children
+of it. It does not override `APPDATA` or `LOCALAPPDATA`, move real profiles, or
+delete unmarked folders. The E2E binary rejects a missing or invalid root
+before startup can use a Known Folder path, and normal release builds ignore
+the E2E variable. `--skip-build` requires a SHA-256 proof that the binary was
+built with the E2E feature and matching token mode. The proof stores only a
+token fingerprint, never the token; synthetic-token runs verify against the
+fingerprint from the build because each fresh synthetic token has a new expiry.
+
+The suite writes `e2e-artifacts/<timestamp>/report.json` (binary SHA-256,
+commit, startup arguments, process exit/error, and per-check results),
+`screenshot.png`, `arlet.log`, `browser-process.log`, and
+`webview-diagnostics.json` (WebView2 runtime versions, isolated browser
+arguments, and Windows event diagnostics). Close every running Arlet first;
+the app is single-instance. `npm run test:all -- --require-clean-proof` (every
+release proof) runs this suite on Windows, so no release is recorded without
+it.
+
+The previous Windows canary failed before DevTools target discovery because
+port 9333 refused connections; the root cause is unverified. The harness now
+selects an available loopback port, passes one run-specific WebView2 data
+directory through both Tauri and the runtime environment, records child
+startup output, and bounds discovery and command deadlines. These changes
+make startup deterministic and the failure report useful, but do not establish
+the original runner failure's cause.
+
+The foreground monitor must ignore only the invisible Tao dispatcher when its
+raw Windows class name is `Tao Thread Event Target` and its extended style includes
+`WS_EX_NOACTIVATE`, `WS_EX_TRANSPARENT`, `WS_EX_LAYERED`, and
+`WS_EX_TOOLWINDOW`. A generic visible/tool/transparent window remains a
+failure. The clipboard restore helper must decode its stdin as UTF-8 without a
+BOM: a legacy PowerShell code page can corrupt the expected Unicode report and
+make `changed` appear successful while Arlet's report is still on the
+clipboard. A `changed` result is valid only after the helper confirms the
+report is no longer current; a successful restore also verifies the text after
+writing it.
 
 The app launches in the background, so a run does not interrupt whoever is
 using the PC. `ARLET_E2E_BACKGROUND=1` (`src-tauri/src/background_launch.rs`)
@@ -66,18 +98,45 @@ Failure modes it covers:
 12. A renderer crash leaves a blank window, or leaves no line in `arlet.log`
     (WebView2 failures are written even with Debug Mode off).
 
-The harness itself must not lose the real data folders:
+The saved-settings reset/restart and legacy-cache migration run entirely
+inside the isolated root. Cleanup validates its absolute path and ownership
+marker, removes it only after the E2E app exits, and never kills another
+`arlet.exe`. A handled setup or test failure still writes the report and
+attempts cleanup. A hard kill can leave only that run's marked temp profile;
+it cannot move or alter the real Arlet profile.
 
-- Ctrl+C during a run leaves them moved aside. The run now restores them
-  before exiting.
-- A run killed outright (a `test:all` timeout, a closed terminal) cannot
-  restore, and Windows gives it no signal to catch. The test profile carries
-  a marker file, so the next run puts the backup back before it starts.
-- Data without that marker is never deleted. With more than one backup, or
-  unmarked data in place, the run stops and asks for a manual restore.
-- Deleting the test profile fails (a WebView2 process still holds a file),
-  and the run stops before it renames any backup back, so Arlet opens on the
-  test profile until the next run.
+The account-session scenario separately rejects `library_cache_clear`,
+`delete_pins`, and `delete_playback_session`, reloads the app, and verifies the
+previous library, pins, and queue remain hidden behind the durable account
+fence. In the marked test data directory, `e2e-account-clear-fault.json` holds
+exactly `{"command":"library_cache_clear"}`,
+`{"command":"delete_pins"}`, or
+`{"command":"delete_playback_session"}`. A missing file means no fault;
+malformed or unreadable controls are rejected. The test-only IPC boundary
+records `{atUnixMs,command,outcome}` lines in
+`e2e-account-clear-trace.jsonl` (`success`, `failure`,
+`injected_failure`, or `invalid_control`), capped at 64 KiB and 128 rows. The
+scenario injects each rejection independently, waits for all three clear
+calls to settle, checks that only the rejected data category remains fenced,
+then reloads and verifies the previous data stays hidden. It saves one trace
+artifact per category.
+
+For a focused diagnostic run, use
+`npm run test:e2e:app -- --skip-build --scenarios flows,discovery,account-session`
+after a matching E2E-feature build is available. `--scenarios` accepts only
+registered names and rejects unknown or repeated names before the harness
+builds or launches Arlet. The report records `selectedScenarios` and
+`fullSuite: false`; focused runs are useful for diagnosis and are never release
+proof. Omitting the option runs every registered scenario and records
+`fullSuite: true`. Both modes retain the isolated profile setup, startup
+diagnostics, tray/quit checks, process verification, and cleanup.
+
+After each native scenario the runner records one check, `<name> leaves the
+app ready for the next scenario`. It fails when the app is signed out (except
+`session-restore`, which signs out on purpose), shows the mini player instead
+of the shell, or still has a fixture hold, delay, or rejection set. The runner
+then restores those fixture controls to defaults but does not repair app state,
+so the failing check names the scenario that leaked.
 
 It also writes `screenshot-offline.png`. CI runs this gate on Windows x64 and
 uploads the report as the `e2e-report` artifact.
@@ -436,6 +495,99 @@ session` and handoff/expiry checks in `report.json`,
 (the banner), and `account-session-trace.json` (every fixture request and
 transition, including the single `/v1/me/storefront` probe).
 
+## Audit regressions
+
+Failure scenarios covered by `scripts/e2e-audit-regressions.js`:
+
+- A held `/v1/me/storefront` probe from the previous account completes with a
+  403 after a new sign-in and expires the healthy session, or prevents the new
+  account epoch from starting its own probe.
+- An authorization still pending when the user explicitly signs out restores
+  the old account when it finishes, or blocks a fresh sign-in after it settles.
+  The separate `audit-fixes` scenario covers cancellation, which does not
+  invalidate a late authorization.
+- An old Play retries `setQueue` with the remaining IDs after a newer Play has
+  already installed and started its queue.
+- Release notes with a 65,527-byte unmatched inline-code run take excessive
+  time or lose the literal backticks; ordinary emphasis, code spans, and
+  non-navigable links regress.
+- A native settings write failure has no visible error or changes the saved
+  value. A failed volume write becomes an unhandled input rejection, or saving
+  remains broken after the owned fault path is removed.
+
+Run only this scenario with
+`npm run test:e2e:app -- --skip-build --scenarios audit-regressions` after a
+matching E2E-feature build is available. It reloads the fixture between cases
+and ends signed in and healthy. The marked run artifacts include
+`audit-regressions-observations.json` and
+`screenshot-audit-regressions-<case>.png`; the settings case also saves the
+volume and theme failure screenshots while their errors are visible. Its
+native settings fault is an empty `settings.json.tmp` directory inside the
+scenario's owned data directory; cleanup removes only that empty directory,
+then the scenario confirms that a later settings save changes the persisted
+theme.
+
+## Deep playback and pin regressions
+
+The `deep-regressions` native scenario runs after `audit-regressions` and
+before `account-session`. It reloads the fixture between cases and covers:
+
+- A held manual Play Next for an album rejects with `NOT_FOUND` after a newer
+  Play has started. The stale retry must not add songs to the new queue.
+- With MusicKit's indexed-selection methods removed, a held Playing Next row
+  selection rejects after a newer Play. Its fallback must not replace that
+  queue.
+- A parked resume waits on the real provider stop while a newer Play starts.
+  Releasing the stop must not replace the new queue or seek to the parked
+  position of 0:42.
+- Removing the upcoming row at index 3 in the six-song playlist holds the
+  rebuild-tier `setQueue`. After a newer Play starts, rejecting that rebuild
+  with `NOT_FOUND` must not retry, reselect, seek, or play over the new queue.
+- An owned empty `pins.json.tmp` directory makes the native pin write fail.
+  The UI must show the save error, persisted pins must stay unchanged, and a
+  later pin write must persist and survive reload after the fault directory is
+  removed.
+
+Run only this scenario with
+`npm run test:e2e:app -- --skip-build --scenarios deep-regressions` after a
+matching E2E-feature build is available. Its marked run artifacts include
+`deep-regressions-observations.json` and
+`screenshot-deep-regressions-<case>.png`; the pin error screenshot is captured
+before the reload. The pin fault cleanup removes only the empty directory the
+scenario created. Each case records its setup preconditions with its result,
+and the scenario ends with the fixture signed in and healthy.
+
+## Handoff and settings regressions
+
+The `handoff-settings-regressions` native scenario runs after
+`deep-regressions` and before `account-session`. It reloads the fixture
+between cases and covers:
+
+- A real provider `stop()` parks a queue and remains pending. The first Play
+  waits on it, a second player toggle means Pause, and releasing the stop must
+  not start audio. A later Play must restore the full album queue at the saved
+  0:42 position. The newer-Play-wins handoff case remains covered by
+  `deep-regressions`.
+- With Shuffle on, removing an upcoming row holds the rebuild after its
+  temporary Shuffle-off change. A newer Play of Album Track C must queue the
+  whole four-song album. Rejecting the old rebuild must retain Shuffle unless
+  the user explicitly turns it off while the rebuild is still held.
+- The native settings loader reads dark theme and volume 0.42 from a valid
+  backup when the primary is missing, and the renderer applies both values.
+  Missing both files and an invalid backup must load defaults. The cases
+  preserve and restore the original primary and backup bytes in the marked
+  run's owned data directory.
+
+Run only this scenario with
+`npm run test:e2e:app -- --skip-build --scenarios handoff-settings-regressions`
+after a matching E2E-feature build is available. Its marked run artifacts
+include `handoff-settings-regressions-observations.json` and
+`screenshot-handoff-settings-regressions-<case>.png`; settings screenshots
+are captured before the temporary files are restored. Queue spies only hold
+and reject MusicKit provider calls; settings cases invoke the real native
+`load_settings` command and reload the renderer. The existing `queue-edit`
+scenario continues to cover a successful rebuild retaining its mode.
+
 ## Radio and artist pages
 
 - Start Station on a library song with no catalog ID, or an artist with none,
@@ -662,8 +814,10 @@ against the `polish` fixture ids in `scripts/e2e-music-fixture.js`. It drives
 the real UI over CDP and reads the fixture's snapshot for requests, queue and
 volume. Each check is written to `report.json` with its observed values in
 `detail`. The runner also writes `screenshot-polish.png` (the state at the end
-of the scenario) and `polish-trace.json`; the per-check screenshots are not
-written.
+of the scenario), `polish-trace.json`, and `now-playing-bloom-results.json`.
+The latter records 20 frozen screenshots covering saturated blue and orange,
+dark, pale and missing artwork in dark and light themes at desktop and narrow
+widths. Compare files with the same name in the before and after run folders.
 
 A check that fails names the gap in its `detail`. The album header menu has no
 copy-link item (the hero carries no catalog URL), which is the one known gap at
@@ -742,6 +896,11 @@ Now Playing:
   formatted time or percentage.
 - With `prefers-reduced-motion: reduce`, open, close or transition animations
   still run.
+- The full-window bloom is too sharp or saturated, or its cover halo paints
+  above the shared readability scrim.
+- Blur, dither or scrim layers overlap the artwork, title, transport controls
+  or queue, block clicks, or create horizontal overflow at narrow width.
+- Forced-colors mode leaves either bloom image, scrim or dither visible.
 
 Context menu:
 
@@ -776,6 +935,9 @@ Keyboard and later items:
 - A favorite star on a song row shows for an unfavorited song, or for the wrong row.
 - QueueDrawer leaves focus on removed or hidden content after Esc.
 - Search tabs ignore Arrow keys, or move focus without moving `aria-selected`.
+- After navigating to a query route, keyboard navigation starts as soon as the
+  tab exists, before RouteView's deferred heading focus settles; that later
+  focus steals the tab and the first key is lost.
 - The explicit badge has no accessible name, or its name is only "explicit".
 - A page state (loading, empty, error) renders without an `h1`.
 
@@ -827,7 +989,7 @@ check name is the `report.json` name):
 | a failed first load ends the skeleton instead of keeping it                                                                               | skeleton on a failed load                                                   |
 | Ctrl+R refresh keeps album cards on screen and shows no skeleton                                                                          | refresh replaces data with a skeleton                                       |
 | About links are enabled type=button elements labelled Project page, Release notes and License, with no href or target (not clicked)       | About link navigates the window, is missing, or is disabled                 |
-| a route change moves focus to the page h1                                                                                                 | route focus                                                                 |
+| a route change moves focus to the page h1                                                                                                 | route focus, including a deferred heading focus stealing search-tab focus   |
 | viewport override switches the shell to the compact layout (720 px)                                                                       | environment: the webview ignores the override (a failing check, not a skip) |
 | opening the compact drawer moves focus into it                                                                                            | compact drawer focus                                                        |
 | Escape closes the compact drawer and focuses the menu button                                                                              | compact drawer Esc                                                          |
@@ -846,6 +1008,10 @@ check name is the `report.json` name):
 | Now Playing renders its artwork backdrop and cover bloom                                                                                  | bloom layers missing; wrong alt or aria-hidden                              |
 | pausing playback holds the bloom still                                                                                                    | bloom drifts while paused                                                   |
 | resuming playback runs the bloom again                                                                                                    | bloom stops after pause and never restarts                                  |
+| Now Playing bloom capture covers artwork variants, themes and widths                                                                      | visual matrix missing an artwork, theme or viewport                         |
+| both bloom layers sit under the shared scrim with foreground content above                                                                | halo escapes the scrim or foreground is covered                             |
+| Now Playing has no horizontal overflow and its controls and queue stay reachable                                                          | narrow layout clips or blocks controls or queue                             |
+| forced colors hides the bloom decorations and keeps the track visible                                                                     | artwork, scrim or dither in forced colors                                   |
 | a track without artwork renders no bloom images                                                                                           | broken backdrop or halo `<img>`                                             |
 | reduced motion: the artwork bloom runs no animation                                                                                       | bloom animation with reduced motion                                         |
 
@@ -919,6 +1085,11 @@ Search suggestions (`/search/suggestions`):
 - A media suggestion has no thumbnail, or a text completion or recent search
   grows one. [media suggestions carry a decorative thumbnail; term suggestions
   stay text-only]
+- The recent-search check starts before MusicKit authorization, catalog source,
+  the submitted search route, or stored recent term settles. It must prove the
+  real form submit and storage/route state before clearing the field and
+  reopening suggestions through user input/focus. [recent searches stay
+  text-only with no thumbnail]
 
 Search results (`with=topResults`, `types`, `limit`, `offset`):
 
@@ -969,6 +1140,10 @@ Curators (`curators/{id}`, `apple-curators/{id}` with `views=grouped-playlists`,
   selectors]
 - A recent search grows an artwork thumbnail. [recent searches stay text-only
   with no thumbnail]
+- The submit handler stores a recent term before the deferred route-to-input
+  effect settles. Clearing the input directly can be overwritten by the old
+  route query, hiding the recent list; use the app's Clear search button and
+  verify the empty route and input before reopening suggestions on focus.
 
 Home (`recent/played`, `history/heavy-rotation`, `recommendations`):
 
@@ -1021,7 +1196,10 @@ Failure modes:
 - Clipboard copy (item 7): a stalled plugin call blocks past 2 s without
   falling back to `navigator.clipboard`. The fallback is skipped after a plugin
   error. "Clipboard is busy" shows while either path succeeded. Neither path
-  logs its result.
+  logs its result. The support-report E2E must read the real clipboard through
+  the provider that succeeded (Tauri first, then the isolated WebView2 browser
+  clipboard with test-only CDP permission), preserve and restore existing text,
+  and report provider failures without recording clipboard contents.
 - Ratings caches (item 10): `settled`, `generations`, or `added` grows past
   2000 entries. Eviction drops an in-flight entry, so a request repeats or a
   result is lost. A re-added key is not treated as the newest entry.
@@ -1108,6 +1286,10 @@ rejects `/v1/me` with a bare `403`, as the old token would. Driven by the check
   and never checked again. It is now kept, and checked once the sign-in
   settles, with the probe cooldown reset.
 - A refused request shows the bare status `403` instead of readable text.
+- Sign-out cleanup is still pending when the Settings `Sign in` button first
+  appears; clicking that disabled button cannot start authorization and must
+  not be mistaken for a stale-API failure. Once the button is enabled, a click
+  that still fails to authorize is a real sign-in failure.
 
 ## Release-only evidence
 

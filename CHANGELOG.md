@@ -5,7 +5,7 @@
 
 | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                                          | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
 | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.1/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.1/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.2/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.2/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -21,6 +21,19 @@
 ### ℹ️ Enjoying Arlet? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
+
+## Changes in `v0.4.0-beta.2:`
+
+- **Ver:** Updated version to `v0.4.0-beta.2`.
+- **Security:** Signing out blocks retained library data, pinned playlists, and saved queues until cleanup succeeds, preventing the previous account's data from reappearing after a failed deletion. Cleanup failures are reported, and signing in again to the same account keeps its parked queue.
+- **Security:** Updated updater dependencies to address archive extraction vulnerabilities while keeping system proxy support.
+- **UI:** Refined Now Playing's artwork bloom with softer colors, a shared reading scrim, and subtle grain. Playback and volume controls stay accessible in narrow layouts.
+- **Codebase:** Branch setup helpers refuse to reset or replace branches when edited files, untracked files, or unpublished commits could be lost.
+- **Codebase:** Release checks require more remaining Apple Music token lifetime, and weekly renewal warnings start earlier.
+- **Testing:** Native end-to-end runs use isolated temporary profiles, bounded debugging connections, and verified process cleanup. Startup failures save runtime diagnostics and process logs for review.
+- **Testing:** Added native account-cleanup failure checks and expanded artwork, clipboard, search, and keyboard coverage. Runs retain reports, traces, and screenshots for repeatable verification.
+- **Tauri:** Updated Tauri to `2.12.5`.
+- **PKG:** Updated packages.
 
 ## Changes in `v0.4.0-beta.1:`
 
