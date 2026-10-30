@@ -109,7 +109,7 @@
     "@tauri-apps/api": "^2.12.1",
     "@tauri-apps/plugin-clipboard-manager": "^2.5.0",
     "@tauri-apps/plugin-updater": "^2.14.0",
-    "lucide-preact": "^1.52.0",
+    "lucide-preact": "^1.62.0",
     "preact": "^11.0.0",
     "zod": "^4.6.5"
   },
