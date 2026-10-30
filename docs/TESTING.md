@@ -131,6 +131,13 @@ proof. Omitting the option runs every registered scenario and records
 `fullSuite: true`. Both modes retain the isolated profile setup, startup
 diagnostics, tray/quit checks, process verification, and cleanup.
 
+After each native scenario the runner records one check, `<name> leaves the
+app ready for the next scenario`. It fails when the app is signed out (except
+`session-restore`, which signs out on purpose), shows the mini player instead
+of the shell, or still has a fixture hold, delay, or rejection set. The runner
+then restores those fixture controls to defaults but does not repair app state,
+so the failing check names the scenario that leaked.
+
 It also writes `screenshot-offline.png`. CI runs this gate on Windows x64 and
 uploads the report as the `e2e-report` artifact.
 

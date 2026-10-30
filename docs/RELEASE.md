@@ -135,18 +135,12 @@ npm run release:win              # prerelease:prepare (warning + token mint + pr
 npm run release:win:resume       # after a failure: prerelease:prepare + release:win:continue, reusing the build session (valid 24 h)
 ```
 
-The release VM is driven over SSH. Windows OpenSSH runs commands elevated
-with no interactive desktop, where WebView2 cannot open a window
-(`0x80070578`, "Invalid window handle"). So `test:all --require-clean-proof`
-skips the native app E2E in an SSH session (`SSH_CONNECTION` or `SSH_CLIENT`
-set) and says so, and `test:e2e:app` refuses to start there. Run
-`npm run test:e2e:app` from a terminal at a desktop (the dev machine or the
-VM console) on the release commit before publishing.
-
-This matches releases up to 0.2.3, whose gate never ran the native E2E; it
-joined `test:all --require-clean-proof` during 0.2.4 work. On the SSH-driven
-VM the gate therefore covers what it always did, and the native suite is a
-manual step at a desktop.
+The native app E2E needs an interactive Windows desktop because OpenSSH runs
+commands without one, where WebView2 cannot open a window (`0x80070578`,
+"Invalid window handle"). `test:all --require-clean-proof` therefore fails on
+SSH and on non-Windows hosts instead of recording incomplete proof. Run the
+full required gate from a Windows desktop on the release commit before
+preparing the build session.
 
 `release:win:continue` runs: session verify → licenses → draft (single
 creator) → Rust targets → x64 + ARM64 NSIS builds (in-build Authenticode via
@@ -165,13 +159,10 @@ npm run release:publish          # verifies, publishes, then syncs a beta feed a
 npm run release:verify:published # downloads live updater metadata and validates it
 ```
 
-For a beta, `release:sign:gpg` (part of `release:win`) copies the beta
-manifests to `/releases/latest` as soon as the beta is signed and uploaded, as
-Zinnia does, so beta users see it without a separate step. Until the draft is
-published its installer URLs return 404; the app's beta updater retries
-briefly and then reports the failure, so publish the draft promptly.
-`release:publish` syncs again after GitHub confirms the published prerelease.
-If a sync fails, retry it with `npm run release:sync-beta-manifests`.
+For a beta, `release:sign:gpg` uploads signed assets to the draft without
+changing public beta feeds. `release:publish` syncs beta manifests to
+`/releases/latest` only after GitHub confirms the prerelease is published. If
+that sync fails, retry it with `npm run release:sync-beta-manifests`.
 
 ## Updater channels and manifest assets
 
@@ -196,8 +187,9 @@ tag.
 
 Stable releases upload all six files to the published stable release, which
 is GitHub's `/releases/latest` alias. Beta releases upload all six files to
-their prerelease tag, and the signing step then transactionally copies the
-four beta manifests onto the latest stable release (again after publishing). A GitHub asset lock, staging names, adjacent rename swap,
+their prerelease tag; after GitHub confirms publication, the publish step
+transactionally copies the four beta manifests onto the latest stable
+release. A GitHub asset lock, staging names, adjacent rename swap,
 rollback, and orphan cleanup protect the live beta feed while multiple release
 VMs are active. If publication or the post-publish sync loses connectivity,
 run:

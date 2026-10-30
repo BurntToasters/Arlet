@@ -67,6 +67,17 @@ fn apply_normal(window: &WebviewWindow, geometry: WindowState) -> Result<(), Str
     if window.is_maximized().unwrap_or(false) {
         window.unmaximize().map_err(stringify)?;
     }
+    apply_normal_geometry(window, geometry)
+}
+
+/// Restores geometry after a renderer failure. Mini entry always unmaximizes
+/// first, so this path avoids a synchronous window-state query on the UI thread.
+fn apply_normal_after_mini(window: &WebviewWindow, geometry: WindowState) -> Result<(), String> {
+    window.set_always_on_top(false).map_err(stringify)?;
+    apply_normal_geometry(window, geometry)
+}
+
+fn apply_normal_geometry(window: &WebviewWindow, geometry: WindowState) -> Result<(), String> {
     window
         .set_min_size(Some(LogicalSize::new(NORMAL_MIN_WIDTH, NORMAL_MIN_HEIGHT)))
         .map_err(stringify)?;
@@ -142,6 +153,31 @@ pub fn set_mini_player(window: WebviewWindow, enabled: bool) -> Result<(), Strin
     } else {
         exit(&window)
     }
+}
+
+/// Restores native mini-player state before a renderer recovery reloads the
+/// frontend, which initializes its mini-player flag to false.
+pub fn restore_after_renderer_failure(window: &WebviewWindow) -> Result<(), String> {
+    let mut saved = SAVED
+        .lock()
+        .map_err(|_| "Mini player lock poisoned".to_string())?;
+    if !is_active() {
+        return Ok(());
+    }
+    let geometry = saved.take();
+    let result = match geometry {
+        Some(geometry) => apply_normal_after_mini(window, geometry),
+        None => window
+            .set_min_size(Some(LogicalSize::new(NORMAL_MIN_WIDTH, NORMAL_MIN_HEIGHT)))
+            .and_then(|_| window.set_always_on_top(false))
+            .map_err(stringify),
+    };
+    if result.is_ok() {
+        ACTIVE.store(false, Ordering::SeqCst);
+    } else {
+        *saved = geometry;
+    }
+    result
 }
 
 /// Keeps the mini window above others. Ignored outside mini mode, so a stale

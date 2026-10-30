@@ -33,6 +33,27 @@ const shuffleModeStates = new WeakMap<
   ShuffleModeState
 >();
 
+export interface TransportIntent {
+  /** Moves on every Play or Pause the user presses. */
+  generation: number;
+  /** True when the latest press was Play. */
+  playing: boolean;
+}
+
+let transportIntent: TransportIntent = { generation: 0, playing: false };
+
+/**
+ * Records a Play (true) or Pause (false) the user pressed. Only the app's
+ * transport commands call this; a queue rebuild's own resume or pause does not.
+ */
+export function recordTransportIntent(playing: boolean): void {
+  transportIntent = { generation: transportIntent.generation + 1, playing };
+}
+
+export function latestTransportIntent(): TransportIntent {
+  return transportIntent;
+}
+
 function playerRecord(
   instance: MusicKit.MusicKitInstance,
 ): Record<string, unknown> {

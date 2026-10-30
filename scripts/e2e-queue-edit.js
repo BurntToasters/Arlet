@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
-import { waitFor as pollFor } from "./e2e-helpers.js";
+import { fixtureCall, waitFor as pollFor } from "./e2e-helpers.js";
 
 const PLAYLIST_ID = "playlist-1";
 const PLAYER_TITLE = `document.querySelector(".player-bar .player-track-copy strong")?.textContent`;
+const PLAY_LABEL = `document.querySelector(".play-button")?.getAttribute("aria-label")`;
 const DRAWER_ROWS = `document.querySelectorAll(".queue-drawer .queue-list > li:not([aria-hidden])")`;
 const SHUFFLE_BUTTON = `document.querySelector('button[aria-label="Toggle shuffle"]')`;
 const MUSIC_TRANSITION_TYPES = ["setQueue", "selectIndex", "play", "pause"];
@@ -277,7 +278,141 @@ export async function runQueueEdit({ page, check }) {
     { sinceClear },
   );
 
-  // Phase 6: a 600-song queue renders only the visible window.
+  // Phase 6: a pause during setQueue keeps the edit but does not resume audio.
+  await page.evaluate(`window.__ARLET_E2E_MUSIC__.seedQueue(6); return true;`);
+  const sixRowsReady = await waitFor(
+    page,
+    `${DRAWER_ROWS}.length === 6 && ${PLAY_LABEL} === "Pause"`,
+  );
+  const mark6 = (await snapshotOf(page)).transitions.length;
+  await fixtureCall(page, "configure", [{ holdSetQueue: true }]);
+  // Row index is the queue index, so row 1 is bulk-1 (the expected removal).
+  const removeDuringPause = await page.evaluate(
+    `return ${clickRowControl(1, '[data-queue-action="remove"]')};`,
+  );
+  const pauseQueueHeld = await waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().queueEdit.setQueueHeld === 1`,
+  );
+  const pauseClicked = await page.evaluate(`
+    const button = document.querySelector(".play-button");
+    if (button?.getAttribute("aria-label") !== "Pause") return false;
+    button.click();
+    return true;
+  `);
+  const pausedDuringRebuild = await waitFor(page, `${PLAY_LABEL} === "Play"`);
+  let releasedForPause = 0;
+  try {
+    releasedForPause = await fixtureCall(page, "releaseSetQueue");
+  } finally {
+    releasedForPause = Math.max(
+      releasedForPause,
+      await fixtureCall(page, "releaseSetQueue"),
+    );
+    await fixtureCall(page, "configure", [{ holdSetQueue: false }]);
+  }
+  const pauseEditSettled = await waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().queue.items.length === 5 && window.__ARLET_E2E_MUSIC__.snapshot().transitions.slice(${mark6}).some((item) => item.type === "seekToTime") && ${PLAY_LABEL} === "Play"`,
+  );
+  const afterPauseEdit = await snapshotOf(page);
+  const pauseEditTransitions = afterPauseEdit.transitions.slice(mark6);
+  const pauseTransitionIndex = pauseEditTransitions.findIndex(
+    (item) => item.type === "pause",
+  );
+  check(
+    "a newer Pause keeps a successful queue rebuild paused",
+    sixRowsReady &&
+      removeDuringPause &&
+      pauseQueueHeld &&
+      pauseClicked &&
+      pausedDuringRebuild &&
+      releasedForPause === 1 &&
+      pauseEditSettled &&
+      sameIds(ids(afterPauseEdit), [
+        "bulk-0",
+        "bulk-2",
+        "bulk-3",
+        "bulk-4",
+        "bulk-5",
+      ]) &&
+      !pauseEditTransitions
+        .slice(pauseTransitionIndex + 1)
+        .some((item) => item.type === "play"),
+    {
+      sixRowsReady,
+      removeDuringPause,
+      pauseQueueHeld,
+      pauseClicked,
+      pausedDuringRebuild,
+      releasedForPause,
+      pauseEditSettled,
+      transitions: pauseEditTransitions,
+      ids: ids(afterPauseEdit),
+    },
+  );
+
+  // Phase 7: a Play pressed during a paused rebuild stays the last word.
+  const mark7 = (await snapshotOf(page)).transitions.length;
+  await fixtureCall(page, "configure", [{ holdSetQueue: true }]);
+  const removeDuringPlay = await page.evaluate(
+    `return ${clickRowControl(2, '[data-queue-action="remove"]')};`,
+  );
+  const playQueueHeld = await waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().queueEdit.setQueueHeld === 1`,
+  );
+  const playClicked = await page.evaluate(`
+    const button = document.querySelector(".play-button");
+    if (button?.getAttribute("aria-label") !== "Play") return false;
+    button.click();
+    return true;
+  `);
+  const playingDuringRebuild = await waitFor(page, `${PLAY_LABEL} === "Pause"`);
+  let releasedForPlay = 0;
+  try {
+    releasedForPlay = await fixtureCall(page, "releaseSetQueue");
+  } finally {
+    releasedForPlay = Math.max(
+      releasedForPlay,
+      await fixtureCall(page, "releaseSetQueue"),
+    );
+    await fixtureCall(page, "configure", [{ holdSetQueue: false }]);
+  }
+  const playEditSettled = await waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().queue.items.length === 4 && window.__ARLET_E2E_MUSIC__.snapshot().transitions.slice(${mark7}).some((item) => item.type === "seekToTime") && ${PLAY_LABEL} === "Pause"`,
+  );
+  const afterPlayEdit = await snapshotOf(page);
+  const playEditTransitions = afterPlayEdit.transitions.slice(mark7);
+  const playTransitionIndex = playEditTransitions.findIndex(
+    (item) => item.type === "play",
+  );
+  check(
+    "a newer Play keeps a successful queue rebuild playing",
+    removeDuringPlay &&
+      playQueueHeld &&
+      playClicked &&
+      playingDuringRebuild &&
+      releasedForPlay === 1 &&
+      playEditSettled &&
+      sameIds(ids(afterPlayEdit), ["bulk-0", "bulk-2", "bulk-4", "bulk-5"]) &&
+      !playEditTransitions
+        .slice(playTransitionIndex + 1)
+        .some((item) => item.type === "pause"),
+    {
+      removeDuringPlay,
+      playQueueHeld,
+      playClicked,
+      playingDuringRebuild,
+      releasedForPlay,
+      playEditSettled,
+      transitions: playEditTransitions,
+      ids: ids(afterPlayEdit),
+    },
+  );
+
+  // Phase 8: a 600-song queue renders only the visible window.
   await page.evaluate(`
     window.__ARLET_E2E_MUSIC__.seedQueue(600);
     return true;

@@ -378,6 +378,63 @@ async function leaveSignedOut(page) {
   await fixtureCall(page, "emitAuthorizationStatus", [true]);
 }
 
+const SIGNED_IN_BUTTON = `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign out")`;
+
+// Ends the suite signed in, through Settings, so the post-scenario isolation
+// guard sees the app ready for the next scenario. Clicks Sign in only when an
+// enabled Sign in button is present. Never throws: the check it records names
+// the state it found, and the caller's cleanup still runs.
+async function endSignedIn(page, check) {
+  const detail = {
+    before: null,
+    signInClicked: false,
+    signedIn: false,
+    signedInLabel: null,
+    fixtureAuthorized: null,
+    error: null,
+  };
+  let passed = false;
+  try {
+    await fixtureCall(page, "reset");
+    await fixtureCall(page, "emitAuthorizationStatus", [true]);
+    await page.evaluate(`location.hash = "#/settings"; return true;`);
+    await waitFor(page, `Boolean(${AUTH_BUTTON})`, 10_000);
+    detail.before = await page.evaluate(
+      `return ${AUTH_BUTTON}?.textContent.trim() ?? null;`,
+    );
+    if (detail.before === "Sign in") {
+      detail.signInClicked = await page.evaluate(`
+        const button = [...document.querySelectorAll("button")]
+          .find((node) => node.textContent.trim() === "Sign in" && !node.disabled);
+        if (!button) return false;
+        button.click();
+        return true;`);
+      detail.signedIn =
+        detail.signInClicked && (await waitFor(page, SIGNED_IN_BUTTON, 15_000));
+    } else {
+      detail.signedIn = detail.before === "Sign out";
+    }
+    await waitFor(
+      page,
+      `document.querySelector(".titlebar-status")?.textContent.trim() === "Connected"`,
+      5_000,
+    );
+    detail.signedInLabel = await page.evaluate(
+      `return document.querySelector(".titlebar-status")?.textContent.trim() ?? null;`,
+    );
+    detail.fixtureAuthorized = await page.evaluate(
+      `return window.__ARLET_E2E_MUSIC__.snapshot().authorized === true;`,
+    );
+    passed =
+      detail.signedIn &&
+      detail.signedInLabel?.includes("Connected") === true &&
+      detail.fixtureAuthorized === true;
+  } catch (error) {
+    detail.error = String(error?.message ?? error);
+  }
+  check("artwork ends signed in for the next scenario", passed, detail);
+}
+
 /** Visits each view, measures its cards, and checks the artwork geometry. */
 export async function runArtwork({ page, check, artifactDir }) {
   try {
@@ -398,10 +455,18 @@ export async function runArtwork({ page, check, artifactDir }) {
       await runView(page, check, view, artifactDir);
     }
   } finally {
-    // Leave the account as the discovery suite does: the app signed out, the
-    // fixture still authorized. Session restore runs after this suite and was
-    // written against that state. Then drop this suite's data.
-    await leaveSignedOut(page);
+    // Drop this suite's data through the banner's local sign-out (recents,
+    // saved queue and library cache), then sign back in through Settings so
+    // the next scenario starts signed in. Each step is guarded so a failure
+    // here cannot replace the suite's own error.
+    try {
+      await leaveSignedOut(page);
+    } catch (error) {
+      check("artwork clears its data through a local sign-out", false, {
+        error: String(error?.message ?? error),
+      });
+    }
+    await endSignedIn(page, check);
     await fixtureCall(page, "reset");
   }
 }

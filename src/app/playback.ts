@@ -2,6 +2,7 @@ import {
   changeToMediaAtIndex,
   queueOptionsForTracks,
   readPlaybackModes,
+  recordTransportIntent,
   type NormalizedRepeatMode,
   seekToTime,
   setRepeatMode as setMusicRepeatMode,
@@ -486,13 +487,16 @@ export function createPlayback(context: ControllerContext) {
         // A song still loading already shows as playing, so the press means
         // pause even though MusicKit has not started yet.
         if (getState().playback.status === "loading") {
+          recordTransportIntent(false);
           pausePlayback();
           instance.pause();
           return;
         }
         if (instance.playbackState === MusicKit.PlaybackStates.playing) {
+          recordTransportIntent(false);
           pausePlayback();
         } else {
+          recordTransportIntent(true);
           session.playPressedAt = session.pauseCount;
         }
         await toggle(instance);
@@ -504,11 +508,13 @@ export function createPlayback(context: ControllerContext) {
 
     async play(): Promise<void> {
       const instance = requireMusic();
+      recordTransportIntent(true);
       session.playPressedAt = session.pauseCount;
       await instance.play();
     },
 
     async pause(): Promise<void> {
+      recordTransportIntent(false);
       // A parked or signed-out session has no player to pause.
       pausePlayback();
       getMusic()?.pause();

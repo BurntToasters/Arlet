@@ -646,14 +646,19 @@ export function createDiscovery(
         status: page.count < SEARCH_PAGE_LIMIT ? "done" : "idle",
         offset: paging.offset + page.count,
       };
+      // The page is cached under catalog either way. Playback only follows it
+      // while catalog is still the selected source; otherwise a Library tab
+      // selected mid-request would show Library rows with catalog play indices.
+      const updatesPlayback =
+        kind === "songs" && getState().search.activeSource === "catalog";
       setSearchState({
         catalog: {
           ...next,
           paging: { ...next.paging, [kind]: nextPaging },
         },
-        ...(kind === "songs" ? { results: next.songs } : {}),
+        ...(updatesPlayback ? { results: next.songs } : {}),
       });
-      if (kind === "songs") lastSearchTracks = next.songs;
+      if (updatesPlayback) lastSearchTracks = next.songs;
     } catch (error) {
       if (requestId !== searchRequestId) return;
       const message = safeErrorMessage(error);

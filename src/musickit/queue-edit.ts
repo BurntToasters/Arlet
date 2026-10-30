@@ -3,6 +3,7 @@ import { getState, setQueueSnapshot } from "../state.ts";
 import {
   acquireShuffleModeOverride,
   changeToMediaAtIndex,
+  latestTransportIntent,
   queueOptionsForTracks,
   readPlaybackModes,
   seekToTime,
@@ -139,7 +140,8 @@ function sameQueue(
 /**
  * Replaces the provider queue, reselects the current song, and resumes.
  * Returns the queue MusicKit actually received: songs it cannot resolve are
- * dropped, which can also move the current song's index.
+ * dropped, which can also move the current song's index. A Play or Pause the
+ * user presses during the rebuild wins over the state captured at the start.
  */
 async function rebuildQueue(
   instance: MusicKit.MusicKitInstance,
@@ -156,6 +158,7 @@ async function rebuildQueue(
     );
   }
   const wasPlaying = instance.playbackState === MusicKit.PlaybackStates.playing;
+  const intentAtStart = latestTransportIntent().generation;
   const shuffled = readPlaybackModes(instance).shuffleMode === "songs";
   // Shuffle reorders upcoming songs on setQueue, which would corrupt the
   // explicit order. The lease keeps the user's desired mode separate.
@@ -196,7 +199,11 @@ async function rebuildQueue(
     releaseShuffleOverride?.();
   }
   if (!isCurrent()) throw new Error("Queue edit is no longer current.");
-  if (wasPlaying) await instance.play();
+  // Without a press during the rebuild, the state captured at the start stands.
+  const intent = latestTransportIntent();
+  const wantsPlaying =
+    intent.generation === intentAtStart ? wasPlaying : intent.playing;
+  if (wantsPlaying) await instance.play();
   else if (
     isCurrent() &&
     instance.playbackState === MusicKit.PlaybackStates.playing

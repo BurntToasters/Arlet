@@ -125,6 +125,104 @@ const SCENARIO_REGISTRY = [
   ["session-restore", runSessionRestore],
 ];
 
+// Scenarios that intentionally end signed out. The isolation guard skips the
+// signed-in invariant for these only.
+const SCENARIOS_ENDING_SIGNED_OUT = new Set(["session-restore"]);
+
+// Fixture request controls and their defaults (reset() in
+// scripts/e2e-music-fixture.js). The isolation guard reports any that a
+// scenario left set, then restores them. delayMs is restored too, but only
+// matters while delayPaths is set, so it is not judged on its own.
+const FIXTURE_CONTROL_DEFAULTS = {
+  holdSetQueue: false,
+  hangAuthorize: false,
+  delayPaths: [],
+  delayTerms: {},
+  queueEditDelayMs: 0,
+  rejectPaths: [],
+  rejectQueryKeys: [],
+  rejectMeStatus: 0,
+  rejectAuthorize: false,
+  rejectPlay: false,
+  rejectPlayTimes: 0,
+  repeatPlaylistCursor: false,
+  repeatViewCursor: false,
+};
+
+/**
+ * Post-scenario isolation guard. Records one check per scenario that the app
+ * is signed in (unless the scenario is in SCENARIOS_ENDING_SIGNED_OUT), on the
+ * shell rather than the mini player, and has no fixture hold, delay or
+ * rejection left set. It then restores the fixture request controls to
+ * defaults, releasing held calls, but does not repair app state: the failing
+ * check names the scenario that leaked. Never throws.
+ */
+async function checkScenarioIsolation(page, name, check) {
+  const checkName = `${name} leaves the app ready for the next scenario`;
+  const signedOutAllowed = SCENARIOS_ENDING_SIGNED_OUT.has(name);
+  let detail;
+  let passed = false;
+  try {
+    const observed = await page.evaluate(`
+      const fixture = window.__ARLET_E2E_MUSIC__;
+      const snapshot = fixture.snapshot();
+      return {
+        signedInUi: document.querySelector(".titlebar-status")?.textContent.trim() ?? null,
+        fixtureAuthorized: snapshot.authorized === true,
+        shellVisible: Boolean(document.querySelector(".app-shell")),
+        miniPlayerVisible: Boolean(document.querySelector(".mini-player")),
+        setQueueHeld: snapshot.queueEdit.setQueueHeld,
+        authorizeHeld: snapshot.authorizeHeld,
+        controls: snapshot.controls,
+      };`);
+    const leftoverControls = Object.fromEntries(
+      Object.entries(FIXTURE_CONTROL_DEFAULTS)
+        .filter(
+          ([key, value]) =>
+            JSON.stringify(observed.controls?.[key]) !== JSON.stringify(value),
+        )
+        .map(([key]) => [key, observed.controls?.[key]]),
+    );
+    const signedIn =
+      observed.signedInUi?.includes("Connected") === true &&
+      observed.fixtureAuthorized;
+    const signedInOk = signedOutAllowed || signedIn;
+    const shellOk = observed.shellVisible && !observed.miniPlayerVisible;
+    const holdsOk = observed.setQueueHeld === 0 && observed.authorizeHeld === 0;
+    const leftoversOk = Object.keys(leftoverControls).length === 0;
+    passed = signedInOk && shellOk && holdsOk && leftoversOk;
+    detail = {
+      signedOutAllowed,
+      signedInUi: observed.signedInUi,
+      fixtureAuthorized: observed.fixtureAuthorized,
+      shellVisible: observed.shellVisible,
+      miniPlayerVisible: observed.miniPlayerVisible,
+      heldCalls: {
+        setQueue: observed.setQueueHeld,
+        authorize: observed.authorizeHeld,
+      },
+      leftoverControls,
+    };
+  } catch (error) {
+    detail = { error: String(error?.message ?? error) };
+  }
+  let restoreError;
+  try {
+    await page.evaluate(`
+      const fixture = window.__ARLET_E2E_MUSIC__;
+      fixture.configure(${JSON.stringify({ ...FIXTURE_CONTROL_DEFAULTS, delayMs: 800 })});
+      fixture.releaseSetQueue();
+      fixture.releaseAuthorize();
+      return true;`);
+  } catch (error) {
+    restoreError = String(error?.message ?? error);
+  }
+  check(checkName, passed, {
+    ...detail,
+    ...(restoreError === undefined ? {} : { restoreError }),
+  });
+}
+
 function selectScenarios(argv) {
   const selectedValues = [];
   for (let index = 0; index < argv.length; index += 1) {
@@ -2047,6 +2145,7 @@ async function run() {
             path.join(artifactDir, `${name}-trace.json`),
             `${JSON.stringify(trace, null, 2)}\n`,
           );
+          await checkScenarioIsolation(page, name, check);
         }
       }
     }

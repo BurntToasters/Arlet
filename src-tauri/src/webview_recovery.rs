@@ -43,6 +43,43 @@ pub fn next_restart_count(previous: u32, uptime: Duration) -> Option<u32> {
     (count <= MAX_RESTARTS).then_some(count)
 }
 
+#[cfg(windows)]
+fn reload_after_renderer_failure(window: tauri::WebviewWindow) {
+    let recovery_window = window.clone();
+    if let Err(error) = window.run_on_main_thread(move || {
+        if let Err(error) = crate::mini_player::restore_after_renderer_failure(&recovery_window) {
+            let message = format!("Unable to restore mini player before renderer reload: {error}");
+            eprintln!("{message}");
+            crate::logging::write_native_log(&message);
+        }
+
+        if let Err(error) = recovery_window.with_webview(|webview| unsafe {
+            match webview.controller().CoreWebView2() {
+                Ok(core) => {
+                    if let Err(error) = core.Reload() {
+                        let message = format!("Unable to reload the recovered WebView2: {error}");
+                        eprintln!("{message}");
+                        crate::logging::write_native_log(&message);
+                    }
+                }
+                Err(error) => {
+                    let message = format!("Unable to access WebView2 for recovery reload: {error}");
+                    eprintln!("{message}");
+                    crate::logging::write_native_log(&message);
+                }
+            }
+        }) {
+            let message = format!("Unable to queue the renderer recovery reload: {error}");
+            eprintln!("{message}");
+            crate::logging::write_native_log(&message);
+        }
+    }) {
+        let message = format!("Unable to schedule renderer recovery: {error}");
+        eprintln!("{message}");
+        crate::logging::write_native_log(&message);
+    }
+}
+
 /// Stops reloading once a page crashes repeatedly (a crash loop).
 #[derive(Default)]
 pub struct CrashGuard {
@@ -80,6 +117,7 @@ pub fn install(window: &tauri::WebviewWindow) -> Result<(), String> {
         .ok()
         .and_then(|value| value.parse::<u32>().ok())
         .unwrap_or(0);
+    let recovery_window = window.clone();
     window
         .with_webview(move |webview| {
             let guard = Mutex::new(CrashGuard::default());
@@ -99,8 +137,8 @@ pub fn install(window: &tauri::WebviewWindow) -> Result<(), String> {
                             .lock()
                             .map(|mut guard| guard.allow_reload(Instant::now()))
                             .unwrap_or(false);
-                        if let (true, Some(sender)) = (allowed, sender) {
-                            unsafe { sender.Reload()? };
+                        if allowed && sender.is_some() {
+                            reload_after_renderer_failure(recovery_window.clone());
                         }
                     }
                     Recovery::Restart => {
