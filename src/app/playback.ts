@@ -164,7 +164,10 @@ export function createPlayback(context: ControllerContext) {
       current: number,
     ) => QueueEditPlan | undefined,
   ): Promise<QueueEditTier> => {
+    const playIntent = session.playIntent;
+    const isCurrent = (): boolean => session.playIntent === playIntent;
     try {
+      if (!isCurrent()) return "noop";
       // A restored queue has no MusicKit queue until Play; edit the snapshot.
       if (getState().playback.pendingRestore) {
         const { queue, queueIndex } = getState().playback;
@@ -175,12 +178,19 @@ export function createPlayback(context: ControllerContext) {
         return "native";
       }
       // A rebuild drops unplayable songs; say so like the other play paths.
-      return await editQueue(instance, plan, (count) => {
-        log(`Skipped ${count} unavailable songs.`);
-        const message = skippedMessage(count);
-        if (message) reportActionError(new Error(message));
-      });
+      return await editQueue(
+        instance,
+        plan,
+        (count) => {
+          if (!isCurrent()) return;
+          log(`Skipped ${count} unavailable songs.`);
+          const message = skippedMessage(count);
+          if (message) reportActionError(new Error(message));
+        },
+        isCurrent,
+      );
     } catch (error) {
+      if (!isCurrent()) return "noop";
       log(`${label}: ${errorMessage(error)}`);
       throw error;
     }
@@ -280,8 +290,15 @@ export function createPlayback(context: ControllerContext) {
       const id = station.id.trim();
       if (!url && !id) throw new Error("This station cannot be played.");
       const instance = requireMusic();
+      const request = beginPlayRequest(instance);
+      if (!request.shuffleReady) {
+        const error = new Error(
+          "Shuffle could not be restored before playback.",
+        );
+        reportPlayFailure("Station play failed", error);
+        throw error;
+      }
       clearContinuation();
-      const request = beginPlayRequest();
       session.station = station;
       clearPlaybackError();
       setPlaybackStatus("loading");
@@ -320,6 +337,14 @@ export function createPlayback(context: ControllerContext) {
         await playTracks(saved, index, undefined, { keepOrder: true });
         return;
       }
+      const request = beginPlayRequest(instance);
+      if (!request.shuffleReady) {
+        const error = new Error(
+          "Shuffle could not be restored before playback.",
+        );
+        reportPlayFailure("Queue item play failed", error);
+        throw error;
+      }
       syncMusicKitQueue(instance);
       const snapshot = getState().playback;
       if (
@@ -329,12 +354,15 @@ export function createPlayback(context: ControllerContext) {
       ) {
         throw new Error("Queue item is unavailable.");
       }
-      const request = beginPlayRequest();
       clearPlaybackError();
       setPlaybackStatus("loading");
       try {
         // Selecting in the provider queue keeps history and shuffle order.
-        if (await changeToMediaAtIndex(instance, index)) {
+        const selected = await changeToMediaAtIndex(instance, index);
+        // The indexed call is asynchronous too. A newer Play may own the
+        // provider before this compatibility fallback gets a chance to run.
+        if (!request.current()) return;
+        if (selected) {
           await startAudio(instance, request);
           if (request.current()) setQueueSnapshot(snapshot.queue, index);
           return;
@@ -345,11 +373,16 @@ export function createPlayback(context: ControllerContext) {
         const { entries, skipped } = await withResolvableTracks(
           snapshot.queue.slice(index),
           async (attempt) => {
+            if (!request.current()) {
+              throw new Error("Queue request is no longer current.");
+            }
             await instance.setQueue(
               queueOptionsForTracks(attempt.map((entry) => entry.track)),
             );
           },
+          request.current,
         );
+        if (!request.current()) return;
         const queue = entries.map((entry) => entry.track);
         if (skipped.length) log(`Skipped ${skipped.length} unavailable songs.`);
         await startAudio(instance, request);
@@ -432,14 +465,18 @@ export function createPlayback(context: ControllerContext) {
     },
 
     async clearUpNext(): Promise<QueueEditTier> {
+      const instance = requireMusic();
+      // A clear takes ownership from older inserts and queue rebuilds.
+      cancelPendingPlayback();
+      const clearIntent = session.playIntent;
       const tier = await editQueueLogged(
         "Queue clear failed",
-        requireMusic(),
+        instance,
         (queue, current) => planClear(queue, current),
       );
       // Clearing Up Next also drops the rest of a capped playlist; a failed
-      // clear keeps it.
-      clearContinuation();
+      // clear keeps it. A newer Play owns its own continuation.
+      if (session.playIntent === clearIntent) clearContinuation();
       return tier;
     },
 
@@ -488,6 +525,9 @@ export function createPlayback(context: ControllerContext) {
 
     /** Changes with every play request; tells a caller its play was replaced. */
     playIntent: (): number => session.playIntent,
+
+    /** Changes with every pause; used to cancel a resume waiting on handoff. */
+    pauseCount: (): number => session.pauseCount,
 
     /** Supersedes a play still awaiting queue setup (sign-out, authorization). */
     cancelPendingPlayback,

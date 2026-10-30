@@ -6,7 +6,11 @@ import {
   savePlaybackSessionPayload,
   type InvokeFunction,
 } from "../platform/playback-session.ts";
-import { isAccountDataBlocked } from "../platform/account-data.ts";
+import {
+  accountDataReadVersion,
+  isAccountDataBlocked,
+  isAccountDataReadCurrent,
+} from "../platform/account-data.ts";
 import {
   getState,
   setPendingRestore,
@@ -271,6 +275,8 @@ export interface PlaybackSessionDependencies {
    * a newer play replaced it and the saved position must not be applied.
    */
   playIntent?: () => number;
+  /** Changes with each pause, so a pause during a handoff wait cancels resume. */
+  pauseCount?: () => number;
   /**
    * The queue to save, when it holds more than the provider queue (songs
    * before the Play and the rest still to be added). Defaults to state.
@@ -522,25 +528,53 @@ export function createPlaybackSession(
   const resumeRestoredQueue = async (): Promise<void> => {
     const { playback } = getState();
     const pending = playback.pendingRestore;
+    if (!pending) return;
+    // A handoff may still be stopping MusicKit. Capture ownership before
+    // waiting so a newer play or account clear can supersede this resume.
+    const resumeGeneration = generation;
+    const resumeIntent = dependencies.playIntent?.();
+    const resumePauseCount = dependencies.pauseCount?.();
+    const queueVersion = accountDataReadVersion("queue");
+    let startedRestore = false;
+    const isCurrentResume = (): boolean =>
+      generation === resumeGeneration &&
+      getState().playback.pendingRestore === pending &&
+      (resumeIntent === undefined ||
+        dependencies.playIntent?.() === resumeIntent) &&
+      (resumePauseCount === undefined ||
+        dependencies.pauseCount?.() === resumePauseCount) &&
+      queueVersion !== undefined &&
+      isAccountDataReadCurrent("queue", queueVersion);
     try {
+      if (!isCurrentResume()) return;
       await dependencies.beforeResume?.();
+      // A newer play may have started while the old provider stop settled.
+      // Drop this resume before it can change the provider queue or seek.
+      if (!isCurrentResume()) return;
       if (pending?.station && dependencies.playStation) {
         // A station has no fixed songs or position to return to.
+        startedRestore = true;
         await dependencies.playStation(pending.station);
         return;
       }
       // A parked queue keeps its saved order, so played songs never return.
+      const current = getState().playback;
+      startedRestore = true;
       const played = dependencies.playTracks(
-        playback.queue,
-        playback.queueIndex,
+        current.queue,
+        current.queueIndex,
         { keepOrder: true },
       );
       // playTracks registers its request before its first await.
       const intent = dependencies.playIntent?.();
       await played;
-      const replaced =
-        intent !== undefined && dependencies.playIntent?.() !== intent;
-      if (!replaced && pending && pending.positionSeconds > 0) {
+      const stillCurrent =
+        generation === resumeGeneration &&
+        getState().playback.pendingRestore === undefined &&
+        queueVersion !== undefined &&
+        isAccountDataReadCurrent("queue", queueVersion) &&
+        (intent === undefined || dependencies.playIntent?.() === intent);
+      if (stillCurrent && pending.positionSeconds > 0) {
         try {
           await dependencies.seek(pending.positionSeconds);
         } catch (error) {
@@ -551,7 +585,11 @@ export function createPlaybackSession(
       }
     } finally {
       // Cleared even on failure, so a stale restore cannot retry forever.
-      setPendingRestore(undefined);
+      // A resume dropped before provider setup leaves its parked queue intact;
+      // an attempted resume only clears the exact restore it started with.
+      if (startedRestore && getState().playback.pendingRestore === pending) {
+        setPendingRestore(undefined);
+      }
     }
   };
 

@@ -520,6 +520,67 @@ scenario's owned data directory; cleanup removes only that empty directory,
 then the scenario confirms that a later settings save changes the persisted
 theme.
 
+## Deep playback and pin regressions
+
+The `deep-regressions` native scenario runs after `audit-regressions` and
+before `account-session`. It reloads the fixture between cases and covers:
+
+- A held manual Play Next for an album rejects with `NOT_FOUND` after a newer
+  Play has started. The stale retry must not add songs to the new queue.
+- With MusicKit's indexed-selection methods removed, a held Playing Next row
+  selection rejects after a newer Play. Its fallback must not replace that
+  queue.
+- A parked resume waits on the real provider stop while a newer Play starts.
+  Releasing the stop must not replace the new queue or seek to the parked
+  position of 0:42.
+- Removing the upcoming row at index 3 in the six-song playlist holds the
+  rebuild-tier `setQueue`. After a newer Play starts, rejecting that rebuild
+  with `NOT_FOUND` must not retry, reselect, seek, or play over the new queue.
+- An owned empty `pins.json.tmp` directory makes the native pin write fail.
+  The UI must show the save error, persisted pins must stay unchanged, and a
+  later pin write must persist and survive reload after the fault directory is
+  removed.
+
+Run only this scenario with
+`npm run test:e2e:app -- --skip-build --scenarios deep-regressions` after a
+matching E2E-feature build is available. Its marked run artifacts include
+`deep-regressions-observations.json` and
+`screenshot-deep-regressions-<case>.png`; the pin error screenshot is captured
+before the reload. The pin fault cleanup removes only the empty directory the
+scenario created. Each case records its setup preconditions with its result,
+and the scenario ends with the fixture signed in and healthy.
+
+## Handoff and settings regressions
+
+The `handoff-settings-regressions` native scenario runs after
+`deep-regressions` and before `account-session`. It reloads the fixture
+between cases and covers:
+
+- A real provider `stop()` parks a queue and remains pending. The first Play
+  waits on it, a second player toggle means Pause, and releasing the stop must
+  not start audio. A later Play must restore the full album queue at the saved
+  0:42 position. The newer-Play-wins handoff case remains covered by
+  `deep-regressions`.
+- With Shuffle on, removing an upcoming row holds the rebuild after its
+  temporary Shuffle-off change. A newer Play of Album Track C must queue the
+  whole four-song album. Rejecting the old rebuild must retain Shuffle unless
+  the user explicitly turns it off while the rebuild is still held.
+- The native settings loader reads dark theme and volume 0.42 from a valid
+  backup when the primary is missing, and the renderer applies both values.
+  Missing both files and an invalid backup must load defaults. The cases
+  preserve and restore the original primary and backup bytes in the marked
+  run's owned data directory.
+
+Run only this scenario with
+`npm run test:e2e:app -- --skip-build --scenarios handoff-settings-regressions`
+after a matching E2E-feature build is available. Its marked run artifacts
+include `handoff-settings-regressions-observations.json` and
+`screenshot-handoff-settings-regressions-<case>.png`; settings screenshots
+are captured before the temporary files are restored. Queue spies only hold
+and reject MusicKit provider calls; settings cases invoke the real native
+`load_settings` command and reload the renderer. The existing `queue-edit`
+scenario continues to cover a successful rebuild retaining its mode.
+
 ## Radio and artist pages
 
 - Start Station on a library song with no catalog ID, or an artist with none,

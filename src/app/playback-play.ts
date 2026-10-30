@@ -7,6 +7,7 @@ import {
   changeToMediaAtIndex,
   queueDescriptorsForTracks,
   queueOptionsForTracks,
+  preparePlaybackModesForPlay,
   readMusicKitQueue,
   readPlaybackModes,
 } from "../musickit/player.ts";
@@ -64,6 +65,7 @@ function isTransientLookupFailure(error: unknown): boolean {
 /** Shared request tokens and failure reporting for every play path. */
 export function createPlayRequests(context: PlaybackContext) {
   const { log, session, suspectSession } = context;
+  const { requireMusic } = context;
 
   const reportPlayFailure = (label: string, error: unknown): void => {
     const message = safeErrorMessage(error);
@@ -73,13 +75,17 @@ export function createPlayRequests(context: PlaybackContext) {
   };
 
   /** One play request. `current` gates state writes; `mayStart` gates audio. */
-  const beginPlayRequest = () => {
+  const beginPlayRequest = (instance?: MusicKit.MusicKitInstance) => {
     const intent = ++session.playIntent;
     // Any new play replaces a station; playStation sets it again after this.
     session.station = undefined;
+    const shuffleReady = preparePlaybackModesForPlay(
+      instance ?? requireMusic(),
+    );
     const pauses = session.pauseCount;
     return {
       current: (): boolean => intent === session.playIntent,
+      shuffleReady,
       mayStart: (): boolean =>
         intent === session.playIntent &&
         (pauses === session.pauseCount ||
@@ -201,6 +207,12 @@ export function createPlayTracks(
     ) {
       throw new Error("The selected song is unavailable.");
     }
+    const request = beginPlayRequest(instance);
+    if (!request.shuffleReady) {
+      const error = new Error("Shuffle could not be restored before playback.");
+      reportPlayFailure("Play failed", error);
+      throw error;
+    }
     const shuffled = readPlaybackModes(instance).shuffleMode === "songs";
     const split = startWindow(
       requestedTracks,
@@ -212,7 +224,6 @@ export function createPlayTracks(
     let rest = split.rest;
     clearContinuation();
     const generation = session.restGeneration;
-    const request = beginPlayRequest();
     const setProviderQueue = async (
       options: MusicKit.QueueOptions,
     ): Promise<void> => {

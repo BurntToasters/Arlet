@@ -45,8 +45,14 @@ export function createQueueInsert(
     tracks: readonly Track[] | readonly string[],
     options: { quiet?: boolean; isCurrent?: () => boolean } = {},
   ): Promise<Track[]> => {
+    const playIntent = context.session.playIntent;
+    // Refills belong to the queue generation they extend. Manual insertions
+    // belong to the play intent that was current when the user started them.
+    const isCurrent =
+      options.isCurrent ?? (() => context.session.playIntent === playIntent);
     const ids = trackIds(tracks);
     if (ids.length === 0) throw new Error("At least one track is required.");
+    if (!isCurrent()) return [];
     const allTracks = materializeTracks(tracks);
     // Same request limit as playTracks; the first songs are kept in order.
     const requestedTracks = allTracks.slice(0, MAX_QUEUE_LENGTH);
@@ -82,43 +88,54 @@ export function createQueueInsert(
     }
     const byId = typeof tracks[0] === "string";
     // One unavailable song would otherwise reject the whole insertion.
-    const { entries, skipped } = await withResolvableTracks(
-      requestedTracks,
-      async (attempt) => {
-        if (!instance || typeof insert !== "function") return;
-        // A refill for a queue that was replaced must not reach the provider.
-        if (options.isCurrent?.() === false) return;
-        const run = (queueOptions: MusicKit.QueueOptions): Promise<void> =>
-          (insert as (options: MusicKit.QueueOptions) => Promise<void>).call(
-            instance,
-            queueOptions,
-          );
-        const attemptTracks = attempt.map((entry) => entry.track);
-        // Song details skip MusicKit's lookup (one request per 16 songs).
-        const detailed = byId
-          ? undefined
-          : queueDescriptorsForTracks(attemptTracks);
-        if (detailed) {
-          try {
-            await run(detailed);
-            return;
-          } catch (error) {
-            if (unresolvedIds(error) || options.isCurrent?.() === false) {
-              throw error;
-            }
-            log(
-              `Adding songs by details failed; using IDs: ${errorMessage(error)}`,
-            );
+    let resolved: Awaited<ReturnType<typeof withResolvableTracks>>;
+    try {
+      resolved = await withResolvableTracks(
+        requestedTracks,
+        async (attempt) => {
+          if (!instance || typeof insert !== "function") return;
+          // The owner may have changed while this insertion was waiting.
+          if (!isCurrent()) {
+            throw new Error("Queue request is no longer current.");
           }
-        }
-        await run(
-          byId
-            ? { songs: attemptTracks.map((track) => track.id) }
-            : queueOptionsForTracks(attemptTracks),
-        );
-      },
-    );
-    if (options.isCurrent?.() === false) return [];
+          const run = (queueOptions: MusicKit.QueueOptions): Promise<void> =>
+            (insert as (options: MusicKit.QueueOptions) => Promise<void>).call(
+              instance,
+              queueOptions,
+            );
+          const attemptTracks = attempt.map((entry) => entry.track);
+          // Song details skip MusicKit's lookup (one request per 16 songs).
+          const detailed = byId
+            ? undefined
+            : queueDescriptorsForTracks(attemptTracks);
+          if (detailed) {
+            try {
+              await run(detailed);
+              return;
+            } catch (error) {
+              if (unresolvedIds(error) || !isCurrent()) throw error;
+              log(
+                `Adding songs by details failed; using IDs: ${errorMessage(error)}`,
+              );
+            }
+          }
+          if (!isCurrent()) {
+            throw new Error("Queue request is no longer current.");
+          }
+          await run(
+            byId
+              ? { songs: attemptTracks.map((track) => track.id) }
+              : queueOptionsForTracks(attemptTracks),
+          );
+        },
+        isCurrent,
+      );
+    } catch (error) {
+      if (!isCurrent()) return [];
+      throw error;
+    }
+    if (!isCurrent()) return [];
+    const { entries, skipped } = resolved;
     const normalizedTracks = entries.map((entry) => entry.track);
     if (skipped.length) {
       log(`Skipped ${skipped.length} unavailable songs.`);

@@ -16,6 +16,23 @@ export interface PlaybackModeCapabilities {
   autoplay: boolean;
 }
 
+interface ShuffleModeOverride {
+  generation: number;
+  enabled: boolean;
+  owners: Set<symbol>;
+}
+
+interface ShuffleModeState {
+  desired: boolean;
+  generation: number;
+  override?: ShuffleModeOverride;
+}
+
+const shuffleModeStates = new WeakMap<
+  MusicKit.MusicKitInstance,
+  ShuffleModeState
+>();
+
 function playerRecord(
   instance: MusicKit.MusicKitInstance,
 ): Record<string, unknown> {
@@ -87,6 +104,38 @@ function shuffleWritable(record: Record<string, unknown>): boolean {
   );
 }
 
+function shuffleModeState(
+  instance: MusicKit.MusicKitInstance,
+): ShuffleModeState {
+  let state = shuffleModeStates.get(instance);
+  if (!state) {
+    state = {
+      desired: readShuffle(playerRecord(instance)),
+      generation: 0,
+    };
+    shuffleModeStates.set(instance, state);
+  }
+  return state;
+}
+
+function writeShuffleMode(
+  record: Record<string, unknown>,
+  enabled: boolean,
+): boolean {
+  try {
+    if (writableProperty(record, "shuffleMode")) {
+      record.shuffleMode = enabled ? 1 : 0;
+    } else if (writableProperty(record, "shuffle")) {
+      record.shuffle = enabled;
+    } else {
+      return false;
+    }
+    return readShuffle(record) === enabled;
+  } catch {
+    return false;
+  }
+}
+
 export function readPlaybackModes(instance: MusicKit.MusicKitInstance): {
   shuffleMode: "off" | "songs";
   repeatMode: NormalizedRepeatMode;
@@ -94,7 +143,19 @@ export function readPlaybackModes(instance: MusicKit.MusicKitInstance): {
 } {
   const record = playerRecord(instance);
   const repeat = record.repeatMode;
-  const shuffleMode = readShuffle(record) ? "songs" : "off";
+  const shuffleState = shuffleModeStates.get(instance);
+  const providerShuffle = readShuffle(record);
+  const shuffleMode =
+    shuffleState?.override !== undefined
+      ? shuffleState.desired
+        ? "songs"
+        : "off"
+      : providerShuffle
+        ? "songs"
+        : "off";
+  if (shuffleState && !shuffleState.override) {
+    shuffleState.desired = providerShuffle;
+  }
   const repeatMode: NormalizedRepeatMode =
     repeat === 2 || repeat === "one"
       ? "one"
@@ -135,18 +196,73 @@ export function setShuffleMode(
   enabled: boolean,
 ): boolean {
   const record = playerRecord(instance);
-  try {
-    if (writableProperty(record, "shuffleMode")) {
-      record.shuffleMode = enabled ? 1 : 0;
-    } else if (writableProperty(record, "shuffle")) {
-      record.shuffle = enabled;
-    } else {
-      return false;
-    }
-    return readShuffle(record) === enabled;
-  } catch {
-    return false;
+  if (!shuffleWritable(record)) return false;
+  const state = shuffleModeState(instance);
+  if (state.override) {
+    // Keep a rebuild's provider override until it releases. Its cleanup reads
+    // this latest user choice, never the value from before the rebuild.
+    state.desired = enabled;
+    return true;
   }
+  if (!writeShuffleMode(record, enabled)) return false;
+  state.desired = enabled;
+  return true;
+}
+
+/**
+ * Temporarily changes the provider mode while preserving the user's desired
+ * mode. The returned release only restores a lease it still owns.
+ */
+export function acquireShuffleModeOverride(
+  instance: MusicKit.MusicKitInstance,
+  enabled: boolean,
+): (() => void) | undefined {
+  const state = shuffleModeState(instance);
+  const record = playerRecord(instance);
+  const owner = Symbol("shuffle mode override");
+  let override = state.override;
+  if (override) {
+    override.owners.add(owner);
+    if (!writeShuffleMode(record, override.enabled)) {
+      override.owners.delete(owner);
+      return undefined;
+    }
+  } else {
+    state.desired = readShuffle(record);
+    override = {
+      generation: ++state.generation,
+      enabled,
+      owners: new Set([owner]),
+    };
+    state.override = override;
+    if (!writeShuffleMode(record, enabled)) {
+      if (state.override === override) state.override = undefined;
+      return undefined;
+    }
+  }
+
+  const generation = override.generation;
+  return (): void => {
+    const current = state.override;
+    if (current?.generation !== generation || !current.owners.delete(owner)) {
+      return;
+    }
+    if (current.owners.size > 0) return;
+    state.override = undefined;
+    state.generation += 1;
+    writeShuffleMode(playerRecord(instance), state.desired);
+  };
+}
+
+/** Restores the desired mode before a new play inspects or changes a queue. */
+export function preparePlaybackModesForPlay(
+  instance: MusicKit.MusicKitInstance,
+): boolean {
+  const state = shuffleModeStates.get(instance);
+  if (!state?.override) return true;
+  state.override = undefined;
+  state.generation += 1;
+  return writeShuffleMode(playerRecord(instance), state.desired);
 }
 
 export function setRepeatMode(

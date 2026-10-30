@@ -43,6 +43,8 @@ import { runArtwork } from "./e2e-artwork.js";
 import { runAccountSession } from "./e2e-account-session.js";
 import { runAuditFixes } from "./e2e-audit-fixes.js";
 import { runAuditRegressions } from "./e2e-audit-regressions.js";
+import { runDeepRegressions } from "./e2e-deep-regressions.js";
+import { runHandoffSettingsRegressions } from "./e2e-handoff-settings-regressions.js";
 import { runSessionRestore } from "./e2e-session-restore.js";
 import { sleep } from "./e2e-helpers.js";
 import { connectCdp, findPageTarget } from "./e2e-cdp.js";
@@ -116,6 +118,8 @@ const SCENARIO_REGISTRY = [
   ["artwork", runArtwork],
   ["audit-fixes", runAuditFixes],
   ["audit-regressions", runAuditRegressions],
+  ["deep-regressions", runDeepRegressions],
+  ["handoff-settings-regressions", runHandoffSettingsRegressions],
   ["account-session", runAccountSession],
   // Last in the full suite because it signs out at the end.
   ["session-restore", runSessionRestore],

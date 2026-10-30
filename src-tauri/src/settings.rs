@@ -276,7 +276,9 @@ fn read_valid_settings(path: &std::path::Path) -> Option<String> {
 fn read_settings_text(path: &std::path::Path) -> Result<String, String> {
     match std::fs::read_to_string(path) {
         Ok(content) if is_settings_object(&content) => Ok(content),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok("{}".to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(read_valid_settings(&backup_path(path)).unwrap_or_else(|| "{}".to_string()))
+        }
         Ok(_) => Ok(read_valid_settings(&backup_path(path)).unwrap_or_else(|| "{}".to_string())),
         Err(e) => read_valid_settings(&backup_path(path))
             .ok_or_else(|| format!("Settings and backup unreadable: {e}")),
