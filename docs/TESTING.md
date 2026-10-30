@@ -37,8 +37,10 @@ commit, startup arguments, process exit/error, and per-check results),
 `webview-diagnostics.json` (WebView2 runtime versions, isolated browser
 arguments, and Windows event diagnostics). Close every running Arlet first;
 the app is single-instance. `npm run test:all -- --require-clean-proof` (every
-release proof) runs this suite on Windows, so no release is recorded without
-it.
+release proof) runs this suite on a Windows desktop. Over SSH (the release VM)
+WebView2 has no desktop, so the proof records this suite as deferred, not
+verified; run `npm run test:e2e:app` at a desktop on the release commit before
+publishing.
 
 The previous Windows canary failed before DevTools target discovery because
 port 9333 refused connections; the root cause is unverified. The harness now

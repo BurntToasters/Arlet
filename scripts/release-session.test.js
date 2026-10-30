@@ -14,7 +14,9 @@ import {
 // Failure modes covered before production edits:
 // - identity and timestamp alone must not validate an old/incomplete proof;
 // - all mandatory stages must be explicitly represented in a valid proof;
-// - release-session creation must validate coverage before accepting a proof.
+// - release-session creation must validate coverage before accepting a proof;
+// - only the native app E2E may be deferred (SSH release VM); a deferred stage
+//   cannot also be verified, and deferral cannot cover any other stage.
 
 const now = 1_800_000_000_000;
 const expectedIdentity = {
@@ -91,6 +93,64 @@ test("quality proof rejects missing or incomplete verified stage coverage", () =
 test("quality proof accepts explicit complete verified stage coverage", () => {
   const validated = validateQualityGate(proof(), expectedIdentity, { now });
   assert.deepEqual(validated.verifiedStages, [...REQUIRED_QUALITY_GATE_STAGES]);
+});
+
+test("quality proof accepts the native app E2E deferred instead of verified", () => {
+  const validated = validateQualityGate(
+    proof({
+      verifiedStages: REQUIRED_QUALITY_GATE_STAGES.filter(
+        (stage) => stage !== "e2eApp",
+      ),
+      deferredStages: ["e2eApp"],
+    }),
+    expectedIdentity,
+    { now },
+  );
+  assert.deepEqual(validated.deferredStages, ["e2eApp"]);
+});
+
+test("quality proof rejects deferral of any other stage or malformed deferral", () => {
+  const withoutStage = (name) =>
+    REQUIRED_QUALITY_GATE_STAGES.filter((stage) => stage !== name);
+  assert.throws(
+    () =>
+      validateQualityGate(
+        proof({ verifiedStages: withoutStage("e2e"), deferredStages: ["e2e"] }),
+        expectedIdentity,
+        { now },
+      ),
+    /deferred/,
+  );
+  assert.throws(
+    () =>
+      validateQualityGate(
+        proof({ deferredStages: ["e2eApp"] }),
+        expectedIdentity,
+        { now },
+      ),
+    /deferred/,
+  );
+  assert.throws(
+    () =>
+      validateQualityGate(
+        proof({
+          verifiedStages: withoutStage("e2eApp"),
+          deferredStages: "e2eApp",
+        }),
+        expectedIdentity,
+        { now },
+      ),
+    /deferred/,
+  );
+  assert.throws(
+    () =>
+      validateQualityGate(
+        proof({ verifiedStages: withoutStage("e2eApp"), deferredStages: [] }),
+        expectedIdentity,
+        { now },
+      ),
+    /e2eApp/,
+  );
 });
 
 test("release session cannot be created from an identity-only proof", () => {
