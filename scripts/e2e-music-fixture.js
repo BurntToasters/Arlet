@@ -39,7 +39,8 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  *   request carrying that query key; configure({ repeatViewCursor: true })
  *   makes every page after the first point at itself. configure({
  *   holdSetQueue: true }) holds queue rebuilds until releaseSetQueue() resolves
- *   them.
+ *   them. configure({ holdSeek: true }) records each seekToTime() call but
+ *   holds its completion tick until releaseSeek(count) resolves the oldest.
  * Event controls (payloads as the app's MusicKit events reader expects them):
  *   emitAuthorizationStatus(false) sets isAuthorized = false, then emits
  *     authorizationStatusDidChange {}; true sets it back the same way.
@@ -313,6 +314,8 @@ function installMusicKitFixture() {
     queueEditDelayMs: 0,
     holdSetQueue: false,
     setQueueReleases: [],
+    holdSeek: false,
+    seekReleases: [],
     // Keyed `${type}:${id}`, e.g. `library-songs:song-a`; values are 1 or -1.
     ratings: {},
     libraryAdds: [],
@@ -346,6 +349,11 @@ function installMusicKitFixture() {
   };
   const releaseHeldSetQueue = () => {
     const releases = state.setQueueReleases.splice(0);
+    for (const release of releases) release();
+    return releases.length;
+  };
+  const releaseHeldSeeks = (count = Infinity) => {
+    const releases = state.seekReleases.splice(0, count);
     for (const release of releases) release();
     return releases.length;
   };
@@ -2707,6 +2715,9 @@ function installMusicKitFixture() {
     },
     async seekToTime(time) {
       state.transitions.push({ type: "seekToTime", seconds: time });
+      if (state.holdSeek) {
+        await new Promise((resolve) => state.seekReleases.push(resolve));
+      }
       emit(events.playbackTimeDidChange, {
         currentPlaybackTime: time,
         currentPlaybackDuration: 180,
@@ -2770,6 +2781,10 @@ function installMusicKitFixture() {
     /** Lets every held setQueue() call finish; returns how many it released. */
     releaseSetQueue() {
       return releaseHeldSetQueue();
+    },
+    /** Finishes the oldest held seekToTime() calls; returns how many. */
+    releaseSeek(count = Infinity) {
+      return releaseHeldSeeks(count);
     },
     configure(options = {}) {
       if (Object.prototype.hasOwnProperty.call(options, "delayPaths")) {
@@ -2842,6 +2857,9 @@ function installMusicKitFixture() {
       if (Object.prototype.hasOwnProperty.call(options, "holdSetQueue")) {
         state.holdSetQueue = options.holdSetQueue === true;
       }
+      if (Object.prototype.hasOwnProperty.call(options, "holdSeek")) {
+        state.holdSeek = options.holdSeek === true;
+      }
       if (Object.prototype.hasOwnProperty.call(options, "delayTerms")) {
         state.delayTerms = Object.fromEntries(
           Object.entries(options.delayTerms ?? {}).map(([term, ms]) => [
@@ -2887,6 +2905,8 @@ function installMusicKitFixture() {
       state.queueEditDelayMs = 0;
       state.holdSetQueue = false;
       releaseHeldSetQueue();
+      state.holdSeek = false;
+      releaseHeldSeeks();
       state.ratings = {};
       state.libraryAdds = [];
       state.librarySize = 0;
@@ -3164,6 +3184,7 @@ function installMusicKitFixture() {
           delayMs: state.queueEditDelayMs,
           setQueueHeld: state.setQueueReleases.length,
         },
+        seekHeld: state.seekReleases.length,
         queue: captureQueue(),
         modes: {
           shuffle: player.shuffle === true,
@@ -3177,6 +3198,7 @@ function installMusicKitFixture() {
         // guard compares them with the defaults after each scenario.
         controls: {
           holdSetQueue: state.holdSetQueue,
+          holdSeek: state.holdSeek,
           hangAuthorize: state.hangAuthorize,
           delayPaths: clone(state.delayPaths),
           delayMs: state.delayMs,

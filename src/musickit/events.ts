@@ -9,7 +9,7 @@ import { normalizeTrack } from "./normalize.ts";
 import { friendlyPlaybackMessage, mapErrorToCode } from "./errors.ts";
 import { redactSensitive } from "../platform/redact.ts";
 import type { PlaybackState } from "../domain/music.ts";
-import { syncMusicKitQueue } from "./player.ts";
+import { endSeek, seekAwarePosition, syncMusicKitQueue } from "./player.ts";
 import {
   isLiveMediaItem,
   liveMetadataFromEvent,
@@ -96,6 +96,8 @@ export function registerMusicKitEvents(
     if (!item || !isLiveMediaItem(item) || item.id !== lastItemId) {
       setLiveMetadata(undefined);
     }
+    // A seek target belongs to the song it was made in.
+    if (item?.id !== lastItemId) endSeek();
     lastItemId = item?.id;
     const queueWasSynced = item ? syncMusicKitQueue(instance, event) : false;
     if (item && !queueWasSynced) {
@@ -111,7 +113,7 @@ export function registerMusicKitEvents(
   const onPlaybackTimeChange = (event: Record<string, unknown>): void => {
     if (ignored()) return;
     // NaN before metadata loads would also defeat the duration check below.
-    const position = finiteOrZero(event.currentPlaybackTime);
+    const position = seekAwarePosition(finiteOrZero(event.currentPlaybackTime));
     const duration = finiteOrZero(event.currentPlaybackDuration);
     setPlaybackPosition(position, duration);
     if (duration === lastDuration) return;

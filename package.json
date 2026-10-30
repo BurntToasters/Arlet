@@ -1,9 +1,9 @@
 {
   "name": "arlet",
-  "version": "0.4.0-beta.2",
+  "version": "0.4.0-beta.3",
   "license": "GPL-3.0-only",
   "private": true,
-  "packageManager": "npm@12.0.2",
+  "packageManager": "npm@12.2.1",
   "description": "Unofficial Apple Music client for Windows 10 and 11, built with Tauri v2, Rust, and MusicKit.",
   "keywords": [
     "apple-music",
@@ -27,8 +27,8 @@
   },
   "type": "module",
   "engines": {
-    "node": "^22.22.2 || ^24.15.0 || >=26.0.0",
-    "npm": ">=12.0.2"
+    "node": "^24.22.1 || >=26.13.0",
+    "npm": ">=12.2.1"
   },
   "scripts": {
     "prepare": "node scripts/install-git-hooks.js",

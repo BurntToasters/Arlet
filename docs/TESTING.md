@@ -316,6 +316,23 @@ are not playable. Failure scenarios:
 - Mute writes volume 0 to `settings.json`, or unmute restores the wrong level.
 - Shuffle play starts the same song every time or leaves shuffle off.
 
+## Seeking
+
+`seek` drives the player-bar slider with real CDP mouse input while the
+fixture emits playback ticks, and holds `seekToTime` with
+`configure({ holdSeek: true })`.
+
+- A tick between press and release cancels the click, so the song does not
+  move (most visible when clicking back).
+- A tick yanks the thumb or the time label away from the pointer mid-press or
+  mid-drag.
+- Dragging seeks more than once, or not to the release point.
+- Stale ticks while `seekToTime` is in flight snap the thumb back to the old
+  position before it settles.
+- An earlier seek that finishes late overrides a newer one.
+- A seek that never confirms freezes the slider instead of following
+  playback again.
+
 ## Queue editing
 
 - Removing or reordering upcoming songs interrupts or restarts the current song.

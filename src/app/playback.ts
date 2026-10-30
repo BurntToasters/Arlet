@@ -1,5 +1,7 @@
 import {
+  beginSeek,
   changeToMediaAtIndex,
+  endSeek,
   queueOptionsForTracks,
   readPlaybackModes,
   recordTransportIntent,
@@ -630,10 +632,24 @@ export function createPlayback(context: ControllerContext) {
         setPlaybackPosition(safeSeconds, durationSeconds);
         return;
       }
+      // Show the target at once; stale ticks are held until the seek lands.
+      const previousSeconds = getState().playback.positionSeconds;
+      const generation = beginSeek(safeSeconds);
+      setPlaybackPosition(safeSeconds, durationSeconds);
       try {
         await seekToTime(requireMusic(), safeSeconds);
-        setPlaybackPosition(safeSeconds, getState().playback.durationSeconds);
+        // Paused playback may not tick, so confirm the position here unless
+        // a tick already did, or a newer seek took over.
+        if (endSeek(generation)) {
+          setPlaybackPosition(safeSeconds, getState().playback.durationSeconds);
+        }
       } catch (error) {
+        if (endSeek(generation)) {
+          setPlaybackPosition(
+            previousSeconds,
+            getState().playback.durationSeconds,
+          );
+        }
         log(`Seek failed: ${errorMessage(error)}`);
         throw error;
       }

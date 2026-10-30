@@ -5,7 +5,7 @@
 
 | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                                          | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
 | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.2/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.2/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.3/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.3/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -21,6 +21,14 @@
 ### ℹ️ Enjoying Arlet? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
+
+## Changes in `v0.4.0-beta.3:`
+
+- **Ver:** Updated version to `v0.4.0-beta.3`.
+- **Fix:** Clicking or dragging the progress bar seeks to where you release it, including when going back. Playback updates during a click no longer cancel it, and the playhead stays at the new position instead of jumping back while the song catches up. This applies to the player bar and Now Playing.
+- **Codebase:** Development and CI use Node.js `26.13.0` and npm `12.2.1`. Node.js `24.22.1` or newer still works but is deprecated, and Node.js 22 is no longer supported.
+- **Codebase:** Beta releases update the beta update feed as soon as they are signed and uploaded again.
+- **Testing:** Added native end-to-end checks that click and drag the progress bar with real mouse input during playback updates, slow seeks, and overlapping seeks. Runs save reports for review.
 
 ## Changes in `v0.4.0-beta.2:`
 
