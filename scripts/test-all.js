@@ -9,7 +9,10 @@
 // test, and the deterministic built frontend smoke gate. App behaviour is
 // tested end to end only (AGENTS.md); there is no frontend unit suite. With
 // --require-clean-proof on a Windows desktop it also runs native app E2E
-// (test:e2e:app) against a release build. Only a complete gate records proof.
+// (test:e2e:app) against a release build. Over SSH (the release VM) native
+// E2E cannot run, so the proof records it as deferred instead of verified;
+// run test:e2e:app at a desktop before publishing. Only a gate whose other
+// stages all pass records proof.
 //
 // Flags: --require-clean-proof --skip-e2e
 
@@ -162,12 +165,6 @@ function main({
     );
     return 1;
   }
-  if (requireCleanProof && sshSession) {
-    console.error(
-      "Cannot record release quality-gate proof over SSH because the native app E2E needs an interactive desktop. Run test:all --require-clean-proof from a Windows desktop.",
-    );
-    return 1;
-  }
   const results = createInitialResults();
   const npm = getNpmCommand();
 
@@ -241,9 +238,16 @@ function main({
   } else {
     runner("e2e", npm, ["run", "test:e2e"], null, results);
   }
-  // The native suite drives a release build of the real app and needs
-  // Windows; it gates every release proof but not everyday runs.
-  if (requireCleanProof && platform === "win32") {
+  // The native suite drives a release build of the real app and needs a
+  // Windows desktop; it gates every release proof but not everyday runs.
+  const deferredStages = requireCleanProof && sshSession ? ["e2eApp"] : [];
+  if (deferredStages.length > 0) {
+    results.e2eApp.status = "skipped";
+    console.log(
+      `${colors.yellow}Deferring native app E2E: SSH sessions have no desktop for WebView2.${colors.reset}
+`,
+    );
+  } else if (requireCleanProof && platform === "win32") {
     runner("e2eApp", npm, ["run", "test:e2e:app"], null, results, {
       timeout: E2E_APP_TIMEOUT_MS,
     });
@@ -253,7 +257,7 @@ function main({
 
   const exitCode = printSummary(results);
   if (exitCode === 0) {
-    const missingStages = missingQualityGateStages(results);
+    const missingStages = missingQualityGateStages(results, deferredStages);
     if (missingStages.length > 0) {
       if (requireCleanProof) {
         console.error(
@@ -263,9 +267,14 @@ function main({
       }
       return exitCode;
     }
-    const gate = recordProof(root, results);
+    const gate = recordProof(root, results, { deferredStages });
     if (gate.recorded) {
       console.log("Release quality-gate proof recorded for this clean commit.");
+      if (deferredStages.length > 0) {
+        console.log(
+          `${colors.yellow}${colors.bold}Native app E2E deferred: run npm run test:e2e:app at a Windows desktop on this commit before release:publish.${colors.reset}`,
+        );
+      }
     } else {
       const reason = gate.missingStages?.length
         ? `required stages did not pass (${gate.missingStages.join(", ")}). Run test:all --require-clean-proof on a Windows desktop.`

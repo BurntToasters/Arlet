@@ -137,10 +137,11 @@ npm run release:win:resume       # after a failure: prerelease:prepare + release
 
 The native app E2E needs an interactive Windows desktop because OpenSSH runs
 commands without one, where WebView2 cannot open a window (`0x80070578`,
-"Invalid window handle"). `test:all --require-clean-proof` therefore fails on
-SSH and on non-Windows hosts instead of recording incomplete proof. Run the
-full required gate from a Windows desktop on the release commit before
-preparing the build session.
+"Invalid window handle"). Over SSH, `test:all --require-clean-proof` runs every
+other stage and records the native suite as deferred in the proof, never as
+verified; only that suite can be deferred. `test:all` and `release-session`
+print a reminder. Before `release:publish`, run `npm run test:e2e:app` at a
+Windows desktop on the release commit. Non-Windows hosts still fail.
 
 `release:win:continue` runs: session verify → licenses → draft (single
 creator) → Rust targets → x64 + ARM64 NSIS builds (in-build Authenticode via

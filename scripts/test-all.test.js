@@ -5,7 +5,9 @@ import { main } from "./test-all.js";
 // Failure modes covered before production edits:
 // - ordinary runs (including --skip-e2e) pass but never create release proof;
 // - --require-clean-proof cannot pass with --skip-e2e or unavailable native E2E;
-// - SSH and non-Windows release runs cannot record incomplete native coverage;
+// - non-Windows release runs cannot record incomplete native coverage;
+// - SSH release runs (the release VM) skip only the native app E2E and record
+//   it as deferred, never as verified; every other stage must still pass;
 // - only a desktop run with every mandatory stage passed may record proof;
 // - a runner reporting a skipped required stage cannot bypass proof coverage.
 
@@ -112,14 +114,34 @@ test("required proof fails when native E2E is unavailable off Windows", () => {
   assert.equal(proofAttempts, 0);
 });
 
-test("required proof fails when SSH prevents native E2E", () => {
-  let proofAttempts = 0;
+test("SSH release runs defer only the native E2E in the recorded proof", () => {
   const calls = [];
+  let recorded;
   const status = runQuietly(
     baseOptions({
       requireCleanProof: true,
       sshSession: true,
       runner: successfulRunner(calls),
+      recordProof(_root, results, options) {
+        recorded = { results, options };
+        return { recorded: true, dirtyFiles: null };
+      },
+    }),
+  );
+  assert.equal(status, 0);
+  assert.ok(calls.includes("e2e"));
+  assert.ok(!calls.includes("e2eApp"));
+  assert.equal(recorded.results.e2eApp.status, "skipped");
+  assert.deepEqual(recorded.options, { deferredStages: ["e2eApp"] });
+});
+
+test("SSH release runs still fail when another stage fails or is skipped", () => {
+  let proofAttempts = 0;
+  const status = runQuietly(
+    baseOptions({
+      requireCleanProof: true,
+      sshSession: true,
+      runner: successfulRunner([], { skipped: ["e2e"] }),
       recordProof() {
         proofAttempts += 1;
         return { recorded: true, dirtyFiles: null };
@@ -127,7 +149,24 @@ test("required proof fails when SSH prevents native E2E", () => {
     }),
   );
   assert.equal(status, 1);
-  assert.ok(!calls.includes("e2eApp"));
+  assert.equal(proofAttempts, 0);
+});
+
+test("SSH release runs still reject --skip-e2e", () => {
+  let proofAttempts = 0;
+  const status = runQuietly(
+    baseOptions({
+      requireCleanProof: true,
+      sshSession: true,
+      skipE2e: true,
+      runner: successfulRunner([]),
+      recordProof() {
+        proofAttempts += 1;
+        return { recorded: true, dirtyFiles: null };
+      },
+    }),
+  );
+  assert.equal(status, 1);
   assert.equal(proofAttempts, 0);
 });
 
@@ -138,8 +177,9 @@ test("required proof records only after every stage passes on desktop", () => {
     baseOptions({
       requireCleanProof: true,
       runner: successfulRunner(calls),
-      recordProof(_root, results) {
+      recordProof(_root, results, options) {
         recordedResults = results;
+        assert.deepEqual(options, { deferredStages: [] });
         return { recorded: true, dirtyFiles: null };
       },
     }),

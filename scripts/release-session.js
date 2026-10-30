@@ -36,6 +36,9 @@ const REQUIRED_QUALITY_GATE_STAGES = Object.freeze([
   "e2e",
   "e2eApp",
 ]);
+// The release VM runs over SSH, where WebView2 has no desktop; only the native
+// app E2E may be recorded as deferred (run it at a desktop before publishing).
+const DEFERRABLE_QUALITY_GATE_STAGES = Object.freeze(["e2eApp"]);
 
 function command(commandName, args, root) {
   // trimEnd only: git porcelain lines start with two status columns and may
@@ -123,9 +126,10 @@ function validateIdentity(record, expected, label) {
   }
 }
 
-function missingQualityGateStages(results) {
+function missingQualityGateStages(results, deferredStages = []) {
   return REQUIRED_QUALITY_GATE_STAGES.filter(
-    (stage) => results?.[stage]?.status !== "passed",
+    (stage) =>
+      !deferredStages.includes(stage) && results?.[stage]?.status !== "passed",
   );
 }
 
@@ -145,8 +149,21 @@ function validateQualityGateCoverage(qualityGate) {
       "Release quality-gate proof has invalid verified stage coverage; run test:all again.",
     );
   }
+  const deferredStages = qualityGate.deferredStages ?? [];
+  if (
+    !Array.isArray(deferredStages) ||
+    new Set(deferredStages).size !== deferredStages.length ||
+    deferredStages.some(
+      (stage) =>
+        !DEFERRABLE_QUALITY_GATE_STAGES.includes(stage) || verified.has(stage),
+    )
+  ) {
+    throw new Error(
+      "Release quality-gate proof has invalid deferred stage coverage; run test:all again.",
+    );
+  }
   const missing = REQUIRED_QUALITY_GATE_STAGES.filter(
-    (stage) => !verified.has(stage),
+    (stage) => !verified.has(stage) && !deferredStages.includes(stage),
   );
   if (missing.length > 0) {
     throw new Error(
@@ -208,8 +225,21 @@ function clearQualityGateProof(root = defaultRoot) {
   fs.rmSync(path.join(root, QUALITY_GATE_RELATIVE_PATH), { force: true });
 }
 
-function recordSuccessfulQualityGate(root = defaultRoot, results) {
-  const missingStages = missingQualityGateStages(results);
+function recordSuccessfulQualityGate(
+  root = defaultRoot,
+  results,
+  { deferredStages = [] } = {},
+) {
+  if (
+    deferredStages.some(
+      (stage) => !DEFERRABLE_QUALITY_GATE_STAGES.includes(stage),
+    )
+  ) {
+    throw new Error(
+      `Quality-gate stages cannot be deferred: ${deferredStages.join(", ")}`,
+    );
+  }
+  const missingStages = missingQualityGateStages(results, deferredStages);
   if (missingStages.length > 0) {
     return { recorded: false, dirtyFiles: null, missingStages };
   }
@@ -238,7 +268,10 @@ function recordSuccessfulQualityGate(root = defaultRoot, results) {
     `${JSON.stringify({
       ...currentReleaseIdentity(root),
       completedAt: Date.now(),
-      verifiedStages: [...REQUIRED_QUALITY_GATE_STAGES],
+      verifiedStages: REQUIRED_QUALITY_GATE_STAGES.filter(
+        (stage) => !deferredStages.includes(stage),
+      ),
+      ...(deferredStages.length > 0 ? { deferredStages } : {}),
     })}\n`,
     { mode: 0o600 },
   );
@@ -324,6 +357,12 @@ function isDirectExecution() {
 if (isDirectExecution()) {
   try {
     const session = verifyReleaseSession();
+    const { deferredStages = [] } = verifyQualityGate();
+    if (deferredStages.length > 0) {
+      console.warn(
+        `release-session: deferred quality-gate stages (${deferredStages.join(", ")}); run npm run test:e2e:app at a Windows desktop on this commit before publishing.`,
+      );
+    }
     console.log(
       `release-session: ok (${session.version}, ${session.commit.slice(0, 12)}, ${session.platform}-${session.arch})`,
     );
@@ -337,6 +376,7 @@ if (isDirectExecution()) {
 
 export {
   DEFAULT_MAX_AGE_MS,
+  DEFERRABLE_QUALITY_GATE_STAGES,
   QUALITY_GATE_RELATIVE_PATH,
   REQUIRED_QUALITY_GATE_STAGES,
   RELEASE_SESSION_RELATIVE_PATH,
