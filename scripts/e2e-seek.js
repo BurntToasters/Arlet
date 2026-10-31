@@ -20,6 +20,11 @@ function formatTime(seconds) {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
+/** A tick position well away from `seconds` on the 180 s fixture track. */
+function farFrom(seconds, offset) {
+  return seconds > 90 ? seconds - offset : seconds + offset;
+}
+
 async function snapshot(page) {
   return page.evaluate("return window.__ARLET_E2E_MUSIC__.snapshot();");
 }
@@ -227,16 +232,89 @@ export async function runSeek({ page, check }) {
       },
     );
 
-    // 5. A seek that never confirms must not freeze the slider.
-    await clickAt(page, 0.1);
-    await waitFor(page, `window.__ARLET_E2E_MUSIC__.snapshot().seekHeld === 1`);
-    await sleep(3_500);
-    await tick(page, 77);
-    check(
-      "a seek that never confirms stops holding the slider",
-      await waitFor(page, `${VALUE} === "77"`, 2_000),
-      { after: await slider(page) },
+    // 5. A seek that lands without a confirming tick, and one that never lands.
+    const landing = await clickAt(page, 0.15);
+    const landingHeld = await waitFor(
+      page,
+      `window.__ARLET_E2E_MUSIC__.snapshot().seekHeld === 1`,
     );
+    await sleep(3_500);
+    await tick(page, farFrom(landing, 60));
+    const inFlight = await slider(page);
+    check(
+      "a seek still in flight after 3.5 seconds keeps the thumb at its target",
+      landingHeld &&
+        inFlight.value === landing &&
+        inFlight.label === formatTime(landing),
+      { landing, inFlight },
+    );
+    await fixtureCall(page, "releaseSeek");
+    await tick(page, farFrom(landing, 60));
+    const justLanded = await slider(page);
+    check(
+      "a stale tick just after a seek lands keeps the thumb at its target",
+      justLanded.value === landing && justLanded.label === formatTime(landing),
+      { landing, justLanded },
+    );
+    await sleep(3_500);
+    const later = farFrom(landing, 45);
+    await tick(page, later);
+    check(
+      "a landed seek with no confirming tick lets go of the slider after 3 seconds",
+      await waitFor(page, `${VALUE} === "${later}"`, 2_000),
+      { landing, later, after: await slider(page) },
+    );
+
+    const never = await clickAt(page, 0.6);
+    const neverHeld = await waitFor(
+      page,
+      `window.__ARLET_E2E_MUSIC__.snapshot().seekHeld === 1`,
+    );
+    await sleep(10_500);
+    const expired = farFrom(never, 60);
+    await tick(page, expired);
+    check(
+      "a seek that never finishes lets go of the slider after 10 seconds",
+      neverHeld && (await waitFor(page, `${VALUE} === "${expired}"`, 2_000)),
+      { never, expired, after: await slider(page) },
+    );
+    await fixtureCall(page, "releaseSeek");
+    const afterLateFinish = farFrom(never, 30);
+    await tick(page, afterLateFinish);
+    check(
+      "a seek that finishes after letting go does not hold the slider again",
+      await waitFor(page, `${VALUE} === "${afterLateFinish}"`, 2_000),
+      { never, expired, afterLateFinish, after: await slider(page) },
+    );
+
+    // 6. A press whose release never reaches the window (focus lost mid-drag).
+    await tick(page, 100);
+    await waitFor(page, `${VALUE} === "100"`);
+    const lost = await pointAt(page, 0.9);
+    await mouse(page, "mousePressed", lost);
+    const pressedLost = await slider(page);
+    check(
+      "a press with no release keeps the thumb at the pointer",
+      pressedLost.value > 100 &&
+        pressedLost.label === formatTime(pressedLost.value),
+      { pressedLost },
+    );
+    // Focus goes straight after the press, before the next frame is painted.
+    await page.evaluate(
+      `window.dispatchEvent(new Event("blur")); return true;`,
+    );
+    await tick(page, 130);
+    check(
+      "losing focus mid-drag lets the slider follow playback again",
+      await waitFor(page, `${VALUE} === "130"`, 2_000),
+      { pressedLost, after: await slider(page) },
+    );
+    await mouse(page, "mouseReleased", lost);
+    await sleep(300);
+    // A landed seek holds stale ticks until one confirms it; this one does.
+    const released = await slider(page);
+    await tick(page, released.value);
+    await waitFor(page, `${VALUE} === "${released.value}"`);
   } finally {
     await fixtureCall(page, "configure", [{ holdSeek: false }]);
     await fixtureCall(page, "releaseSeek");

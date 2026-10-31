@@ -26,6 +26,7 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 
 - **Ver:** Updated version to `v0.4.0-beta.3`.
 - **Fix:** Clicking or dragging the progress bar seeks to where you release it, including when going back. Playback updates during a click no longer cancel it, and the playhead stays at the new position instead of jumping back while the song catches up. This applies to the player bar and Now Playing.
+- **Fix:** Pinned playlists with custom covers show their cover after a restart instead of a blank image, and a cover that can't load shows the playlist icon.
 - **Fix:** Also fixed in `v0.4.0-beta.2`: a late search page no longer replaces songs playing from your Library, a queue rebuild no longer undoes a newer Pause, and the mini player keeps its layout after the window recovers from a crash.
 - **Codebase:** Development and CI use Node.js `26.13.0` and npm `12.2.1`. Node.js `24.22.1` or newer still works but is deprecated, and Node.js 22 is no longer supported.
 - **Codebase:** Beta releases update the beta update feed as soon as they are signed and uploaded again.

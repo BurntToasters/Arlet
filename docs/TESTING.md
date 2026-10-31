@@ -71,7 +71,11 @@ page gets DevTools focus emulation and WebView2 switches that stop throttling
 a covered window. `scripts/e2e-foreground.js` samples the foreground window
 every 250 ms and writes `foreground.json`. The check fails if Arlet was ever
 the active window or a sized Arlet window overlapped the active one from
-above. `--foreground` opts out (no flag, no monitor).
+above. When the desktop itself is active (explorer's `Progman` or `WorkerW`),
+every window sits above it, so those samples only check that Arlet did not
+activate; `foreground.json` counts them as `desktopSamples`. A File Explorer
+window (`CabinetWClass`) is an ordinary app and is still checked for
+covering. `--foreground` opts out (no flag, no monitor).
 
 After each run, older `e2e-artifacts/<timestamp>` folders are pruned so only
 the newest 20 (the current run included) remain. Set `ARLET_E2E_KEEP_RUNS` to
@@ -309,9 +313,10 @@ are not playable. Failure scenarios:
 
 ## Pinned playlist artwork
 
-`pin-artwork` saves pins and reloads the app. Apple serves uploaded playlist
-covers from signed links (`X-Amz-Date` + `X-Amz-Expires`, 24 hours), so a
-link saved with a pin goes dead a day later.
+`pin-artwork` saves pins and reloads the app, and pins a playlist from its
+page while the Library list holds an expired link for it. Apple serves
+uploaded playlist covers from signed links (`X-Amz-Date` + `X-Amz-Expires`,
+24 hours), so a link saved with a pin goes dead a day later.
 
 - After a restart, a pin whose saved link has expired shows a broken image
   until its playlist is opened.
@@ -321,6 +326,12 @@ link saved with a pin goes dead a day later.
 - Pins whose saved link is still valid are looked up again on every start.
 - An image that fails to load for any other reason shows the browser's
   broken-image glyph instead of the playlist icon.
+- Pinning while the Library list holds an expired link saves the name but no
+  cover, so the pin is never looked up again and shows the icon for good.
+- A playlist whose custom cover was removed keeps its dead saved link, so its
+  pin is looked up again on every start.
+- A lookup that fails or finds no playlist drops the saved link, so a
+  network error loses the cover.
 
 ## Keyboard and transport
 
@@ -345,8 +356,13 @@ fixture emits playback ticks, and holds `seekToTime` with
 - Stale ticks while `seekToTime` is in flight snap the thumb back to the old
   position before it settles.
 - An earlier seek that finishes late overrides a newer one.
-- A seek that never confirms freezes the slider instead of following
-  playback again.
+- A seek in flight for more than 3 seconds lets stale ticks snap the thumb
+  back before it finishes.
+- A stale tick just after the seek finishes snaps the thumb back.
+- A seek that finishes but no tick confirms, or that never finishes, freezes
+  the slider instead of following playback again.
+- A press whose release never reaches the window (focus lost mid-drag)
+  leaves the slider stuck at the pointer instead of following playback.
 
 ## Queue editing
 
@@ -815,6 +831,10 @@ Failure modes this pass must not have:
 - A library artist's page hero has no picture, although its catalog artist has
   artwork.
 - An album with no artwork shows no initials, or the wrong initials.
+- Run on its own, or after a scenario that leaves the app signed in, Home and
+  the library still hold data loaded before the artwork fixture was turned
+  on, so the views show none of its cards. (In the full suite `discovery`
+  leaves the app signed out first, which hid this.)
 
 Each check's `detail` in `report.json` holds the measurements: the rects of the
 artwork, content box and overlay, the row widths, and the kind of art each card

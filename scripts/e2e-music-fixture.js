@@ -98,6 +98,13 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  *   (two named "Sunday Drive") and a "Road Trip" folder holding two of them.
  *   configure({ ratings: { "library-albums:<id>": 1 } }) replaces the rating
  *   map; reset() clears it and libraryView.
+ *
+ * Pinned playlist artwork (scripts/e2e-pin-artwork.js; docs/TESTING.md
+ *   "Pinned playlist artwork"): playlist-pin-art has an uploaded cover signed
+ *   when answered; playlist-pin-nocover has no artwork. Neither is in the plain
+ *   library list unless configure({ pinArtListExpired: true }) adds
+ *   playlist-pin-art there with its cover signed 2026-01-01, so the link has
+ *   expired. Unknown library ids answer { data: [] } on detail and ?ids=.
  */
 
 function installMusicKitFixture() {
@@ -327,6 +334,8 @@ function installMusicKitFixture() {
     artworkTemplate: "",
     // Artwork sizing data (ARTWORK_* below); off, so other suites never see it.
     artworkGrid: false,
+    // Pinned playlist artwork (header comment); off by default.
+    pinArtListExpired: false,
     // Discovery controls (header comment); all off by default.
     delayTerms: {},
     rejectQueryKeys: [],
@@ -2029,31 +2038,45 @@ function installMusicKitFixture() {
   // signed links that expire after 24 hours, so each answer is signed now.
   // The host never resolves, so the image always fails to load.
   const PIN_ART_PLAYLIST_ID = "playlist-pin-art";
-  const pinArtPlaylist = () => {
-    const signedAt = new Date()
+  // A library playlist whose custom cover was removed: no artwork at all.
+  const PIN_NOCOVER_PLAYLIST_ID = "playlist-pin-nocover";
+  const PIN_EXPIRED_SIGNED_AT = Date.UTC(2026, 0, 1);
+  const pinArtPlaylist = (id, signedAtMs = Date.now()) => {
+    if (id === PIN_NOCOVER_PLAYLIST_ID) {
+      return {
+        id,
+        type: "library-playlists",
+        attributes: { name: "Pinned Without Cover", canEdit: true },
+      };
+    }
+    const signedAt = new Date(signedAtMs)
       .toISOString()
       .replace(/[-:]/gu, "")
       .replace(/\.\d{3}/u, "");
     return {
-      id: PIN_ART_PLAYLIST_ID,
+      id,
       type: "library-playlists",
       attributes: {
         name: "Pinned Cover Art",
         canEdit: true,
         artwork: {
-          url: `https://e2e-blobstore.invalid/${PIN_ART_PLAYLIST_ID}.jpg?X-Amz-Date=${signedAt}&X-Amz-Expires=86400&X-Amz-Signature=e2e`,
+          url: `https://e2e-blobstore.invalid/${id}.jpg?X-Amz-Date=${signedAt}&X-Amz-Expires=86400&X-Amz-Signature=e2e`,
         },
       },
     };
   };
   const pinArtResponse = (pathname, path, call) => {
-    if (pathname === `/v1/me/library/playlists/${PIN_ART_PLAYLIST_ID}`) {
-      return { data: [pinArtPlaylist()] };
-    }
+    const detail = pathname.match(
+      /^\/v1\/me\/library\/playlists\/(playlist-pin-(?:art|nocover))$/u,
+    );
+    if (detail) return { data: [pinArtPlaylist(detail[1])] };
     if (pathname !== "/v1/me/library/playlists") return undefined;
     const ids = String(requestParams(path, call).ids ?? "").split(",");
-    return ids.includes(PIN_ART_PLAYLIST_ID)
-      ? { data: [pinArtPlaylist()] }
+    const known = [PIN_ART_PLAYLIST_ID, PIN_NOCOVER_PLAYLIST_ID].filter((id) =>
+      ids.includes(id),
+    );
+    return known.length
+      ? { data: known.map((id) => pinArtPlaylist(id)) }
       : undefined;
   };
 
@@ -2276,8 +2299,15 @@ function installMusicKitFixture() {
       };
     }
     if (pathname === "/v1/me/library/playlists") {
-      if (!state.libraryView) return itemResponse(playlist);
-      return { data: libraryViewPlaylists.map(clone) };
+      const listed = state.libraryView
+        ? libraryViewPlaylists.map(clone)
+        : [clone(playlist)];
+      // configure({ pinArtListExpired: true }) lists the pin-art playlist with
+      // its cover link already expired.
+      if (state.pinArtListExpired) {
+        listed.push(pinArtPlaylist(PIN_ART_PLAYLIST_ID, PIN_EXPIRED_SIGNED_AT));
+      }
+      return { data: listed };
     }
     // Paged like Apple: `next` carries the offset and limit for the next call.
     const libraryKind = {
@@ -2882,6 +2912,9 @@ function installMusicKitFixture() {
       if (Object.prototype.hasOwnProperty.call(options, "artworkGrid")) {
         state.artworkGrid = options.artworkGrid === true;
       }
+      if (Object.prototype.hasOwnProperty.call(options, "pinArtListExpired")) {
+        state.pinArtListExpired = options.pinArtListExpired === true;
+      }
       if (Object.prototype.hasOwnProperty.call(options, "queueEditDelayMs")) {
         state.queueEditDelayMs = Math.max(
           0,
@@ -2947,6 +2980,7 @@ function installMusicKitFixture() {
       state.libraryView = false;
       state.artworkTemplate = "";
       state.artworkGrid = false;
+      state.pinArtListExpired = false;
       state.delayTerms = {};
       state.rejectQueryKeys = [];
       state.repeatViewCursor = false;
@@ -3246,6 +3280,7 @@ function installMusicKitFixture() {
           rejectPlayTimes: state.rejectPlayTimes,
           repeatPlaylistCursor: state.repeatPlaylistCursor,
           repeatViewCursor: state.repeatViewCursor,
+          pinArtListExpired: state.pinArtListExpired,
         },
         configure: state.configureOptions
           ? clone(state.configureOptions)

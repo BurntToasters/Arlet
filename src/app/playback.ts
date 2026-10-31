@@ -7,6 +7,7 @@ import {
   recordTransportIntent,
   type NormalizedRepeatMode,
   seekToTime,
+  settleSeek,
   setRepeatMode as setMusicRepeatMode,
   setShuffleMode as setMusicShuffleMode,
   setVolume as setMusicVolume,
@@ -639,8 +640,8 @@ export function createPlayback(context: ControllerContext) {
       try {
         await seekToTime(requireMusic(), safeSeconds);
         // Paused playback may not tick, so confirm the position here unless
-        // a tick already did, or a newer seek took over.
-        if (endSeek(generation)) {
+        // a newer seek or a song change took over.
+        if (settleSeek(generation)) {
           setPlaybackPosition(safeSeconds, getState().playback.durationSeconds);
         }
       } catch (error) {

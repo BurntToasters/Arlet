@@ -75,15 +75,22 @@ export function createControllerPins(
           ? url
           : undefined;
       };
-      // Pins that neither the list nor the saved pin can name, or whose only
-      // cover link has expired. One batched request per source covers them;
-      // any pin it misses is looked up alone.
+      // The list's cover link for a pin, when that link has expired.
+      const listedLinkExpired = (pin: PinnedPlaylist): boolean => {
+        const url = knownOf(pin)?.artwork?.url;
+        return typeof url === "string" && artworkLinkExpired(url);
+      };
+      // Pins that neither the list nor the saved pin can name, or that have no
+      // live cover because the list's or the saved link has expired. One
+      // batched request per source covers them; any pin it misses is looked up
+      // alone.
       const needsLookup = pins.filter(
         (pin) =>
           (!knownOf(pin)?.name && !pin.name) ||
           (!knownArtworkOf(pin) &&
-            pin.artworkUrl !== undefined &&
-            artworkLinkExpired(pin.artworkUrl)),
+            (listedLinkExpired(pin) ||
+              (pin.artworkUrl !== undefined &&
+                artworkLinkExpired(pin.artworkUrl)))),
       );
       const lookupIds = new Set(needsLookup.map((pin) => pin.id));
       const batched = new Map<string, Playlist>();
@@ -113,6 +120,9 @@ export function createControllerPins(
         const known = knownOf(pin);
         let name = typeof known?.name === "string" ? known.name : undefined;
         let artworkUrl = knownArtworkOf(pin);
+        // Set when the lookup found the playlist with no cover, so the saved
+        // link is dead. A failed lookup or a missing playlist keeps the link.
+        let coverRemoved = false;
         if (lookupIds.has(pin.id)) {
           let found = batched.get(pin.id);
           if (!found) {
@@ -124,14 +134,15 @@ export function createControllerPins(
           }
           name ??= found?.name;
           artworkUrl ??= found?.artwork?.url;
+          coverRemoved = found !== undefined && !artworkUrl;
         }
-        if (
-          (name && name !== pin.name) ||
-          (artworkUrl && artworkUrl !== pin.artworkUrl)
-        ) {
+        const nextArtworkUrl = coverRemoved
+          ? undefined
+          : (artworkUrl ?? pin.artworkUrl);
+        if ((name && name !== pin.name) || nextArtworkUrl !== pin.artworkUrl) {
           updates.set(pin.id, {
             name: name ?? pin.name,
-            artworkUrl: artworkUrl ?? pin.artworkUrl,
+            artworkUrl: nextArtworkUrl,
           });
         }
       }

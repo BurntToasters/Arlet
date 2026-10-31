@@ -10,7 +10,8 @@
 // visible console (it runs hidden); a dead monitor reported as "no steals"
 // (zero samples is reported, never treated as a pass); Tao's visible message
 // dispatcher and tauri-plugin-single-instance's IPC window being mistaken for
-// covering windows (exact class and styles).
+// covering windows (exact class and styles); an active desktop, which every
+// window sits above, reported as covered (docs/TESTING.md has the rule).
 
 import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -69,6 +70,13 @@ while ($true) {
   $arletIds = @(Get-Process -Name arlet -ErrorAction SilentlyContinue | ForEach-Object { [uint32]$_.Id })
   $fg = New-Object ArletE2E.Foreground+RECT
   [void][ArletE2E.Foreground]::GetWindowRect($hwnd, [ref]$fg)
+  # The desktop is below every window, so nothing above it is covering it.
+  $fgClass = New-Object System.Text.StringBuilder 64
+  [void][ArletE2E.Foreground]::GetClassName($hwnd, $fgClass, 64)
+  $desktop = 0
+  if ($name -eq "explorer" -and ($fgClass.ToString() -ceq "Progman" -or $fgClass.ToString() -ceq "WorkerW")) {
+    $desktop = 1
+  }
   # "-" when nothing of Arlet's covers the active window, else title|class|rect.
   $above = "-"
   $dispatcherCount = 0
@@ -76,7 +84,7 @@ while ($true) {
   $singleInstanceCount = 0
   $singleInstanceStyleEvidence = "-"
   $walk = [ArletE2E.Foreground]::GetWindow($hwnd, $GW_HWNDPREV)
-  while ($walk -ne [System.IntPtr]::Zero -and $arletIds.Count -gt 0) {
+  while ($walk -ne [System.IntPtr]::Zero -and $arletIds.Count -gt 0 -and $desktop -eq 0) {
     $walkOwner = [uint32]0
     [void][ArletE2E.Foreground]::GetWindowThreadProcessId($walk, [ref]$walkOwner)
     if (($arletIds -contains $walkOwner) -and [ArletE2E.Foreground]::IsWindowVisible($walk)) {
@@ -109,7 +117,7 @@ while ($true) {
     $walk = [ArletE2E.Foreground]::GetWindow($walk, $GW_HWNDPREV)
   }
   if (-not $name) { $name = "(none)" }
-  [Console]::Out.WriteLine("$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) $above $name $dispatcherCount $dispatcherStyleEvidence $singleInstanceCount $singleInstanceStyleEvidence")
+  [Console]::Out.WriteLine("$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()) $desktop $above $name $dispatcherCount $dispatcherStyleEvidence $singleInstanceCount $singleInstanceStyleEvidence")
   [Console]::Out.Flush()
   Start-Sleep -Milliseconds ${SAMPLE_MS}
 }
@@ -138,18 +146,19 @@ export function startForegroundMonitor() {
     const lines = buffer.split(/\r?\n/u);
     buffer = lines.pop() ?? "";
     for (const line of lines) {
-      const match = /^(\d+) (\S+) (.+) (\d+) (\S+) (\d+) (\S+)$/u.exec(
+      const match = /^(\d+) ([01]) (\S+) (.+) (\d+) (\S+) (\d+) (\S+)$/u.exec(
         line.trim(),
       );
       if (match) {
         samples.push({
           at: Number(match[1]),
-          above: match[2] === "-" ? null : match[2],
-          name: match[3],
-          ignoredDispatcherCount: Number(match[4]),
-          ignoredDispatcherStyle: match[5] === "-" ? null : match[5],
-          ignoredSingleInstanceCount: Number(match[6]),
-          ignoredSingleInstanceStyle: match[7] === "-" ? null : match[7],
+          desktop: match[2] === "1",
+          above: match[3] === "-" ? null : match[3],
+          name: match[4],
+          ignoredDispatcherCount: Number(match[5]),
+          ignoredDispatcherStyle: match[6] === "-" ? null : match[6],
+          ignoredSingleInstanceCount: Number(match[7]),
+          ignoredSingleInstanceStyle: match[8] === "-" ? null : match[8],
         });
       }
     }
@@ -195,6 +204,8 @@ export function startForegroundMonitor() {
         aboveFirstAt: firstAt(above),
         // Title|class|rect of the first covering window, to tell which it was.
         aboveWindow: above[0]?.above ?? null,
+        // Samples with the desktop active, checked for activation only.
+        desktopSamples: samples.filter((sample) => sample.desktop).length,
         ignoredDispatcher: {
           className: DISPATCHER_CLASS,
           requiredExtendedStyleMask: `0x${HELPER_STYLE_MASK}`,

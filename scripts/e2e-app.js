@@ -152,6 +152,7 @@ const FIXTURE_CONTROL_DEFAULTS = {
   rejectPlayTimes: 0,
   repeatPlaylistCursor: false,
   repeatViewCursor: false,
+  pinArtListExpired: false,
 };
 
 /**

@@ -56,12 +56,16 @@ export function latestTransportIntent(): TransportIntent {
 
 /** A tick this close to a seek target confirms that the seek landed. */
 const SEEK_CONFIRM_SECONDS = 1.5;
-/** Longest wait for that tick before ticks are trusted again. */
+/** Longest wait for a seek to finish before its target stops being held. */
+const SEEK_PENDING_MS = 10_000;
+/** After a seek lands, longest wait for a tick to confirm it. */
 const SEEK_HOLD_MS = 3_000;
 
 interface PendingSeek {
   generation: number;
   seconds: number;
+  /** False while seekToTime() is in flight; true once it has resolved. */
+  landed: boolean;
   holdUntil: number;
 }
 
@@ -78,9 +82,20 @@ export function beginSeek(seconds: number, now = Date.now()): number {
   pendingSeek = {
     generation: seekGeneration,
     seconds,
-    holdUntil: now + SEEK_HOLD_MS,
+    landed: false,
+    holdUntil: now + SEEK_PENDING_MS,
   };
   return seekGeneration;
+}
+
+/**
+ * Records that `generation` landed and keeps holding stale ticks for
+ * SEEK_HOLD_MS more. Returns whether it is still the pending seek.
+ */
+export function settleSeek(generation: number, now = Date.now()): boolean {
+  if (pendingSeek?.generation !== generation) return false;
+  pendingSeek = { ...pendingSeek, landed: true, holdUntil: now + SEEK_HOLD_MS };
+  return true;
 }
 
 /**
@@ -99,6 +114,10 @@ export function endSeek(generation?: number): boolean {
 /** The position to show for a playback tick at `position`. */
 export function seekAwarePosition(position: number, now = Date.now()): number {
   if (!pendingSeek) return position;
+  // In flight, only the cap ends the hold; a tick at the target does not.
+  if (!pendingSeek.landed && now <= pendingSeek.holdUntil) {
+    return pendingSeek.seconds;
+  }
   if (
     now > pendingSeek.holdUntil ||
     Math.abs(position - pendingSeek.seconds) <= SEEK_CONFIRM_SECONDS
