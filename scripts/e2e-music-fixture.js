@@ -2025,11 +2025,45 @@ function installMusicKitFixture() {
     return undefined;
   };
 
+  // A library playlist with an uploaded cover. Apple serves such covers from
+  // signed links that expire after 24 hours, so each answer is signed now.
+  // The host never resolves, so the image always fails to load.
+  const PIN_ART_PLAYLIST_ID = "playlist-pin-art";
+  const pinArtPlaylist = () => {
+    const signedAt = new Date()
+      .toISOString()
+      .replace(/[-:]/gu, "")
+      .replace(/\.\d{3}/u, "");
+    return {
+      id: PIN_ART_PLAYLIST_ID,
+      type: "library-playlists",
+      attributes: {
+        name: "Pinned Cover Art",
+        canEdit: true,
+        artwork: {
+          url: `https://e2e-blobstore.invalid/${PIN_ART_PLAYLIST_ID}.jpg?X-Amz-Date=${signedAt}&X-Amz-Expires=86400&X-Amz-Signature=e2e`,
+        },
+      },
+    };
+  };
+  const pinArtResponse = (pathname, path, call) => {
+    if (pathname === `/v1/me/library/playlists/${PIN_ART_PLAYLIST_ID}`) {
+      return { data: [pinArtPlaylist()] };
+    }
+    if (pathname !== "/v1/me/library/playlists") return undefined;
+    const ids = String(requestParams(path, call).ids ?? "").split(",");
+    return ids.includes(PIN_ART_PLAYLIST_ID)
+      ? { data: [pinArtPlaylist()] }
+      : undefined;
+  };
+
   const responseFor = (path, call = { method: "GET" }) => {
     const pathname = String(path).split("?", 1)[0];
     const mutation =
       ratingResponse(pathname, call) ?? libraryResponse(pathname, call);
     if (mutation) return mutation;
+    const pinArt = pinArtResponse(pathname, path, call);
+    if (pinArt !== undefined) return pinArt;
     const artwork = artworkGridResponse(pathname, path, call);
     if (artwork !== undefined) return artwork;
     const discovered = discoveryResponse(pathname, path, call);

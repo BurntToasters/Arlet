@@ -307,6 +307,21 @@ are not playable. Failure scenarios:
 - An artist page matches `img.detail-hero-backdrop` instead of its own
   `artist-hero-banner` / `artist-hero-backdrop` selectors.
 
+## Pinned playlist artwork
+
+`pin-artwork` saves pins and reloads the app. Apple serves uploaded playlist
+covers from signed links (`X-Amz-Date` + `X-Amz-Expires`, 24 hours), so a
+link saved with a pin goes dead a day later.
+
+- After a restart, a pin whose saved link has expired shows a broken image
+  until its playlist is opened.
+- The startup lookup skips pins that already have a name, so an expired link
+  is never replaced.
+- The fresh link is shown but not saved, so the next restart breaks again.
+- Pins whose saved link is still valid are looked up again on every start.
+- An image that fails to load for any other reason shows the browser's
+  broken-image glyph instead of the playlist icon.
+
 ## Keyboard and transport
 
 - Shortcuts fire while typing in search, a text field, or a dialog.

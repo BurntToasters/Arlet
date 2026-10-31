@@ -294,6 +294,29 @@ function validArtworkUrl(value: string): boolean {
   }
 }
 
+// "20261030T210828Z", the AWS signature date format.
+const AMZ_DATE = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/u;
+
+/**
+ * True when `url` is a signed link past its expiry. Apple serves uploaded
+ * playlist covers from such links (`X-Amz-Date` plus `X-Amz-Expires`
+ * seconds, 24 hours), so a saved copy goes dead. Other links never expire.
+ */
+export function artworkLinkExpired(url: string, now = Date.now()): boolean {
+  let params: URLSearchParams;
+  try {
+    params = new URL(url).searchParams;
+  } catch {
+    return false;
+  }
+  const date = AMZ_DATE.exec(params.get("X-Amz-Date") ?? "");
+  const lifetime = Number(params.get("X-Amz-Expires"));
+  if (!date || !Number.isFinite(lifetime)) return false;
+  const [, year, month, day, hour, minute, second] = date.map(Number);
+  const signedAt = Date.UTC(year!, month! - 1, day, hour, minute, second);
+  return now >= signedAt + lifetime * 1000;
+}
+
 /** Fixed sizes for Apple artwork requests so the WebView HTTP cache hits. */
 export const ARTWORK_BUCKETS = [96, 300, 640] as const;
 /** Blurred backdrops never show detail, so they take the smallest request. */

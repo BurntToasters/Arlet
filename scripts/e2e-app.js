@@ -31,6 +31,7 @@ import { runMiniPlayer } from "./e2e-mini-player.js";
 import { runSongNavigation } from "./e2e-song-navigation.js";
 import { runTransport } from "./e2e-transport.js";
 import { runSeek } from "./e2e-seek.js";
+import { runPinArtwork } from "./e2e-pin-artwork.js";
 import { runQueueEdit } from "./e2e-queue-edit.js";
 import { runNowPlaying } from "./e2e-now-playing.js";
 import { runRadioArtist } from "./e2e-radio-artist.js";
@@ -108,6 +109,7 @@ const SCENARIO_REGISTRY = [
   ["radio-artist", runRadioArtist],
   ["unavailable", runUnavailable],
   ["layout", runLayout],
+  ["pin-artwork", runPinArtwork],
   ["desktop", runDesktop],
   ["flows", runFlows],
   ["library-view", runLibraryView],

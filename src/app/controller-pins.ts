@@ -1,5 +1,6 @@
 import type { MusicSource, PinnedPlaylist, Playlist } from "../domain/music.ts";
 import type { AppleMusicLibraryClient } from "../musickit/library.ts";
+import { artworkLinkExpired } from "../musickit/normalize.ts";
 import { getState, setPins } from "../state.ts";
 import {
   MAX_PINS,
@@ -51,7 +52,8 @@ export function createControllerPins(
    * Saves each pin's name and artwork, so the sidebar can show a pinned
    * playlist that is not in the loaded playlist list. Uses the loaded list
    * when it has the playlist (also picking up renames) and asks Apple for the
-   * rest. Runs once at a time; needs a signed-in library.
+   * rest, including pins whose saved cover link has expired. Runs once at a
+   * time; needs a signed-in library.
    */
   const resolveDetails = async (): Promise<void> => {
     if (resolvingPins) {
@@ -67,11 +69,23 @@ export function createControllerPins(
       const knownOf = (pin: PinnedPlaylist) =>
         listed.find((item) => item.id === pin.id) as
           { name?: unknown; artwork?: { url?: unknown } } | undefined;
-      // Pins that neither the list nor the saved pin can name. One batched
-      // request per source covers them; any pin it misses is looked up alone.
+      const knownArtworkOf = (pin: PinnedPlaylist): string | undefined => {
+        const url = knownOf(pin)?.artwork?.url;
+        return typeof url === "string" && !artworkLinkExpired(url)
+          ? url
+          : undefined;
+      };
+      // Pins that neither the list nor the saved pin can name, or whose only
+      // cover link has expired. One batched request per source covers them;
+      // any pin it misses is looked up alone.
       const needsLookup = pins.filter(
-        (pin) => !knownOf(pin)?.name && !pin.name,
+        (pin) =>
+          (!knownOf(pin)?.name && !pin.name) ||
+          (!knownArtworkOf(pin) &&
+            pin.artworkUrl !== undefined &&
+            artworkLinkExpired(pin.artworkUrl)),
       );
+      const lookupIds = new Set(needsLookup.map((pin) => pin.id));
       const batched = new Map<string, Playlist>();
       const batchSources = [...new Set(needsLookup.map((pin) => pin.source))];
       await Promise.all(
@@ -98,24 +112,18 @@ export function createControllerPins(
       for (const pin of pins) {
         const known = knownOf(pin);
         let name = typeof known?.name === "string" ? known.name : undefined;
-        let artworkUrl =
-          typeof known?.artwork?.url === "string"
-            ? known.artwork.url
-            : undefined;
-        if (!name && !pin.name) {
-          const found = batched.get(pin.id);
-          if (found) {
-            name = found.name;
-            artworkUrl = found.artwork?.url;
-          } else {
+        let artworkUrl = knownArtworkOf(pin);
+        if (lookupIds.has(pin.id)) {
+          let found = batched.get(pin.id);
+          if (!found) {
             try {
-              const playlist = await client.getPlaylist(pin.id, pin.source);
-              name = playlist?.name;
-              artworkUrl = playlist?.artwork?.url;
+              found = await client.getPlaylist(pin.id, pin.source);
             } catch (error) {
               log(`Pinned playlist lookup failed: ${safeErrorMessage(error)}`);
             }
           }
+          name ??= found?.name;
+          artworkUrl ??= found?.artwork?.url;
         }
         if (
           (name && name !== pin.name) ||
