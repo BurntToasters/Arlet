@@ -58,6 +58,24 @@ export function planRemove(
   };
 }
 
+/** Removes `count` upcoming songs from `start` on. */
+export function planRemoveRange(
+  queue: readonly Track[],
+  current: number,
+  start: number,
+  count: number,
+): QueueEditPlan | undefined {
+  if (count <= 0) return undefined;
+  assertUpcoming(queue, current, start, "removed");
+  assertUpcoming(queue, current, start + count - 1, "removed");
+  return {
+    next: [...queue.slice(0, start), ...queue.slice(start + count)],
+    native: async (native) => {
+      await native.splice(start, count);
+    },
+  };
+}
+
 export function planMove(
   queue: readonly Track[],
   current: number,

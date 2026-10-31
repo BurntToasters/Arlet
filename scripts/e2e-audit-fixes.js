@@ -1104,10 +1104,368 @@ async function parkedQueueOrder(page, check) {
       seeks: seeks.map((item) => item.seconds),
     },
   );
+
+  // Past the first seconds Previous restarts the song. Parked on Track B at
+  // 0:42, it queues from Track B (not Track A) and starts it from 0:00.
+  await waitFor(
+    page,
+    `document.querySelector(${q(POSITION)})?.textContent === "0:42"`,
+  );
+  pauseAt = await mark(page);
+  await pauseWithFastRelease(page);
+  await waitForTransition(page, pauseAt, "stop");
+  await sleep(300);
+  const parkedRestartAt = await mark(page);
+  await clickTransport(page, "Previous track");
+  await waitForTransition(page, parkedRestartAt, "setQueue");
+  await buttonIs(page, "Pause", 5000);
+  await sleep(300);
+  const parkedRestartQueues = await queuedSince(page, parkedRestartAt);
+  const parkedRestartSeeks = typesOf(
+    (await since(page, parkedRestartAt)).transitions,
+    "seekToTime",
+  );
+  check(
+    "Previous past the first seconds of a parked song restarts it",
+    parkedRestartQueues.length === 1 &&
+      sameIds(parkedRestartQueues[0].ids, ["album-b", "album-c", "album-d"]) &&
+      parkedRestartQueues[0].index === 0 &&
+      !parkedRestartSeeks.some((item) => item.seconds > 0),
+    {
+      queues: parkedRestartQueues.map((item) => item.ids),
+      seeks: parkedRestartSeeks.map((item) => item.seconds),
+    },
+  );
+
+  // Playing, the same press seeks to 0:00 and leaves the queue alone.
+  await fixtureCall(page, "emitPlaybackTime", [SAVED_SECONDS]);
+  await waitFor(
+    page,
+    `document.querySelector(${q(POSITION)})?.textContent === "0:42"`,
+  );
+  const liveRestartAt = await mark(page);
+  await clickTransport(page, "Previous track");
+  const restartShown = await waitFor(
+    page,
+    `document.querySelector(${q(POSITION)})?.textContent === "0:00"`,
+    5000,
+  );
+  await sleep(300);
+  const liveRestart = (await since(page, liveRestartAt)).transitions;
+  const restartTitle = await page.evaluate(
+    `return document.querySelector(${q(NOW_PLAYING)})?.textContent ?? null;`,
+  );
+  check(
+    "Previous past the first seconds of a playing song restarts it in place",
+    restartShown &&
+      restartTitle === "Album Track B" &&
+      typesOf(liveRestart, "seekToTime").some((item) => item.seconds === 0) &&
+      !liveRestart.some((item) =>
+        ["setQueue", "selectIndex", "previous"].includes(item.type),
+      ),
+    { restartTitle, transitions: liveRestart },
+  );
 }
 
 const sameIds = (actual, expected) =>
   JSON.stringify(actual ?? []) === JSON.stringify(expected);
+
+// The fixture's 30-song catalog playlist, paged 25 at a time.
+const LONG_PLAYLIST_HASH = "#/playlist/pl.catalog-fixture?source=catalog";
+const LONG_PLAYLIST_IDS = Array.from(
+  { length: 30 },
+  (_, index) => `pl-catalog-${String(index + 1).padStart(2, "0")}`,
+);
+const SHUFFLE_BUTTON = 'button[aria-label="Toggle shuffle"]';
+const REPEAT_BUTTON = 'button[aria-label^="Repeat "]';
+
+/** Turns shuffle on or off through the player bar. */
+async function setShuffle(page, on) {
+  await page.evaluate(`
+    const button = document.querySelector(${q(SHUFFLE_BUTTON)});
+    if (button && (button.getAttribute("aria-pressed") === "true") !== ${on}) button.click();
+    return true;`);
+  return waitFor(
+    page,
+    `document.querySelector(${q(SHUFFLE_BUTTON)})?.getAttribute("aria-pressed") === ${q(String(on))}`,
+  );
+}
+
+/** Cycles the repeat button (off, all, one) until it shows `mode`. */
+async function setRepeat(page, mode) {
+  const label = `Repeat ${mode}`;
+  for (let press = 0; press < 3; press += 1) {
+    const shown = await page.evaluate(
+      `return document.querySelector(${q(REPEAT_BUTTON)})?.getAttribute("aria-label") ?? null;`,
+    );
+    if (shown === label) return true;
+    if (shown === null) return false;
+    await page.evaluate(
+      `document.querySelector(${q(REPEAT_BUTTON)})?.click(); return true;`,
+    );
+    await waitFor(
+      page,
+      `document.querySelector(${q(REPEAT_BUTTON)})?.getAttribute("aria-label") !== ${q(shown)}`,
+      3000,
+    );
+  }
+  return (
+    (await page.evaluate(
+      `return document.querySelector(${q(REPEAT_BUTTON)})?.getAttribute("aria-label") ?? null;`,
+    )) === label
+  );
+}
+
+/** Parks the playing queue through a pause with the handoff delay shortened. */
+async function park(page) {
+  const at = await mark(page);
+  await pauseWithFastRelease(page);
+  const stopped = await waitForTransition(page, at, "stop");
+  await sleep(300);
+  return stopped;
+}
+
+/** The fixture's provider queue as song IDs. */
+const providerIds = async (page) =>
+  (await snapshot(page)).queue.items.map((item) => item.id);
+
+const waitForProviderIds = (page, ids, timeoutMs = 5000) =>
+  waitFor(
+    page,
+    `JSON.stringify(${FIXTURE}.snapshot().queue.items.map((item) => item.id)) === ${q(JSON.stringify(ids))}`,
+    timeoutMs,
+  );
+
+const nowPlayingIs = (page, title, timeoutMs = 8000) =>
+  waitFor(
+    page,
+    `document.querySelector(${q(NOW_PLAYING)})?.textContent === ${q(title)}`,
+    timeoutMs,
+  );
+
+/** Plays the album from its last song through the app's row click. */
+async function playLastAlbumSong(page) {
+  await page.evaluate(`
+    document.querySelectorAll(".library-track-row")[3]?.click();
+    return true;`);
+  return (
+    (await buttonIs(page, "Pause", 8000)) &&
+    (await nowPlayingIs(page, "Album Track D"))
+  );
+}
+
+/**
+ * Repeat All loops through the whole album, as in Apple Music. A Play from
+ * the last song gets the next pass from the album's first song; turning
+ * Repeat All off removes it but keeps a song added after it. The Windows
+ * media flyout keeps Next on the last song, and a parked queue wraps too.
+ */
+async function repeatAllWrap(page, check) {
+  await openHash(
+    page,
+    `#/album/${PARKED_ALBUM}`,
+    `document.querySelectorAll(".library-track-row").length >= 4`,
+    15_000,
+  );
+  const shuffleWasOn = await page.evaluate(
+    `return document.querySelector(${q(SHUFFLE_BUTTON)})?.getAttribute("aria-pressed") === "true";`,
+  );
+  // MusicKit's queue for that Play, then the next pass.
+  const withPass = ["album-d", ...PARKED_QUEUE];
+  try {
+    // Real MusicKit edits its queue in place; so does the fixture here.
+    await fixtureCall(page, "configure", [{ nativeQueueEdit: true }]);
+    // Shuffle off, so the album plays in order.
+    const shuffleOff = await setShuffle(page, false);
+    const repeatAll = await setRepeat(page, "all");
+    const playAt = await mark(page);
+    const onLast = await playLastAlbumSong(page);
+    const passAdded = await waitForProviderIds(page, withPass);
+    const added = typesOf((await since(page, playAt)).transitions, "playLater");
+    check(
+      "with Repeat All, the last song of a Play from mid-album gets the next pass from the album's first song",
+      shuffleOff &&
+        repeatAll &&
+        onLast &&
+        passAdded &&
+        added.length === 1 &&
+        sameIds(added[0].ids, PARKED_QUEUE),
+      {
+        shuffleOff,
+        repeatAll,
+        onLast,
+        added: added.map((item) => item.ids),
+        queue: await providerIds(page),
+      },
+    );
+
+    // A song added after the pass is the user's and stays.
+    await page.evaluate(`
+      await window.MusicKit.getInstance().playLater({ songs: ["song-a"] });
+      return true;`);
+    const extraAdded = await waitForProviderIds(page, [...withPass, "song-a"]);
+    const repeatOff = await setRepeat(page, "off");
+    const passRemoved = await waitForProviderIds(page, ["album-d", "song-a"]);
+    check(
+      "turning Repeat All off on the last song removes the next pass and keeps a song added after it",
+      extraAdded && repeatOff && passRemoved,
+      { extraAdded, repeatOff, queue: await providerIds(page) },
+    );
+
+    const repeatAgain = await setRepeat(page, "all");
+    const replayAt = await mark(page);
+    const onLastAgain = await playLastAlbumSong(page);
+    const passAgain =
+      (await waitForTransition(page, replayAt, "playLater")) &&
+      (await waitForProviderIds(page, withPass));
+    await clickTransport(page, "Next track");
+    const wrapped = await nowPlayingIs(page, "Album Track A", 5000);
+    check(
+      "with Repeat All, Next on the last song of a Play from mid-album plays the album's first song",
+      repeatAgain && onLastAgain && passAgain && wrapped,
+      {
+        repeatAgain,
+        onLastAgain,
+        passAgain,
+        nowPlaying: await page.evaluate(
+          `return document.querySelector(${q(NOW_PLAYING)})?.textContent ?? null;`,
+        ),
+        queue: await providerIds(page),
+      },
+    );
+
+    // A queue set outside the app has no songs before it, so MusicKit
+    // wraps it alone; the flyout must still offer Next on its last song.
+    await page.evaluate(`
+      const music = window.MusicKit.getInstance();
+      await music.setQueue({ songs: ["song-c"] });
+      await music.play();
+      return true;`);
+    const single = await nowPlayingIs(page, "Track C");
+    const flyoutNext = await waitFor(
+      page,
+      "window.__ARLET_E2E_TAURI_EVENTS__?.mediaSession()?.nextEnabled === true",
+      3000,
+    );
+    const flyout = await page.evaluate(
+      "return window.__ARLET_E2E_TAURI_EVENTS__?.mediaSession() ?? null;",
+    );
+    check(
+      "with Repeat All, the media flyout keeps Next enabled on the last song",
+      single && flyoutNext,
+      {
+        single,
+        nextEnabled: flyout?.nextEnabled ?? null,
+        repeat: flyout?.repeat ?? null,
+        queue: await providerIds(page),
+      },
+    );
+
+    // Parked on the last song with Repeat All off, so no pass was added.
+    const offBeforePark = await setRepeat(page, "off");
+    const parkedOnLast = await playLastAlbumSong(page);
+    const parkedLast = await park(page);
+    const repeatParked = await setRepeat(page, "all");
+    const nextAt = await mark(page);
+    await clickTransport(page, "Next track");
+    await waitForTransition(page, nextAt, "setQueue", 5000);
+    const nextQueues = await queuedSince(page, nextAt);
+    check(
+      "with Repeat All, Next on the last song of a parked queue plays the first",
+      offBeforePark &&
+        parkedOnLast &&
+        parkedLast &&
+        repeatParked &&
+        nextQueues.length === 1 &&
+        sameIds(nextQueues[0].ids, PARKED_QUEUE) &&
+        nextQueues[0].index === 0,
+      {
+        offBeforePark,
+        parkedOnLast,
+        parkedLast,
+        repeatParked,
+        queues: nextQueues,
+      },
+    );
+
+    await buttonIs(page, "Pause", 5000);
+    const parkedFirst = await park(page);
+    const previousAt = await mark(page);
+    await clickTransport(page, "Previous track");
+    await waitForTransition(page, previousAt, "setQueue", 5000);
+    const previousQueues = await queuedSince(page, previousAt);
+    check(
+      "with Repeat All, Previous on the first song of a parked queue plays the last",
+      parkedFirst &&
+        previousQueues.length === 1 &&
+        sameIds(previousQueues[0].ids, ["album-d"]) &&
+        previousQueues[0].index === 0,
+      { parkedFirst, queues: previousQueues },
+    );
+    await buttonIs(page, "Pause", 5000);
+
+    // Song 25 of a 30-song playlist: every song before it counts, not only
+    // the 20 a saved queue keeps.
+    const offForPrevious = await setRepeat(page, "off");
+    const longRows = await openHash(
+      page,
+      LONG_PLAYLIST_HASH,
+      `document.querySelectorAll(".library-track-row").length >= ${LONG_PLAYLIST_IDS.length}`,
+      15_000,
+    );
+    const playSong25 = () =>
+      page.evaluate(`
+        document.querySelectorAll(".library-track-row")[24]?.click();
+        return true;`);
+    await playSong25();
+    const onSong25 = await nowPlayingIs(page, "Catalog Playlist Track 25");
+    let steppedTo = null;
+    for (let song = 24; song >= 1; song -= 1) {
+      await clickTransport(page, "Previous track");
+      const title = `Catalog Playlist Track ${song}`;
+      if (!(await nowPlayingIs(page, title, 3000))) break;
+      steppedTo = title;
+    }
+    check(
+      "Previous on the first queued song steps back to the playlist's first song, not 20 songs back",
+      offForPrevious &&
+        longRows &&
+        onSong25 &&
+        steppedTo === "Catalog Playlist Track 1",
+      { offForPrevious, longRows, onSong25, steppedTo },
+    );
+
+    const repeatLong = await setRepeat(page, "all");
+    const longAt = await mark(page);
+    await playSong25();
+    let onLastLong = await nowPlayingIs(page, "Catalog Playlist Track 25");
+    for (let song = 26; song <= 30 && onLastLong; song += 1) {
+      await clickTransport(page, "Next track");
+      onLastLong = await nowPlayingIs(page, `Catalog Playlist Track ${song}`);
+    }
+    await waitForTransition(page, longAt, "playLater");
+    const longAdded = typesOf(
+      (await since(page, longAt)).transitions,
+      "playLater",
+    );
+    check(
+      "with Repeat All, a Play from song 25 of 30 repeats all 30 songs",
+      repeatLong &&
+        onLastLong &&
+        longAdded.length === 1 &&
+        sameIds(longAdded[0].ids, LONG_PLAYLIST_IDS),
+      {
+        repeatLong,
+        onLastLong,
+        added: longAdded.map((item) => item.ids),
+      },
+    );
+  } finally {
+    await setRepeat(page, "off");
+    await setShuffle(page, shuffleWasOn);
+    await fixtureCall(page, "configure", [{ nativeQueueEdit: false }]);
+  }
+}
 
 /** Leaves the app signed in and healthy for the next suite. */
 async function restoreHealthy(page, check) {
@@ -1159,6 +1517,7 @@ export async function runAuditFixes({ page, check, logDir, artifactDir }) {
     await group(check, "parked queue order", () =>
       parkedQueueOrder(page, check),
     );
+    await group(check, "repeat all wrap", () => repeatAllWrap(page, check));
     await group(check, "parked station", () => parkedStation(page, check));
   } finally {
     await restoreTimers(page);

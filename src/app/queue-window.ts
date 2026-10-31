@@ -16,10 +16,10 @@ export const SHUFFLE_IN_ORDER_LIMIT = 100;
 /** Most songs one Play next or Play later adds at once. */
 export const MAX_QUEUE_LENGTH = 500;
 /**
- * Songs before the chosen one that Arlet keeps, so Previous on the first
- * queued song can step back through the playlist. MusicKit's queue starts at
- * the chosen song: songs before it would make MusicKit prepare the wrong item
- * and then switch (a re-select that cost about 1.3 seconds).
+ * Songs before the chosen one that a saved or parked queue keeps. MusicKit's
+ * queue starts at the chosen song: songs before it would make MusicKit
+ * prepare the wrong item and then switch (a re-select that cost about 1.3
+ * seconds). Arlet keeps all of them for Previous and Repeat All.
  */
 export const QUEUE_HISTORY_LENGTH = 20;
 /** Refill when fewer upcoming songs than this remain in the queue. */
@@ -28,7 +28,7 @@ export const QUEUE_REFILL_THRESHOLD = 50;
 export const QUEUE_REFILL_SIZE = 100;
 
 export interface StartWindow {
-  /** Songs before the chosen one, kept by Arlet for Previous. */
+  /** Every song before the chosen one, kept by Arlet for Previous. */
   history: Track[];
   /** MusicKit's first items. */
   batch: Track[];
@@ -113,10 +113,7 @@ export function startWindow(
     };
   }
   return {
-    history: tracks.slice(
-      Math.max(0, startIndex - QUEUE_HISTORY_LENGTH),
-      startIndex,
-    ),
+    history: tracks.slice(0, startIndex),
     batch: tracks.slice(startIndex, startIndex + FIRST_BATCH_LENGTH),
     startIndex: 0,
     rest: tracks.slice(startIndex + FIRST_BATCH_LENGTH),

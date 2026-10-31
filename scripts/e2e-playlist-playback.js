@@ -501,16 +501,19 @@ export async function runPlaylistPlayback({ page, check }) {
   const repeatAllAtStart = await page.evaluate(
     "return window.__ARLET_E2E_MUSIC__.snapshot();",
   );
+  // The album started at Track B. As in Apple Music, Repeat All goes on to
+  // the album's first song, not back to the song the Play started at.
   check(
-    "repeat all wraps to the beginning after natural completion",
+    "repeat all goes on to the album's first song after natural completion",
     repeatAllReady &&
-      repeatAllAtStart.transitions.some((item) => item.type === "finishWrap") &&
-      currentIndex(repeatAllAtStart) === 0,
+      repeatAllAtStart.transitions.some((item) => item.type === "finishNext") &&
+      repeatAllAtStart.queue?.activeId === "album-a",
     {
       queue: repeatAllAtStart.queue,
       transitions: repeatAllAtStart.transitions.slice(-3),
     },
   );
+  const repeatAllIndex = currentIndex(repeatAllAtStart);
 
   await page.evaluate(`
     document.querySelector('button[aria-label="Repeat all"]')?.click();
@@ -533,7 +536,8 @@ export async function runPlaylistPlayback({ page, check }) {
       repeatOneSnapshot.transitions.some(
         (item) => item.type === "finishRepeatOne",
       ) &&
-      currentIndex(repeatOneSnapshot) === 0,
+      currentIndex(repeatOneSnapshot) === repeatAllIndex &&
+      repeatOneSnapshot.queue?.activeId === "album-a",
     {
       queue: repeatOneSnapshot.queue,
       transitions: repeatOneSnapshot.transitions.slice(-3),

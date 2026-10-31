@@ -1,4 +1,5 @@
 import { readPlaybackModes } from "../musickit/player.ts";
+import { editQueue, planRemoveRange } from "../musickit/queue-edit.ts";
 import { isSameTrack, type Track } from "../domain/music.ts";
 import { errorMessage } from "./controller-support.ts";
 import {
@@ -25,18 +26,100 @@ export function createQueueContinuation(
     setQueueRest(tracks.length);
   };
 
-  const clearContinuation = (): void => {
+  /** Drops the songs still to be added and any refill in flight. */
+  const dropRest = (): void => {
     session.restGeneration += 1;
     setRest([]);
   };
 
+  /** A new Play, Clear, or replaced queue also ends Repeat All's passes. */
+  const clearContinuation = (): void => {
+    dropRest();
+    session.repeatCycle = undefined;
+    session.repeatPass = undefined;
+  };
+
+  const repeatsAll = (): boolean => {
+    const instance = getMusic();
+    return (
+      instance !== undefined &&
+      instance !== null &&
+      readPlaybackModes(instance).repeatMode === "all"
+    );
+  };
+
+  /**
+   * Apple Music's Repeat All loops through the whole collection, but a Play
+   * started mid-collection begins MusicKit's queue at the chosen song. On
+   * the last song, the next pass (from the collection's first song) becomes
+   * the queue's rest. Returns true when it did.
+   */
+  const startRepeatPass = (): boolean => {
+    const { queue, queueIndex, pendingRestore } = getState().playback;
+    const last = queue.at(-1);
+    if (!last || pendingRestore || session.station) return false;
+    if (queueIndex !== queue.length - 1) return false;
+    if (
+      session.startHistory.length === 0 ||
+      !isSameTrack(queue[0], session.historyAnchor)
+    ) {
+      return false;
+    }
+    // Once per last song, so a pass that failed is not retried on every event.
+    if (session.repeatPass?.from === queue.length || !repeatsAll()) {
+      return false;
+    }
+    session.repeatCycle ??= [...session.startHistory, ...queue];
+    session.repeatPass = { from: queue.length, anchor: last, count: 0 };
+    setRest([...session.repeatCycle], last);
+    return true;
+  };
+
+  /** Repeat All went off: removes the next pass unless it already started. */
+  const dropRepeatPass = (): void => {
+    const pass = session.repeatPass;
+    session.repeatPass = undefined;
+    if (!pass) return;
+    // The part of the pass not added yet. The collection order is kept for
+    // a later Repeat All.
+    if (session.queueRest.length > 0) dropRest();
+    const instance = getMusic();
+    // A parked queue has no MusicKit queue to edit.
+    if (!instance || pass.count === 0 || getState().playback.pendingRestore) {
+      return;
+    }
+    const generation = session.restGeneration;
+    session.refilling = true;
+    void editQueue(
+      instance,
+      (queue, current) =>
+        current < pass.from && isSameTrack(queue[pass.from - 1], pass.anchor)
+          ? planRemoveRange(queue, current, pass.from, pass.count)
+          : undefined,
+      undefined,
+      () => generation === session.restGeneration,
+    )
+      .catch((error: unknown) => {
+        log(`Removing the Repeat All pass failed: ${errorMessage(error)}`);
+      })
+      .finally(() => {
+        session.refilling = false;
+      });
+  };
+
   /**
    * Appends the next songs of a capped playlist once fewer than
-   * QUEUE_REFILL_THRESHOLD upcoming songs remain. Runs once at a time; a new
-   * play or `Clear` drops a refill that is still in flight.
+   * QUEUE_REFILL_THRESHOLD upcoming songs remain, and with Repeat All the
+   * collection's next pass. Runs once at a time; a new play or `Clear`
+   * drops a refill that is still in flight.
    */
   const maybeRefillQueue = (): void => {
-    if (session.refilling || session.queueRest.length === 0) return;
+    if (session.refilling) return;
+    if (session.repeatPass && !repeatsAll()) {
+      dropRepeatPass();
+      return;
+    }
+    if (session.queueRest.length === 0 && !startRepeatPass()) return;
     const { queue, queueIndex } = getState().playback;
     if (queue.length === 0) return;
     if (!queue.some((track) => isSameTrack(track, session.restAnchor))) {
@@ -69,8 +152,11 @@ export function createQueueContinuation(
         session.refilling = false;
         // The chunk is consumed even on failure so a bad page cannot loop.
         if (generation === session.restGeneration) {
+          if (session.repeatPass) session.repeatPass.count += inserted.length;
           setRest(session.queueRest.slice(chunk.length), inserted.at(-1));
         }
+        // Repeat All may have gone off while this chunk was being added.
+        if (session.repeatPass && !repeatsAll()) dropRepeatPass();
       });
   };
 

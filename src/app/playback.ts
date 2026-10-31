@@ -22,7 +22,7 @@ import {
   withResolvableTracks,
 } from "../musickit/unresolved.ts";
 import { reportActionError } from "../components/action-errors.ts";
-import { nearestTrackIndex } from "./queue-window.ts";
+import { nearestTrackIndex, QUEUE_HISTORY_LENGTH } from "./queue-window.ts";
 import {
   editQueue,
   planClear,
@@ -78,6 +78,12 @@ export interface PlaybackSession {
   // the queue still starts with `historyAnchor`.
   startHistory: Track[];
   historyAnchor: Track | undefined;
+  // With Repeat All, the whole collection in Play order (`startHistory`,
+  // then the first pass), kept for each next pass of that Play.
+  repeatCycle: Track[] | undefined;
+  // The pass added on the last song: where it starts in the queue, the song
+  // before it, and how many of its songs are in the queue so far.
+  repeatPass: { from: number; anchor: Track; count: number } | undefined;
   // The station the latest play started, so a handoff can restart it.
   station: Station | undefined;
 }
@@ -109,6 +115,8 @@ export function createPlayback(context: ControllerContext) {
     restAnchor: undefined,
     startHistory: [],
     historyAnchor: undefined,
+    repeatCycle: undefined,
+    repeatPass: undefined,
     station: undefined,
   };
   const shared: PlaybackContext = { ...context, session };
@@ -252,6 +260,41 @@ export function createPlayback(context: ControllerContext) {
   const insert = createQueueInsert(shared, { playTracks });
   const { insertTracks } = insert;
 
+  const seek = async (seconds: number): Promise<void> => {
+    if (!Number.isFinite(seconds)) return;
+    const safeSeconds = Math.max(0, seconds);
+    const { pendingRestore, durationSeconds } = getState().playback;
+    // A parked station restarts on Play, so it has no position to move to.
+    if (pendingRestore?.station) return;
+    if (pendingRestore) {
+      // Nothing is loaded yet; resume starts from the new position.
+      setPendingRestore({ ...pendingRestore, positionSeconds: safeSeconds });
+      setPlaybackPosition(safeSeconds, durationSeconds);
+      return;
+    }
+    // Show the target at once; stale ticks are held until the seek lands.
+    const previousSeconds = getState().playback.positionSeconds;
+    const generation = beginSeek(safeSeconds);
+    setPlaybackPosition(safeSeconds, durationSeconds);
+    try {
+      await seekToTime(requireMusic(), safeSeconds);
+      // Paused playback may not tick, so confirm the position here unless
+      // a newer seek or a song change took over.
+      if (settleSeek(generation)) {
+        setPlaybackPosition(safeSeconds, getState().playback.durationSeconds);
+      }
+    } catch (error) {
+      if (endSeek(generation)) {
+        setPlaybackPosition(
+          previousSeconds,
+          getState().playback.durationSeconds,
+        );
+      }
+      log(`Seek failed: ${errorMessage(error)}`);
+      throw error;
+    }
+  };
+
   return {
     applyPlaybackVolume,
     reflectMusicVolume,
@@ -264,16 +307,16 @@ export function createPlayback(context: ControllerContext) {
     continuationToken: continuation.continuationToken,
 
     /**
-     * The whole queue as the user sees it: the songs before the one a Play
-     * started at, MusicKit's queue, and the rest still to be added. Saved
-     * for restore and for Save as playlist.
+     * The whole queue as the user sees it: the last QUEUE_HISTORY_LENGTH
+     * songs before the one a Play started at, MusicKit's queue, and the rest
+     * still to be added. Saved for restore and for Save as playlist.
      */
     fullQueue(): { tracks: Track[]; index: number } {
       const { queue, queueIndex, pendingRestore } = getState().playback;
       if (pendingRestore) return { tracks: [...queue], index: queueIndex };
       const history =
         queue[0] !== undefined && isSameTrack(queue[0], session.historyAnchor)
-          ? session.startHistory
+          ? session.startHistory.slice(-QUEUE_HISTORY_LENGTH)
           : [];
       const rest =
         session.queueRest.length > 0 &&
@@ -478,8 +521,9 @@ export function createPlayback(context: ControllerContext) {
         instance,
         (queue, current) => planClear(queue, current),
       );
-      // Clearing Up Next also drops the rest of a capped playlist; a failed
-      // clear keeps it. A newer Play owns its own continuation.
+      // Clearing Up Next also drops the rest of a capped playlist and any
+      // Repeat All pass; a failed clear keeps them. A newer Play owns its
+      // own continuation.
       if (session.playIntent === clearIntent) clearContinuation();
       return tier;
     },
@@ -563,21 +607,45 @@ export function createPlayback(context: ControllerContext) {
             ? "one"
             : "off";
       applyRepeatMode(instance, next);
+      // Repeat All adds the collection's next pass; leaving it removes one.
+      maybeRefillQueue();
     },
 
     async setRepeatMode(mode: NormalizedRepeatMode): Promise<void> {
       applyRepeatMode(requireMusic(), mode);
+      maybeRefillQueue();
     },
 
     async previous(): Promise<void> {
       try {
-        // A restored queue has no MusicKit queue to step back in yet.
-        const { pendingRestore, queue, queueIndex, positionSeconds } =
-          getState().playback;
+        const {
+          pendingRestore,
+          queue,
+          queueIndex,
+          positionSeconds,
+          repeatMode,
+        } = getState().playback;
+        // MusicKit only restarts the first song or with Repeat One, so the
+        // restart past the first seconds happens here. A station has none.
+        const restart =
+          positionSeconds >= RESTART_THRESHOLD_SECONDS &&
+          session.station === undefined &&
+          !pendingRestore?.station;
+        // A restored queue has no MusicKit queue to step back in yet. Like
+        // MusicKit, Repeat All goes from the first song to the last.
         if (pendingRestore && queue.length > 0) {
-          await playTracks(queue, Math.max(0, queueIndex - 1), undefined, {
-            keepOrder: true,
-          });
+          const index = restart
+            ? queueIndex
+            : queueIndex > 0
+              ? queueIndex - 1
+              : repeatMode === "all"
+                ? queue.length - 1
+                : 0;
+          await playTracks(queue, index, undefined, { keepOrder: true });
+          return;
+        }
+        if (restart) {
+          await seek(0);
           return;
         }
         // On the song a Play started at, step back into the songs before
@@ -604,13 +672,19 @@ export function createPlayback(context: ControllerContext) {
 
     async next(): Promise<void> {
       try {
-        const { pendingRestore, queue, queueIndex } = getState().playback;
+        const { pendingRestore, queue, queueIndex, repeatMode } =
+          getState().playback;
         if (pendingRestore && queue.length > 0) {
-          // Past the last song there is nothing to skip to, as in MusicKit.
-          if (queueIndex + 1 < queue.length) {
-            await playTracks(queue, queueIndex + 1, undefined, {
-              keepOrder: true,
-            });
+          // As in MusicKit, past the last song only Repeat All goes on, to
+          // the first song.
+          const index =
+            queueIndex + 1 < queue.length
+              ? queueIndex + 1
+              : repeatMode === "all"
+                ? 0
+                : undefined;
+          if (index !== undefined) {
+            await playTracks(queue, index, undefined, { keepOrder: true });
           }
           return;
         }
@@ -621,39 +695,6 @@ export function createPlayback(context: ControllerContext) {
       }
     },
 
-    async seek(seconds: number): Promise<void> {
-      if (!Number.isFinite(seconds)) return;
-      const safeSeconds = Math.max(0, seconds);
-      const { pendingRestore, durationSeconds } = getState().playback;
-      // A parked station restarts on Play, so it has no position to move to.
-      if (pendingRestore?.station) return;
-      if (pendingRestore) {
-        // Nothing is loaded yet; resume starts from the new position.
-        setPendingRestore({ ...pendingRestore, positionSeconds: safeSeconds });
-        setPlaybackPosition(safeSeconds, durationSeconds);
-        return;
-      }
-      // Show the target at once; stale ticks are held until the seek lands.
-      const previousSeconds = getState().playback.positionSeconds;
-      const generation = beginSeek(safeSeconds);
-      setPlaybackPosition(safeSeconds, durationSeconds);
-      try {
-        await seekToTime(requireMusic(), safeSeconds);
-        // Paused playback may not tick, so confirm the position here unless
-        // a newer seek or a song change took over.
-        if (settleSeek(generation)) {
-          setPlaybackPosition(safeSeconds, getState().playback.durationSeconds);
-        }
-      } catch (error) {
-        if (endSeek(generation)) {
-          setPlaybackPosition(
-            previousSeconds,
-            getState().playback.durationSeconds,
-          );
-        }
-        log(`Seek failed: ${errorMessage(error)}`);
-        throw error;
-      }
-    },
+    seek,
   };
 }

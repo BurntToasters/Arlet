@@ -209,6 +209,9 @@ Failure scenarios to cover before changing production code:
 - Choosing a row in `Playing Next` drops earlier songs, breaks Previous, or
   reorders a shuffled queue.
 - A failed repeat or queue action is silent.
+- After a Play from mid-album, Repeat All at the end of the last song goes
+  back to the chosen song instead of the album's first song, and Repeat One
+  then repeats a different song.
 - A library-only song (no catalog ID) leaves the `songs` descriptor, which
   MusicKit's item loader resolves through `/v1/me/library/songs`.
 - With shuffle on, the chosen song does not play first (MusicKit shuffles on
@@ -1312,7 +1315,29 @@ and `parked queue order`). The rest are code-reviewed:
   shuffle on, each queue only the songs from the target index on, in saved
   order, and Play then seeks to the saved position. Previous steps back into
   history without queueing it. Restore from disk runs the same
-  `resumeRestoredQueue` path, but a restart is not driven here.
+  `resumeRestoredQueue` path, but a restart is not driven here. Past a song's
+  first 3 seconds, Previous restarts it, as in Apple Music: MusicKit's
+  `skipToPreviousItem` only restarts the first song or with Repeat One.
+  Failure modes: Previous at 0:42 into a later song plays the song before it;
+  the restart rebuilds or reselects the queue instead of seeking to 0:00; on
+  a parked queue it queues from the song before, or resumes at the saved
+  position instead of the start.
+- Repeat All (`repeat all wrap`): as in Apple Music, Repeat All loops through
+  the whole album or playlist. A Play started mid-album begins MusicKit's
+  queue at the chosen song, so MusicKit alone would loop from there. On the
+  last song Arlet adds the next pass, from the album's first song, as the
+  queue's rest; turning Repeat All off before that pass starts removes it. A
+  parked queue wraps the same way. Failure modes: Next or the end of the last
+  song loops back to the chosen song, so the songs before it never repeat;
+  the pass stays after Repeat All is turned off, so playback runs past the
+  album's end; a song added with Play Later after the pass is removed with
+  it; Next on the last parked song does nothing; Previous on the first parked
+  song restarts it instead of playing the last; the Windows media flyout and
+  taskbar Next are disabled on the last song with Repeat All on. Songs before
+  the chosen one (song 25 of a 30-song playlist): the pass starts 20 songs
+  before the chosen one, so songs 1 to 4 never repeat; Previous on the first
+  queued song stops stepping back after 20 songs instead of reaching song 1.
+  A saved or parked queue still keeps only the last 20 of them.
 - Lid close on Modern Standby (item 3): native-only. The decision logic (pause
   once on entering "lid closed and display off"; ignore the registration seed)
   is unit-tested in `src-tauri/src/system_events.rs`, and the wiring is
