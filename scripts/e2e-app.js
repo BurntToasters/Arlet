@@ -2136,6 +2136,9 @@ async function run() {
           await scenario({
             page,
             check,
+            // The isolated app's own process, so native window helpers never
+            // touch another Arlet window open on this desktop.
+            appPid: runningArletPid(),
             dataDir: dataDirs().data,
             logDir: dataDirs().logs,
             artifactDir,

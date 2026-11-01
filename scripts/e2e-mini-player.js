@@ -7,10 +7,12 @@
  * mode not restoring the start size (40 px); Escape or Ctrl+Shift+M not
  * toggling both ways; full screen not left on entering or not restored on
  * leaving; a layout switch pausing playback; the scenario ending in
- * mini mode. Mini geometry is never persisted (window_state.rs owns that).
- * Keys go through CDP Input events so the real window keydown listener runs.
+ * mini mode; leaving it after its monitor is gone restoring off-screen
+ * (docs/TESTING.md). Mini geometry is never persisted (window_state.rs owns
+ * that). Keys go through CDP Input events so the real keydown listener runs.
  */
 
+import { spawnSync } from "node:child_process";
 import { fixtureCall, sleep, waitFor as pollFor } from "./e2e-helpers.js";
 
 const ALBUM_ID = "album-1";
@@ -131,7 +133,100 @@ async function leaveMiniIfActive(page) {
   }
 }
 
-export async function runMiniPlayer({ page, check }) {
+/**
+ * The E2E app's window frame and every monitor's work area, in physical
+ * pixels, after moving the frame to `move` when given. Only the visible
+ * "Arlet" window owned by `pid` is read or moved.
+ */
+function nativeWindow(pid, move) {
+  if (!Number.isInteger(pid) || pid <= 0) return { found: false };
+  if (move && !(Number.isInteger(move.x) && Number.isInteger(move.y))) {
+    return { found: false };
+  }
+  const moveLine = move
+    ? `[void][ArletE2eMiniWindow]::SetWindowPos($handle, [IntPtr]::Zero, ${move.x}, ${move.y}, 0, 0, 0x15)`
+    : "";
+  const script = `
+Add-Type @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class ArletE2eMiniWindow {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+  [StructLayout(LayoutKind.Sequential)] public struct MONITORINFO { public int cbSize; public RECT rcMonitor; public RECT rcWork; public uint dwFlags; }
+  public delegate bool EnumProc(IntPtr hwnd, IntPtr lParam);
+  public delegate bool MonitorProc(IntPtr monitor, IntPtr hdc, ref RECT clip, IntPtr data);
+  [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int maxCount);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  [DllImport("user32.dll")] public static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, MonitorProc callback, IntPtr data);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetMonitorInfo(IntPtr monitor, ref MONITORINFO info);
+  public static IntPtr Find(uint processId) {
+    IntPtr found = IntPtr.Zero;
+    EnumWindows((hwnd, lParam) => {
+      uint owner;
+      GetWindowThreadProcessId(hwnd, out owner);
+      if (owner != processId || !IsWindowVisible(hwnd)) return true;
+      var title = new StringBuilder(64);
+      GetWindowText(hwnd, title, title.Capacity);
+      if (title.ToString() != "Arlet") return true;
+      found = hwnd;
+      return false;
+    }, IntPtr.Zero);
+    return found;
+  }
+  public static string Monitors() {
+    var parts = new List<string>();
+    EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr monitor, IntPtr hdc, ref RECT clip, IntPtr data) => {
+      var info = new MONITORINFO();
+      info.cbSize = Marshal.SizeOf(typeof(MONITORINFO));
+      if (GetMonitorInfo(monitor, ref info)) {
+        var work = info.rcWork;
+        parts.Add(String.Format("{{\\"x\\":{0},\\"y\\":{1},\\"width\\":{2},\\"height\\":{3},\\"primary\\":{4}}}", work.Left, work.Top, work.Right - work.Left, work.Bottom - work.Top, (info.dwFlags & 1) == 1 ? "true" : "false"));
+      }
+      return true;
+    }, IntPtr.Zero);
+    return "[" + String.Join(",", parts) + "]";
+  }
+}
+"@
+# Per-monitor aware, so coordinates are the physical pixels Arlet saves.
+[void][ArletE2eMiniWindow]::SetThreadDpiAwarenessContext([IntPtr]-4)
+$handle = [ArletE2eMiniWindow]::Find(${pid})
+if ($handle -eq [IntPtr]::Zero) { '{"found":false}'; exit }
+${moveLine}
+Start-Sleep -Milliseconds 300
+$frame = New-Object ArletE2eMiniWindow+RECT
+[void][ArletE2eMiniWindow]::GetWindowRect($handle, [ref]$frame)
+'{{"found":true,"rect":{{"x":{0},"y":{1},"width":{2},"height":{3}}},"monitors":{4}}}' -f $frame.Left, $frame.Top, ($frame.Right - $frame.Left), ($frame.Bottom - $frame.Top), [ArletE2eMiniWindow]::Monitors()`;
+  const result = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    { encoding: "utf8", windowsHide: true, timeout: 20_000 },
+  );
+  try {
+    return JSON.parse(result.stdout.trim());
+  } catch {
+    return {
+      found: false,
+      error: result.error?.message ?? result.stderr?.trim() ?? result.stdout,
+    };
+  }
+}
+
+/** True when `rect` lies inside `area`, allowing for the invisible frame. */
+const insideArea = (rect, area, slack = 16) =>
+  rect.x >= area.x - slack &&
+  rect.y >= area.y - slack &&
+  rect.x + rect.width <= area.x + area.width + slack &&
+  rect.y + rect.height <= area.y + area.height + slack;
+
+export async function runMiniPlayer({ page, check, appPid }) {
   await fixtureCall(page, "reset");
   await page.evaluate(`
     location.hash = "#/album/${ALBUM_ID}";
@@ -426,6 +521,60 @@ export async function runMiniPlayer({ page, check }) {
         (await page.evaluate(`return ${PLAYING};`)),
       { transitions: switchTransitions },
     );
+
+    // A monitor disconnected in mini mode: the normal window was on it, and
+    // Windows moved the mini window onto a monitor still connected. Moving
+    // the normal window past every monitor stands in for the missing one.
+    const home = nativeWindow(appPid);
+    const primary = home.monitors?.find((monitor) => monitor.primary);
+    if (home.found && primary) {
+      try {
+        const right = Math.max(
+          ...home.monitors.map((monitor) => monitor.x + monitor.width),
+        );
+        const gone = nativeWindow(appPid, { x: right + 4000, y: home.rect.y });
+        await clickSelector(page, "[data-mini-player-toggle]");
+        const goneMini = await waitFor(
+          page,
+          `Boolean(${MINI}) && !${SHELL} && window.innerWidth <= 400`,
+          RESIZE_TIMEOUT_MS,
+        );
+        nativeWindow(appPid, { x: primary.x + 100, y: primary.y + 100 });
+        await clickSelector(page, "[data-mini-expand]");
+        const goneExpanded = await waitFor(
+          page,
+          `Boolean(${SHELL}) && !${MINI} && window.innerWidth > 400`,
+          RESIZE_TIMEOUT_MS,
+        );
+        await sleep(300);
+        const rescued = nativeWindow(appPid);
+        const expected = {
+          width: Math.min(gone.rect?.width ?? 0, primary.width),
+          height: Math.min(gone.rect?.height ?? 0, primary.height),
+        };
+        check(
+          "leaving the mini player after its monitor is gone opens on a monitor in use",
+          goneMini &&
+            goneExpanded &&
+            rescued.found &&
+            insideArea(rescued.rect, primary) &&
+            Math.abs(rescued.rect.width - expected.width) <=
+              SIZE_TOLERANCE_PX &&
+            Math.abs(rescued.rect.height - expected.height) <=
+              SIZE_TOLERANCE_PX,
+          { home, gone, rescued, expected, goneMini, goneExpanded },
+        );
+      } finally {
+        await leaveMiniIfActive(page);
+        nativeWindow(appPid, { x: home.rect.x, y: home.rect.y });
+      }
+    } else {
+      check(
+        "leaving the mini player after its monitor is gone opens on a monitor in use",
+        false,
+        { appPid, home },
+      );
+    }
 
     // Runs last: a renderer recovery reload resets the frontend mini flag,
     // playback, and the IPC recorder. Enter mini here so the crash happens in

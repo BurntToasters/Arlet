@@ -22,6 +22,11 @@ export interface VirtualListProps<T> {
   "aria-label"?: string;
   /** Ancestor that scrolls the list. Defaults to the main content scroller. */
   scrollParentSelector?: string;
+  /**
+   * Row to bring to the top of the scroller when the list mounts. Later
+   * changes do not scroll, so a list that stays mounted keeps its place.
+   */
+  revealIndex?: number;
 }
 
 export function scrollParent(
@@ -67,9 +72,11 @@ export function VirtualList<T>({
   className,
   "aria-label": ariaLabel,
   scrollParentSelector = ".content-scroll",
+  revealIndex,
 }: VirtualListProps<T>): JSX.Element {
   const listRef = useRef<HTMLOListElement>(null);
   const measured = useRef(rowHeight);
+  const revealed = useRef(false);
   // Read from the DOM once; a window resize clears it so zoom or font
   // changes are picked up without measuring on every scroll.
   const rowKnown = useRef(false);
@@ -138,6 +145,25 @@ export function VirtualList<T>({
       window.removeEventListener("resize", onResize);
     };
   }, [virtual, items.length, scrollParentSelector]);
+
+  // Scrolling fires the range effect's listener, so virtual rows follow it.
+  useLayoutEffect(() => {
+    if (revealed.current || revealIndex === undefined) return;
+    revealed.current = true;
+    const list = listRef.current;
+    const scroller = list ? scrollParent(list, scrollParentSelector) : null;
+    if (!list || !scroller || scroller === list) return;
+    const row = list.querySelector<HTMLElement>(
+      ":scope > li:not([aria-hidden])",
+    );
+    const height = row && row.offsetHeight > 0 ? row.offsetHeight : rowHeight;
+    // The list's offset inside the scroller, so the row lands at its top edge.
+    const listTop =
+      list.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top +
+      scroller.scrollTop;
+    scroller.scrollTop = listTop + revealIndex * height;
+  }, [revealIndex, rowHeight, scrollParentSelector]);
 
   if (!virtual) {
     return (

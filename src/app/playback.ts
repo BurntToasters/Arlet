@@ -22,7 +22,7 @@ import {
   withResolvableTracks,
 } from "../musickit/unresolved.ts";
 import { reportActionError } from "../components/action-errors.ts";
-import { nearestTrackIndex, QUEUE_HISTORY_LENGTH } from "./queue-window.ts";
+import { nearestTrackIndex } from "./queue-window.ts";
 import {
   editQueue,
   planClear,
@@ -307,16 +307,16 @@ export function createPlayback(context: ControllerContext) {
     continuationToken: continuation.continuationToken,
 
     /**
-     * The whole queue as the user sees it: the last QUEUE_HISTORY_LENGTH
-     * songs before the one a Play started at, MusicKit's queue, and the rest
-     * still to be added. Saved for restore and for Save as playlist.
+     * The whole queue as the user sees it: every song before the one a Play
+     * started at, MusicKit's queue, and the rest still to be added. Saved for
+     * restore and for Save as playlist; a saved file keeps a window of it.
      */
     fullQueue(): { tracks: Track[]; index: number } {
       const { queue, queueIndex, pendingRestore } = getState().playback;
       if (pendingRestore) return { tracks: [...queue], index: queueIndex };
       const history =
         queue[0] !== undefined && isSameTrack(queue[0], session.historyAnchor)
-          ? session.startHistory.slice(-QUEUE_HISTORY_LENGTH)
+          ? session.startHistory
           : [];
       const rest =
         session.queueRest.length > 0 &&

@@ -5,8 +5,10 @@
 // not block expiry), the notice stack, the clipboard fallback, and a parked
 // station that cannot be scrubbed, a manual Sign in again that is cancelled or
 // rejected, a token MusicKit drops silently, and a parked queue that resumes
-// in saved order with shuffle on. Timers are remapped only while a check
-// needs them and restored after; the suite ends signed in and healthy.
+// in saved order with shuffle on, and a parked queue that keeps every song
+// before its Play for Previous, Repeat All and Playing Next. Timers are
+// remapped only while a check needs them and restored after; the suite ends
+// signed in and healthy.
 // Offline auto-reload, the ratings caps and the updater are code-reviewed
 // (TESTING.md).
 
@@ -1254,6 +1256,56 @@ async function playLastAlbumSong(page) {
   );
 }
 
+const PLAYING_NEXT_OPEN = 'aside.queue-drawer[data-state="open"]';
+
+/** Opens Playing Next from its player-bar toggle unless it is already open. */
+async function openPlayingNext(page) {
+  await page.evaluate(`
+    if (!document.querySelector(${q(PLAYING_NEXT_OPEN)})) {
+      document.querySelector('button[aria-label="Toggle Playing Next"]')?.click();
+    }
+    return true;`);
+  return waitFor(page, `document.querySelector(${q(PLAYING_NEXT_OPEN)})`, 4000);
+}
+
+async function closePlayingNext(page) {
+  await page.evaluate(`
+    document.querySelector('aside.queue-drawer button[aria-label="Close Playing Next"]')?.click();
+    return true;`);
+  return waitFor(
+    page,
+    `!document.querySelector(${q(PLAYING_NEXT_OPEN)})`,
+    4000,
+  );
+}
+
+/** The active drawer row, measured against the drawer's scroll container. */
+const ACTIVE_ROW_PLACEMENT = `(() => {
+  const scroller = document.querySelector('aside.queue-drawer .queue-scroll');
+  const row = scroller?.querySelector('.queue-row-shell.is-active');
+  if (!scroller || !row) return null;
+  const box = scroller.getBoundingClientRect();
+  const rect = row.getBoundingClientRect();
+  return {
+    top: rect.top - box.top,
+    bottom: rect.bottom - box.top,
+    height: box.height,
+    scrollTop: scroller.scrollTop,
+    title: row.querySelector(".queue-copy strong")?.textContent ?? null,
+  };
+})()`;
+
+/** True when the active row is inside the list and in its top half. */
+const ACTIVE_ROW_NEAR_TOP = `(() => {
+  const placement = ${ACTIVE_ROW_PLACEMENT};
+  return Boolean(
+    placement &&
+      placement.top >= 0 &&
+      placement.bottom <= placement.height &&
+      placement.top < placement.height / 2,
+  );
+})()`;
+
 /**
  * Repeat All loops through the whole album, as in Apple Music. A Play from
  * the last song gets the next pass from the album's first song; turning
@@ -1404,8 +1456,8 @@ async function repeatAllWrap(page, check) {
     );
     await buttonIs(page, "Pause", 5000);
 
-    // Song 25 of a 30-song playlist: every song before it counts, not only
-    // the 20 a saved queue keeps.
+    // Song 25 of a 30-song playlist: every song before it counts, including
+    // when the queue is parked.
     const offForPrevious = await setRepeat(page, "off");
     const longRows = await openHash(
       page,
@@ -1458,6 +1510,96 @@ async function repeatAllWrap(page, check) {
         repeatLong,
         onLastLong,
         added: longAdded.map((item) => item.ids),
+      },
+    );
+
+    // Parked on song 25: the first Previous steps back from the parked queue,
+    // and each later one from the queue it resumes into. Every press is
+    // inside the first 3 seconds of its song (the fixture does not tick).
+    const offForParked = await setRepeat(page, "off");
+    const parkedSongs = await playSong25();
+    const playedSong25 = await nowPlayingIs(page, "Catalog Playlist Track 25");
+    const parkedAt25 = await park(page);
+    const stepped = [];
+    for (let song = 24; song >= 1; song -= 1) {
+      await clickTransport(page, "Previous track");
+      const title = `Catalog Playlist Track ${song}`;
+      if (!(await nowPlayingIs(page, title, 3000))) break;
+      stepped.push(title);
+    }
+    check(
+      "a parked queue from song 25 steps Previous back to the playlist's first song, not 20 songs back",
+      offForParked &&
+        longRows &&
+        parkedSongs &&
+        playedSong25 &&
+        parkedAt25 &&
+        stepped.length === 24 &&
+        stepped[0] === "Catalog Playlist Track 24" &&
+        stepped.at(-1) === "Catalog Playlist Track 1",
+      {
+        offForParked,
+        playedSong25,
+        parkedAt25,
+        steps: stepped.length,
+        first: stepped[0] ?? null,
+        last: stepped.at(-1) ?? null,
+      },
+    );
+
+    // Parked on song 25 again: Playing Next opens with that row near its top,
+    // the songs before it above, so the drawer shows the current song.
+    await playSong25();
+    const song25Again = await nowPlayingIs(page, "Catalog Playlist Track 25");
+    const parkedAgain = await park(page);
+    const drawerOpen = await openPlayingNext(page);
+    const drawerInView = await waitFor(page, ACTIVE_ROW_NEAR_TOP, 4000);
+    const placement = await page.evaluate(`return ${ACTIVE_ROW_PLACEMENT};`);
+    await closePlayingNext(page);
+    check(
+      "Playing Next opens on a parked queue at song 25 with that song's row near the top",
+      song25Again &&
+        parkedAgain &&
+        drawerOpen &&
+        drawerInView &&
+        placement?.title === "Catalog Playlist Track 25",
+      { song25Again, parkedAgain, drawerOpen, drawerInView, placement },
+    );
+
+    // Resumed from that parked song 25 with Repeat All on, the pass starts at
+    // the playlist's first song and repeats all 30 songs.
+    const repeatResumed = await setRepeat(page, "all");
+    const resumeAt = await mark(page);
+    await clickPlayButton(page);
+    const resumed = await waitForTransition(page, resumeAt, "play");
+    let onLastResumed = await nowPlayingIs(page, "Catalog Playlist Track 25");
+    const onSong25Resumed = onLastResumed;
+    for (let song = 26; song <= 30 && onLastResumed; song += 1) {
+      await clickTransport(page, "Next track");
+      onLastResumed = await nowPlayingIs(
+        page,
+        `Catalog Playlist Track ${song}`,
+      );
+    }
+    await waitForTransition(page, resumeAt, "playLater");
+    const resumedAdded = typesOf(
+      (await since(page, resumeAt)).transitions,
+      "playLater",
+    );
+    check(
+      "after a parked queue from song 25 resumes, Repeat All repeats all 30 songs",
+      repeatResumed &&
+        resumed &&
+        onSong25Resumed &&
+        onLastResumed &&
+        resumedAdded.length === 1 &&
+        sameIds(resumedAdded[0].ids, LONG_PLAYLIST_IDS),
+      {
+        repeatResumed,
+        resumed,
+        onSong25Resumed,
+        onLastResumed,
+        added: resumedAdded.map((item) => item.ids),
       },
     );
   } finally {

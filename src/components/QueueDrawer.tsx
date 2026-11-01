@@ -346,6 +346,7 @@ export function QueueDrawer(): JSX.Element | null {
               className="queue-list"
               aria-label="Queued songs"
               scrollParentSelector=".queue-scroll"
+              revealIndex={current}
             />
             {restCount > 0 ? (
               <p className="queue-rest-note">

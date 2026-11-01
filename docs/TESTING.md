@@ -207,7 +207,8 @@ Failure scenarios to cover before changing production code:
 
 - A playback error badge outlives a later successful play.
 - Choosing a row in `Playing Next` drops earlier songs, breaks Previous, or
-  reorders a shuffled queue.
+  reorders a shuffled queue. Opening `Playing Next` on a parked queue leaves
+  the current row out of view.
 - A failed repeat or queue action is silent.
 - After a Play from mid-album, Repeat All at the end of the last song goes
   back to the chosen song instead of the album's first song, and Repeat One
@@ -419,13 +420,20 @@ fixture emits playback ticks, and holds `seekToTime` with
 - The mini player paints an opaque background over the native Acrylic/Mica
   effect while the bloom is shown.
 - The bloom renders for a track without artwork.
+- Leaving the mini player after the normal window's monitor is gone puts the
+  window back where that monitor was, out of reach.
+- The rescued window opens on another monitor than the mini player's, keeps
+  the mini size, or is larger than that monitor's work area.
+- A Win32 test helper moves a window that does not belong to the E2E
+  process.
 
 Checks in `scripts/e2e-mini-player.js`:
 
-| Check                                                              | Guards                                       |
-| ------------------------------------------------------------------ | -------------------------------------------- |
-| the mini player radiates its artwork over the native window effect | opaque background; bloom missing; scrollbars |
-| the mini player bloom adds no scrollbars at the 300x120 minimum    | bloom overflow at the minimum window size    |
+| Check                                                                       | Guards                                       |
+| --------------------------------------------------------------------------- | -------------------------------------------- |
+| the mini player radiates its artwork over the native window effect          | opaque background; bloom missing; scrollbars |
+| the mini player bloom adds no scrollbars at the 300x120 minimum             | bloom overflow at the minimum window size    |
+| leaving the mini player after its monitor is gone opens on a monitor in use | off-screen restore; wrong monitor or size    |
 
 ## Desktop controls
 
@@ -1167,6 +1175,13 @@ Browse charts (`/charts` with `genre`, `with`, `next`):
 - Top Songs See all repeats songs, or follows a next link that is not a chart
   path. [Top Songs See all pages through 30 songs with no duplicates, via the
   chart's next link]
+- A Browse refresh that fails while a See all page loads leaves that shelf
+  "loading" forever, so Load more never returns. [a failed Browse refresh during
+  a See all page does not strand Load more; the next page appends once]
+- Load more during a Browse refresh follows the old cursor, so a chart page for
+  the replaced list is requested and appended to the new one. [Load more during
+  a Browse refresh requests no chart page, and the next page appends once after
+  it]
 
 Radio station genres (`station-genres`, `station-genres/{id}/stations`):
 
@@ -1321,7 +1336,8 @@ and `parked queue order`). The rest are code-reviewed:
   Failure modes: Previous at 0:42 into a later song plays the song before it;
   the restart rebuilds or reselects the queue instead of seeking to 0:00; on
   a parked queue it queues from the song before, or resumes at the saved
-  position instead of the start.
+  position instead of the start. A parked queue keeps only 20 songs before its
+  Play, so Previous stops 20 songs back (see `repeat all wrap`).
 - Repeat All (`repeat all wrap`): as in Apple Music, Repeat All loops through
   the whole album or playlist. A Play started mid-album begins MusicKit's
   queue at the chosen song, so MusicKit alone would loop from there. On the
@@ -1337,7 +1353,17 @@ and `parked queue order`). The rest are code-reviewed:
   the chosen one (song 25 of a 30-song playlist): the pass starts 20 songs
   before the chosen one, so songs 1 to 4 never repeat; Previous on the first
   queued song stops stepping back after 20 songs instead of reaching song 1.
-  A saved or parked queue still keeps only the last 20 of them.
+  A parked queue keeps every song before the chosen one. Checks: after a Play
+  from song 25 and a park, Previous steps back 24 songs to song 1; after a
+  resume with Repeat All on, the pass repeats all 30 songs. Failure modes: a
+  parked queue keeps only the 20 songs before its Play, so Previous stops 20
+  songs back and a resumed pass starts at song 5 (26 songs, not 30).
+- Playing Next opens at the current song (`repeat all wrap`, the Playing Next
+  check): the drawer scrolls so the current row is near its top, with the songs
+  before it above, each time it opens. Failure modes: it opens at the top with
+  the current row out of view on a parked queue of 20 or more earlier songs;
+  a later song change while it stays open scrolls it. The later-change part is
+  code-reviewed (`VirtualList` `revealIndex` applies once per mount).
 - Lid close on Modern Standby (item 3): native-only. The decision logic (pause
   once on entering "lid closed and display off"; ignore the registration seed)
   is unit-tested in `src-tauri/src/system_events.rs`, and the wiring is

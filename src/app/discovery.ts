@@ -142,6 +142,23 @@ function shelfPaging(page: { next?: string }): BrowseShelfPaging {
   return { status: "idle", ...(next ? { next } : {}) };
 }
 
+/**
+ * A shelf page still loading when its refresh fails is dropped with that
+ * refresh, so the shelf goes back to idle and keeps its cursor for Load more.
+ */
+function settleLoadingPaging(
+  paging: BrowseState["paging"],
+): BrowseState["paging"] {
+  const settled: BrowseState["paging"] = { ...paging };
+  for (const kind of Object.keys(paging) as BrowseShelfKind[]) {
+    const shelf = paging[kind];
+    if (shelf?.status === "loading") {
+      settled[kind] = { ...shelf, status: "idle" };
+    }
+  }
+  return settled;
+}
+
 function pagingFromCharts(charts: BrowseCharts): BrowseState["paging"] {
   return {
     songs: shelfPaging(charts.songs),
@@ -262,6 +279,7 @@ export function createDiscovery(
       setBrowseState({
         status: "error",
         error: message,
+        paging: settleLoadingPaging(getState().browse.paging),
       });
       log(`Browse load failed: ${message}`);
       throw error;
@@ -380,9 +398,14 @@ export function createDiscovery(
   /**
    * Appends the next page of one Browse shelf. The shelf's cursor is kept
    * until a page comes back without one; a shelf reload drops the response.
+   * Nothing loads while a Browse load or refresh is running.
    */
   const loadMoreBrowseShelf = async (kind: BrowseShelfKind): Promise<void> => {
-    const paging = getState().browse.paging[kind];
+    const browse = getState().browse;
+    // A load or refresh replaces the shelves and their cursors, so no page
+    // follows the old cursor while one runs.
+    if (browse.status === "loading" || browse.status === "refreshing") return;
+    const paging = browse.paging[kind];
     if (!paging?.next || paging.status === "loading") return;
     const requestId = browseRequestId;
     // Re-checked where the cursor is followed; an invalid one ends the shelf.

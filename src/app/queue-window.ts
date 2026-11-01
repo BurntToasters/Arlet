@@ -15,13 +15,6 @@ export const FIRST_BATCH_LENGTH = 16;
 export const SHUFFLE_IN_ORDER_LIMIT = 100;
 /** Most songs one Play next or Play later adds at once. */
 export const MAX_QUEUE_LENGTH = 500;
-/**
- * Songs before the chosen one that a saved or parked queue keeps. MusicKit's
- * queue starts at the chosen song: songs before it would make MusicKit
- * prepare the wrong item and then switch (a re-select that cost about 1.3
- * seconds). Arlet keeps all of them for Previous and Repeat All.
- */
-export const QUEUE_HISTORY_LENGTH = 20;
 /** Refill when fewer upcoming songs than this remain in the queue. */
 export const QUEUE_REFILL_THRESHOLD = 50;
 /** Songs appended per refill. */
