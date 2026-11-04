@@ -19,7 +19,7 @@ permissions:
 env:
   NODE_VERSION: "26.13.0"
   NPM_VERSION: "12.2.1"
-  RUST_VERSION: "1.98.1"
+  RUST_VERSION: "1.99.1"
   # Start warning at 130 days. Release preflight requires 170 days left,
   # leaving 40 days at the threshold and at least 33 after a weekly delay.
   MAX_RELEASE_AGE_DAYS: "130"
