@@ -427,4 +427,196 @@ export async function runQueueEdit({ page, check }) {
     windowed && renderedRows > 0 && renderedRows < 100,
     { renderedRows },
   );
+
+  // Phase 9: with Queue.splice hidden, every edit rebuilds the queue. A slow
+  // setQueue keeps the first rebuild in flight while the next row is clicked;
+  // the edits must queue behind each other and plan from the settled state.
+  await fixtureCall(page, "configure", [
+    {
+      nativeQueueEdit: true,
+      hideQueueSplice: true,
+      setQueueDelayMs: 250,
+    },
+  ]);
+  const seedSixIds = [
+    "bulk-0",
+    "bulk-1",
+    "bulk-2",
+    "bulk-3",
+    "bulk-4",
+    "bulk-5",
+  ];
+  await page.evaluate(`
+    for (const button of document.querySelectorAll('.action-toast button[aria-label="Dismiss"]')) {
+      button.click();
+    }
+    window.__ARLET_E2E_MUSIC__.seedQueue(6);
+    return true;
+  `);
+  const serialMoveReady = await waitFor(
+    page,
+    `JSON.stringify(window.__ARLET_E2E_MUSIC__.snapshot().queue.items.map((item) => item.id)) === ${JSON.stringify(JSON.stringify(seedSixIds))} && ${DRAWER_ROWS}.length === 6 && ${PLAY_LABEL} === "Pause"`,
+  );
+  const beforeDoubleMove = await snapshotOf(page);
+  const mark9 = beforeDoubleMove.transitions.length;
+  const moveStart = beforeDoubleMove.queueEdit.setQueueStarts;
+  const firstMove = await page.evaluate(
+    `return ${clickRowControl(3, '[data-queue-action="up"]')};`,
+  );
+  const firstMoveStarted = await waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().queueEdit.setQueueStarts === ${moveStart + 1}`,
+  );
+  const secondMove = await page.evaluate(`
+    const seeded = JSON.stringify(window.__ARLET_E2E_MUSIC__.snapshot().queue.items.map((item) => item.id)) === ${JSON.stringify(JSON.stringify(seedSixIds))};
+    const clicked = ${clickRowControl(3, '[data-queue-action="up"]')};
+    return seeded && clicked;
+  `);
+  const doubleMove = firstMove && firstMoveStarted && secondMove;
+  const afterFirstMove = [
+    "bulk-0",
+    "bulk-1",
+    "bulk-3",
+    "bulk-2",
+    "bulk-4",
+    "bulk-5",
+  ];
+  const afterDoubleMove = [
+    "bulk-0",
+    "bulk-3",
+    "bulk-1",
+    "bulk-2",
+    "bulk-4",
+    "bulk-5",
+  ];
+  const doubleMoveSettled = await waitFor(
+    page,
+    `(() => {
+      const snapshot = window.__ARLET_E2E_MUSIC__.snapshot();
+      const transitions = snapshot.transitions.slice(${mark9});
+      return transitions.filter((item) => item.type === "setQueue").length === 2 &&
+        transitions.filter((item) => item.type === "play").length === 2 &&
+        JSON.stringify(snapshot.queue.items.map((item) => item.id)) === ${JSON.stringify(JSON.stringify(afterDoubleMove))};
+    })()`,
+  );
+  const afterDoubleMoveSnapshot = await snapshotOf(page);
+  const doubleMoveTransitions =
+    afterDoubleMoveSnapshot.transitions.slice(mark9);
+  const doubleMoveSetQueues = doubleMoveTransitions.filter(
+    (item) => item.type === "setQueue",
+  );
+  const doubleMoveToasts = await page.evaluate(`
+    return [...document.querySelectorAll(".action-toast-message")].map((node) => node.textContent ?? "");
+  `);
+  check(
+    "two rebuild-tier moves queue behind each other and apply in order",
+    serialMoveReady &&
+      doubleMove &&
+      doubleMoveSettled &&
+      sameIds(ids(afterDoubleMoveSnapshot), afterDoubleMove) &&
+      afterDoubleMoveSnapshot.queue.index === 0 &&
+      afterDoubleMoveSnapshot.queueEdit.native &&
+      afterDoubleMoveSnapshot.queueEdit.spliceHidden &&
+      sameIds(doubleMoveSetQueues[0]?.ids, afterFirstMove) &&
+      sameIds(doubleMoveSetQueues[1]?.ids, afterDoubleMove) &&
+      !doubleMoveToasts.some(
+        (text) => text.includes("changed") || text.includes("reloaded"),
+      ),
+    {
+      ready: serialMoveReady,
+      firstMove,
+      firstMoveStarted,
+      secondDuringFirstRebuild: secondMove,
+      settled: doubleMoveSettled,
+      ids: ids(afterDoubleMoveSnapshot),
+      setQueues: doubleMoveSetQueues.map((item) => item.ids),
+      toasts: doubleMoveToasts,
+    },
+  );
+
+  // Phase 10: a move followed by a remove composes the same way.
+  await page.evaluate(`
+    for (const button of document.querySelectorAll('.action-toast button[aria-label="Dismiss"]')) {
+      button.click();
+    }
+    window.__ARLET_E2E_MUSIC__.seedQueue(6);
+    return true;
+  `);
+  const serialRemoveReady = await waitFor(
+    page,
+    `JSON.stringify(window.__ARLET_E2E_MUSIC__.snapshot().queue.items.map((item) => item.id)) === ${JSON.stringify(JSON.stringify(seedSixIds))} && ${DRAWER_ROWS}.length === 6 && ${PLAY_LABEL} === "Pause"`,
+  );
+  const beforeMoveThenRemove = await snapshotOf(page);
+  const mark10 = beforeMoveThenRemove.transitions.length;
+  const removeMoveStart = beforeMoveThenRemove.queueEdit.setQueueStarts;
+  const firstRemoveMove = await page.evaluate(
+    `return ${clickRowControl(3, '[data-queue-action="up"]')};`,
+  );
+  const firstRemoveMoveStarted = await waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().queueEdit.setQueueStarts === ${removeMoveStart + 1}`,
+  );
+  const removeClick = await page.evaluate(`
+    const seeded = JSON.stringify(window.__ARLET_E2E_MUSIC__.snapshot().queue.items.map((item) => item.id)) === ${JSON.stringify(JSON.stringify(seedSixIds))};
+    const clicked = ${clickRowControl(2, '[data-queue-action="remove"]')};
+    return seeded && clicked;
+  `);
+  const moveThenRemove =
+    firstRemoveMove && firstRemoveMoveStarted && removeClick;
+  const afterMoveThenRemove = [
+    "bulk-0",
+    "bulk-1",
+    "bulk-3",
+    "bulk-4",
+    "bulk-5",
+  ];
+  const moveThenRemoveSettled = await waitFor(
+    page,
+    `(() => {
+      const snapshot = window.__ARLET_E2E_MUSIC__.snapshot();
+      const transitions = snapshot.transitions.slice(${mark10});
+      return transitions.filter((item) => item.type === "setQueue").length === 2 &&
+        transitions.filter((item) => item.type === "play").length === 2 &&
+        JSON.stringify(snapshot.queue.items.map((item) => item.id)) === ${JSON.stringify(JSON.stringify(afterMoveThenRemove))};
+    })()`,
+  );
+  const afterMoveThenRemoveSnapshot = await snapshotOf(page);
+  const moveThenRemoveTransitions =
+    afterMoveThenRemoveSnapshot.transitions.slice(mark10);
+  const moveThenRemoveSetQueues = moveThenRemoveTransitions.filter(
+    (item) => item.type === "setQueue",
+  );
+  const moveThenRemoveToasts = await page.evaluate(`
+    return [...document.querySelectorAll(".action-toast-message")].map((node) => node.textContent ?? "");
+  `);
+  check(
+    "a rebuild-tier move and remove queue behind each other and apply in order",
+    serialRemoveReady &&
+      moveThenRemove &&
+      moveThenRemoveSettled &&
+      sameIds(ids(afterMoveThenRemoveSnapshot), afterMoveThenRemove) &&
+      afterMoveThenRemoveSnapshot.queue.index === 0 &&
+      sameIds(moveThenRemoveSetQueues[0]?.ids, afterFirstMove) &&
+      sameIds(moveThenRemoveSetQueues[1]?.ids, afterMoveThenRemove) &&
+      !moveThenRemoveToasts.some(
+        (text) => text.includes("changed") || text.includes("reloaded"),
+      ),
+    {
+      ready: serialRemoveReady,
+      firstRemoveMove,
+      firstRemoveMoveStarted,
+      removeDuringFirstRebuild: removeClick,
+      settled: moveThenRemoveSettled,
+      ids: ids(afterMoveThenRemoveSnapshot),
+      setQueues: moveThenRemoveSetQueues.map((item) => item.ids),
+      toasts: moveThenRemoveToasts,
+    },
+  );
+  await fixtureCall(page, "configure", [
+    {
+      nativeQueueEdit: false,
+      hideQueueSplice: false,
+      setQueueDelayMs: 0,
+    },
+  ]);
 }

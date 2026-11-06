@@ -59,7 +59,10 @@ const EDITABLE_SELECTOR = [
   "[role='slider']",
 ].join(", ");
 // Now Playing is a full-window view where transport keys should still work.
-const DIALOG_SELECTOR = "[role='dialog']:not(.now-playing), dialog[open]";
+// `alertdialog` covers the reset-settings confirmation, which would otherwise
+// let shortcuts unmount Settings (sending the app to mini player) underneath it.
+const DIALOG_SELECTOR =
+  "[role='dialog']:not(.now-playing), [role='alertdialog'], dialog[open]";
 const NATIVE_ACTIVATION_SELECTOR =
   "button, a[href], [role='button'], [role='link']";
 

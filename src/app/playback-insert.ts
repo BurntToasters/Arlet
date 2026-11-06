@@ -61,6 +61,17 @@ export function createQueueInsert(
         `Added the first ${requestedTracks.length} of ${allTracks.length} songs to stay within Apple's request limits.`,
       );
     }
+    // A Play may still be replacing the provider queue. Wait for that setup so
+    // the snapshot below is the queue the user will actually hear. The settled
+    // generation then gates every write: a newer setup aborts this insert.
+    while (context.session.queueSetup) {
+      await context.session.queueSetup;
+      if (!isCurrent()) return [];
+    }
+    const setupGeneration = context.session.queueSetupGeneration;
+    const setupCurrent = (): boolean =>
+      context.session.queueSetupGeneration === setupGeneration;
+    const current = (): boolean => isCurrent() && setupCurrent();
     const currentQueue = getState().playback.queue;
     const currentIndex = getState().playback.queueIndex;
     if (currentQueue.length === 0) {
@@ -95,7 +106,7 @@ export function createQueueInsert(
         async (attempt) => {
           if (!instance || typeof insert !== "function") return;
           // The owner may have changed while this insertion was waiting.
-          if (!isCurrent()) {
+          if (!current()) {
             throw new Error("Queue request is no longer current.");
           }
           const run = (queueOptions: MusicKit.QueueOptions): Promise<void> =>
@@ -113,13 +124,13 @@ export function createQueueInsert(
               await run(detailed);
               return;
             } catch (error) {
-              if (unresolvedIds(error) || !isCurrent()) throw error;
+              if (unresolvedIds(error) || !current()) throw error;
               log(
                 `Adding songs by details failed; using IDs: ${errorMessage(error)}`,
               );
             }
           }
-          if (!isCurrent()) {
+          if (!current()) {
             throw new Error("Queue request is no longer current.");
           }
           await run(
@@ -128,13 +139,13 @@ export function createQueueInsert(
               : queueOptionsForTracks(attemptTracks),
           );
         },
-        isCurrent,
+        current,
       );
     } catch (error) {
-      if (!isCurrent()) return [];
+      if (!current()) return [];
       throw error;
     }
-    if (!isCurrent()) return [];
+    if (!current()) return [];
     const { entries, skipped } = resolved;
     const normalizedTracks = entries.map((entry) => entry.track);
     if (skipped.length) {
@@ -154,9 +165,11 @@ export function createQueueInsert(
     }
     // A replaced queue or a moved selection happened during the await. It is
     // newer than this insertion, so the captured snapshot must not overwrite
-    // it. Checked before the provider sync, which may read a stale queue.
+    // it. A queue setup that started meanwhile owns the provider now, so its
+    // new queue must not be replaced by this insert's snapshot either.
     const latest = getState().playback;
     if (
+      !current() ||
       !sameTrackIds(latest.queue, beforeQueue) ||
       latest.queueIndex !== currentIndex
     ) {

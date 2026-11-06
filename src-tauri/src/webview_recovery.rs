@@ -128,9 +128,13 @@ pub fn install(window: &tauri::WebviewWindow) -> Result<(), String> {
                 let action = recovery_for_kind(kind.0);
                 let message = format!("WebView2 process failed (kind {}): {action:?}", kind.0);
                 eprintln!("{message}");
-                // Written even with Debug Mode off: like a native crash,
-                // nothing else would record that WebView2 died.
-                crate::logging::write_native_log(&message);
+                // Written even with Debug Mode off when Arlet must recover:
+                // like a native crash, nothing else would record that
+                // WebView2 died. Failures WebView2 recovers itself (utility,
+                // GPU, frame) are routine and stay behind Debug Mode.
+                if action != Recovery::Ignore || crate::settings::debug_mode() {
+                    crate::logging::write_native_log(&message);
+                }
                 match action {
                     Recovery::Reload => {
                         let allowed = guard
@@ -192,7 +196,8 @@ mod tests {
         assert_eq!(recovery_for_kind(1), Recovery::Reload); // render exited
         assert_eq!(recovery_for_kind(2), Recovery::Reload); // unresponsive
         assert_eq!(recovery_for_kind(3), Recovery::Ignore); // frame renderer
-        assert_eq!(recovery_for_kind(5), Recovery::Ignore); // GPU
+        assert_eq!(recovery_for_kind(4), Recovery::Ignore); // utility
+        assert_eq!(recovery_for_kind(6), Recovery::Ignore); // GPU
         assert_eq!(recovery_for_kind(99), Recovery::Ignore);
     }
 

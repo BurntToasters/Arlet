@@ -179,6 +179,7 @@ function AppLayout({
         event.key.toLowerCase() === "k" &&
         !miniActive
       ) {
+        if (hasOpenDialog()) return;
         event.preventDefault();
         router.navigate({ kind: "search", query: "" });
         // The Search view may render a few frames after navigation.
@@ -191,12 +192,15 @@ function AppLayout({
         };
         requestAnimationFrame(focusSearch);
       } else if (event.ctrlKey && event.key.toLowerCase() === "r") {
+        if (hasOpenDialog()) return;
         event.preventDefault();
         void controller.refreshCurrentData().catch(() => undefined);
       } else if (event.altKey && event.key === "ArrowLeft") {
+        if (hasOpenDialog()) return;
         event.preventDefault();
         router.back();
       } else if (event.altKey && event.key === "ArrowRight") {
+        if (hasOpenDialog()) return;
         event.preventDefault();
         router.forward();
       }

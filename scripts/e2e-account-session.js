@@ -159,6 +159,26 @@ function readAccountClearTrace(dataDir) {
   }
 }
 
+/** Polls the trace until a record after `after` has this command and outcome. */
+async function waitForTraceRecord(dataDir, command, outcome, after = 0) {
+  const deadline = Date.now() + 15_000;
+  let trace = readAccountClearTrace(dataDir);
+  while (Date.now() < deadline) {
+    trace = readAccountClearTrace(dataDir);
+    if (
+      trace.records
+        .slice(after)
+        .some(
+          (record) => record.command === command && record.outcome === outcome,
+        )
+    ) {
+      break;
+    }
+    await sleep(50);
+  }
+  return trace;
+}
+
 async function waitForAccountDataClearSettlement(
   page,
   dataDir,
@@ -836,100 +856,175 @@ async function revocation(page, check, artifactDir, dataDir) {
         );
       }
       if (!settlement.settled) break;
+
+      const signedOut = await openHash(
+        page,
+        "#/library/recent",
+        `document.body.innerText.includes("Sign in to view your library")`,
+        15_000,
+      );
+      const finalUi = await uiOf(page);
+      const finalRecents = await recentsOf(page);
+      const fence = await page.evaluate(`
+      try {
+        const value = JSON.parse(localStorage.getItem(${q(ACCOUNT_DATA_FENCE_KEY)}));
+        return Array.isArray(value?.blocked) ? value.blocked : null;
+      } catch {
+        return null;
+      }`);
+      const finalTrace = await snapshot(page);
+      check(
+        `${failureCase.category} clear failure leaves only that account category fenced`,
+        clicked &&
+          signedOut &&
+          !finalUi.notice &&
+          Array.isArray(fence) &&
+          ACCOUNT_DATA_CATEGORIES.every((category) =>
+            category === failureCase.category
+              ? fence.includes(category)
+              : !fence.includes(category),
+          ) &&
+          settlement.trace.records.filter(
+            (record) =>
+              record.command === failureCase.command &&
+              record.outcome === "injected_failure",
+          ).length >= settlement.expectedFaults &&
+          settlement.successfulCommands[failureCase.command] === 0 &&
+          settlement.successfulCommands["library_cache_clear"] >=
+            (failureCase.category === "library" ? 0 : 1) &&
+          settlement.successfulCommands.delete_pins >=
+            (failureCase.category === "pins" ? 0 : 1) &&
+          settlement.successfulCommands.delete_playback_session >=
+            (failureCase.category === "queue" ? 0 : 1) &&
+          (finalRecents === null || JSON.parse(finalRecents).length === 0) &&
+          finalUi.title === "Nothing playing" &&
+          finalTrace.authorized === false &&
+          finalTrace.transitions.some((item) => item.type === "unauthorize"),
+        {
+          clicked,
+          signedOut,
+          finalUi,
+          finalRecents,
+          fence,
+          settlement,
+        },
+      );
+
+      // The fault stays through this reload, so the startup retry is rejected.
+      // The trace is cleared first, so its records are the startup ones only.
+      fs.rmSync(tracePath, { force: true });
+      const restarted = await reloadWithOfflineAccountData(page);
+      const rejectedTrace = await waitForTraceRecord(
+        dataDir,
+        failureCase.command,
+        "injected_failure",
+      );
+      await openHash(page, "#/library/playlists");
+      const libraryHidden = !(await waitFor(
+        page,
+        `document.body.innerText.includes("Fixture Playlist")`,
+        1500,
+      ));
+      const restartedPins = await pinsOf(page);
+      const restartedUi = await uiOf(page);
+      const restartedFence = await page.evaluate(`
+      try {
+        const value = JSON.parse(localStorage.getItem(${q(ACCOUNT_DATA_FENCE_KEY)}));
+        return Array.isArray(value?.blocked) ? value.blocked : null;
+      } catch {
+        return null;
+      }`);
+      check(
+        `startup retry of the ${failureCase.category} clear is rejected while the fault is kept`,
+        restarted &&
+          rejectedTrace.records.some(
+            (record) =>
+              record.command === failureCase.command &&
+              record.outcome === "injected_failure",
+          ) &&
+          libraryHidden &&
+          restartedPins.length === 0 &&
+          restartedUi.title === "Nothing playing" &&
+          Array.isArray(restartedFence) &&
+          restartedFence.length === 1 &&
+          restartedFence[0] === failureCase.category,
+        {
+          restarted,
+          trace: rejectedTrace,
+          libraryHidden,
+          pins: restartedPins,
+          ui: restartedUi,
+          fence: restartedFence,
+        },
+      );
+
+      // Without the fault, the next startup retry clears the category and lifts
+      // its fence. The trace length taken here tells the two startups apart.
+      const rejectedCount = readAccountClearTrace(dataDir).records.length;
+      fs.rmSync(faultPath, { force: true });
+      const recovered = await reloadWithOfflineAccountData(page);
+      const retryTrace = await waitForTraceRecord(
+        dataDir,
+        failureCase.command,
+        "success",
+        rejectedCount,
+      );
+      await openHash(page, "#/library/playlists");
+      const recoveredLibraryHidden = !(await waitFor(
+        page,
+        `document.body.innerText.includes("Fixture Playlist")`,
+        1500,
+      ));
+      const recoveredPins = await pinsOf(page);
+      const recoveredUi = await uiOf(page);
+      const recoveredFence = await page.evaluate(`
+      try {
+        const value = JSON.parse(localStorage.getItem(${q(ACCOUNT_DATA_FENCE_KEY)}));
+        return Array.isArray(value?.blocked) ? value.blocked : null;
+      } catch {
+        return null;
+      }`);
+      check(
+        `startup retry of the ${failureCase.category} clear succeeds and lifts its fence`,
+        recovered &&
+          retryTrace.records
+            .slice(rejectedCount)
+            .some(
+              (record) =>
+                record.command === failureCase.command &&
+                record.outcome === "success",
+            ) &&
+          Array.isArray(recoveredFence) &&
+          recoveredFence.length === 0,
+        {
+          recovered,
+          trace: retryTrace,
+          fence: recoveredFence,
+        },
+      );
+      check(
+        `restart after the ${failureCase.category} retry still hides the previous data`,
+        recoveredLibraryHidden &&
+          recoveredPins.length === 0 &&
+          recoveredUi.title === "Nothing playing",
+        {
+          libraryHidden: recoveredLibraryHidden,
+          pins: recoveredPins,
+          ui: recoveredUi,
+        },
+      );
+      if (fs.existsSync(tracePath)) {
+        fs.copyFileSync(
+          tracePath,
+          path.join(
+            artifactDir,
+            `account-clear-${failureCase.category}-restart.jsonl`,
+          ),
+        );
+      }
     } finally {
       fs.rmSync(faultPath, { force: true });
     }
-    if (!settlement?.settled) break;
-
-    const signedOut = await openHash(
-      page,
-      "#/library/recent",
-      `document.body.innerText.includes("Sign in to view your library")`,
-      15_000,
-    );
-    const finalUi = await uiOf(page);
-    const finalRecents = await recentsOf(page);
-    const fence = await page.evaluate(`
-      try {
-        const value = JSON.parse(localStorage.getItem(${q(ACCOUNT_DATA_FENCE_KEY)}));
-        return Array.isArray(value?.blocked) ? value.blocked : null;
-      } catch {
-        return null;
-      }`);
-    const finalTrace = await snapshot(page);
-    check(
-      `${failureCase.category} clear failure leaves only that account category fenced`,
-      clicked &&
-        signedOut &&
-        !finalUi.notice &&
-        Array.isArray(fence) &&
-        ACCOUNT_DATA_CATEGORIES.every((category) =>
-          category === failureCase.category
-            ? fence.includes(category)
-            : !fence.includes(category),
-        ) &&
-        settlement.trace.records.filter(
-          (record) =>
-            record.command === failureCase.command &&
-            record.outcome === "injected_failure",
-        ).length >= settlement.expectedFaults &&
-        settlement.successfulCommands[failureCase.command] === 0 &&
-        settlement.successfulCommands["library_cache_clear"] >=
-          (failureCase.category === "library" ? 0 : 1) &&
-        settlement.successfulCommands.delete_pins >=
-          (failureCase.category === "pins" ? 0 : 1) &&
-        settlement.successfulCommands.delete_playback_session >=
-          (failureCase.category === "queue" ? 0 : 1) &&
-        (finalRecents === null || JSON.parse(finalRecents).length === 0) &&
-        finalUi.title === "Nothing playing" &&
-        finalTrace.authorized === false &&
-        finalTrace.transitions.some((item) => item.type === "unauthorize"),
-      {
-        clicked,
-        signedOut,
-        finalUi,
-        finalRecents,
-        fence,
-        settlement,
-      },
-    );
-
-    const restarted = await reloadWithOfflineAccountData(page);
-    await openHash(page, "#/library/playlists");
-    const libraryHidden = !(await waitFor(
-      page,
-      `document.body.innerText.includes("Fixture Playlist")`,
-      1500,
-    ));
-    const restartedPins = await pinsOf(page);
-    const restartedUi = await uiOf(page);
-    const restartedFence = await page.evaluate(`
-      try {
-        const value = JSON.parse(localStorage.getItem(${q(ACCOUNT_DATA_FENCE_KEY)}));
-        return Array.isArray(value?.blocked) ? value.blocked : null;
-      } catch {
-        return null;
-      }`);
-    check(
-      `restart does not restore data while the ${failureCase.category} clear is outstanding`,
-      restarted &&
-        libraryHidden &&
-        restartedPins.length === 0 &&
-        restartedUi.title === "Nothing playing" &&
-        Array.isArray(restartedFence) &&
-        ACCOUNT_DATA_CATEGORIES.every((category) =>
-          category === failureCase.category
-            ? restartedFence.includes(category)
-            : !restartedFence.includes(category),
-        ),
-      {
-        restarted,
-        libraryHidden,
-        pins: restartedPins,
-        ui: restartedUi,
-        fence: restartedFence,
-      },
-    );
   }
 }
 

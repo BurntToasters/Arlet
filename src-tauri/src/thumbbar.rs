@@ -72,8 +72,8 @@ mod platform {
         THUMBBUTTONFLAGS,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        CreateIconIndirect, DestroyIcon, GetSystemMetrics, RegisterWindowMessageW, HICON, ICONINFO,
-        SM_CXSMICON, WM_COMMAND,
+        ChangeWindowMessageFilterEx, CreateIconIndirect, DestroyIcon, GetSystemMetrics,
+        RegisterWindowMessageW, HICON, ICONINFO, MSGFLT_ALLOW, SM_CXSMICON, WM_COMMAND,
     };
 
     /// Identifies this subclass on the main window.
@@ -130,6 +130,20 @@ mod platform {
         // SAFETY: the argument is a static wide string literal.
         let message = unsafe { RegisterWindowMessageW(w!("TaskbarButtonCreated")) };
         TASKBAR_BUTTON_CREATED.store(message, Ordering::SeqCst);
+        // Elevated windows drop messages from the non-elevated Explorer unless
+        // they are allowed. A refusal leaves the toolbar as it was.
+        for allowed in [message, WM_COMMAND] {
+            if allowed == 0 {
+                continue;
+            }
+            // SAFETY: `hwnd` is the main window owned by this UI thread, and no
+            // CHANGEFILTERSTRUCT is passed.
+            if let Err(error) =
+                unsafe { ChangeWindowMessageFilterEx(hwnd, allowed, MSGFLT_ALLOW, None) }
+            {
+                eprintln!("Unable to allow taskbar message {allowed:#x}: {error}");
+            }
+        }
         // SAFETY: a metric query takes no pointers.
         let size = unsafe { GetSystemMetrics(SM_CXSMICON) };
         let icons = create_icons(size)?;

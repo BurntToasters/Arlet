@@ -5,7 +5,7 @@
 
 | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                                          | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
 | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.3/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.3/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.4/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.4/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -21,6 +21,21 @@
 ### ℹ️ Enjoying Arlet? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
+
+## Changes in `v0.4.0-beta.4:`
+
+- **Ver:** Updated version to `v0.4.0-beta.4`.
+- **Fix:** Queue edits now serialize per queue instead of racing: two quick Move up/down clicks apply in order on runtimes without MusicKit's `Queue.splice`; a watchdog abandons an edit that hangs more than 20 s and reloads the queue.
+- **Fix:** Save as playlist sends the queue in batches: one create carries the first 100 tracks, then sequential adds of up to 100. If a batch fails, the playlist keeps the saved songs and the dialog reports how many were saved versus how many could not be added.
+- **Fix:** A Play whose queue setup fails no longer discards a restored (parked) queue: the drawer keeps all songs, the saved position, and the saved session file; retrying Play starts the same queue.
+- **Fix:** A cached playlist or album whose refresh fails on a later page no longer collapses to its first page: the previous full list stays, the cache keeps its last complete copy, and the failure shows an error note.
+- **Fix:** Failed favorites lookups no longer leave the view stuck on "Checking favorites…"; it settles with a "Could not check favorites" state and works once the lookup succeeds.
+- **Fix:** Shortcuts stay inert underneath open dialogs: the reset-settings confirmation (`role="alertdialog"`) plus Ctrl+K, Ctrl+R, and Alt+Arrow no longer act behind it, while Escape still cancels.
+- **Fix:** Play Next or Play Later pressed while a queue setup is still running now applies against the new queue in order instead of landing in the old provider queue.
+- **Security:** The main window no longer gets a generic clipboard-read permission. Context-menu Paste calls a single `paste_clipboard_text` command after a trusted-gesture and editable-target check.
+- **Codebase:** Rust backend hardening: the music-diagnostic window opens asynchronously (fixes a Windows deadlock); it uses the E2E profile directory in test builds; the library cache caps per-section pages/bytes (512 pages / 64 MiB) evicting the oldest; the bundled-origin check compares the full origin including the port; reset-settings runs off the UI thread; settings temp files are removed after failed saves; the SMTC display-change key no longer collides on U+001F in titles.
+- **Testing:** Added native end-to-end checks for batched save-as-playlist with partial failure (600-song sequential-add assertion, short-save single create, failed-add keeps 300 and stops), loader robustness for cached pages, restore integrity after a failed Play, clipboard paste permissions, shortcuts staying inert around dialogs, and Play Next/Later during a slow Play. Runs save reports, traces, and screenshots for repeatable verification.
+- **Carry-forward:** Also fixed and tested in this release, building on `v0.4.0-beta.3`: progress-bar seeking, pinned playlist covers after a restart, Previous restarting a song more than 3 seconds in, Repeat All looping the whole collection, mini-player monitor rescue, Browse shelf recovery after a failed refresh, and late search/queue/mini-player fixes. All `v0.4.0-beta.3` changes are included below.
 
 ## Changes in `v0.4.0-beta.3:`
 

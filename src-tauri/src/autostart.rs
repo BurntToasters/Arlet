@@ -14,7 +14,12 @@ pub fn launched_at_startup() -> bool {
     std::env::args().any(|arg| arg == AUTOSTART_ARG)
 }
 
+/// Ordinary builds ignore the override, so the environment cannot redirect
+/// writes to another registry key.
 fn run_key_path() -> String {
+    if !cfg!(feature = "e2e") {
+        return RUN_KEY.to_string();
+    }
     match std::env::var(RUN_KEY_OVERRIDE_ENV) {
         Ok(path) if !path.is_empty() => path,
         _ => RUN_KEY.to_string(),

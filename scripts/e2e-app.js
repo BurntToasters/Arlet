@@ -25,6 +25,7 @@ import { runLibraryActions } from "./e2e-library-actions.js";
 import { runPlaylistPlayback } from "./e2e-playlist-playback.js";
 import { runFlows } from "./e2e-flows.js";
 import { runLibraryView } from "./e2e-library-view.js";
+import { runLoaderRobustness } from "./e2e-loader-robustness.js";
 import { runShortcuts } from "./e2e-shortcuts.js";
 import { runMultiSelect } from "./e2e-multi-select.js";
 import { runMiniPlayer } from "./e2e-mini-player.js";
@@ -33,6 +34,8 @@ import { runTransport } from "./e2e-transport.js";
 import { runSeek } from "./e2e-seek.js";
 import { runPinArtwork } from "./e2e-pin-artwork.js";
 import { runQueueEdit } from "./e2e-queue-edit.js";
+import { runSaveQueue } from "./e2e-save-queue.js";
+import { runClipboardPaste } from "./e2e-clipboard-paste.js";
 import { runNowPlaying } from "./e2e-now-playing.js";
 import { runRadioArtist } from "./e2e-radio-artist.js";
 import { runUnavailable } from "./e2e-unavailable.js";
@@ -104,6 +107,7 @@ const SCENARIO_REGISTRY = [
   ["transport", runTransport],
   ["seek", runSeek],
   ["queue-edit", runQueueEdit],
+  ["clipboard-paste", runClipboardPaste],
   ["library-actions", runLibraryActions],
   ["now-playing", runNowPlaying],
   ["radio-artist", runRadioArtist],
@@ -124,6 +128,8 @@ const SCENARIO_REGISTRY = [
   ["audit-regressions", runAuditRegressions],
   ["deep-regressions", runDeepRegressions],
   ["handoff-settings-regressions", runHandoffSettingsRegressions],
+  ["loader-robustness", runLoaderRobustness],
+  ["save-queue", runSaveQueue],
   ["account-session", runAccountSession],
   // Last in the full suite because it signs out at the end.
   ["session-restore", runSessionRestore],
@@ -145,6 +151,8 @@ const FIXTURE_CONTROL_DEFAULTS = {
   delayTerms: {},
   queueEditDelayMs: 0,
   rejectPaths: [],
+  failNextLibraryPage: null,
+  failNextPlaylistAdd: null,
   rejectQueryKeys: [],
   rejectMeStatus: 0,
   rejectAuthorize: false,
@@ -1977,6 +1985,56 @@ async function run() {
       `document.querySelector("[role=alertdialog]")`,
       5_000,
     );
+    // Ctrl+Shift+M must not enter mini player: that unmounts Settings and the
+    // alertdialog would vanish behind the confirmation.
+    const miniChord = {
+      key: "M",
+      code: "KeyM",
+      windowsVirtualKeyCode: 77,
+      modifiers: 2 | 8,
+    };
+    await page.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      ...miniChord,
+    });
+    await page.send("Input.dispatchKeyEvent", { type: "keyUp", ...miniChord });
+    await sleep(500);
+    const inertWithDialog = await page.evaluate(`
+      return {
+        dialogStillOpen: Boolean(document.querySelector("[role=alertdialog]")),
+        miniActive: Boolean(document.querySelector(".mini-player")),
+      };`);
+    check(
+      "Ctrl+Shift+M is inert while the reset dialog is open",
+      inertWithDialog.dialogStillOpen && !inertWithDialog.miniActive,
+      inertWithDialog,
+    );
+    // Ctrl+K must not route to Search behind the confirmation.
+    await page.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key: "k",
+      code: "KeyK",
+      windowsVirtualKeyCode: 75,
+      modifiers: 2,
+    });
+    await page.send("Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key: "k",
+      code: "KeyK",
+      windowsVirtualKeyCode: 75,
+      modifiers: 2,
+    });
+    await sleep(500);
+    const searchBlocked = await page.evaluate(`
+      return {
+        dialogStillOpen: Boolean(document.querySelector("[role=alertdialog]")),
+        searchVisible: Boolean(document.querySelector(".search-form")),
+      };`);
+    check(
+      "Ctrl+K does not navigate behind the reset dialog",
+      searchBlocked.dialogStillOpen && !searchBlocked.searchVisible,
+      searchBlocked,
+    );
     await page.evaluate(clickInDialog("Cancel"));
     await sleep(500);
     const afterCancel = {
@@ -1993,6 +2051,32 @@ async function run() {
         afterCancel.dialogClosed &&
         afterCancel.settingsKept,
       { resetButtonFound, dialogShown, ...afterCancel },
+    );
+
+    // Escape still cancels the confirmation; nothing is reset.
+    await page.evaluate(openReset);
+    await waitFor(page, `document.querySelector("[role=alertdialog]")`, 5_000);
+    await page.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key: "Escape",
+      code: "Escape",
+      windowsVirtualKeyCode: 27,
+    });
+    await page.send("Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key: "Escape",
+      code: "Escape",
+      windowsVirtualKeyCode: 27,
+    });
+    const escapeClosed = await waitFor(
+      page,
+      `!document.querySelector("[role=alertdialog]")`,
+      5_000,
+    );
+    check(
+      "Escape closes the reset dialog without resetting settings",
+      escapeClosed && fs.existsSync(settingsFile),
+      { escapeClosed, settingsKept: fs.existsSync(settingsFile) },
     );
 
     await page.evaluate(openReset);

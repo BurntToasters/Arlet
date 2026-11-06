@@ -1,7 +1,7 @@
 //! Library metadata cache in SQLite, behind fixed commands. The webview gets
 //! no generic SQL access, and the schema carries its own version.
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use serde_json::Value;
@@ -46,6 +46,13 @@ pub const MAX_PAGE_ITEMS: usize = 10_000;
 pub const MAX_KEY_LENGTH: usize = 2048;
 /// Serialized item data for one page; a hostile write cannot fill the disk.
 pub const MAX_PAGE_BYTES: usize = 16 * 1024 * 1024;
+/// A whole library is many sections of about 100 items per page. 512 pages
+/// covers a 50k-item section (and the frontend's 500-page full load), while
+/// 64 MiB leaves about 128 KiB per page for ordinary metadata. A write past
+/// either cap evicts the section's oldest pages, so a cursor per write cannot
+/// grow the file or a `read_section` response without bound.
+pub const MAX_SECTION_PAGES: i64 = 512;
+pub const MAX_SECTION_BYTES: i64 = 64 * 1024 * 1024;
 pub const DATABASE_FILE: &str = "arlet-library.db";
 
 /// Version 1 matches the tables the former SQL plugin created, so an
@@ -439,6 +446,86 @@ pub fn read_section(
     }))
 }
 
+/// Item bytes and page count currently stored for one section, measured the
+/// way `read_section` returns them (a resource linked twice counts twice).
+fn section_usage(conn: &Connection, scope: &str, section: &str) -> Result<(i64, i64), String> {
+    let pages: i64 = conn
+        .prepare_cached("SELECT COUNT(*) FROM music_pages WHERE scope = ?1 AND section = ?2")
+        .and_then(|mut statement| statement.query_row([scope, section], |row| row.get(0)))
+        .map_err(sql_error)?;
+    let bytes: i64 = conn
+        .prepare_cached(
+            "SELECT COALESCE(SUM(LENGTH(CAST(r.payload AS BLOB))), 0)
+             FROM music_page_items i
+             JOIN music_resources r ON r.scope = i.scope
+               AND r.resource_type = i.resource_type AND r.resource_id = i.resource_id
+             WHERE i.scope = ?1 AND i.section = ?2",
+        )
+        .and_then(|mut statement| statement.query_row([scope, section], |row| row.get(0)))
+        .map_err(sql_error)?;
+    Ok((pages, bytes))
+}
+
+/// Evicts the oldest pages until a section is inside both caps. The page just
+/// written is kept, so one legitimate large detail page still lands and the
+/// loop terminates (a single page is already under the per-page caps).
+fn evict_section_overflow(
+    tx: &rusqlite::Transaction<'_>,
+    scope: &str,
+    section: &str,
+    keep_cursor: &str,
+) -> Result<(), String> {
+    let (mut pages, mut bytes) = section_usage(tx, scope, section)?;
+    while pages > MAX_SECTION_PAGES || bytes > MAX_SECTION_BYTES {
+        let oldest: Option<String> = tx
+            .prepare_cached(
+                "SELECT cursor FROM music_pages
+                 WHERE scope = ?1 AND section = ?2 AND cursor <> ?3
+                 ORDER BY updated_at ASC, cursor ASC LIMIT 1",
+            )
+            .map_err(sql_error)?
+            .query_row([scope, section, keep_cursor], |row| row.get(0))
+            .optional()
+            .map_err(sql_error)?;
+        let Some(oldest) = oldest else {
+            break;
+        };
+        let removed_bytes: i64 = tx
+            .prepare_cached(
+                "SELECT COALESCE(SUM(LENGTH(CAST(r.payload AS BLOB))), 0)
+                 FROM music_page_items i
+                 JOIN music_resources r ON r.scope = i.scope
+                   AND r.resource_type = i.resource_type AND r.resource_id = i.resource_id
+                 WHERE i.scope = ?1 AND i.section = ?2 AND i.cursor = ?3",
+            )
+            .map_err(sql_error)?
+            .query_row([scope, section, oldest.as_str()], |row| row.get(0))
+            .map_err(sql_error)?;
+        let previous = linked_resources(
+            tx,
+            "SELECT DISTINCT resource_type, resource_id FROM music_page_items
+             WHERE scope = ?1 AND section = ?2 AND cursor = ?3",
+            &[scope, section, &oldest],
+        )?;
+        tx.prepare_cached(
+            "DELETE FROM music_page_items WHERE scope = ?1 AND section = ?2 AND cursor = ?3",
+        )
+        .map_err(sql_error)?
+        .execute([scope, section, oldest.as_str()])
+        .map_err(sql_error)?;
+        tx.prepare_cached(
+            "DELETE FROM music_pages WHERE scope = ?1 AND section = ?2 AND cursor = ?3",
+        )
+        .map_err(sql_error)?
+        .execute([scope, section, oldest.as_str()])
+        .map_err(sql_error)?;
+        delete_orphans(tx, scope, &previous)?;
+        pages -= 1;
+        bytes -= removed_bytes;
+    }
+    Ok(())
+}
+
 pub fn write_page(
     conn: &mut Connection,
     scope: &str,
@@ -533,6 +620,7 @@ pub fn write_page(
         }
     }
     delete_orphans(&tx, scope, &previous)?;
+    evict_section_overflow(&tx, scope, section, cursor)?;
     tx.commit().map_err(sql_error)
 }
 

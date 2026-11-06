@@ -176,6 +176,30 @@ export function isAccountDataBlocked(category: AccountDataCategory): boolean {
   return stored.blocked.has(category) || memoryBlocked.has(category);
 }
 
+/**
+ * Lists the categories a readable, valid stored fence still blocks. An
+ * unreadable, malformed, or failed-closed fence lists none, so a caller never
+ * releases data on a guess. Read-only.
+ */
+export function storedBlockedAccountData(): AccountDataCategory[] {
+  if (storageFailedClosed) return [];
+  let stored: StoredFence;
+  try {
+    stored = readStoredFence();
+  } catch {
+    return [];
+  }
+  if (
+    !stored.valid ||
+    ![...memoryBlocked].every((item) => stored.blocked.has(item))
+  ) {
+    return [];
+  }
+  return ACCOUNT_DATA_CATEGORIES.filter((category) =>
+    stored.blocked.has(category),
+  );
+}
+
 /** Captures the fence version so an in-flight read cannot outlive a clear. */
 export function accountDataReadVersion(
   category: AccountDataCategory,

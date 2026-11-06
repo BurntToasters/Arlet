@@ -38,9 +38,18 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  *   suggestions term; configure({ rejectQueryKeys: ["views"] }) rejects any
  *   request carrying that query key; configure({ repeatViewCursor: true })
  *   makes every page after the first point at itself. configure({
- *   holdSetQueue: true }) holds queue rebuilds until releaseSetQueue() resolves
- *   them. configure({ holdSeek: true }) records each seekToTime() call but
+ *   failNextLibraryPage: { path: "playlist-big/tracks?offset=300" } }) fails
+ *   the next GET whose path contains `path` (once unless once is false).
+ *   configure({ holdSetQueue: true }) holds queue rebuilds until releaseSetQueue() resolves
+ *   them. configure({ rejectSetQueue: true }) rejects every setQueue() call
+ *   (after any hold) until cleared, for a failed Play. configure({
+ *   holdSeek: true }) records each seekToTime() call but
  *   holds its completion tick until releaseSeek(count) resolves the oldest.
+ *   configure({ hideQueueSplice: true }) keeps native queue methods hidden
+ *   while nativeQueueEdit is on, forcing the rebuild tier; configure({
+ *   setQueueDelayMs: 150 }) slows every setQueue() so a queue edit races a
+ *   second click in tests. snapshot().queueEdit.setQueueStarts counts entries,
+ *   so a test can click while one is still delayed.
  * Event controls (payloads as the app's MusicKit events reader expects them):
  *   emitAuthorizationStatus(false) sets isAuthorized = false, then emits
  *     authorizationStatusDidChange {}; true sets it back the same way.
@@ -105,6 +114,15 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  *   library list unless configure({ pinArtListExpired: true }) adds
  *   playlist-pin-art there with its cover signed 2026-01-01, so the link has
  *   expired. Unknown library ids answer { data: [] } on detail and ?ids=.
+ *
+ * Saving a queue as a playlist (scripts/e2e-save-queue.js): POST
+ *   /v1/me/library/playlists creates "saved-playlist-N" with the first track
+ *   batch, and POST /v1/me/library/playlists/{id}/tracks appends the rest.
+ *   Created playlists answer detail, ?ids= and paged /tracks reads like Apple.
+ *   snapshot().playlistMutations has { creates, adds, created } in request
+ *   order, each add carrying its IDs and a failed flag. configure({
+ *   failNextPlaylistAdd: { nth: 3 } }) rejects the nth add POST once (set
+ *   once: false to repeat every nth); reset() clears all playlists and counts.
  */
 
 function installMusicKitFixture() {
@@ -306,10 +324,15 @@ function installMusicKitFixture() {
     contextTarget: undefined,
     delayPaths: [],
     rejectPaths: [],
+    // Fails one matching GET before any response is served; see header.
+    failNextLibraryPage: null,
     delayMs: 800,
     repeatPlaylistCursor: false,
     rejectPlay: false,
     rejectPlayTimes: 0,
+    // Test-only: every setQueue() rejects until cleared, so a Play's queue
+    // setup can fail deterministically.
+    rejectSetQueue: false,
     // Catalog IDs the item loader cannot resolve, and IDs that resolve but
     // are not playable (MusicKit drops those silently).
     unresolvedIds: [],
@@ -318,14 +341,29 @@ function installMusicKitFixture() {
     detailsSkipLookup: false,
     unplayableIds: [],
     nativeQueueEdit: false,
+    // Test-only: keep `queue` exposed but without splice, as some runtimes do.
+    hideQueueSplice: false,
     queueEditDelayMs: 0,
+    // Test-only: widens the window between two queue edits.
+    setQueueDelayMs: 0,
     holdSetQueue: false,
     setQueueReleases: [],
+    // Cumulative setQueue() entries; a delayed call is observable from here.
+    setQueueStarts: 0,
     holdSeek: false,
     seekReleases: [],
     // Keyed `${type}:${id}`, e.g. `library-songs:song-a`; values are 1 or -1.
     ratings: {},
     libraryAdds: [],
+    // Library playlists created through the fixture, with their saved tracks.
+    createdPlaylists: [],
+    nextCreatedPlaylistId: 1,
+    // Create/add playlist POSTs, in request order (header comment).
+    playlistCreates: [],
+    playlistAdds: [],
+    playlistAddAttempts: 0,
+    // Test-only: fail the nth add-to-playlist POST once.
+    failNextPlaylistAdd: null,
     // Generated library albums and artists; 0 keeps the seed data only.
     librarySize: 0,
     // Library songs, playlists and the playlist folder (header comment).
@@ -1959,6 +1997,134 @@ function installMusicKitFixture() {
     return {};
   };
 
+  // Playlist creates and track adds are recorded so save-as-playlist can prove
+  // its batching. Created playlists answer detail and track reads below.
+  const PLAYLIST_MUTATION_PAGE_SIZE = 100;
+  const playlistAddRequest = (pathname, body) => {
+    const match = pathname.match(
+      /^\/v1\/me\/library\/playlists\/([^/]+)\/tracks$/u,
+    );
+    if (!match) return undefined;
+    const payload = body && typeof body === "object" ? body : {};
+    const data = Array.isArray(payload.data) ? payload.data : [];
+    const refs = data.filter(
+      (ref) => ref && typeof ref.id === "string" && ref.id.length > 0,
+    );
+    return {
+      playlistId: decodeURIComponent(match[1]),
+      refs,
+      ids: refs.map((ref) => ref.id),
+    };
+  };
+  const savedPlaylistTrack = (ref, index) => {
+    const item = track(ref.id, ref.id, "Saved Playlist Album");
+    if (typeof ref.type === "string" && ref.type) item.type = ref.type;
+    item.attributes.trackNumber = index + 1;
+    return item;
+  };
+  const createLibraryPlaylist = (body) => {
+    const payload = body && typeof body === "object" ? body : {};
+    const attributes =
+      payload.attributes && typeof payload.attributes === "object"
+        ? payload.attributes
+        : {};
+    const name =
+      typeof attributes.name === "string" && attributes.name.trim()
+        ? attributes.name.trim()
+        : "Untitled Playlist";
+    const description =
+      typeof attributes.description === "string" && attributes.description
+        ? attributes.description
+        : undefined;
+    const relationship = payload.relationships?.tracks;
+    const data = Array.isArray(relationship?.data) ? relationship.data : [];
+    const refs = data.filter(
+      (ref) => ref && typeof ref.id === "string" && ref.id.length > 0,
+    );
+    const id = `saved-playlist-${state.nextCreatedPlaylistId}`;
+    state.nextCreatedPlaylistId += 1;
+    const playlist = {
+      id,
+      resource: {
+        id,
+        type: "library-playlists",
+        attributes: {
+          name,
+          artistName: "Arlet E2E",
+          trackCount: refs.length,
+          canEdit: true,
+          ...(description ? { description } : {}),
+        },
+      },
+      tracks: refs.map(savedPlaylistTrack),
+    };
+    state.createdPlaylists.push(playlist);
+    state.playlistCreates.push({
+      id,
+      name,
+      trackIds: playlist.tracks.map((item) => item.id),
+    });
+    return playlist;
+  };
+  const createdPlaylistFor = (pathname) => {
+    const match = pathname.match(
+      /^\/v1\/me\/library\/playlists\/([^/]+)(\/tracks)?$/u,
+    );
+    if (!match) return undefined;
+    const playlist = state.createdPlaylists.find(
+      (entry) => entry.id === decodeURIComponent(match[1]),
+    );
+    return playlist ? { playlist, tracks: Boolean(match[2]) } : undefined;
+  };
+  const createdPlaylistTracksPage = (playlist, path) => {
+    const pathname = String(path).split("?", 1)[0];
+    const offset =
+      Math.max(
+        0,
+        Math.floor(
+          Number(
+            new URLSearchParams(String(path).split("?")[1] ?? "").get(
+              "offset",
+            ) ?? 0,
+          ),
+        ),
+      ) || 0;
+    const end = Math.min(
+      playlist.tracks.length,
+      offset + PLAYLIST_MUTATION_PAGE_SIZE,
+    );
+    return {
+      data: playlist.tracks.slice(offset, end).map(clone),
+      ...(end < playlist.tracks.length
+        ? { next: `${pathname}?offset=${end}` }
+        : {}),
+    };
+  };
+  const playlistMutationResponse = (pathname, call) => {
+    if (call.method !== "POST") return undefined;
+    if (pathname === "/v1/me/library/playlists") {
+      return { data: [clone(createLibraryPlaylist(call.body).resource)] };
+    }
+    const add = playlistAddRequest(pathname, call.body);
+    if (!add) return undefined;
+    state.playlistAdds.push({
+      playlistId: add.playlistId,
+      ids: add.ids,
+      failed: false,
+    });
+    const playlist = state.createdPlaylists.find(
+      (entry) => entry.id === add.playlistId,
+    );
+    if (playlist) {
+      const start = playlist.tracks.length;
+      playlist.tracks.push(
+        ...add.refs.map((ref, index) => savedPlaylistTrack(ref, start + index)),
+      );
+      playlist.resource.attributes.trackCount = playlist.tracks.length;
+    }
+    return {};
+  };
+
   // Artwork sizing routes; undefined unless configure({ artworkGrid: true }).
   const artworkSearchResponse = (params) => {
     const { offset, limit } = pagingOf(params, 10, 25);
@@ -2083,7 +2249,9 @@ function installMusicKitFixture() {
   const responseFor = (path, call = { method: "GET" }) => {
     const pathname = String(path).split("?", 1)[0];
     const mutation =
-      ratingResponse(pathname, call) ?? libraryResponse(pathname, call);
+      ratingResponse(pathname, call) ??
+      libraryResponse(pathname, call) ??
+      playlistMutationResponse(pathname, call);
     if (mutation) return mutation;
     const pinArt = pinArtResponse(pathname, path, call);
     if (pinArt !== undefined) return pinArt;
@@ -2096,7 +2264,10 @@ function installMusicKitFixture() {
     }
     // `include=tracks` carries the first track page in `relationships.tracks`,
     // with the same `next` as the tracks endpoint, so callers page on as before.
-    if (call.query?.include === "tracks" && TRACK_DETAIL_PATHS.has(pathname)) {
+    if (
+      call.query?.include === "tracks" &&
+      (TRACK_DETAIL_PATHS.has(pathname) || createdPlaylistFor(pathname))
+    ) {
       const detail = responseFor(pathname, { method: "GET" });
       const page = responseFor(`${pathname}/tracks`, { method: "GET" });
       const [resource] = detail.data ?? [];
@@ -2114,8 +2285,15 @@ function installMusicKitFixture() {
       const playlists = pathname.startsWith("/v1/catalog/")
         ? [catalogPlaylist, polishPlaylist]
         : state.libraryView
-          ? libraryViewPlaylists
-          : [playlist, bigPlaylist];
+          ? [
+              ...libraryViewPlaylists,
+              ...state.createdPlaylists.map((entry) => entry.resource),
+            ]
+          : [
+              playlist,
+              bigPlaylist,
+              ...state.createdPlaylists.map((entry) => entry.resource),
+            ];
       const ids = String(call.query.ids).split(",").filter(Boolean);
       // Ids come back in the order asked for; unknown ids are skipped.
       return {
@@ -2124,6 +2302,12 @@ function installMusicKitFixture() {
           return match ? [clone(match)] : [];
         }),
       };
+    }
+    const createdPlaylist = createdPlaylistFor(pathname);
+    if (createdPlaylist) {
+      return createdPlaylist.tracks
+        ? createdPlaylistTracksPage(createdPlaylist.playlist, path)
+        : itemResponse(createdPlaylist.playlist.resource);
     }
     if (pathname === "/v1/me/library/playlists/playlist-1") {
       return itemResponse(playlist);
@@ -2302,6 +2486,9 @@ function installMusicKitFixture() {
       const listed = state.libraryView
         ? libraryViewPlaylists.map(clone)
         : [clone(playlist)];
+      listed.push(
+        ...state.createdPlaylists.map((entry) => clone(entry.resource)),
+      );
       // configure({ pinArtListExpired: true }) lists the pin-art playlist with
       // its cover link already expired.
       if (state.pinArtListExpired) {
@@ -2411,6 +2598,36 @@ function installMusicKitFixture() {
     if (shouldReject) {
       request.error = `Fixture request rejected: ${pathText}`;
       throw new Error(request.error);
+    }
+    const failingPage = state.failNextLibraryPage;
+    if (
+      failingPage &&
+      request.method === "GET" &&
+      pathText.includes(failingPage.path)
+    ) {
+      if (failingPage.once) state.failNextLibraryPage = null;
+      request.failedPage = true;
+      request.error = `Fixture page rejected: ${pathText}`;
+      throw new Error(request.error);
+    }
+    const playlistAdd =
+      request.method === "POST"
+        ? playlistAddRequest(pathText.split("?", 1)[0], request.body)
+        : undefined;
+    if (playlistAdd) {
+      state.playlistAddAttempts += 1;
+      const fail = state.failNextPlaylistAdd;
+      if (fail && state.playlistAddAttempts === fail.nth) {
+        if (fail.once !== false) state.failNextPlaylistAdd = null;
+        state.playlistAdds.push({
+          playlistId: playlistAdd.playlistId,
+          ids: playlistAdd.ids,
+          failed: true,
+        });
+        request.failedPlaylistAdd = true;
+        request.error = `Fixture playlist add rejected: ${pathText}`;
+        throw new Error(request.error);
+      }
     }
     if (
       state.rejectMeStatus &&
@@ -2622,7 +2839,10 @@ function installMusicKitFixture() {
       return state.queue;
     },
     get queue() {
-      return state.nativeQueueEdit ? nativeQueue : undefined;
+      if (!state.nativeQueueEdit) return undefined;
+      // Test-only: a runtime that exposes Queue but not its undocumented
+      // splice, so the app must rebuild. The base record has no splice.
+      return state.hideQueueSplice ? queueRecord : nativeQueue;
     },
     get currentPlaybackQueueItemIndex() {
       return state.queue.length ? state.queueIndex : -1;
@@ -2685,8 +2905,21 @@ function installMusicKitFixture() {
       emit(events.authorizationStatusDidChange, {});
     },
     async setQueue(options) {
+      state.setQueueStarts += 1;
+      if (state.setQueueDelayMs > 0) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, state.setQueueDelayMs),
+        );
+      }
       if (state.holdSetQueue) {
         await new Promise((resolve) => state.setQueueReleases.push(resolve));
+      }
+      if (state.rejectSetQueue) {
+        state.transitions.push({ type: "setQueueRejected" });
+        const error = new Error("Fixture queue setup failed");
+        error.errorCode = "UNKNOWN_ERROR";
+        error.reason = "UNKNOWN_ERROR";
+        throw error;
       }
       const itemIds = loadQueueItems(
         "setQueue",
@@ -2857,6 +3090,29 @@ function installMusicKitFixture() {
       if (Object.prototype.hasOwnProperty.call(options, "rejectPaths")) {
         state.rejectPaths = [...(options.rejectPaths ?? [])];
       }
+      if (
+        Object.prototype.hasOwnProperty.call(options, "failNextLibraryPage")
+      ) {
+        const value = options.failNextLibraryPage;
+        state.failNextLibraryPage = value
+          ? {
+              path: String(value.path ?? value.endpoint ?? value),
+              once: value.once !== false,
+            }
+          : null;
+      }
+      if (
+        Object.prototype.hasOwnProperty.call(options, "failNextPlaylistAdd")
+      ) {
+        const value = options.failNextPlaylistAdd;
+        state.failNextPlaylistAdd = value
+          ? {
+              nth: Math.max(1, Math.floor(Number(value.nth ?? value)) || 1),
+              once: value.once !== false,
+            }
+          : null;
+        state.playlistAddAttempts = 0;
+      }
       if (Object.prototype.hasOwnProperty.call(options, "delayMs")) {
         state.delayMs = Math.max(0, Number(options.delayMs) || 0);
       }
@@ -2884,6 +3140,9 @@ function installMusicKitFixture() {
       }
       if (Object.prototype.hasOwnProperty.call(options, "rejectPlay")) {
         state.rejectPlay = options.rejectPlay === true;
+      }
+      if (Object.prototype.hasOwnProperty.call(options, "rejectSetQueue")) {
+        state.rejectSetQueue = options.rejectSetQueue === true;
       }
       if (Object.prototype.hasOwnProperty.call(options, "nativeQueueEdit")) {
         state.nativeQueueEdit = options.nativeQueueEdit === true;
@@ -2919,6 +3178,15 @@ function installMusicKitFixture() {
         state.queueEditDelayMs = Math.max(
           0,
           Number(options.queueEditDelayMs) || 0,
+        );
+      }
+      if (Object.prototype.hasOwnProperty.call(options, "hideQueueSplice")) {
+        state.hideQueueSplice = options.hideQueueSplice === true;
+      }
+      if (Object.prototype.hasOwnProperty.call(options, "setQueueDelayMs")) {
+        state.setQueueDelayMs = Math.max(
+          0,
+          Number(options.setQueueDelayMs) || 0,
         );
       }
       if (Object.prototype.hasOwnProperty.call(options, "holdSetQueue")) {
@@ -2960,18 +3228,29 @@ function installMusicKitFixture() {
       state.contextTarget = undefined;
       state.delayPaths = [];
       state.rejectPaths = [];
+      state.failNextLibraryPage = null;
+      state.failNextPlaylistAdd = null;
+      state.playlistAddAttempts = 0;
+      state.playlistCreates = [];
+      state.playlistAdds = [];
+      state.createdPlaylists = [];
+      state.nextCreatedPlaylistId = 1;
       state.delayMs = 800;
       state.repeatPlaylistCursor = false;
       state.rejectPlay = false;
       state.rejectPlayTimes = 0;
+      state.rejectSetQueue = false;
       state.playlistPrepended = false;
       state.unresolvedIds = [];
       state.detailsSkipLookup = false;
       state.unplayableIds = [];
       state.nativeQueueEdit = false;
+      state.hideQueueSplice = false;
       state.queueEditDelayMs = 0;
+      state.setQueueDelayMs = 0;
       state.holdSetQueue = false;
       releaseHeldSetQueue();
+      state.setQueueStarts = 0;
       state.holdSeek = false;
       releaseHeldSeeks();
       state.ratings = {};
@@ -3249,11 +3528,23 @@ function installMusicKitFixture() {
         transitions: clone(state.transitions),
         queueEdit: {
           native: state.nativeQueueEdit,
+          spliceHidden: state.hideQueueSplice,
           delayMs: state.queueEditDelayMs,
+          setQueueDelayMs: state.setQueueDelayMs,
+          setQueueStarts: state.setQueueStarts,
           setQueueHeld: state.setQueueReleases.length,
         },
         seekHeld: state.seekReleases.length,
         queue: captureQueue(),
+        playlistMutations: {
+          creates: clone(state.playlistCreates),
+          adds: clone(state.playlistAdds),
+          created: state.createdPlaylists.map((entry) => ({
+            id: entry.id,
+            trackIds: entry.tracks.map((item) => item.id),
+            trackCount: entry.resource.attributes.trackCount,
+          })),
+        },
         modes: {
           shuffle: player.shuffle === true,
           repeat: player.repeatMode,
@@ -3273,11 +3564,18 @@ function installMusicKitFixture() {
           delayTerms: clone(state.delayTerms),
           queueEditDelayMs: state.queueEditDelayMs,
           rejectPaths: clone(state.rejectPaths),
+          failNextLibraryPage: state.failNextLibraryPage
+            ? clone(state.failNextLibraryPage)
+            : null,
+          failNextPlaylistAdd: state.failNextPlaylistAdd
+            ? clone(state.failNextPlaylistAdd)
+            : null,
           rejectQueryKeys: clone(state.rejectQueryKeys),
           rejectMeStatus: state.rejectMeStatus,
           rejectAuthorize: state.rejectAuthorize,
           rejectPlay: state.rejectPlay,
           rejectPlayTimes: state.rejectPlayTimes,
+          rejectSetQueue: state.rejectSetQueue,
           repeatPlaylistCursor: state.repeatPlaylistCursor,
           repeatViewCursor: state.repeatViewCursor,
           pinArtListExpired: state.pinArtListExpired,

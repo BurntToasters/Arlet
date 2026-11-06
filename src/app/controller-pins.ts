@@ -175,9 +175,14 @@ export function createControllerPins(
     const trimmed = id.trim();
     if (!trimmed) return;
     const current = getState().pins;
-    const next = current.some((pin) => pin.id === trimmed)
+    const pinned = current.some((pin) => pin.id === trimmed);
+    // Trimming to the limit would silently drop the new pin.
+    if (!pinned && current.length >= MAX_PINS) {
+      throw new Error(`You can pin up to ${MAX_PINS} playlists.`);
+    }
+    const next = pinned
       ? current.filter((pin) => pin.id !== trimmed)
-      : [...current, { id: trimmed, source }].slice(0, MAX_PINS);
+      : [...current, { id: trimmed, source }];
     setPins(next);
     await persistPins(next);
     void resolveDetails();

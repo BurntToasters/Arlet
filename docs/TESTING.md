@@ -101,8 +101,11 @@ Failure modes it covers:
 10. The open-source licenses dialog is empty.
 11. With Apple's CDN unreachable, the cached library is not shown, or the
     connection returning (an `online` event) does not reload to retry.
-12. A renderer crash leaves a blank window, or leaves no line in `arlet.log`
-    (WebView2 failures are written even with Debug Mode off).
+12. A renderer crash leaves a blank window, or leaves no line in `arlet.log`.
+    A renderer or browser process exit that Arlet must recover from is
+    written even with Debug Mode off. Failures WebView2 recovers from by
+    itself (utility, GPU, and frame processes) are written only with Debug
+    Mode on.
 
 The saved-settings reset/restart and legacy-cache migration run entirely
 inside the isolated root. Cleanup validates its absolute path and ownership
@@ -123,9 +126,15 @@ records `{atUnixMs,command,outcome}` lines in
 `e2e-account-clear-trace.jsonl` (`success`, `failure`,
 `injected_failure`, or `invalid_control`), capped at 64 KiB and 128 rows. The
 scenario injects each rejection independently, waits for all three clear
-calls to settle, checks that only the rejected data category remains fenced,
-then reloads and verifies the previous data stays hidden. It saves one trace
-artifact per category.
+calls to settle, and checks that only the rejected data category remains
+fenced. It then reloads with the fault still in place. Startup retries the
+clear for each fenced category, so the trace shows `injected_failure`, the
+fence stays, and the previous data stays hidden. The fault file is then
+removed and the app reloads again. The startup retry succeeds, the fence is
+lifted, and the previous data still stays hidden. The fault file is removed in
+a `finally`, so a failed check cannot leak it into later suites. The run saves
+one sign-out trace per category (`account-clear-<category>.jsonl`) and one
+restart trace per category (`account-clear-<category>-restart.jsonl`).
 
 For a focused diagnostic run, use
 `npm run test:e2e:app -- --skip-build --scenarios flows,discovery,account-session`
@@ -252,6 +261,11 @@ are not playable. Failure scenarios:
   library copy can still play.
 - A playlist where every song is unavailable loops or shows a raw error.
 - `Play next` or `Play later` adds nothing because one song is unavailable.
+- `Play next` or `Play later` pressed while a Play is still replacing the
+  provider queue lands in the queue being replaced, so the next Play drops it.
+  (Covered by `unavailable`: the fixture holds `setQueue`, the menu inserts
+  during the hold, and the provider queue must show the inserted songs right
+  after the new Play's active song, in order.)
 - The user is not told that songs were skipped.
 - A song that fails when it starts playing (content unavailable, restricted,
   unsupported) stops the queue instead of skipping to the next song.
@@ -299,6 +313,22 @@ are not playable. Failure scenarios:
 - A collection Play that a newer Play replaced while it was starting still
   appends its later pages to the newer queue. (Code-reviewed: the later pages
   carry the token their own Play returned; the race is not driven here.)
+
+`unavailable` also drives queue-integrity failures around a parked or
+restored queue. A failed Play must leave the parked queue's songs, index,
+seek position, and saved `playback-session.json` untouched, and the retry
+must start the same queue; a failed station Play must leave no station label
+for a later stream handoff. Both are checked with the fixture's held and
+rejected `setQueue`, and the saved file is read directly.
+
+The same scenario checks the insert-versus-setup race: a `Play next` pressed
+while a Play is still replacing the provider queue must queue into the new
+queue, in order, not the queue being replaced. The fixture holds `setQueue`
+for the new Play, the album's menu item is clicked during the hold, then the
+hold is released; the provider queue must show the album's songs directly
+after the new Play's active song. Queue setup is tracked in the playback
+session (`queueSetup`/`queueSetupGeneration`), and inserts wait for it before
+planning, then abort their writes if a newer setup starts.
 
 ## Layout
 
@@ -382,6 +412,32 @@ fixture emits playback ticks, and holds `seekToTime` with
   path, and the shift itself is not driven here.)
 - `Save as playlist` saves only the songs already handed to MusicKit and
   leaves out the rest of a long playlist that the drawer says is coming.
+  It now sends the queue in batches: a create carries the first 100 tracks,
+  then sequential adds of up to 100 each, and a failed batch stops further
+  adds while keeping the songs already saved; the dialog reports how many
+  were saved versus how many could not be added.
+  `scripts/e2e-save-queue.js` proves it with a 600-song queue: one create
+  with the first 100 then sequential adds to 600, a short save that stays a
+  single create, and a failed third add that keeps 300 and stops.
+- A runtime without the undocumented `Queue.splice` rebuilds the queue for
+  every edit (`setQueue`, reselect, seek, resume). Two quick clicks used to
+  plan from the same local snapshot, run both rebuilds together, and finish by
+  reloading the queue because it changed underneath them. Edits on one
+  MusicKit instance now run in order: a pending edit waits for the edit ahead
+  to settle, then reads local state and plans, so the second click sees the
+  first result. Two Move ups apply in order, and a Move followed by a Remove
+  of another row produces the sequential result. The native tier queues the
+  same way, but its splices stay immediate.
+- A MusicKit call that never settles must not block future edits forever.
+  After a generous 20 s watchdog a pending edit abandons the stuck edit,
+  reloads the provider queue into local state, and continues. The abandoned
+  edit's late completion re-checks the abandoned condition around every await
+  and writes no local state (including no error toast for its lost race).
+- `scripts/e2e-queue-edit.js` hides `queue.splice` and delays `setQueue`, then
+  clicks two Move ups, and separately a Move and a Remove on another row,
+  before the first rebuild settles. It checks both provider orders and that no
+  queue-reloaded error toast appears. The watchdog is code-reviewed: a 20 s
+  hang is too long to drive in the deterministic suite.
 
 ## Ratings and library
 
@@ -721,8 +777,9 @@ then turns it on through Settings for the rest of the run.
 - Turning it off keeps writing until restart.
 
 A native crash or a failed window start is written to `arlet.log` even with
-Debug Mode off, because nothing else records it. That path is not driven
-here.
+Debug Mode off, because nothing else records it. Routine native events, such
+as a pause on suspend or lid close, are written only with Debug Mode on. The
+crash path is not driven here.
 
 ## Rendering performance
 
@@ -1442,6 +1499,10 @@ the deterministic smoke gate:
   - Starting a song mid-playlist with shuffle on plays that song first
     (`setQueue` `startWith`), and the shuffle button reflects `shuffleMode`.
   - Queue remove, move, and clear use `Queue.splice` without restarting audio.
+    On a runtime without it, the same edits rebuild the queue and briefly
+    restart audio, one edit at a time (see "Queue editing"'s forced-rebuild
+    block, Phase 9: edits serialize per instance with a 20 s watchdog, and the
+    double Move up and Move+Remove serial scenarios run there).
   - A library-only (uploaded) song plays from the `songs` descriptor.
   - Favorite, Dislike, clear, and Add to Library reach Apple (check the Music app).
   - Autoplay continues after the queue ends when enabled.

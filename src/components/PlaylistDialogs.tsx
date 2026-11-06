@@ -2,8 +2,13 @@ import { LoaderCircle, Plus, Search, X } from "lucide-preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { JSX, TargetedEvent } from "preact";
 import type { AppController } from "../app/controller.ts";
+import {
+  PLAYLIST_TRACK_CHUNK_SIZE,
+  PlaylistPartialSaveError,
+} from "../app/playlist-editing.ts";
 import { useAppController, useAppSlices } from "../app/context.tsx";
 import type { Track } from "../domain/music.ts";
+import { reportActionError, reportNotice } from "./action-errors.ts";
 import {
   PLAYLIST_DIALOG_REQUEST,
   type PlaylistDialogMode,
@@ -294,17 +299,29 @@ export function PlaylistDialogs(): JSX.Element | null {
     }
     setBusy(true);
     setError(undefined);
+    const seedTracks = dialog?.tracks ?? [];
     void createPlaylistWithTracks(
       controller,
       trimmed,
       description.trim(),
-      dialog?.tracks ?? [],
+      seedTracks,
     )
       .then(() => {
-        if (isOpenDialog(generation)) closeDialog();
+        if (!isOpenDialog(generation)) return;
+        closeDialog();
+        if (seedTracks.length > PLAYLIST_TRACK_CHUNK_SIZE) {
+          reportNotice(`Saved ${seedTracks.length} songs to “${trimmed}”.`);
+        }
       })
       .catch((reason: unknown) => {
         if (!isOpenDialog(generation)) return;
+        // The playlist already exists; leaving the form open would invite a
+        // second one. Close it and report how much was saved.
+        if (reason instanceof PlaylistPartialSaveError) {
+          closeDialog();
+          reportActionError(reason);
+          return;
+        }
         setBusy(false);
         setError(errorMessage(reason));
       });

@@ -2,9 +2,12 @@ import { authorize, isAuthorized, unauthorize } from "../musickit/auth.ts";
 import { probeUserToken } from "../musickit/catalog.ts";
 import type { AppleMusicLibraryClient } from "../musickit/library.ts";
 import {
+  ACCOUNT_DATA_CATEGORIES,
   beginAccountDataInvalidation,
   cancelAccountDataInvalidation,
   completeAccountDataClear,
+  storedBlockedAccountData,
+  type AccountDataCategory,
 } from "../platform/account-data.ts";
 import { registerSensitiveValue } from "../platform/redact.ts";
 import {
@@ -90,6 +93,11 @@ export interface ControllerAccount {
   suspectSession(error: unknown, path?: string): void;
   /** Bumped on sign-in and sign-out; work started earlier must not land. */
   generation(): number;
+  /**
+   * Startup: clears again each category a failed clear left fenced, and
+   * releases its fence only on success. Never rejects.
+   */
+  retryBlockedAccountData(): Promise<void>;
 }
 
 interface SignInAttempt {
@@ -160,40 +168,67 @@ export function createControllerAccount(
     trackNavigation.clear();
   };
 
-  /** Clears each persisted category independently and releases its fence only on success. */
+  /** Local clear and log label for each persisted category. */
+  const persistedClears: Record<
+    AccountDataCategory,
+    { label: string; clear: () => Promise<void> }
+  > = {
+    library: {
+      label: "Library cache clear failed",
+      clear: () => library.clearLibraryCache(),
+    },
+    pins: {
+      label: "Pinned playlists clear failed",
+      clear: () => pinning.clearStored(),
+    },
+    queue: {
+      label: "Playback session clear failed",
+      clear: () => playbackSession.clear(),
+    },
+  };
+
+  /**
+   * Clears each listed category independently and releases its fence only on
+   * success. Every category is listed by default.
+   */
   const clearPersistedAccountData = async (
     ownsClear: () => boolean = () => true,
+    categories: readonly AccountDataCategory[] = ACCOUNT_DATA_CATEGORIES,
   ): Promise<void> => {
     const failures: string[] = [];
-    const clearCategory = async (
-      category: "library" | "pins" | "queue",
-      label: string,
-      clear: () => Promise<void>,
-    ): Promise<void> => {
-      try {
-        await clear();
-        // A later sign-out may have installed a newer durable fence while
-        // this clear was in flight. Only its owning transition may release it.
-        if (ownsClear()) completeAccountDataClear(category);
-      } catch (error) {
-        const message = safeErrorMessage(error);
-        log(`${label}: ${message}`);
-        failures.push(`${label}: ${message}`);
-      }
-    };
-    await Promise.all([
-      clearCategory("library", "Library cache clear failed", () =>
-        library.clearLibraryCache(),
-      ),
-      clearCategory("pins", "Pinned playlists clear failed", () =>
-        pinning.clearStored(),
-      ),
-      clearCategory("queue", "Playback session clear failed", () =>
-        playbackSession.clear(),
-      ),
-    ]);
+    await Promise.all(
+      categories.map(async (category) => {
+        const { label, clear } = persistedClears[category];
+        try {
+          await clear();
+          // A later sign-out may have installed a newer durable fence while
+          // this clear was in flight. Only its owning transition may release it.
+          if (ownsClear()) completeAccountDataClear(category);
+        } catch (error) {
+          const message = safeErrorMessage(error);
+          log(`${label}: ${message}`);
+          failures.push(`${label}: ${message}`);
+        }
+      }),
+    );
     if (failures.length > 0) {
       throw new Error(`Account data clear failed: ${failures.join("; ")}`);
+    }
+  };
+
+  const retryBlockedAccountData = async (): Promise<void> => {
+    const blocked = storedBlockedAccountData();
+    if (blocked.length === 0) return;
+    log(`Retrying account data clear at startup: ${blocked.join(", ")}.`);
+    const generation = accountGeneration;
+    // A sign-in or sign-out that starts during the retry installs its own
+    // fence, so this retry must not release it.
+    const ownsClear = (): boolean =>
+      accountGeneration === generation && !transitioning();
+    try {
+      await clearPersistedAccountData(ownsClear, blocked);
+    } catch (error) {
+      log(`Startup account data retry failed: ${safeErrorMessage(error)}`);
     }
   };
 
@@ -558,5 +593,6 @@ export function createControllerAccount(
     onMusicKitAuthorizationChange,
     suspectSession: (error, path) => sessionHealth.suspect(error, path),
     generation: () => accountGeneration,
+    retryBlockedAccountData,
   };
 }

@@ -663,6 +663,9 @@ export function createAppController(
 
   const initializeController = async (): Promise<void> => {
     playbackSession.start();
+    // Clears what a failed earlier clear left fenced. It runs before any local
+    // read, so restore, pins, and library cache see the outcome.
+    await accounts.retryBlockedAccountData();
     setInitializationState({ status: "loading" });
     log("Initializing MusicKit…");
     // Opens the SQLite cache during MusicKit configure. Nothing is shown from

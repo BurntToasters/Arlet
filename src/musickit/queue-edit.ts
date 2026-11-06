@@ -33,6 +33,63 @@ export interface QueueEditPlan {
   native?: (queue: NativeQueue, isCurrent: () => boolean) => Promise<void>;
 }
 
+/**
+ * How long a queued edit waits for the edit ahead of it before giving up on
+ * it. A MusicKit call that never settles must not block future edits forever;
+ * a generous window keeps normal slow rebuilds intact while still recovering.
+ */
+const QUEUE_EDIT_WATCHDOG_MS = 20_000;
+
+interface QueueEditRun {
+  /** Set by the edit behind this one when its watchdog gives up on it. */
+  abandoned: boolean;
+}
+
+interface QueueEditChain {
+  /** Settles when the edit that currently owns the chain finishes. */
+  tail: Promise<void>;
+  /** The edit `tail` belongs to, so a watchdog can abandon it. */
+  current?: QueueEditRun;
+}
+
+/**
+ * One chain per MusicKit instance: edits against one provider queue run one
+ * after another, while a replaced instance (sign-out then in) starts clean.
+ */
+const editChains = new WeakMap<MusicKit.MusicKitInstance, QueueEditChain>();
+
+function editChain(instance: MusicKit.MusicKitInstance): QueueEditChain {
+  const existing = editChains.get(instance);
+  if (existing) return existing;
+  const chain: QueueEditChain = { tail: Promise.resolve() };
+  editChains.set(instance, chain);
+  return chain;
+}
+
+/**
+ * Resolves true when the edit ahead settles, or false once the watchdog
+ * window passes. The timer is cleared when that edit wins the race.
+ */
+function waitForPreviousEdit(
+  previous: Promise<void>,
+  timeoutMs: number,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(false);
+    }, timeoutMs);
+    void previous.then(() => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(true);
+    });
+  });
+}
+
 function assertUpcoming(
   queue: readonly Track[],
   current: number,
@@ -238,14 +295,12 @@ async function rebuildQueue(
  * state is resynced from the provider instead of overwritten with the stale
  * result.
  */
-export async function editQueue(
+async function runQueueEdit(
   instance: MusicKit.MusicKitInstance,
   plan: (queue: readonly Track[], current: number) => QueueEditPlan | undefined,
-  /** Told how many unplayable songs a rebuild dropped, so it can say so. */
-  onSkipped?: (count: number) => void,
-  isCurrent: () => boolean = () => true,
+  onSkipped: ((count: number) => void) | undefined,
+  isCurrent: () => boolean,
 ): Promise<QueueEditTier> {
-  if (!isCurrent()) return "noop";
   syncMusicKitQueue(instance);
   if (!isCurrent()) return "noop";
   const playback = getState().playback;
@@ -284,4 +339,58 @@ export async function editQueue(
   }
   syncMusicKitQueue(instance);
   throw new Error("The queue changed during this edit and was reloaded.");
+}
+
+/**
+ * Runs one queue edit. Edits against the same MusicKit instance are queued:
+ * each one waits for the edit ahead to settle before it reads local state and
+ * plans, so consecutive clicks compose instead of racing the provider queue.
+ * If that edit takes longer than the watchdog window, it is abandoned, the
+ * provider queue is read back into local state, and this edit continues. An
+ * abandoned edit re-checks the extra condition around every await, so its
+ * late completion can never write local state.
+ */
+export async function editQueue(
+  instance: MusicKit.MusicKitInstance,
+  plan: (queue: readonly Track[], current: number) => QueueEditPlan | undefined,
+  /** Told how many unplayable songs a rebuild dropped, so it can say so. */
+  onSkipped?: (count: number) => void,
+  isCurrent: () => boolean = () => true,
+): Promise<QueueEditTier> {
+  if (!isCurrent()) return "noop";
+  const chain = editChain(instance);
+  const previous = chain.tail;
+  const pending = chain.current;
+  const run: QueueEditRun = { abandoned: false };
+  let settle = (): void => {};
+  chain.tail = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  chain.current = run;
+  try {
+    // With nothing ahead, the edit starts synchronously as it always has; a
+    // change that lands in the same turn stays "during the edit".
+    if (pending) {
+      const previousSettled = await waitForPreviousEdit(
+        previous,
+        QUEUE_EDIT_WATCHDOG_MS,
+      );
+      if (!previousSettled) {
+        pending.abandoned = true;
+        // Plan from what the provider actually holds now, not from the state
+        // its stuck edit may never finish writing.
+        if (isCurrent()) syncMusicKitQueue(instance);
+      }
+    }
+    const current = (): boolean => !run.abandoned && isCurrent();
+    if (!current()) return "noop";
+    return await runQueueEdit(instance, plan, onSkipped, current);
+  } catch (error) {
+    // A successor already took over, so its report is the one that matters.
+    if (run.abandoned) return "noop";
+    throw error;
+  } finally {
+    settle();
+    if (chain.current === run) chain.current = undefined;
+  }
 }

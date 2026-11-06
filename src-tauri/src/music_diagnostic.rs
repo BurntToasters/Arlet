@@ -14,15 +14,24 @@ pub fn should_auto_open_music_diagnostic(value: Option<&str>) -> bool {
 
 /// Opens Apple's site in a separate webview with zero Tauri IPC.
 /// Do not inject scripts or scrape the page; this is a DRM-runtime probe only.
+///
+/// Async on purpose: building a webview deadlocks the Windows event loop when
+/// it runs in a synchronous command (tauri 2.12.5 `WebviewWindowBuilder::new`).
 #[tauri::command]
-pub fn open_music_diagnostic(app: AppHandle) -> Result<String, String> {
+pub async fn open_music_diagnostic(app: AppHandle) -> Result<String, String> {
+    open_music_diagnostic_window(&app)
+}
+
+/// The blocking half of the command. Callers outside Tauri must run it on a
+/// worker thread, never on the event loop.
+pub fn open_music_diagnostic_window(app: &AppHandle) -> Result<String, String> {
     if let Some(existing) = app.get_webview_window(WINDOW_LABEL) {
         existing.set_focus().map_err(|err| err.to_string())?;
         return Ok("focused".to_string());
     }
 
     let url = Url::parse(DIAGNOSTIC_URL).map_err(|err| err.to_string())?;
-    WebviewWindowBuilder::new(&app, WINDOW_LABEL, WebviewUrl::External(url))
+    let builder = WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::External(url))
         .title("Arlet — music.apple.com diagnostic (unprivileged)")
         .inner_size(1100.0, 800.0)
         .resizable(true)
@@ -33,9 +42,17 @@ pub fn open_music_diagnostic(app: AppHandle) -> Result<String, String> {
                 && url
                     .host_str()
                     .is_some_and(|host| host == "apple.com" || host.ends_with(".apple.com"))
-        })
-        .build()
-        .map_err(|err| err.to_string())?;
+        });
+    #[cfg(feature = "e2e")]
+    let builder = if let Some(directory) =
+        crate::app_paths::webview_data_dir().map_err(|err| err.to_string())?
+    {
+        std::fs::create_dir_all(&directory).map_err(|err| err.to_string())?;
+        builder.data_directory(directory)
+    } else {
+        builder
+    };
+    builder.build().map_err(|err| err.to_string())?;
     Ok("opened".to_string())
 }
 

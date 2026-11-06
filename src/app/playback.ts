@@ -44,11 +44,13 @@ import {
   setQueue,
   setQueueSnapshot,
   setVolume,
+  subscribe,
 } from "../state.ts";
 import { errorMessage, type ControllerContext } from "./controller-support.ts";
 import { createPlayRequests, createPlayTracks } from "./playback-play.ts";
 import { createQueueInsert } from "./playback-insert.ts";
 import { createQueueContinuation } from "./queue-continuation.ts";
+import { beginQueueSetup } from "./queue-setup.ts";
 
 /**
  * Mutable playback bookkeeping shared by the playback modules. One instance
@@ -61,6 +63,11 @@ export interface PlaybackSession {
   playIntent: number;
   // Bumped by a pause. A play still awaiting queue setup must not start audio.
   pauseCount: number;
+  // Bumped when a Play starts replacing the provider queue. An insert started
+  // during setup waits on `queueSetup`, then plans against the new queue, and
+  // aborts if another setup claims the provider before its calls land.
+  queueSetupGeneration: number;
+  queueSetup: Promise<void> | undefined;
   // `pauseCount` when the user last pressed play. A play pressed after the
   // latest pause is the user's last word, so setup may still start audio.
   playPressedAt: number;
@@ -109,6 +116,8 @@ export function createPlayback(context: ControllerContext) {
     pauseCount: 0,
     playPressedAt: -1,
     pauseListeners: new Set<() => void>(),
+    queueSetupGeneration: 0,
+    queueSetup: undefined,
     queueRest: [],
     restGeneration: 0,
     refilling: false,
@@ -120,6 +129,15 @@ export function createPlayback(context: ControllerContext) {
     station: undefined,
   };
   const shared: PlaybackContext = { ...context, session };
+
+  // Account transitions reset the playback scope. A station from the previous
+  // scope must not label a handoff's parked queue.
+  subscribe(() => {
+    const { auth } = getState();
+    if (auth.pending === true || auth.status !== "authorized") {
+      session.station = undefined;
+    }
+  });
 
   /** Levels written to MusicKit, so its volume events can be told apart. */
   const sentMusicVolumes: number[] = [];
@@ -260,6 +278,13 @@ export function createPlayback(context: ControllerContext) {
   const insert = createQueueInsert(shared, { playTracks });
   const { insertTracks } = insert;
 
+  /** The rest still to be added, but only while it belongs to `queue`. */
+  const currentRest = (queue: Track[]): Track[] =>
+    session.queueRest.length > 0 &&
+    queue.some((track) => isSameTrack(track, session.restAnchor))
+      ? session.queueRest
+      : [];
+
   const seek = async (seconds: number): Promise<void> => {
     if (!Number.isFinite(seconds)) return;
     const safeSeconds = Math.max(0, seconds);
@@ -267,9 +292,14 @@ export function createPlayback(context: ControllerContext) {
     // A parked station restarts on Play, so it has no position to move to.
     if (pendingRestore?.station) return;
     if (pendingRestore) {
-      // Nothing is loaded yet; resume starts from the new position.
-      setPendingRestore({ ...pendingRestore, positionSeconds: safeSeconds });
-      setPlaybackPosition(safeSeconds, durationSeconds);
+      // Nothing is loaded yet; resume starts from the new position, within
+      // the song when its length is known.
+      const resumeSeconds =
+        Number.isFinite(durationSeconds) && durationSeconds > 0
+          ? Math.min(safeSeconds, durationSeconds)
+          : safeSeconds;
+      setPendingRestore({ ...pendingRestore, positionSeconds: resumeSeconds });
+      setPlaybackPosition(resumeSeconds, durationSeconds);
       return;
     }
     // Show the target at once; stale ticks are held until the seek lands.
@@ -318,13 +348,8 @@ export function createPlayback(context: ControllerContext) {
         queue[0] !== undefined && isSameTrack(queue[0], session.historyAnchor)
           ? session.startHistory
           : [];
-      const rest =
-        session.queueRest.length > 0 &&
-        queue.some((track) => isSameTrack(track, session.restAnchor))
-          ? session.queueRest
-          : [];
       return {
-        tracks: [...history, ...queue, ...rest],
+        tracks: [...history, ...queue, ...currentRest(queue)],
         index: history.length + queueIndex,
       };
     },
@@ -349,14 +374,20 @@ export function createPlayback(context: ControllerContext) {
       session.station = station;
       clearPlaybackError();
       setPlaybackStatus("loading");
+      const releaseQueueSetup = beginQueueSetup(session);
       try {
         await instance.setQueue(url ? { url } : { station: id });
         await startAudio(instance, request);
       } catch (error) {
         // A superseded or signed-out station play reports nothing.
         if (!request.current()) return;
+        // The provider never took the station. A later handoff must park the
+        // untouched queue, not label it as a station.
+        session.station = undefined;
         reportPlayFailure("Station play failed", error);
         throw error;
+      } finally {
+        releaseQueueSetup();
       }
     },
 
@@ -658,7 +689,7 @@ export function createPlayback(context: ControllerContext) {
         if (onStartSong && session.startHistory.length > 0) {
           const history = session.startHistory;
           await playTracks(
-            [...history, ...queue, ...session.queueRest],
+            [...history, ...queue, ...currentRest(queue)],
             history.length - 1,
           );
           return;

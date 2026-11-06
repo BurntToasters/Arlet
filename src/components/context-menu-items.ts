@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import {
   ArrowLeft,
   ArrowRight,
@@ -28,8 +29,8 @@ import {
   X,
 } from "lucide-preact";
 import type { LucideIcon } from "lucide-preact";
-import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { useAppRouter } from "../app/context.tsx";
+import { isEditableTarget } from "../app/shortcuts.ts";
 import type { AppController } from "../app/controller.ts";
 import {
   isLibraryTarget,
@@ -60,7 +61,8 @@ export interface MenuItem {
   icon: LucideIcon;
   disabled?: boolean;
   targetId?: string;
-  action: () => void;
+  /** Paste receives the click so it can require a trusted user gesture. */
+  action: (event?: Event) => void;
 }
 
 /** A visual divider between groups. Arrow keys skip it. */
@@ -221,18 +223,27 @@ export function buildItems({
         shortcut: "Ctrl+V",
         icon: Clipboard,
         disabled: !editable,
-        action: run(() => {
-          void readText()
+        action: (event?: Event) => {
+          // A synthetic click must not read the clipboard. The editable target
+          // is rechecked after focus returns and again before insertion.
+          if (event?.isTrusted !== true || !editable) {
+            close();
+            return;
+          }
+          restoreFocus();
+          if (!isEditableTarget(document.activeElement)) {
+            close();
+            return;
+          }
+          close();
+          void invoke<string>("paste_clipboard_text")
             .then((text: string) => {
-              // execCommand lets WebView2 insert into the focused native input;
-              // the read is intentionally permissioned through the Tauri plugin.
-              if (editable) {
-                restoreFocus();
+              if (isEditableTarget(document.activeElement)) {
                 insertClipboardText(text);
               }
             })
             .catch(() => undefined);
-        }),
+        },
       },
       {
         id: "select-all",
