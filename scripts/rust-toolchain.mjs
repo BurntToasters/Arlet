@@ -113,9 +113,12 @@ function rustup(args, cwd) {
 
 function parseArguments(argv) {
   const options = { install: false, defaultToolchain: false, targets: [] };
+  let print = false;
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
-    if (argument === "--install") {
+    if (argument === "--print") {
+      print = true;
+    } else if (argument === "--install") {
       options.install = true;
     } else if (argument === "--default") {
       options.defaultToolchain = true;
@@ -129,6 +132,12 @@ function parseArguments(argv) {
     } else {
       throw new Error(`Unknown argument: ${argument}`);
     }
+  }
+  if (
+    print &&
+    (options.install || options.defaultToolchain || options.targets.length > 0)
+  ) {
+    throw new Error("--print cannot be combined with an action");
   }
   if (options.defaultToolchain && !options.install) {
     throw new Error("--default requires --install");

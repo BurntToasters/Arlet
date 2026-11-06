@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import process from "node:process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
@@ -78,4 +80,32 @@ test("Node and npm update environment versions fail closed at exact boundaries",
   assert.equal(isSupportedNodeVersion("26.13.0"), true);
   assert.equal(isSupportedNodeVersion("27.0.0"), true);
   assert.throws(() => parseVersion("latest"), /Invalid semantic version/);
+});
+
+test("rust toolchain CLI --print matches the bare pin and never combines with an action", () => {
+  const script = path.join(root, "scripts", "rust-toolchain.mjs");
+  const run = (args) =>
+    spawnSync(process.execPath, [script, ...args], { encoding: "utf8" });
+  const bare = run([]);
+  assert.equal(bare.status, 0, bare.stderr);
+  assert.match(bare.stdout, /^\d+\.\d+\.\d+\n$/u);
+  const printed = run(["--print"]);
+  assert.equal(printed.status, 0, printed.stderr);
+  assert.equal(printed.stdout, bare.stdout);
+  for (const args of [
+    ["--print", "--install"],
+    ["--install", "--print"],
+    ["--print", "--target", "x86_64-pc-windows-msvc"],
+    ["--target", "x86_64-pc-windows-msvc", "--print"],
+  ]) {
+    const result = run(args);
+    const label = args.join(" ");
+    assert.notEqual(result.status, 0, `${label} must fail`);
+    assert.match(
+      result.stderr,
+      /--print cannot be combined/u,
+      `${label} must name --print`,
+    );
+    assert.equal(result.stdout, "", `${label} must not print or act`);
+  }
 });
