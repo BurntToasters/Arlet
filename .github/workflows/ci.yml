@@ -55,7 +55,11 @@ jobs:
       - name: Read pinned Rust version
         id: rust-pin
         shell: bash
-        run: echo "version=$(node scripts/rust-toolchain.mjs)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          version="$(node scripts/rust-toolchain.mjs)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: ${{ steps.rust-pin.outputs.version }}
@@ -100,7 +104,11 @@ jobs:
       - name: Read pinned Rust version
         id: rust-pin
         shell: bash
-        run: echo "version=$(node scripts/rust-toolchain.mjs)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          version="$(node scripts/rust-toolchain.mjs)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: ${{ steps.rust-pin.outputs.version }}
@@ -148,7 +156,11 @@ jobs:
       - name: Read pinned Rust version
         id: rust-pin
         shell: bash
-        run: echo "version=$(node scripts/rust-toolchain.mjs)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          version="$(node scripts/rust-toolchain.mjs)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: ${{ steps.rust-pin.outputs.version }}

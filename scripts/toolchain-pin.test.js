@@ -14,7 +14,7 @@ import {
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (file) => readFileSync(path.join(root, file), "utf8");
 const rustPinStep =
-  /- name: Read pinned Rust version\n\s+id: rust-pin\n\s+shell: bash\n\s+run: echo "version=\$\(node scripts\/rust-toolchain\.mjs\)" >> "\$GITHUB_OUTPUT"/u;
+  /- name: Read pinned Rust version\n\s+id: rust-pin\n\s+shell: bash\n\s+run: \|\n\s+set -euo pipefail\n\s+version="\$\(node scripts\/rust-toolchain\.mjs\)"\n\s+test -n "\$version"\n\s+echo "version=\$version" >> "\$GITHUB_OUTPUT"/gu;
 const pinnedToolchain =
   /toolchain: \$\{\{ steps\.rust-pin\.outputs\.version \}\}/gu;
 
@@ -32,7 +32,14 @@ test("Rust toolchain is pinned to one exact version everywhere", () => {
   ]) {
     const workflow = read(file);
     assert.doesNotMatch(workflow, /RUST_VERSION/u, `${file} uses a pin env`);
-    assert.match(workflow, rustPinStep, `${file} must extract the pin`);
+    const toolchainSteps =
+      workflow.match(/uses: dtolnay\/rust-toolchain/gu)?.length ?? 0;
+    assert.ok(toolchainSteps > 0, `${file} must install Rust`);
+    assert.equal(
+      workflow.match(rustPinStep)?.length ?? 0,
+      toolchainSteps,
+      `${file} must extract a non-empty pin before every Rust toolchain step`,
+    );
     assert.equal(
       workflow.match(pinnedToolchain)?.length ?? 0,
       workflow.match(/uses: dtolnay\/rust-toolchain/gu)?.length ?? 0,
