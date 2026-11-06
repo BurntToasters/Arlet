@@ -5,7 +5,7 @@
 
 | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                                          | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
 | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.4/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.4/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.5/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.5/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -17,10 +17,30 @@
 > Key: https://tuxedo.rosie.run/GPG/BurntToasters_0xF2FBC20F_public.asc.
 >
 > This app is currently unstable. Bugs, issues, and rough edges are expected.
+> The `v0.4.0` betas are very unstable, and `v1.0.0` will be the first stable release.
 
 ### ℹ️ Enjoying Arlet? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
+
+## Changes in `v0.4.0-beta.5:`
+
+- **Ver:** Updated version to `v0.4.0-beta.5`.
+- **Fix:** Repeat One and Repeat All were swapped. Repeat One now shows a Repeat-1 icon, and with Repeat One on, Next and Previous move between songs.
+- **Fix:** Shuffle covers the whole album or playlist, including the songs before the one you started, as in Apple Music. Turning shuffle off returns to the album or playlist order after the current song, including playlists with the same song twice.
+- **Fix:** Resumed queues and queue edits are no longer reshuffled.
+- **Fix:** Choosing a song to play next no longer flashes the player or the Windows media controls.
+- **UI:** On stations, Shuffle and Repeat are hidden, and Play Next, Play Later, and Clear explain why they're unavailable.
+- **NEW - Autoplay:** Autoplay songs show under their own `Autoplay` heading with an on/off toggle. Play Later goes before them, and Clear keeps them. Turning Repeat on turns them off. They're never saved into your queue, a playlist, or a handoff.
+- **NEW - Audio quality:** A new setting with High (256 kbps, the default), Standard (64 kbps), and Automatic. It applies from the next song, and Settings shows the current streaming bitrate.
+- **UI:** Without an Apple Music subscription, Arlet shows a `Previews only` notice with a Subscribe button that opens Apple's page.
+- **NEW - Replay:** Home has Replay shelves.
+- **NEW - Record labels:** Record label pages, linked from albums, and Record Labels results in Search.
+- **NEW - Activities:** Activity pages, and Activities results in Search.
+- **NEW - Get Info:** A Get Info dialog for songs.
+- **NEW - Folder choice:** When creating a playlist or folder, you can choose a folder for it.
+- **Docs:** Added a MusicKit feature coverage document. It lists what Arlet supports, what it leaves out on purpose (such as lyrics, music videos, Lossless, and Atmos), and what Apple's public API doesn't allow.
+- **Carry-forward:** Everything in `v0.4.0-beta.4` is still included below.
 
 ## Changes in `v0.4.0-beta.4:`
 

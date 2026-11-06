@@ -33,6 +33,16 @@ declare namespace MusicKit {
     player?: Player;
     currentPlaybackQueueItem?: MediaItem | null;
     currentPlaybackQueueItemIndex?: number;
+    /** Playback bitrate in kbps; compare with `PlaybackBitrate`. */
+    bitrate?: number;
+    /** True when the user gets 30 s previews instead of full playback. */
+    previewOnly?: boolean;
+    hasMusicSubscription?: () => Promise<boolean>;
+    /** Apple URL where the user can subscribe to Apple Music. */
+    subscribeURL?: string;
+    storefrontCountryCode?: string;
+    /** Autoplay keeps adding songs after the user's queue when on. */
+    autoplayEnabled?: boolean;
     play(): Promise<void>;
     playNext?(
       options?: QueueOptions | string | MediaItem,
@@ -122,6 +132,15 @@ declare namespace MusicKit {
     currentItem?: MediaItem | null;
     nextPlayableItem?: MediaItem | null;
     previousPlayableItem?: MediaItem | null;
+    /** Songs MusicKit added on its own while autoplay is on. */
+    autoplayItems?: MediaItem[];
+    /** Songs the user queued, in order. */
+    userAddedItems?: MediaItem[];
+    unplayedAutoplayItems?: MediaItem[];
+    unplayedUserItems?: MediaItem[];
+    /** Queue index where `playLater` inserts, before any autoplay songs. */
+    appendTargetIndex?: number;
+    hasAutoplayStation?: boolean;
     [key: string]: unknown;
   }
 
@@ -131,7 +150,8 @@ declare namespace MusicKit {
     nowPlayingItemIndex?: number;
     currentPlaybackQueueItemIndex?: number;
     shuffle?: boolean;
-    repeatMode?: number | "off" | "all" | "one";
+    /** Numeric in MusicKit v3 (see `PlayerRepeatMode`); strings on older shapes. */
+    repeatMode?: number | "none" | "off" | "all" | "one";
     /** Select and begin playback at a queue index in MusicKit JS v3. */
     changeToMediaAtIndex?(index: number): Promise<number>;
     [key: string]: unknown;
@@ -164,6 +184,17 @@ declare namespace MusicKit {
     completed: number;
   };
 
+  /**
+   * Global enums MusicKit v3 exposes with numeric values (repeat none 0, one 1,
+   * all 2; shuffle off 0, songs 1). Optional: older runtimes may lack them, so
+   * callers fall back to the v3 numbers.
+   */
+  const PlayerRepeatMode:
+    { none: number; one: number; all: number } | undefined;
+  const PlayerShuffleMode: { off: number; songs: number } | undefined;
+  /** Bitrates in kbps. */
+  const PlaybackBitrate: { STANDARD: number; HIGH: number } | undefined;
+
   /** Names of events the runtime may not advertise; check `typeof` before use. */
   const Events: {
     playbackStateDidChange: string;
@@ -178,6 +209,10 @@ declare namespace MusicKit {
     metadataDidChange?: string;
     shuffleModeDidChange?: string;
     repeatModeDidChange?: string;
+    autoplayEnabledDidChange?: string;
+    playbackBitrateDidChange?: string;
+    storefrontCountryCodeDidChange?: string;
+    storefrontIdentifierDidChange?: string;
   };
 
   function configure(config: Config): MusicKitInstance;

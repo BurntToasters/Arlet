@@ -14,6 +14,7 @@ import {
   clearRecentSearches,
   getState,
   resetState,
+  setAccountSubscription,
   setAccountSummary,
   setAuthPending,
   setAuthState,
@@ -91,6 +92,11 @@ export interface ControllerAccount {
   onMusicKitAuthorizationChange(instance: MusicKit.MusicKitInstance): void;
   /** Reports an error that may mean the Apple sign-in expired. */
   suspectSession(error: unknown, path?: string): void;
+  /**
+   * Asks MusicKit whether the account has a subscription. The status stays
+   * "unknown" while the lookup runs and when it fails. Never rejects.
+   */
+  refreshSubscription(): Promise<void>;
   /** Bumped on sign-in and sign-out; work started earlier must not land. */
   generation(): number;
   /**
@@ -313,12 +319,43 @@ export function createControllerAccount(
     log,
   });
 
+  /** Bumped on each subscription lookup; only the newest one may write. */
+  let subscriptionSequence = 0;
+
+  const refreshSubscription = async (): Promise<void> => {
+    if (getState().auth.status !== "authorized") return;
+    const instance = context.getMusic();
+    subscriptionSequence += 1;
+    const sequence = subscriptionSequence;
+    const generation = accountGeneration;
+    // A sign-out or sign-in starts a new generation, and a newer lookup bumps
+    // the sequence; either makes this answer stale.
+    const isCurrent = (): boolean =>
+      sequence === subscriptionSequence && generation === accountGeneration;
+    setAccountSubscription("unknown");
+    if (!instance || typeof instance.hasMusicSubscription !== "function") {
+      return;
+    }
+    try {
+      const subscribed = await instance.hasMusicSubscription();
+      if (!isCurrent() || typeof subscribed !== "boolean") return;
+      setAccountSubscription(subscribed ? "active" : "none");
+    } catch (error) {
+      if (isCurrent()) {
+        log(`Subscription check failed: ${safeErrorMessage(error)}`);
+      }
+    }
+  };
+
   const onMusicKitAuthorizationChange = (
     instance: MusicKit.MusicKitInstance,
   ): void => {
     if (transitioning()) return;
     if (typeof instance.isAuthorized !== "boolean") return;
-    if (isAuthorized(instance)) return;
+    if (isAuthorized(instance)) {
+      void refreshSubscription();
+      return;
+    }
     if (getState().auth.status !== "authorized") return;
     handleSessionExpired("MusicKit no longer authorizes the session");
   };
@@ -407,6 +444,7 @@ export function createControllerAccount(
       if (await stopIfSignedOut()) return;
       // Keep the user token private to MusicKit; only expose auth status.
       setAuthState({ status: "authorized" });
+      void refreshSubscription();
       // A lookup made while the popup was open used the old sign-in; look
       // the playing song's rating up again for the new one.
       ratings.reset();
@@ -592,6 +630,7 @@ export function createControllerAccount(
     cancelSignIn,
     onMusicKitAuthorizationChange,
     suspectSession: (error, path) => sessionHealth.suspect(error, path),
+    refreshSubscription,
     generation: () => accountGeneration,
     retryBlockedAccountData,
   };

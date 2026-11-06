@@ -35,7 +35,9 @@ import { UpdateReadyModal } from "../components/UpdateReadyModal.tsx";
 import { ContextMenu } from "../components/ContextMenu.tsx";
 import { PlaylistDialogs } from "../components/PlaylistDialogs.tsx";
 import { ShortcutOverlay } from "../components/ShortcutOverlay.tsx";
+import { SongInfoDialog } from "../components/SongInfoDialog.tsx";
 import { ActionToasts } from "../components/ActionToasts.tsx";
+import { PreviewNotice } from "../components/PreviewNotice.tsx";
 import { SessionExpiredNotice } from "../components/SessionExpiredNotice.tsx";
 import { TokenExpiryNotice } from "../components/TokenExpiryNotice.tsx";
 import type { DiagnosticsStore } from "../diagnostics/store.ts";
@@ -343,12 +345,14 @@ function AppLayout({
       <UpdateReadyModal />
       <ContextMenu />
       <PlaylistDialogs />
+      <SongInfoDialog />
       {shortcutsOpen ? (
         <ShortcutOverlay onClose={() => setShortcutsOpen(false)} />
       ) : null}
       <ActionToasts />
       <div className="notice-stack">
         <SessionExpiredNotice />
+        <PreviewNotice />
         <TokenExpiryNotice />
       </div>
     </div>

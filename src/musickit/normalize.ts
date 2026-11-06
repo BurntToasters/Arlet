@@ -11,6 +11,7 @@ import type {
   Playlist,
   PlaylistFolder,
   PlaylistTrackResourceType,
+  SongInfo,
   Track,
 } from "../domain/music.ts";
 
@@ -722,7 +723,7 @@ export function plainTextFromHtml(value: string): string {
 }
 
 /** Apple's `{ short, standard }` notes, or a plain string, as plain text. */
-function editorialText(value: unknown): string | undefined {
+export function editorialText(value: unknown): string | undefined {
   const record = asRecord(value);
   const raw =
     typeof value === "string"
@@ -868,4 +869,64 @@ export function normalizeTrackResource(
     return undefined;
   }
   return normalizeResourceTrack(resource, type);
+}
+
+/** One string field of Apple's response as plain text, or undefined. */
+function plainField(value: unknown): string | undefined {
+  const text = stringValue(value);
+  if (!text) return undefined;
+  return plainTextFromHtml(text) || undefined;
+}
+
+/**
+ * Get Info fields for a catalog song. `album` is the song's album, read with
+ * `include=record-labels`; it supplies the copyright, label, and label ID.
+ */
+export function normalizeSongInfo(
+  song: AppleMusicResource,
+  album?: AppleMusicResource,
+): SongInfo | undefined {
+  const id = resourceId(song);
+  if (!id) return undefined;
+  const attributes = attributesOf(song);
+  const albumAttributes = album ? attributesOf(album) : {};
+  const info: SongInfo = {
+    id,
+    title: plainField(attributes.name) ?? "Unknown Title",
+    artistName: plainField(attributes.artistName) ?? "Unknown Artist",
+    genreNames: stringList(attributes.genreNames)
+      .map((name) => plainTextFromHtml(name))
+      .filter((name) => name !== ""),
+  };
+  const albumTitle = plainField(attributes.albumName);
+  if (albumTitle) info.albumTitle = albumTitle;
+  const composerName = plainField(attributes.composerName);
+  if (composerName) info.composerName = composerName;
+  const isrc = plainField(attributes.isrc);
+  if (isrc) info.isrc = isrc;
+  const durationMs = positiveNumber(attributes.durationInMillis);
+  if (durationMs !== undefined && durationMs > 0) info.durationMs = durationMs;
+  const discNumber = positiveInteger(attributes.discNumber);
+  if (discNumber) info.discNumber = discNumber;
+  const trackNumber = positiveInteger(attributes.trackNumber);
+  if (trackNumber) info.trackNumber = trackNumber;
+  const releaseDate = stringValue(attributes.releaseDate);
+  if (releaseDate && /^\d{4}/u.test(releaseDate)) {
+    info.releaseDate = releaseDate;
+  }
+  const contentRating = stringValue(attributes.contentRating)?.toLowerCase();
+  if (contentRating === "explicit" || contentRating === "clean") {
+    info.contentRating = contentRating;
+  }
+  const copyright = plainField(albumAttributes.copyright);
+  if (copyright) info.copyright = copyright;
+  const recordLabel = plainField(albumAttributes.recordLabel);
+  if (recordLabel) info.recordLabel = recordLabel;
+  if (album) {
+    const recordLabelId = firstResourceId(
+      relationshipData(album, "record-labels"),
+    );
+    if (recordLabelId) info.recordLabelId = recordLabelId;
+  }
+  return info;
 }

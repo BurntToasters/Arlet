@@ -5,12 +5,16 @@ import {
 } from "../musickit/errors.ts";
 import {
   changeToMediaAtIndex,
+  holdProviderShuffleOff,
+  isProviderShuffleHeldOff,
   queueDescriptorsForTracks,
   queueOptionsForTracks,
   preparePlaybackModesForPlay,
   readMusicKitQueue,
   readPlaybackModes,
+  syncMusicKitQueue,
 } from "../musickit/player.ts";
+import { labelOccurrences } from "../musickit/queue-edit.ts";
 import { isSameTrack, type Track } from "../domain/music.ts";
 import { normalizeTrack } from "../musickit/normalize.ts";
 import {
@@ -138,7 +142,11 @@ export function createPlayTracks(
     const chosen = queue[startIndex];
     const provider = readMusicKitQueue(instance);
     if (!provider) return startIndex;
-    const shuffled = readPlaybackModes(instance).shuffleMode === "songs";
+    // A keep-order lease holds MusicKit's shuffle off, so its order is the
+    // saved order even though the UI reports shuffle on.
+    const shuffled =
+      readPlaybackModes(instance).shuffleMode === "songs" &&
+      !isProviderShuffleHeldOff(instance);
     const matches: number[] = [];
     provider.items.forEach((item, index) => {
       if (isSameTrack(normalizeTrack(item), chosen)) matches.push(index);
@@ -241,6 +249,12 @@ export function createPlayTracks(
           restAnchor: session.restAnchor,
         }
       : undefined;
+    // The collection a failed Play puts back with the parked queue.
+    const parkedCollection = {
+      collection: session.collection,
+      intact: session.collectionIntact,
+      occurrences: session.occurrences,
+    };
     const releaseSave = parked ? holdPlaybackSessionSave() : undefined;
     clearContinuation();
     const generation = session.restGeneration;
@@ -262,8 +276,22 @@ export function createPlayTracks(
     // plan against the new queue instead of the one being replaced.
     const releaseQueueSetup = beginQueueSetup(session);
     try {
+      // Live MusicKit reshuffles the whole queue on every setQueue while its
+      // shuffle is on, which would undo a resume's saved order. With keepOrder
+      // and shuffle on, hold MusicKit's shuffle off for this queue; the UI
+      // still reports shuffle on. This runs after beginPlayRequest, which
+      // lifts any earlier hold, and before the first setQueue.
+      if (options.keepOrder && shuffled && !holdProviderShuffleOff(instance)) {
+        log(
+          "Shuffle could not be held off; the saved order may be reshuffled.",
+        );
+      }
       let batchStart = split.startIndex;
       setQueue([...batch], batchStart);
+      // A Play starts a new collection: the whole list in the order it came.
+      session.collection = [...requestedTracks];
+      session.collectionIntact = true;
+      session.occurrences = [];
       // The previous song's position would otherwise show until MusicKit's
       // first time event, and Previous would read it as past the restart point.
       setPlaybackPosition(0, (batch[batchStart]?.durationMs ?? 0) / 1000);
@@ -405,6 +433,19 @@ export function createPlayTracks(
         await startAudio(instance, request);
       }
       step(retriedById ? "play() after ID retry" : "play()");
+      // Labels the chosen song's collection index on the queue MusicKit now
+      // holds, after its own shuffle, so a duplicate names the copy playing.
+      if (request.current()) {
+        syncMusicKitQueue(instance);
+        const now = getState().playback;
+        session.occurrences = labelOccurrences(
+          session.collection,
+          now.queue,
+          now.queueIndex,
+          [],
+          requestedStart,
+        );
+      }
       if (generation === session.restGeneration) {
         setRest(rest, queue.at(-1));
         // The first batch is under the refill threshold; append the next
@@ -426,6 +467,9 @@ export function createPlayTracks(
         setQueueSnapshot(parked.queue, parked.queueIndex, false);
         session.queueRest = parked.rest;
         session.restAnchor = parked.restAnchor;
+        session.collection = parkedCollection.collection;
+        session.collectionIntact = parkedCollection.intact;
+        session.occurrences = parkedCollection.occurrences;
         setQueueRest(parked.rest.length);
         setPendingRestore(parked.restore);
         setPlaybackPosition(parked.positionSeconds, parked.durationSeconds);

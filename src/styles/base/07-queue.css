@@ -210,3 +210,53 @@
   color: var(--text-faint);
   font-size: 12px;
 }
+
+/* Autoplay songs: heading row with the toggle at the right, then their rows. */
+.queue-autoplay {
+  padding: 6px 7px 10px;
+  border-top: 1px solid var(--border);
+}
+.queue-autoplay-head {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 0 0 9px;
+}
+.queue-autoplay-head h3 {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 620;
+}
+.queue-autoplay-toggle {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+}
+.queue-autoplay-toggle:hover:not(:disabled),
+.queue-autoplay-toggle:focus-visible:not(:disabled) {
+  background: var(--surface-active);
+  color: var(--accent-strong);
+}
+.queue-autoplay-toggle.is-active {
+  border-color: var(--accent-strong);
+  background: var(--surface-active);
+  color: var(--accent-strong);
+}
+.queue-autoplay-toggle:disabled {
+  color: var(--text-faint);
+  opacity: 0.55;
+}
+.queue-autoplay-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}

@@ -144,6 +144,7 @@
 }
 
 .playlist-dialog-form input,
+.playlist-dialog-form select,
 .playlist-dialog-form textarea {
   width: 100%;
   border: 1px solid var(--border-strong);
@@ -160,6 +161,7 @@
 }
 
 .playlist-dialog-form input:focus,
+.playlist-dialog-form select:focus,
 .playlist-dialog-form textarea:focus,
 .playlist-dialog-search:focus-within {
   border-color: var(--accent);

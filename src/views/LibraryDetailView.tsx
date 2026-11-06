@@ -43,7 +43,8 @@ import {
   toTrack,
   type ResourceLike,
 } from "./LibraryView.tsx";
-import type { AlbumShelves, Track } from "../domain/music.ts";
+import type { Album, AlbumShelves, Track } from "../domain/music.ts";
+import { serializeRoute } from "../routing/router.ts";
 import {
   ARTWORK_BACKDROP_BUCKET,
   normalizeArtworkUrl,
@@ -453,9 +454,14 @@ function DetailMore({
   kind: "album" | "playlist";
   resource: ResourceLike;
 }): JSX.Element | null {
+  const router = useAppRouter();
   const [open, setOpen] = useState(false);
   const details = detailNotes(kind, resource);
-  if (!details) return null;
+  // An album with a record label gets a link even when its notes are empty.
+  const info = resource.raw as Partial<Album>;
+  const labelId = kind === "album" ? info.recordLabelId : undefined;
+  const labelName = info.recordLabelName ?? info.recordLabel;
+  if (!details && !labelId) return null;
   return (
     <section className="library-detail-more">
       <button
@@ -472,18 +478,39 @@ function DetailMore({
         className="library-detail-more-body"
         hidden={!open}
       >
-        {details.notes ? (
+        {details?.notes ? (
           <p className="library-detail-notes">{details.notes}</p>
         ) : null}
-        {details.recordLabel || details.copyright ? (
+        {labelId || details?.recordLabel || details?.copyright ? (
           <dl className="library-detail-facts">
-            {details.recordLabel ? (
+            {labelId || details?.recordLabel ? (
               <>
                 <dt>Label</dt>
-                <dd>{details.recordLabel}</dd>
+                <dd>
+                  {labelId ? (
+                    // The href is the label route; the click navigates in-app.
+                    <a
+                      className="curator-link"
+                      href={serializeRoute({ kind: "label", id: labelId })}
+                      aria-label={
+                        labelName
+                          ? `Record label: ${labelName}`
+                          : "Record label"
+                      }
+                      onClick={(event) => {
+                        event.preventDefault();
+                        router.navigate({ kind: "label", id: labelId });
+                      }}
+                    >
+                      {labelName ?? "Record label"}
+                    </a>
+                  ) : (
+                    details?.recordLabel
+                  )}
+                </dd>
               </>
             ) : null}
-            {details.copyright ? (
+            {details?.copyright ? (
               <>
                 <dt>Copyright</dt>
                 <dd>{details.copyright}</dd>

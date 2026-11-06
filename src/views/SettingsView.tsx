@@ -1,5 +1,6 @@
 import {
   AlertCircle,
+  AudioLines,
   Bug,
   Check,
   ClipboardCopy,
@@ -43,6 +44,7 @@ import type {
   UpdateState,
   WindowEffectPreference,
 } from "../state.ts";
+import type { AudioQuality } from "../state-types.ts";
 import { reportActionError } from "../components/action-errors.ts";
 import { openAboutLink } from "../platform/support.ts";
 
@@ -176,6 +178,7 @@ export function SettingsView(): JSX.Element {
   const autoplayAvailable = useAppSelector(
     (store) => store.playback.modeCapabilities?.autoplay,
   );
+  const streamingBitrate = useAppSelector((store) => store.playback.bitrate);
   const controller = useAppController();
   const settings = state.settings;
   const authorized = state.auth.status === "authorized";
@@ -224,6 +227,13 @@ export function SettingsView(): JSX.Element {
     void controller
       .setTheme(event.currentTarget.value as ThemePreference)
       .catch(reportActionError);
+  };
+  const updateAudioQuality = (
+    event: TargetedEvent<HTMLSelectElement>,
+  ): void => {
+    void Promise.resolve(
+      controller.setAudioQuality(event.currentTarget.value as AudioQuality),
+    ).catch(reportActionError);
   };
   const updateEffect = (event: TargetedEvent<HTMLSelectElement>): void => {
     void controller
@@ -498,11 +508,32 @@ export function SettingsView(): JSX.Element {
                 />
               </label>
             ) : null}
+            <label className="settings-field">
+              <span>
+                <AudioLines aria-hidden="true" size={16} strokeWidth={1.8} />{" "}
+                Audio quality
+              </span>
+              <select
+                aria-label="Audio quality"
+                value={settings.audioQuality}
+                onChange={updateAudioQuality}
+              >
+                <option value="high">High</option>
+                <option value="standard">Standard</option>
+                <option value="automatic">Automatic</option>
+              </select>
+            </label>
           </div>
           <p className="settings-field-help">
             Restores the last queue and position after restart, paused. Turning
             this off deletes the saved queue.
           </p>
+          <p className="settings-field-help">Applies from the next song.</p>
+          {streamingBitrate !== undefined ? (
+            <p className="settings-field-help" aria-live="polite">
+              {`Streaming at ${streamingBitrate} kbps`}
+            </p>
+          ) : null}
         </section>
 
         <section

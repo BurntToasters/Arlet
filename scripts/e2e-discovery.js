@@ -632,7 +632,7 @@ async function searchResults(page, check) {
     "overview search asks every group with topResults and a limit of 10",
     overviewReady &&
       String(overview?.query?.types) ===
-        "songs,albums,artists,playlists,stations,apple-curators" &&
+        "songs,albums,artists,playlists,stations,apple-curators,record-labels,activities" &&
       String(overview?.query?.limit) === "10",
     { ready: overviewReady, query: overview?.query ?? null },
   );

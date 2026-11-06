@@ -187,8 +187,23 @@ const emitNative = (page, event, payload) =>
  * second clear of each.
  */
 async function idleCap(page, check, artifactDir) {
+  // A queue left playing by an earlier scenario has its idle timer armed at the
+  // real 4-hour limit. Pause it first, so the next Play arms the shortened one.
+  const playingBefore = await page.evaluate(
+    `return document.querySelector(${q(PLAY_BUTTON)})?.getAttribute("aria-label") === "Pause";`,
+  );
+  if (playingBefore) {
+    await pauseWithFastRelease(page);
+    await buttonIs(page, "Play", 5000);
+  }
   await installTimers(page, { idleMs: IDLE_TEST_MS });
   const started = await playSongs(page);
+  // A playback that began before the shortened timer was mapped can keep its
+  // real-limit timer, because the guard only re-arms on a status change. An
+  // activity event re-arms it at the mapped delay, as a user input does.
+  await page.evaluate(
+    `window.dispatchEvent(new Event("pointerdown")); return true;`,
+  );
   const at = await mark(page);
   const paused = await buttonIs(page, "Play", IDLE_TEST_MS + 6000);
   const notice = await waitFor(
@@ -601,6 +616,15 @@ const TOKEN_LINE =
 const PARKED_ALBUM = "album-1";
 const PARKED_QUEUE = ["album-a", "album-b", "album-c", "album-d"];
 const PARKED_START = 1;
+
+/** The provider queue's song IDs, playing index and active song, as MusicKit holds them. */
+const providerQueue = (page) =>
+  page.evaluate(`
+    const queue = window.__ARLET_E2E_MUSIC__.snapshot().queue;
+    return { ids: queue.items.map((item) => item.id), index: queue.index, activeId: queue.activeId };`);
+/** The same songs in any order. */
+const sameSetIds = (actual, expected) =>
+  JSON.stringify([...actual].sort()) === JSON.stringify([...expected].sort());
 
 /** Lines of arlet.log containing text in this E2E run's explicit log directory. */
 function logCount(logDir, text) {
@@ -1027,7 +1051,8 @@ async function parkedQueueOrder(page, check) {
     { shuffled, shuffleOn, playing, first },
   );
 
-  // Park on Album Track B, then Next: songs after it only, in saved order.
+  // Park on Album Track B (the Play's start). MusicKit played the queue in its
+  // shuffled order, so that order is the saved order every resume must keep.
   let pauseAt = await mark(page);
   await fixtureCall(page, "emitPlaybackTime", [SAVED_SECONDS]);
   await waitFor(
@@ -1037,6 +1062,10 @@ async function parkedQueueOrder(page, check) {
   await pauseWithFastRelease(page);
   await waitForTransition(page, pauseAt, "stop");
   await sleep(300);
+  const saved = await providerQueue(page);
+  const startIndex = saved.ids.indexOf("album-b");
+
+  // Next queues the songs after the start song, in the saved order.
   const nextAt = await mark(page);
   await clickTransport(page, "Next track");
   await waitFor(
@@ -1047,17 +1076,35 @@ async function parkedQueueOrder(page, check) {
   await buttonIs(page, "Pause", 5000);
   check(
     "Next on a parked queue queues only the songs after the current one, in order",
-    nextQueue.length === 1 &&
-      sameIds(nextQueue[0].ids, ["album-c", "album-d"]) &&
+    sameSetIds(saved.ids, PARKED_QUEUE) &&
+      saved.activeId === "album-b" &&
+      nextQueue.length === 1 &&
+      sameIds(nextQueue[0].ids, saved.ids.slice(startIndex + 1)) &&
       nextQueue[0].index === 0,
-    { nextQueue },
+    { saved, nextQueue },
   );
 
-  // Park on Album Track C (index 2); Previous steps back to Track B (index 1).
+  // Park on the song Next reached, then press Next again. Previous below then
+  // steps back from a song that has an earlier one (the start song), which must
+  // not be queued again.
   pauseAt = await mark(page);
   await pauseWithFastRelease(page);
   await waitForTransition(page, pauseAt, "stop");
   await sleep(300);
+  const stepAt = await mark(page);
+  await clickTransport(page, "Next track");
+  await waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().transitions.slice(${stepAt.transitions}).some((item) => item.type === "setQueue")`,
+  );
+  await buttonIs(page, "Pause", 5000);
+  pauseAt = await mark(page);
+  await pauseWithFastRelease(page);
+  await waitForTransition(page, pauseAt, "stop");
+  await sleep(300);
+  const parkedSecond = await providerQueue(page);
+
+  // Previous steps back to the song before the parked one, and queues from it.
   const previousAt = await mark(page);
   await clickTransport(page, "Previous track");
   await waitFor(
@@ -1068,11 +1115,25 @@ async function parkedQueueOrder(page, check) {
   await buttonIs(page, "Pause", 5000);
   check(
     "Previous on a parked queue queues from the song it steps back to, never earlier songs",
-    previousQueue.length === 1 &&
-      sameIds(previousQueue[0].ids, ["album-b", "album-c", "album-d"]) &&
+    parkedSecond.activeId === saved.ids[startIndex + 2] &&
+      previousQueue.length === 1 &&
+      sameIds(previousQueue[0].ids, saved.ids.slice(startIndex + 1)) &&
       previousQueue[0].index === 0,
-    { previousQueue },
+    { saved, parkedSecond, previousQueue },
   );
+
+  // Step back to the start song, so the next Play resumes Album Track B.
+  pauseAt = await mark(page);
+  await pauseWithFastRelease(page);
+  await waitForTransition(page, pauseAt, "stop");
+  await sleep(300);
+  const backToStartAt = await mark(page);
+  await clickTransport(page, "Previous track");
+  await waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().transitions.slice(${backToStartAt.transitions}).some((item) => item.type === "setQueue")`,
+  );
+  await buttonIs(page, "Pause", 5000);
 
   // Park on Album Track B with a saved position; Play resumes there in saved order.
   await fixtureCall(page, "emitPlaybackTime", [SAVED_SECONDS]);
@@ -1084,6 +1145,7 @@ async function parkedQueueOrder(page, check) {
   await pauseWithFastRelease(page);
   await waitForTransition(page, pauseAt, "stop");
   await sleep(300);
+  const parkedAtStart = await providerQueue(page);
   const playAt = await mark(page);
   await clickPlayButton(page);
   await waitForTransition(page, playAt, "play");
@@ -1097,18 +1159,21 @@ async function parkedQueueOrder(page, check) {
   );
   check(
     "Play after a handoff queues Album Track B onward in saved order, then seeks to the saved position",
-    resumeQueues.length === 1 &&
-      sameIds(resumeQueues[0].ids, ["album-b", "album-c", "album-d"]) &&
+    parkedAtStart.activeId === "album-b" &&
+      resumeQueues.length === 1 &&
+      sameIds(resumeQueues[0].ids, saved.ids.slice(startIndex)) &&
       resumeQueues[0].index === 0 &&
       seeks.some((item) => item.seconds === SAVED_SECONDS),
     {
+      saved: saved.ids,
       queues: resumeQueues.map((item) => item.ids),
       seeks: seeks.map((item) => item.seconds),
     },
   );
 
   // Past the first seconds Previous restarts the song. Parked on Track B at
-  // 0:42, it queues from Track B (not Track A) and starts it from 0:00.
+  // 0:42, it queues from Track B in saved order (nothing before it) and starts
+  // it from 0:00.
   await waitFor(
     page,
     `document.querySelector(${q(POSITION)})?.textContent === "0:42"`,
@@ -1130,7 +1195,7 @@ async function parkedQueueOrder(page, check) {
   check(
     "Previous past the first seconds of a parked song restarts it",
     parkedRestartQueues.length === 1 &&
-      sameIds(parkedRestartQueues[0].ids, ["album-b", "album-c", "album-d"]) &&
+      sameIds(parkedRestartQueues[0].ids, saved.ids.slice(startIndex)) &&
       parkedRestartQueues[0].index === 0 &&
       !parkedRestartSeeks.some((item) => item.seconds > 0),
     {

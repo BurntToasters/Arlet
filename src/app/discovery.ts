@@ -61,6 +61,8 @@ function emptySearchGroups(): SearchResourceGroups {
     playlists: [],
     stations: [],
     curators: [],
+    recordLabels: [],
+    activities: [],
     paging: {},
     status: "idle",
   };
@@ -88,6 +90,8 @@ function catalogGroups(result: CatalogSearchResult): SearchResourceGroups {
     playlists: result.playlists,
     stations: result.stations,
     curators: result.curators,
+    recordLabels: result.recordLabels ?? [],
+    activities: result.activities ?? [],
     top: result.top,
     paging: pagingFromCounts(result.counts),
     status: "success",
@@ -127,6 +131,16 @@ function appendPage(
       return { ...groups, stations: mergeById(groups.stations, page.items) };
     case "curators":
       return { ...groups, curators: mergeById(groups.curators, page.items) };
+    case "record-labels":
+      return {
+        ...groups,
+        recordLabels: mergeById(groups.recordLabels ?? [], page.items),
+      };
+    case "activities":
+      return {
+        ...groups,
+        activities: mergeById(groups.activities ?? [], page.items),
+      };
   }
 }
 
@@ -494,6 +508,8 @@ export function createDiscovery(
             playlists: [],
             stations: [],
             curators: [],
+            recordLabels: [],
+            activities: [],
             counts: {
               songs: songs.length,
               albums: 0,
@@ -533,6 +549,8 @@ export function createDiscovery(
               ...results[1].value,
               stations: [],
               curators: [],
+              recordLabels: [],
+              activities: [],
               paging: {},
               status: "success",
             }
@@ -540,6 +558,8 @@ export function createDiscovery(
               ...currentSearch.library,
               stations: [],
               curators: [],
+              recordLabels: [],
+              activities: [],
               paging: {},
               status: "error",
               error: safeErrorMessage(results[1].reason),

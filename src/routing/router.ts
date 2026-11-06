@@ -18,6 +18,8 @@ export type Route =
   | { kind: "artist"; id: string; source?: MusicSource }
   | { kind: "playlist"; id: string; source?: MusicSource }
   | { kind: "curator"; id: string; curatorKind: CuratorKind }
+  | { kind: "label"; id: string }
+  | { kind: "activity"; id: string }
   | { kind: "settings" };
 
 export function routeSource(route: Route): MusicSource {
@@ -87,6 +89,11 @@ export function parseRoute(hash: string): Route {
       curatorKind: kind === "apple" ? "apple" : "curator",
     };
   }
+  if (head === "label" && segments[1])
+    return { kind: "label", id: segments[1] };
+  if (head === "activity" && segments[1]) {
+    return { kind: "activity", id: segments[1] };
+  }
   if (head === "new") return { kind: "new" };
   if (head === "browse") return { kind: "browse" };
   if (head === "radio") return { kind: "radio" };
@@ -118,6 +125,10 @@ export function serializeRoute(route: Route): string {
         : `#/${route.kind}/${encode(route.id)}`;
     case "curator":
       return `#/curator/${encode(route.id)}?kind=${route.curatorKind}`;
+    case "label":
+      return `#/label/${encode(route.id)}`;
+    case "activity":
+      return `#/activity/${encode(route.id)}`;
     case "settings":
       return "#/settings";
   }

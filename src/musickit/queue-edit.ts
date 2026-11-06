@@ -1,4 +1,4 @@
-import type { Track } from "../domain/music.ts";
+import { isSameTrack, type Track } from "../domain/music.ts";
 import { getState, setQueueSnapshot } from "../state.ts";
 import {
   acquireShuffleModeOverride,
@@ -30,6 +30,13 @@ interface NativeQueue {
 export interface QueueEditPlan {
   /** Queue after the edit. The current index never changes. */
   next: Track[];
+  /**
+   * What a rebuild sets when it differs from `next`. MusicKit tops autoplay
+   * songs up again after a rebuild, so the plan may leave them out here.
+   */
+  rebuildNext?: Track[];
+  /** Index to select when a rebuild runs. Defaults to the current index. */
+  rebuildIndex?: number;
   native?: (queue: NativeQueue, isCurrent: () => boolean) => Promise<void>;
 }
 
@@ -161,6 +168,25 @@ export function planMove(
   };
 }
 
+/**
+ * Runs of consecutive user songs after `current`, as queue positions. Autoplay
+ * songs are skipped by flag, not by ID, so a duplicate ID never shifts a run.
+ */
+function upcomingUserRuns(
+  queue: readonly Track[],
+  current: number,
+): { start: number; count: number }[] {
+  const runs: { start: number; count: number }[] = [];
+  for (let position = current + 1; position < queue.length; position += 1) {
+    if (queue[position]?.autoplay) continue;
+    const last = runs[runs.length - 1];
+    if (last && last.start + last.count === position) last.count += 1;
+    else runs.push({ start: position, count: 1 });
+  }
+  return runs;
+}
+
+/** Removes the user songs after `current`; autoplay songs stay in the queue. */
 export function planClear(
   queue: readonly Track[],
   current: number,
@@ -168,11 +194,22 @@ export function planClear(
   if (current < 0 || current >= queue.length) {
     throw new Error("Queue item is unavailable.");
   }
-  if (current === queue.length - 1) return undefined;
+  const runs = upcomingUserRuns(queue, current);
+  if (runs.length === 0) return undefined;
   return {
-    next: queue.slice(0, current + 1),
-    native: async (native) => {
-      await native.splice(current + 1, queue.length - current - 1);
+    next: queue.filter(
+      (track, position) => position <= current || !track.autoplay,
+    ),
+    // A rebuild keeps history and the current song; MusicKit tops up autoplay.
+    rebuildNext: queue.slice(0, current + 1),
+    native: async (native, isCurrent) => {
+      // Back to front, so the earlier runs keep their positions.
+      for (const run of [...runs].reverse()) {
+        if (!isCurrent()) {
+          throw new Error("Queue edit is no longer current.");
+        }
+        await native.splice(run.start, run.count);
+      }
     },
   };
 }
@@ -199,16 +236,33 @@ function canSelectIndex(instance: MusicKit.MusicKitInstance): boolean {
   );
 }
 
+/**
+ * The queue without autoplay songs after `index`. Same rule as the app's
+ * `withoutUpcomingAutoplay`, kept here because musickit does not import app.
+ */
+function withoutUpcomingAutoplay(
+  queue: readonly Track[],
+  index: number,
+): Track[] {
+  return queue.filter(
+    (track, position) => position <= index || !track.autoplay,
+  );
+}
+
+/**
+ * Same index and same songs once upcoming autoplay is ignored. MusicKit tops
+ * autoplay up on its own after an edit, so those songs are never stale here.
+ */
 function sameQueue(
   left: { queue: readonly Track[]; index: number },
   right: { queue: readonly Track[]; index: number },
 ): boolean {
+  if (left.index !== right.index) return false;
+  const leftQueue = withoutUpcomingAutoplay(left.queue, left.index);
+  const rightQueue = withoutUpcomingAutoplay(right.queue, right.index);
   return (
-    left.index === right.index &&
-    left.queue.length === right.queue.length &&
-    left.queue.every(
-      (track, position) => track.id === right.queue[position]?.id,
-    )
+    leftQueue.length === rightQueue.length &&
+    leftQueue.every((track, position) => track.id === rightQueue[position]?.id)
   );
 }
 
@@ -235,10 +289,12 @@ async function rebuildQueue(
   const wasPlaying = instance.playbackState === MusicKit.PlaybackStates.playing;
   const intentAtStart = latestTransportIntent().generation;
   const shuffled = readPlaybackModes(instance).shuffleMode === "songs";
-  // Shuffle reorders upcoming songs on setQueue, which would corrupt the
-  // explicit order. The lease keeps the user's desired mode separate.
+  // Live MusicKit reshuffles the whole queue on every setQueue while its
+  // shuffle is on, which would corrupt the explicit order. The override holds
+  // it off. `restoreOnRelease: false` keeps that order on release (a keep-order
+  // lease) instead of writing shuffle on, which would reshuffle the edit.
   const releaseShuffleOverride = shuffled
-    ? acquireShuffleModeOverride(instance, false)
+    ? acquireShuffleModeOverride(instance, false, { restoreOnRelease: false })
     : undefined;
   if (shuffled && !releaseShuffleOverride) {
     throw new Error("Shuffle must be off to edit the queue in this runtime.");
@@ -319,8 +375,8 @@ async function runQueueEdit(
     } else {
       applied = await rebuildQueue(
         instance,
-        edit.next,
-        before.index,
+        edit.rebuildNext ?? edit.next,
+        edit.rebuildIndex ?? before.index,
         playback.positionSeconds,
         onSkipped,
         isCurrent,
@@ -334,7 +390,12 @@ async function runQueueEdit(
   const now = getState().playback;
   const current = { queue: now.queue, index: now.queueIndex };
   if (sameQueue(current, before) || sameQueue(current, applied)) {
-    setQueueSnapshot(applied.queue, applied.index);
+    // MusicKit tops autoplay up after an edit, and that top-up can land after
+    // the plan's result was written. The provider is the authority when it can
+    // be read; the plan's result is only the fallback for a hidden queue.
+    if (!syncMusicKitQueue(instance)) {
+      setQueueSnapshot(applied.queue, applied.index);
+    }
     return tier;
   }
   syncMusicKitQueue(instance);
@@ -393,4 +454,272 @@ export async function editQueue(
     settle();
     if (chain.current === run) chain.current = undefined;
   }
+}
+
+/**
+ * Resolves once the queued edits for `instance` have settled, or once the
+ * watchdog window passes. A shuffle toggle waits here so it never plans
+ * against an edit that is still writing the provider queue.
+ */
+export async function settleQueueEdits(
+  instance: MusicKit.MusicKitInstance,
+): Promise<void> {
+  const chain = editChain(instance);
+  for (;;) {
+    const tail = chain.tail;
+    const settled = await waitForPreviousEdit(tail, QUEUE_EDIT_WATCHDOG_MS);
+    if (!settled || chain.tail === tail) return;
+  }
+}
+
+/** Track keys that identify a song, as `isSameTrack` compares them. */
+function trackKeys(track: Pick<Track, "id" | "catalogId">): string[] {
+  return [...new Set([track.id, track.catalogId])].filter(
+    (key): key is string => Boolean(key),
+  );
+}
+
+/**
+ * A multiset of songs. `take` removes one copy of the song from the pool and
+ * reports whether there was one, so duplicate IDs are counted, not merged.
+ */
+function trackPool(tracks: readonly Track[]) {
+  const buckets = new Map<string, { track: Track; used: boolean }[]>();
+  for (const track of tracks) {
+    const entry = { track, used: false };
+    for (const key of trackKeys(track)) {
+      const bucket = buckets.get(key);
+      if (bucket) bucket.push(entry);
+      else buckets.set(key, [entry]);
+    }
+  }
+  return {
+    take(track: Track): boolean {
+      for (const key of trackKeys(track)) {
+        const hit = (buckets.get(key) ?? []).find(
+          (entry) => !entry.used && isSameTrack(entry.track, track),
+        );
+        if (hit) {
+          hit.used = true;
+          return true;
+        }
+      }
+      return false;
+    },
+  };
+}
+
+/** Where a collection song is now: in the queue, still in the rest, or neither. */
+type CollectionPlace = "queued" | "rest" | "missing";
+
+/**
+ * Sorts each collection song by where it is. The playing occurrence is taken
+ * first, so a duplicate ID resolves to the copy that is playing; the other
+ * copies follow in collection order. Undefined when the playing song is not
+ * among the queued songs, so the collection cannot be placed.
+ */
+function collectionPlaces(
+  collection: readonly Track[],
+  playing: number,
+  queued: readonly Track[],
+  rest: readonly Track[],
+): CollectionPlace[] | undefined {
+  const queuePool = trackPool(queued);
+  const restPool = trackPool(rest);
+  const playingTrack = collection[playing];
+  if (!playingTrack || !queuePool.take(playingTrack)) return undefined;
+  return collection.map((track, occurrence): CollectionPlace => {
+    if (occurrence === playing) return "queued";
+    if (queuePool.take(track)) return "queued";
+    return restPool.take(track) ? "rest" : "missing";
+  });
+}
+
+/**
+ * The songs a shuffle turned on has to add so the whole collection is in play:
+ * the collection songs neither queued nor in the rest (songs before the
+ * playing one, and any after it), then the rest itself. Undefined when the
+ * collection cannot be placed.
+ */
+export function shuffleOnAdds(
+  collection: readonly Track[],
+  playing: number,
+  queued: readonly Track[],
+  rest: readonly Track[],
+): Track[] | undefined {
+  const places = collectionPlaces(collection, playing, queued, rest);
+  if (!places) return undefined;
+  return [
+    ...collection.filter((_, occurrence) => places[occurrence] === "missing"),
+    ...rest,
+  ];
+}
+
+export interface RestoreOrderInput {
+  /** The whole ordered list the latest Play started. */
+  collection: readonly Track[];
+  /** Collection index of the song playing now. */
+  playing: number;
+  /** User songs in the provider queue before shuffle went off. */
+  queued: readonly Track[];
+  /** Songs not yet in the provider queue before shuffle went off. */
+  rest: readonly Track[];
+  /** Upcoming autoplay songs, kept after the user songs. */
+  autoplay: readonly Track[];
+  /** The provider queue as it reads now, after shuffle went off. */
+  provider: readonly Track[];
+  /** Index of the playing song in `provider`. */
+  providerIndex: number;
+}
+
+export interface RestoreOrder {
+  /** Songs before the restored run, kept for Previous. */
+  startHistory: Track[];
+  /** The restored user songs, in collection order. */
+  queue: Track[];
+  /** Collection index of each song in `queue`. */
+  occurrences: number[];
+  /** Position of the playing song in `queue`. */
+  index: number;
+  /** Songs after the run, in collection order, appended as the queue drains. */
+  rest: Track[];
+}
+
+/**
+ * Puts the collection back in album order when shuffle goes off. The run is
+ * the contiguous stretch of queued songs around the playing one, so the
+ * upcoming songs are in collection order. Songs before the run go to the
+ * Previous history, and songs after it go to the rest, so the queue never
+ * shows an order the collection does not have. `plan` is undefined when the
+ * provider already holds that queue. Undefined when the collection cannot be
+ * placed.
+ */
+export function planRestoreOrder(
+  input: RestoreOrderInput,
+): { order: RestoreOrder; plan: QueueEditPlan | undefined } | undefined {
+  const { collection, playing, queued, rest, autoplay, provider } = input;
+  const places = collectionPlaces(collection, playing, queued, rest);
+  if (!places) return undefined;
+  // Missing songs do not break a run: they are not in the list any more.
+  let first = playing;
+  for (let occurrence = playing - 1; occurrence >= 0; occurrence -= 1) {
+    const place = places[occurrence];
+    if (place === "missing") continue;
+    if (place !== "queued") break;
+    first = occurrence;
+  }
+  let last = playing;
+  for (
+    let occurrence = playing + 1;
+    occurrence < collection.length;
+    occurrence += 1
+  ) {
+    const place = places[occurrence];
+    if (place === "missing") continue;
+    if (place !== "queued") break;
+    last = occurrence;
+  }
+  const queue: Track[] = [];
+  const occurrences: number[] = [];
+  for (let occurrence = first; occurrence <= last; occurrence += 1) {
+    const track = collection[occurrence];
+    if (track && places[occurrence] === "queued") {
+      queue.push(track);
+      occurrences.push(occurrence);
+    }
+  }
+  const index = occurrences.indexOf(playing);
+  if (index < 0) return undefined;
+  const order: RestoreOrder = {
+    startHistory: collection.filter(
+      (_, occurrence) => occurrence < first && places[occurrence] !== "missing",
+    ),
+    queue,
+    occurrences,
+    index,
+    rest: collection.filter(
+      (_, occurrence) => occurrence > last && places[occurrence] !== "missing",
+    ),
+  };
+  const providerUser = provider.filter((track) => !track.autoplay);
+  const unchanged =
+    input.providerIndex === index &&
+    providerUser.length === queue.length &&
+    queue.every((track, position) =>
+      isSameTrack(track, providerUser[position]),
+    );
+  if (unchanged) return { order, plan: undefined };
+  return {
+    order,
+    plan: {
+      next: [...queue, ...autoplay],
+      rebuildNext: queue,
+      rebuildIndex: index,
+    },
+  };
+}
+
+/**
+ * Collection index for each queue position, -1 for autoplay songs and songs
+ * not in the collection. The playing position takes `playing` when it names
+ * the same song. Other positions keep their `previous` label while it still
+ * names the song, and any left take the lowest copy not yet claimed.
+ */
+export function labelOccurrences(
+  collection: readonly Track[],
+  queue: readonly Track[],
+  index: number,
+  previous: readonly number[],
+  playing?: number,
+): number[] {
+  const byKey = new Map<string, number[]>();
+  collection.forEach((track, occurrence) => {
+    for (const key of trackKeys(track)) {
+      const bucket = byKey.get(key);
+      if (bucket) bucket.push(occurrence);
+      else byKey.set(key, [occurrence]);
+    }
+  });
+  const candidates = (track: Track): number[] => {
+    const found = new Set<number>();
+    for (const key of trackKeys(track)) {
+      for (const occurrence of byKey.get(key) ?? []) found.add(occurrence);
+    }
+    return [...found]
+      .sort((left, right) => left - right)
+      .filter((occurrence) => isSameTrack(collection[occurrence], track));
+  };
+  const labels = queue.map((): number => -1);
+  const taken = new Set<number>();
+  const claim = (position: number, occurrence: number): void => {
+    labels[position] = occurrence;
+    taken.add(occurrence);
+  };
+  const playingTrack = queue[index];
+  if (
+    playing !== undefined &&
+    playingTrack &&
+    !playingTrack.autoplay &&
+    candidates(playingTrack).includes(playing)
+  ) {
+    claim(index, playing);
+  }
+  queue.forEach((track, position) => {
+    if (labels[position] !== -1 || track.autoplay) return;
+    const prior = previous[position];
+    if (
+      prior !== undefined &&
+      prior >= 0 &&
+      !taken.has(prior) &&
+      candidates(track).includes(prior)
+    ) {
+      claim(position, prior);
+    }
+  });
+  queue.forEach((track, position) => {
+    if (labels[position] !== -1 || track.autoplay) return;
+    const free = candidates(track).find((occurrence) => !taken.has(occurrence));
+    if (free !== undefined) claim(position, free);
+  });
+  return labels;
 }

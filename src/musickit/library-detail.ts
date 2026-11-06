@@ -155,6 +155,24 @@ function albumShelvesOf(
     : undefined;
 }
 
+/** The album's record label ID, and its name when Apple included the label. */
+function recordLabelFieldsOf(
+  resource: AppleMusicResource,
+): Pick<Album, "recordLabelId" | "recordLabelName"> {
+  const relationship = asRecord(
+    asRecord(resource.relationships)?.["record-labels"],
+  );
+  const first = Array.isArray(relationship?.data)
+    ? asRecord(relationship.data[0])
+    : undefined;
+  const id = nonEmptyString(first?.id);
+  if (!id) return {};
+  const name = nonEmptyString(asRecord(first?.attributes)?.name);
+  return name
+    ? { recordLabelId: id, recordLabelName: name }
+    : { recordLabelId: id };
+}
+
 export function createDetailMethods(
   request: MusicRequest,
   instance: MusicKit.MusicKitInstance,
@@ -266,16 +284,27 @@ export function createDetailMethods(
     };
   }
 
-  /** A library album's views come from its catalog twin; a failed read leaves them out. */
-  async function catalogAlbumShelves(
-    catalogId: string,
-  ): Promise<AlbumShelves | undefined> {
+  /**
+   * A library album's views and record label come from its catalog twin; a
+   * failed read leaves them out.
+   */
+  async function catalogAlbumExtras(catalogId: string): Promise<
+    | (Pick<Album, "recordLabelId" | "recordLabelName"> & {
+        shelves?: AlbumShelves;
+      })
+    | undefined
+  > {
     try {
       const raw = await request(await albumPath(catalogId, "catalog"), {
         views: ALBUM_PAGE_VIEWS.join(","),
+        include: "record-labels",
       });
       const resource = firstResource(raw);
-      return resource ? albumShelvesOf(resource) : undefined;
+      if (!resource) return undefined;
+      return {
+        shelves: albumShelvesOf(resource),
+        ...recordLabelFieldsOf(resource),
+      };
     } catch {
       return undefined;
     }
@@ -307,26 +336,49 @@ export function createDetailMethods(
       id: string,
       source: MusicSource = "library",
     ): Promise<DetailWithTracks<Album>> {
+      const decorate = (album: Album, resource: AppleMusicResource): Album => {
+        const withLabel = { ...album, ...recordLabelFieldsOf(resource) };
+        const shelves = albumShelvesOf(resource);
+        return shelves ? { ...withLabel, shelves } : withLabel;
+      };
       // A library album asks for its catalog ID too, to find its views.
       const detail = await getWithFirstTracks(
         await albumPath(id, source),
         normalizeAlbumResource,
-        {
-          include: source === "catalog" ? "tracks" : "tracks,catalog",
-          ...(source === "catalog" ? { views: ALBUM_PAGE_VIEWS } : {}),
-          decorate: (album, resource) => {
-            const shelves = albumShelvesOf(resource);
-            return shelves ? { ...album, shelves } : album;
-          },
-        },
-      );
+        source === "catalog"
+          ? {
+              include: "tracks,record-labels",
+              views: ALBUM_PAGE_VIEWS,
+              decorate,
+            }
+          : {
+              include: "tracks,catalog,record-labels",
+              decorate,
+            },
+      ).catch(async (error: unknown) => {
+        // Record labels are an extra on library albums: without them the page
+        // still loads with its catalog ID and views, as before.
+        if (source === "catalog") throw error;
+        return getWithFirstTracks(
+          await albumPath(id, source),
+          normalizeAlbumResource,
+          { include: "tracks,catalog", decorate },
+        );
+      });
       const catalogId =
         source === "library" ? detail.item?.catalogId : undefined;
       if (!detail.item || !catalogId) return detail;
-      const shelves = await catalogAlbumShelves(catalogId);
-      return shelves
-        ? { ...detail, item: { ...detail.item, shelves } }
-        : detail;
+      const extras = await catalogAlbumExtras(catalogId);
+      if (!extras) return detail;
+      const { shelves, ...label } = extras;
+      return {
+        ...detail,
+        item: {
+          ...detail.item,
+          ...label,
+          ...(shelves ? { shelves } : {}),
+        },
+      };
     },
     async getAlbumTracks(
       id: string,

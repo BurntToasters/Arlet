@@ -31,6 +31,7 @@ import { runMultiSelect } from "./e2e-multi-select.js";
 import { runMiniPlayer } from "./e2e-mini-player.js";
 import { runSongNavigation } from "./e2e-song-navigation.js";
 import { runTransport } from "./e2e-transport.js";
+import { runMusicKitParity } from "./e2e-musickit-parity.js";
 import { runSeek } from "./e2e-seek.js";
 import { runPinArtwork } from "./e2e-pin-artwork.js";
 import { runQueueEdit } from "./e2e-queue-edit.js";
@@ -46,6 +47,7 @@ import { runPolish } from "./e2e-polish.js";
 import { runDiscovery } from "./e2e-discovery.js";
 import { runArtwork } from "./e2e-artwork.js";
 import { runAccountSession } from "./e2e-account-session.js";
+import { runCatalogExtras } from "./e2e-catalog-extras.js";
 import { runAuditFixes } from "./e2e-audit-fixes.js";
 import { runAuditRegressions } from "./e2e-audit-regressions.js";
 import { runDeepRegressions } from "./e2e-deep-regressions.js";
@@ -93,6 +95,9 @@ const RELEASE_ORIGIN = "http://tauri.localhost";
 // appear in the script text (docs/TESTING.md "Audit fixes", item 3).
 const MUSICKIT_LIVE_SCRIPT_URL =
   "https://js-cdn.music.apple.com/musickit/v3/musickit.js";
+// The LIVE_SCRIPT_MARKERS and LIVE_QUEUE_MODEL_MARKERS checks are the canary
+// for Apple's script text; the enum constant below is the same canary for the
+// values. See docs/TESTING.md "MusicKit parity" (Canary) before editing them.
 const LIVE_SCRIPT_MARKERS = [
   ["suppressErrorDialog"],
   ["MKDialog"],
@@ -100,6 +105,51 @@ const LIVE_SCRIPT_MARKERS = [
   ["stopLicenseSession", "_license.stop"],
   ["userTokenIsValid"],
 ];
+// Enum and state values the E2E fixture copies from live MusicKit v3
+// (docs/TESTING.md "MusicKit parity"). Compared numbers only.
+const LIVE_MUSICKIT_ENUMS = {
+  repeat: { none: 0, one: 1, all: 2 },
+  shuffle: { off: 0, songs: 1 },
+  bitrate: { STANDARD: 64, HIGH: 256 },
+  states: {
+    none: 0,
+    loading: 1,
+    playing: 2,
+    paused: 3,
+    stopped: 4,
+    ended: 5,
+    seeking: 6,
+    waiting: 8,
+    stalled: 9,
+    completed: 10,
+  },
+};
+// Queue-model internals the fixture copies (autoplay, the shuffler, stop()
+// before a change, station queues). Each group lists alternatives, as in
+// LIVE_SCRIPT_MARKERS. See docs/TESTING.md "MusicKit parity" (Canary).
+const LIVE_QUEUE_MODEL_MARKERS = [
+  ["isAutoplay"],
+  ["appendTargetIndex"],
+  ["_unshuffledIDs"],
+  ["checkAndReshuffle"],
+  ["hasAutoplayStation"],
+  ["stopMediaAndCleanup"],
+  ["stations/continuous"],
+  ["Prepending to the Queue is not supported"],
+];
+// Same key set and same numeric values. Extra keys count as drift.
+function enumsEqual(actual, expected) {
+  if (!actual || typeof actual !== "object") return false;
+  const keys = Object.keys(expected).sort();
+  const actualKeys = Object.keys(actual).sort();
+  return (
+    keys.length === actualKeys.length &&
+    keys.every(
+      (key, index) =>
+        key === actualKeys[index] && actual[key] === expected[key],
+    )
+  );
+}
 const USER_TOKEN = "AqmL0f7xY2/Zp+Q9wR3kT8vN1bC4dE6gH5jK7mP0sU2yW==";
 const SCENARIO_REGISTRY = [
   ["playlist-playback", runPlaylistPlayback],
@@ -131,6 +181,10 @@ const SCENARIO_REGISTRY = [
   ["loader-robustness", runLoaderRobustness],
   ["save-queue", runSaveQueue],
   ["account-session", runAccountSession],
+  ["catalog-extras", runCatalogExtras],
+  // After radio-artist and discovery: its station checks fill the station and
+  // genre caches those scenarios assert on.
+  ["musickit-parity", runMusicKitParity],
   // Last in the full suite because it signs out at the end.
   ["session-restore", runSessionRestore],
 ];
@@ -161,6 +215,19 @@ const FIXTURE_CONTROL_DEFAULTS = {
   repeatPlaylistCursor: false,
   repeatViewCursor: false,
   pinArtListExpired: false,
+  // Replay shelves answer data (configure({ replay }) in e2e-music-fixture.js).
+  replay: "data",
+  // Live-like: changeToMediaAtIndex and changeToMediaItem stop first.
+  selectStops: true,
+  // "refused" keeps the existing scenarios (no autoplay songs); "ok" models a
+  // live autoplay station with up to 10 upcoming autoplay songs.
+  autoplayStation: "refused",
+  // Live-like: a Music subscription is held, so playback is not preview-only.
+  subscription: true,
+  subscriptionDelayMs: 0,
+  // Live MusicKit starts at STANDARD unless configured; the fixture keeps the
+  // high setting the scenarios expect.
+  startupBitrate: 256,
 };
 
 /**
@@ -1313,6 +1380,9 @@ async function run() {
     });
     // Generous: a slow CDN must not read as Apple removing MusicKit.
     musicRuntimeCapabilities = await page.evaluate(`
+      const numericEntries = (value) => value && typeof value === "object"
+        ? Object.fromEntries(Object.entries(value).filter(([, item]) => typeof item === "number"))
+        : {};
       const deadline = Date.now() + 30000;
       while (Date.now() < deadline) {
         try {
@@ -1326,6 +1396,13 @@ async function run() {
             queueAppend: typeof music.queue?.append === "function",
             queuePrepend: typeof music.queue?.prepend === "function",
             autoplayEnabled: "autoplayEnabled" in music,
+            // Numbers only, so reverse-mapping keys do not count as values.
+            liveEnums: {
+              repeat: numericEntries(window.MusicKit?.PlayerRepeatMode),
+              shuffle: numericEntries(window.MusicKit?.PlayerShuffleMode),
+              bitrate: numericEntries(window.MusicKit?.PlaybackBitrate),
+              states: numericEntries(window.MusicKit?.PlaybackStates),
+            },
             // Everything Arlet calls without a fallback. MusicKit loads from
             // Apple's CDN unversioned, so this is the early warning when
             // Apple changes it; see .github/workflows/musickit-canary.yml.
@@ -1352,11 +1429,16 @@ async function run() {
             // Optional: Arlet detects these and falls back when absent.
             missingOptional: [
               ...(typeof music.queue?.splice === "function" ? [] : ["queue.splice"]),
-              ...["queuePositionDidChange", "shuffleModeDidChange", "repeatModeDidChange"]
+              ...["queuePositionDidChange", "shuffleModeDidChange", "repeatModeDidChange",
+                "autoplayEnabledDidChange", "playbackBitrateDidChange", "storefrontIdentifierDidChange"]
                 .filter((name) => typeof window.MusicKit?.Events?.[name] !== "string")
                 .map((name) => "Events." + name),
               ...("shuffleMode" in music ? [] : ["shuffleMode"]),
               ...("repeatMode" in music ? [] : ["repeatMode"]),
+              ...("bitrate" in music ? [] : ["bitrate"]),
+              ...(typeof music.hasMusicSubscription === "function" ? [] : ["hasMusicSubscription"]),
+              ...("subscribeURL" in music ? [] : ["subscribeURL"]),
+              ...(music.queue && "autoplayItems" in music.queue ? [] : ["queue.autoplayItems"]),
             ],
           };
         } catch { /* MusicKit can load before its instance is configured. */ }
@@ -1378,6 +1460,19 @@ async function run() {
           missingRequired: musicRuntimeCapabilities.missingRequired,
           missingOptional: musicRuntimeCapabilities.missingOptional,
         },
+      );
+      const liveEnums = musicRuntimeCapabilities.liveEnums;
+      check(
+        "live MusicKit repeat and shuffle enums match Arlet's mapping",
+        enumsEqual(liveEnums.repeat, LIVE_MUSICKIT_ENUMS.repeat) &&
+          enumsEqual(liveEnums.shuffle, LIVE_MUSICKIT_ENUMS.shuffle),
+        { repeat: liveEnums.repeat, shuffle: liveEnums.shuffle },
+      );
+      check(
+        "live MusicKit playback states and bitrates match the E2E fixture",
+        enumsEqual(liveEnums.states, LIVE_MUSICKIT_ENUMS.states) &&
+          enumsEqual(liveEnums.bitrate, LIVE_MUSICKIT_ENUMS.bitrate),
+        { states: liveEnums.states, bitrate: liveEnums.bitrate },
       );
     } else {
       check(
@@ -1417,6 +1512,21 @@ async function run() {
         status: liveScript.status,
         error: liveScript.error,
         missingMarkers,
+      },
+    );
+    const missingQueueMarkers = LIVE_QUEUE_MODEL_MARKERS.filter(
+      (alternatives) =>
+        !alternatives.some((marker) => liveScript.text.includes(marker)),
+    ).map((alternatives) => alternatives.join(" or "));
+    check(
+      "live MusicKit script keeps the queue model the E2E fixture copies",
+      liveScript.ok && missingQueueMarkers.length === 0,
+      {
+        url: MUSICKIT_LIVE_SCRIPT_URL,
+        bytes: liveScript.text.length,
+        status: liveScript.status,
+        error: liveScript.error,
+        missingMarkers: missingQueueMarkers,
       },
     );
 
@@ -2208,6 +2318,26 @@ async function run() {
           ),
     });
     if (fixtureReady) {
+      // The fixture must copy the live enum values, or every other check
+      // passes against a model MusicKit does not use.
+      const fixtureEnums = await page.evaluate(`
+        const numericEntries = (value) => value && typeof value === "object"
+          ? Object.fromEntries(Object.entries(value).filter(([, item]) => typeof item === "number"))
+          : {};
+        const mk = window.MusicKit;
+        return {
+          repeat: numericEntries(mk?.PlayerRepeatMode),
+          shuffle: numericEntries(mk?.PlayerShuffleMode),
+          bitrate: numericEntries(mk?.PlaybackBitrate),
+          states: numericEntries(mk?.PlaybackStates),
+        };`);
+      check(
+        "E2E fixture enums equal live MusicKit's",
+        Object.entries(LIVE_MUSICKIT_ENUMS).every(([group, expected]) =>
+          enumsEqual(fixtureEnums[group], expected),
+        ),
+        { fixture: fixtureEnums, live: LIVE_MUSICKIT_ENUMS },
+      );
       const scenarioByName = new Map(SCENARIO_REGISTRY);
       for (const name of selectedScenarios) {
         const scenario = scenarioByName.get(name);
@@ -2240,8 +2370,15 @@ async function run() {
           const trace = await page.evaluate(
             "return window.__ARLET_E2E_MUSIC__.snapshot();",
           );
-          fs.writeFileSync(
+          // A scenario that wrote its own group trace keeps that file; the
+          // fixture snapshot goes to a separate name instead of overwriting it.
+          const traceName = fs.existsSync(
             path.join(artifactDir, `${name}-trace.json`),
+          )
+            ? `${name}-fixture.json`
+            : `${name}-trace.json`;
+          fs.writeFileSync(
+            path.join(artifactDir, traceName),
             `${JSON.stringify(trace, null, 2)}\n`,
           );
           await checkScenarioIsolation(page, name, check);

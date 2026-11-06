@@ -1,4 +1,4 @@
-import { MAX_QUEUE_LENGTH } from "./queue-window.ts";
+import { MAX_QUEUE_LENGTH, appendTargetIndex } from "./queue-window.ts";
 import {
   queueDescriptorsForTracks,
   queueOptionsForTracks,
@@ -10,6 +10,7 @@ import {
   unresolvedIds,
   withResolvableTracks,
 } from "../musickit/unresolved.ts";
+import { musicKitReasonOf } from "../musickit/errors.ts";
 import { reportActionError } from "../components/action-errors.ts";
 import { getState, setQueue, setQueueSnapshot } from "../state.ts";
 import {
@@ -21,6 +22,10 @@ import {
 import type { PlaybackContext } from "./playback.ts";
 
 type QueueInsertMethod = "playNext" | "playLater";
+
+/** Shown when a station is playing; MusicKit has no queue to insert into. */
+export const STATION_INSERT_MESSAGE =
+  "Play Next and Play Later aren't available while a station is playing.";
 
 /**
  * Play Next and Play Later. Built on the shared playback context; an empty
@@ -53,6 +58,12 @@ export function createQueueInsert(
     const ids = trackIds(tracks);
     if (ids.length === 0) throw new Error("At least one track is required.");
     if (!isCurrent()) return [];
+    // A station's MusicKit queue refuses inserts, so none is sent. Background
+    // refills stop quietly; a user's request gets the toast.
+    if (context.session.station !== undefined) {
+      if (!options.quiet) reportActionError(new Error(STATION_INSERT_MESSAGE));
+      return [];
+    }
     const allTracks = materializeTracks(tracks);
     // Same request limit as playTracks; the first songs are kept in order.
     const requestedTracks = allTracks.slice(0, MAX_QUEUE_LENGTH);
@@ -124,7 +135,13 @@ export function createQueueInsert(
               await run(detailed);
               return;
             } catch (error) {
-              if (unresolvedIds(error) || !current()) throw error;
+              if (
+                unresolvedIds(error) ||
+                !current() ||
+                musicKitReasonOf(error) === "UNSUPPORTED_ERROR"
+              ) {
+                throw error;
+              }
               log(
                 `Adding songs by details failed; using IDs: ${errorMessage(error)}`,
               );
@@ -143,6 +160,13 @@ export function createQueueInsert(
       );
     } catch (error) {
       if (!current()) return [];
+      // The station state can be stale: MusicKit may be on a station this
+      // module has not recorded. Its refusal gets the same message.
+      if (musicKitReasonOf(error) === "UNSUPPORTED_ERROR") {
+        log(`${method} refused by MusicKit: ${errorMessage(error)}`);
+        reportActionError(new Error(STATION_INSERT_MESSAGE));
+        return [];
+      }
       throw error;
     }
     if (!current()) return [];
@@ -154,13 +178,18 @@ export function createQueueInsert(
       if (message && !options.quiet) reportActionError(new Error(message));
     }
     const expectedQueue = [...beforeQueue];
+    let expectedIndex = snapshotIndex;
     if (method === "playNext") {
       expectedQueue.splice(snapshotIndex + 1, 0, ...normalizedTracks);
     } else {
-      expectedQueue.push(...normalizedTracks);
+      // MusicKit's playLater lands before the autoplay songs, not at the end.
+      const at = appendTargetIndex(beforeQueue);
+      expectedQueue.splice(at, 0, ...normalizedTracks);
+      // Songs inserted at or before the playing song move it along.
+      if (at <= snapshotIndex) expectedIndex += normalizedTracks.length;
     }
     if (!instance) {
-      setQueue(expectedQueue, snapshotIndex);
+      setQueue(expectedQueue, expectedIndex);
       return normalizedTracks;
     }
     // A replaced queue or a moved selection happened during the await. It is
@@ -185,7 +214,7 @@ export function createQueueInsert(
     if (synced && sameTrackIds(getState().playback.queue, expectedQueue)) {
       return normalizedTracks;
     }
-    setQueueSnapshot(expectedQueue, snapshotIndex);
+    setQueueSnapshot(expectedQueue, expectedIndex);
     return normalizedTracks;
   };
 

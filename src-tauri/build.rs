@@ -61,6 +61,7 @@ fn main() {
         "get_beta_updater_target",
         "open_support_page",
         "open_about_link",
+        "open_subscribe_link",
         "paste_clipboard_text",
         "open_music_diagnostic",
         "load_settings",

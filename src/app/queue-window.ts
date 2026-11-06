@@ -112,3 +112,39 @@ export function startWindow(
     rest: tracks.slice(startIndex + FIRST_BATCH_LENGTH),
   };
 }
+
+/** Songs after `index` that the user queued, not autoplay. */
+export function upcomingUserCount(
+  queue: readonly Track[],
+  index: number,
+): number {
+  let count = 0;
+  for (let position = index + 1; position < queue.length; position += 1) {
+    if (!queue[position]?.autoplay) count += 1;
+  }
+  return count;
+}
+
+/** The queue without autoplay songs after `index`; history and the current song stay. */
+export function withoutUpcomingAutoplay(
+  queue: readonly Track[],
+  index: number,
+): Track[] {
+  return queue.filter(
+    (track, position) => position <= index || !track.autoplay,
+  );
+}
+
+/** Index of the first autoplay song, or the queue length when there is none. */
+export function appendTargetIndex(queue: readonly Track[]): number {
+  const first = queue.findIndex((track) => track.autoplay === true);
+  return first < 0 ? queue.length : first;
+}
+
+/** Index of the last song the user queued, or -1 when there is none. */
+export function lastUserIndex(queue: readonly Track[]): number {
+  for (let position = queue.length - 1; position >= 0; position -= 1) {
+    if (!queue[position]?.autoplay) return position;
+  }
+  return -1;
+}

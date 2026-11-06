@@ -6,6 +6,7 @@ import {
   readPlaybackModes,
   recordTransportIntent,
   type NormalizedRepeatMode,
+  type PlaybackModeCapabilities,
   seekToTime,
   settleSeek,
   setRepeatMode as setMusicRepeatMode,
@@ -22,14 +23,25 @@ import {
   withResolvableTracks,
 } from "../musickit/unresolved.ts";
 import { reportActionError } from "../components/action-errors.ts";
-import { nearestTrackIndex } from "./queue-window.ts";
+import {
+  MAX_QUEUE_LENGTH,
+  lastUserIndex,
+  nearestTrackIndex,
+  shuffledCopy,
+  withoutUpcomingAutoplay,
+} from "./queue-window.ts";
 import {
   editQueue,
+  labelOccurrences,
   planClear,
   planMove,
   planRemove,
+  planRestoreOrder,
   type QueueEditPlan,
   type QueueEditTier,
+  type RestoreOrder,
+  settleQueueEdits,
+  shuffleOnAdds,
 } from "../musickit/queue-edit.ts";
 import {
   clearPlaybackError,
@@ -93,6 +105,17 @@ export interface PlaybackSession {
   repeatPass: { from: number; anchor: Track; count: number } | undefined;
   // The station the latest play started, so a handoff can restart it.
   station: Station | undefined;
+  // The whole ordered list the latest Play started. It holds only while the
+  // queue still has it as the user heard it: an edit clears `collectionIntact`.
+  // `occurrences` gives each queue position's collection index (-1 if none).
+  collection: Track[];
+  collectionIntact: boolean;
+  occurrences: number[];
+  labeledQueue: readonly Track[] | undefined;
+  // Shuffle toggles run one after another, each reading what the last left.
+  shuffleChain: Promise<void>;
+  // The refill in flight, if any, so a toggle can wait for it.
+  refillSettled: Promise<void> | undefined;
 }
 
 /** The controller context plus the one shared playback session. */
@@ -107,6 +130,15 @@ const RESTART_THRESHOLD_SECONDS = 3;
 const MUSIC_VOLUME_TOLERANCE = 0.001;
 /** Levels this app wrote recently, kept for their volume echoes. */
 const MAX_SENT_MUSIC_VOLUMES = 16;
+
+const STATION_SHUFFLE_MESSAGE =
+  "Shuffle isn't available while a station is playing.";
+const STATION_REPEAT_MESSAGE =
+  "Repeat isn't available while a station is playing.";
+const STATION_CLEAR_MESSAGE =
+  "Clear Up Next isn't available while a station is playing.";
+const AUTOPLAY_MODE_MESSAGE =
+  "Shuffle and Repeat aren't available while an Autoplay song is playing.";
 
 /** Queue and transport commands over the MusicKit instance. */
 export function createPlayback(context: ControllerContext) {
@@ -127,8 +159,32 @@ export function createPlayback(context: ControllerContext) {
     repeatCycle: undefined,
     repeatPass: undefined,
     station: undefined,
+    collection: [],
+    collectionIntact: false,
+    occurrences: [],
+    labeledQueue: undefined,
+    shuffleChain: Promise.resolve(),
+    refillSettled: undefined,
   };
   const shared: PlaybackContext = { ...context, session };
+  // Whether the capabilities last written hid shuffle and repeat for a station.
+  let stationModesWritten = false;
+
+  // Each queue change re-labels the collection index of every queue position,
+  // so a shuffle toggle reads the copy of a duplicate song that is playing.
+  subscribe(() => {
+    const { queue, queueIndex } = getState().playback;
+    if (queue === session.labeledQueue) return;
+    session.labeledQueue = queue;
+    session.occurrences = session.collectionIntact
+      ? labelOccurrences(
+          session.collection,
+          queue,
+          queueIndex,
+          session.occurrences,
+        )
+      : [];
+  });
 
   // Account transitions reset the playback scope. A station from the previous
   // scope must not label a handoff's parked queue.
@@ -226,13 +282,48 @@ export function createPlayback(context: ControllerContext) {
     }
   };
 
+  /**
+   * A station plays without MusicKit shuffle or repeat, so both stay hidden
+   * while one plays. Songs bring the runtime's capabilities back.
+   */
+  const stationCapabilities = (
+    capabilities: PlaybackModeCapabilities,
+  ): PlaybackModeCapabilities =>
+    session.station === undefined
+      ? capabilities
+      : { ...capabilities, shuffle: false, repeat: false };
+
   const syncPlaybackModes = (instance: MusicKit.MusicKitInstance): void => {
     const modes = readPlaybackModes(instance);
+    const playing = session.station !== undefined;
+    stationModesWritten = playing;
     setPlaybackModes({
       shuffleMode: modes.shuffleMode,
       repeatMode: modes.repeatMode,
-      modeCapabilities: modes.capabilities,
+      modeCapabilities: stationCapabilities(modes.capabilities),
+      stationPlaying: playing,
     });
+  };
+
+  // A play that starts or ends a station changes `session.station` without a
+  // MusicKit mode event. The next state write re-reads the capabilities and
+  // the station flag the UI reads.
+  subscribe(() => {
+    const playing = session.station !== undefined;
+    if (playing === stationModesWritten) return;
+    const music = getMusic();
+    if (music) {
+      syncPlaybackModes(music);
+      return;
+    }
+    stationModesWritten = playing;
+    setPlaybackModes({ stationPlaying: playing });
+  });
+
+  /** True while the song at the queue position is one MusicKit added on its own. */
+  const autoplayPlaying = (): boolean => {
+    const { queue, queueIndex } = getState().playback;
+    return queue[queueIndex]?.autoplay === true;
   };
 
   /** Writes a repeat mode; throws when the runtime cannot change it. */
@@ -240,15 +331,36 @@ export function createPlayback(context: ControllerContext) {
     instance: MusicKit.MusicKitInstance,
     mode: NormalizedRepeatMode,
   ): void => {
+    if (session.station !== undefined) throw new Error(STATION_REPEAT_MESSAGE);
+    if (autoplayPlaying()) throw new Error(AUTOPLAY_MODE_MESSAGE);
     const current = readPlaybackModes(instance);
     if (!current.capabilities.repeat) {
       throw new Error("Repeat is not available in this MusicKit runtime.");
     }
     if (!setMusicRepeatMode(instance, mode)) {
       setPlaybackModes({
-        modeCapabilities: { ...current.capabilities, repeat: false },
+        modeCapabilities: stationCapabilities({
+          ...current.capabilities,
+          repeat: false,
+        }),
       });
       throw new Error("Repeat could not be changed in this MusicKit runtime.");
+    }
+    syncPlaybackModes(instance);
+  };
+
+  /** Writes shuffle to MusicKit and syncs the modes; throws when unsupported. */
+  const setShuffleModeNow = async (mode: "off" | "songs"): Promise<void> => {
+    const instance = requireMusic();
+    if (!setMusicShuffleMode(instance, mode === "songs")) {
+      const modes = readPlaybackModes(instance);
+      setPlaybackModes({
+        modeCapabilities: stationCapabilities({
+          ...modes.capabilities,
+          shuffle: false,
+        }),
+      });
+      throw new Error("Shuffle is not available in this MusicKit runtime.");
     }
     syncPlaybackModes(instance);
   };
@@ -272,11 +384,196 @@ export function createPlayback(context: ControllerContext) {
     insertTracks: (method, tracks, options) =>
       insert.insertTracks(method, tracks, options),
   });
-  const { clearContinuation, maybeRefillQueue, appendContinuation } =
+  const { clearContinuation, maybeRefillQueue, appendContinuation, setRest } =
     continuation;
   const { playTracks } = createPlayTracks(shared, continuation, requests);
   const insert = createQueueInsert(shared, { playTracks });
   const { insertTracks } = insert;
+
+  /** A user edit or a station ends the collection the queue was built from. */
+  const breakCollection = (): void => {
+    session.collectionIntact = false;
+  };
+
+  /** True when the queue still holds the whole collection and can be reordered. */
+  const collectionUsable = (): boolean =>
+    session.collectionIntact &&
+    session.collection.length > 0 &&
+    session.station === undefined &&
+    !getState().playback.pendingRestore;
+
+  /** The last song the user queued: the song the rest is appended after. */
+  const lastUserSong = (queue: readonly Track[]): Track | undefined =>
+    queue[lastUserIndex(queue)];
+
+  /**
+   * Shuffle on for an intact collection. The songs of the list not in the
+   * queue join the shuffle, so the songs before the one playing come back, as
+   * in Apple Music. Up to MAX_QUEUE_LENGTH they join the queue at once; a
+   * longer list refills from the rest in random order.
+   */
+  const shuffleOnCollection = async (
+    instance: MusicKit.MusicKitInstance,
+  ): Promise<void> => {
+    const intent = session.playIntent;
+    if (!readPlaybackModes(instance).capabilities.shuffle) {
+      return setShuffleModeNow("songs");
+    }
+    await settleQueueEdits(instance);
+    await continuation.settleRefills();
+    if (!collectionUsable()) return setShuffleModeNow("songs");
+    const { queue, queueIndex } = getState().playback;
+    const playing = session.occurrences[queueIndex] ?? -1;
+    const adds = shuffleOnAdds(
+      session.collection,
+      playing,
+      queue.filter((track) => !track.autoplay),
+      session.queueRest,
+    );
+    if (!adds) {
+      // The playing song cannot be placed in the collection. Shuffle then
+      // covers the queue alone, as it did before the collection was tracked.
+      breakCollection();
+      return setShuffleModeNow("songs");
+    }
+    const rest = [...session.queueRest];
+    const anchor = session.restAnchor ?? lastUserSong(queue);
+    const listLength = session.collection.length;
+    setRest([]);
+    session.refilling = true;
+    let inserted = false;
+    let bigList = false;
+    try {
+      if (listLength <= MAX_QUEUE_LENGTH) {
+        if (adds.length > 0) {
+          // Before the shuffle, so MusicKit shuffles the whole list at once.
+          await insert.insertTracks("playLater", adds, { quiet: true });
+          inserted = true;
+        }
+        if (session.playIntent !== intent) return setShuffleModeNow("songs");
+        await setShuffleModeNow("songs");
+      } else {
+        await setShuffleModeNow("songs");
+        setRest(shuffledCopy(adds), anchor);
+        bigList = true;
+      }
+    } catch (error) {
+      if (!inserted) setRest(rest, anchor);
+      breakCollection();
+      throw error;
+    } finally {
+      session.refilling = false;
+    }
+    session.startHistory = [];
+    session.historyAnchor = undefined;
+    if (!syncMusicKitQueue(instance)) breakCollection();
+    const now = getState().playback;
+    session.occurrences = labelOccurrences(
+      session.collection,
+      now.queue,
+      now.queueIndex,
+      session.occurrences,
+      playing,
+    );
+    // A longer list refills at once. Without it, the queue's in-order songs
+    // hold the first refill back for about 65 song ends, and the songs from
+    // before the start cannot come up sooner.
+    maybeRefillQueue(bigList);
+    if (bigList) await continuation.settleRefills();
+  };
+
+  /**
+   * Shuffle off for an intact collection. The queue goes back to collection
+   * order from the playing song, with autoplay songs last. Songs that are not
+   * in the provider queue go to the rest, and songs before the run go to the
+   * Previous history. The playing copy is the recorded collection index, not
+   * MusicKit's position, which a duplicate ID can leave on the wrong copy.
+   */
+  const shuffleOffCollection = async (
+    instance: MusicKit.MusicKitInstance,
+  ): Promise<void> => {
+    const intent = session.playIntent;
+    if (!collectionUsable()) return setShuffleModeNow("off");
+    const before = getState().playback;
+    const playing = session.occurrences[before.queueIndex] ?? -1;
+    if (playing < 0) {
+      breakCollection();
+      return setShuffleModeNow("off");
+    }
+    const queued = before.queue.filter((track) => !track.autoplay);
+    const autoplay = before.queue.filter((track) => track.autoplay === true);
+    const rest = [...session.queueRest];
+    const anchor = session.restAnchor;
+    const collection = session.collection;
+    // Set by the plan, which runs against the provider queue as it reads
+    // after the shuffle went off.
+    const result: { order?: RestoreOrder } = {};
+    session.refilling = true;
+    try {
+      // The explicit off reaches the provider at once: a held or stale edit
+      // must not hold it back. The queue is restored once pending work settles.
+      await setShuffleModeNow("off");
+      await settleQueueEdits(instance);
+      await continuation.settleRefills();
+      if (session.playIntent !== intent) return;
+      setRest([]);
+      await editQueueLogged(
+        "Queue restore failed",
+        instance,
+        (queue, current) => {
+          const restored = planRestoreOrder({
+            collection,
+            playing,
+            queued,
+            rest,
+            autoplay,
+            provider: queue,
+            providerIndex: current,
+          });
+          result.order = restored?.order;
+          return restored?.plan;
+        },
+      );
+      if (session.playIntent !== intent) return;
+      const applied = result.order;
+      if (!applied) {
+        breakCollection();
+        return;
+      }
+      const now = getState().playback;
+      session.startHistory = applied.startHistory;
+      session.historyAnchor = now.queue[0];
+      session.repeatPass = undefined;
+      session.occurrences = labelOccurrences(
+        collection,
+        now.queue,
+        now.queueIndex,
+        applied.occurrences,
+        playing,
+      );
+      setRest(applied.rest, lastUserSong(now.queue));
+    } catch (error) {
+      if (session.playIntent === intent) setRest(rest, anchor);
+      breakCollection();
+      throw error;
+    } finally {
+      session.refilling = false;
+    }
+    maybeRefillQueue();
+  };
+
+  /** One shuffle toggle, with the collection kept when it can be. */
+  const toggleShuffle = async (mode: "off" | "songs"): Promise<void> => {
+    const instance = requireMusic();
+    if (
+      !collectionUsable() ||
+      readPlaybackModes(instance).shuffleMode === mode
+    ) {
+      return setShuffleModeNow(mode);
+    }
+    if (mode === "songs") return shuffleOnCollection(instance);
+    return shuffleOffCollection(instance);
+  };
 
   /** The rest still to be added, but only while it belongs to `queue`. */
   const currentRest = (queue: Track[]): Track[] =>
@@ -325,7 +622,7 @@ export function createPlayback(context: ControllerContext) {
     }
   };
 
-  return {
+  const playback = {
     applyPlaybackVolume,
     reflectMusicVolume,
     syncPlaybackModes,
@@ -340,16 +637,18 @@ export function createPlayback(context: ControllerContext) {
      * The whole queue as the user sees it: every song before the one a Play
      * started at, MusicKit's queue, and the rest still to be added. Saved for
      * restore and for Save as playlist; a saved file keeps a window of it.
+     * Upcoming autoplay songs are left out: MusicKit adds them again.
      */
     fullQueue(): { tracks: Track[]; index: number } {
       const { queue, queueIndex, pendingRestore } = getState().playback;
-      if (pendingRestore) return { tracks: [...queue], index: queueIndex };
+      const upcoming = withoutUpcomingAutoplay(queue, queueIndex);
+      if (pendingRestore) return { tracks: upcoming, index: queueIndex };
       const history =
         queue[0] !== undefined && isSameTrack(queue[0], session.historyAnchor)
           ? session.startHistory
           : [];
       return {
-        tracks: [...history, ...queue, ...currentRest(queue)],
+        tracks: [...history, ...upcoming, ...currentRest(queue)],
         index: history.length + queueIndex,
       };
     },
@@ -371,6 +670,7 @@ export function createPlayback(context: ControllerContext) {
         throw error;
       }
       clearContinuation();
+      breakCollection();
       session.station = station;
       clearPlaybackError();
       setPlaybackStatus("loading");
@@ -394,12 +694,14 @@ export function createPlayback(context: ControllerContext) {
     playNextTracks: async (
       tracks: readonly Track[] | readonly string[],
     ): Promise<void> => {
+      breakCollection();
       await insertTracks("playNext", tracks);
     },
 
     playLaterTracks: async (
       tracks: readonly Track[] | readonly string[],
     ): Promise<void> => {
+      breakCollection();
       await insertTracks("playLater", tracks);
     },
 
@@ -445,6 +747,8 @@ export function createPlayback(context: ControllerContext) {
           if (request.current()) setQueueSnapshot(snapshot.queue, index);
           return;
         }
+        // The rebuild drops the songs before the selected one.
+        breakCollection();
         log(
           "Queue selection unavailable; rebuilding the queue from the selected song.",
         );
@@ -499,6 +803,7 @@ export function createPlayback(context: ControllerContext) {
       index: number,
       trackId?: string,
     ): Promise<QueueEditTier> {
+      breakCollection();
       return editQueueLogged(
         "Queue remove failed",
         requireMusic(),
@@ -522,6 +827,7 @@ export function createPlayback(context: ControllerContext) {
       to: number,
       trackId?: string,
     ): Promise<QueueEditTier> {
+      breakCollection();
       return editQueueLogged(
         "Queue move failed",
         requireMusic(),
@@ -543,7 +849,10 @@ export function createPlayback(context: ControllerContext) {
     },
 
     async clearUpNext(): Promise<QueueEditTier> {
+      // A station has no MusicKit queue to edit, so a clear would only fail.
+      if (session.station !== undefined) throw new Error(STATION_CLEAR_MESSAGE);
       const instance = requireMusic();
+      breakCollection();
       // A clear takes ownership from older inserts and queue rebuilds.
       cancelPendingPlayback();
       const clearIntent = session.playIntent;
@@ -616,16 +925,26 @@ export function createPlayback(context: ControllerContext) {
     /** Supersedes a play still awaiting queue setup (sign-out, authorization). */
     cancelPendingPlayback,
 
+    /** Shuffle from the UI, media controls or shortcuts. Refused during a station. */
     async setShuffleMode(mode: "off" | "songs"): Promise<void> {
-      const instance = requireMusic();
-      if (!setMusicShuffleMode(instance, mode === "songs")) {
-        const modes = readPlaybackModes(instance);
-        setPlaybackModes({
-          modeCapabilities: { ...modes.capabilities, shuffle: false },
-        });
-        throw new Error("Shuffle is not available in this MusicKit runtime.");
-      }
-      syncPlaybackModes(instance);
+      if (session.station !== undefined)
+        throw new Error(STATION_SHUFFLE_MESSAGE);
+      if (autoplayPlaying()) throw new Error(AUTOPLAY_MODE_MESSAGE);
+      // Toggles run one at a time, so each reads the collection the last left.
+      const toggle = session.shuffleChain.then(() => toggleShuffle(mode));
+      session.shuffleChain = toggle.then(
+        () => undefined,
+        () => undefined,
+      );
+      await toggle;
+    },
+
+    /**
+     * Shuffle for a play about to start. It runs while a station may still be
+     * playing, but the play replaces the station, so the write is allowed.
+     */
+    setShuffleModeForPlay(mode: "off" | "songs"): Promise<void> {
+      return setShuffleModeNow(mode);
     },
 
     async cycleRepeatMode(): Promise<void> {
@@ -656,12 +975,18 @@ export function createPlayback(context: ControllerContext) {
           positionSeconds,
           repeatMode,
         } = getState().playback;
-        // MusicKit only restarts the first song or with Repeat One, so the
-        // restart past the first seconds happens here. A station has none.
+        // MusicKit's Previous only restarts the current song (the first song,
+        // or any song with Repeat One), so Arlet steps back itself: a restart
+        // past the first seconds happens here, and with Repeat One Previous
+        // plays the song before. A station has no steps.
         const restart =
           positionSeconds >= RESTART_THRESHOLD_SECONDS &&
           session.station === undefined &&
           !pendingRestore?.station;
+        const repeatOne =
+          repeatMode === "one" &&
+          session.station === undefined &&
+          !pendingRestore;
         // A restored queue has no MusicKit queue to step back in yet. Like
         // MusicKit, Repeat All goes from the first song to the last.
         if (pendingRestore && queue.length > 0) {
@@ -679,6 +1004,12 @@ export function createPlayback(context: ControllerContext) {
           await seek(0);
           return;
         }
+        // With Repeat One, Previous plays the song before the current one and
+        // keeps Repeat One, as Apple Music does.
+        if (repeatOne && queueIndex > 0) {
+          await playback.playQueueItem(queueIndex - 1);
+          return;
+        }
         // On the song a Play started at, step back into the songs before
         // it. Past the first seconds, Previous restarts the song instead.
         const onStartSong =
@@ -689,9 +1020,18 @@ export function createPlayback(context: ControllerContext) {
         if (onStartSong && session.startHistory.length > 0) {
           const history = session.startHistory;
           await playTracks(
-            [...history, ...queue, ...currentRest(queue)],
+            [
+              ...history,
+              ...withoutUpcomingAutoplay(queue, queueIndex),
+              ...currentRest(queue),
+            ],
             history.length - 1,
           );
+          return;
+        }
+        // Nothing before this song: MusicKit would only restart it, so seek.
+        if (repeatOne) {
+          await seek(0);
           return;
         }
         await skipToPrevious(requireMusic());
@@ -719,6 +1059,20 @@ export function createPlayback(context: ControllerContext) {
           }
           return;
         }
+        // With Repeat One, Next plays the next song and keeps Repeat One.
+        // MusicKit's skip would only restart the current song.
+        if (
+          repeatMode === "one" &&
+          session.station === undefined &&
+          !pendingRestore
+        ) {
+          if (queueIndex + 1 < queue.length) {
+            await playback.playQueueItem(queueIndex + 1);
+            return;
+          }
+          log("Next with Repeat One: no next song yet.");
+          return;
+        }
         await skipToNext(requireMusic());
       } catch (error) {
         log(`Next failed: ${errorMessage(error)}`);
@@ -728,4 +1082,5 @@ export function createPlayback(context: ControllerContext) {
 
     seek,
   };
+  return playback;
 }

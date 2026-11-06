@@ -2,6 +2,7 @@ import {
   AudioLines,
   ChevronDown,
   ChevronUp,
+  Infinity as InfinityIcon,
   ListMusic,
   ListPlus,
   ListX,
@@ -16,6 +17,7 @@ import {
   useAppSlices,
 } from "../app/context.tsx";
 import type { Track } from "../domain/music.ts";
+import { upcomingUserCount } from "../app/queue-window.ts";
 import { getState, setUiState } from "../state.ts";
 import { Artwork } from "./Artwork.tsx";
 import { reportActionError, reportQueueEdit } from "./action-errors.ts";
@@ -56,8 +58,64 @@ function escapeClosesQueue(drawer: HTMLElement | null): boolean {
   );
 }
 
+/** A queue song with its real queue position, which edits and playback use. */
+interface QueueEntry {
+  track: Track;
+  index: number;
+}
+
+/** Context-menu data for a track row. Callers add the queue index when editable. */
+function trackContextAttributes(track: Track): Record<string, string> {
+  return {
+    "data-context-kind": "track",
+    "data-context-id": track.id,
+    "data-context-title": track.title,
+    "data-context-artist": track.artistName,
+    ...(track.albumRef
+      ? { "data-context-album-ref": serializeContextRefs(track.albumRef) }
+      : {}),
+    ...(track.artistRefs?.length
+      ? {
+          "data-context-artist-refs": serializeContextRefs(track.artistRefs),
+        }
+      : {}),
+    ...(track.albumTitle ? { "data-context-album": track.albumTitle } : {}),
+    ...(track.artwork?.url
+      ? { "data-context-artwork": track.artwork.url }
+      : {}),
+    ...(track.resourceType
+      ? { "data-context-resource-type": track.resourceType }
+      : {}),
+    ...(track.catalogId ? { "data-context-catalog-id": track.catalogId } : {}),
+    ...(track.catalogUrl
+      ? { "data-context-catalog-url": track.catalogUrl }
+      : {}),
+  };
+}
+
+/** The More actions button, shared by user and autoplay rows. */
+function moreAction(track: Track): JSX.Element {
+  return (
+    <button
+      className="queue-row-more"
+      type="button"
+      aria-label={`More actions for ${track.title} by ${track.artistName}`}
+      title="More actions"
+      aria-haspopup="menu"
+      onClick={(event) => {
+        const target = event.currentTarget.closest<HTMLElement>(
+          "[data-context-kind], [data-context-track-id]",
+        );
+        if (target) requestContextMenu(target, event.currentTarget);
+      }}
+    >
+      <MoreHorizontal aria-hidden="true" size={17} />
+    </button>
+  );
+}
+
 export function QueueDrawer(): JSX.Element | null {
-  const state = useAppSlices("playback");
+  const state = useAppSlices("playback", "settings");
   const controller = useAppController();
   const queueOpen = useAppSelector((store) => store.ui.queueOpen);
   // Index of the upcoming row being dragged; only same-drawer drags count.
@@ -126,8 +184,29 @@ export function QueueDrawer(): JSX.Element | null {
   const closing = !queueOpen;
   const queue = state.playback.queue;
   const current = state.playback.queueIndex;
-  const upcomingCount = Math.max(0, queue.length - current - 1);
+  // Clear removes only the user's upcoming songs; autoplay songs stay.
+  const upcomingCount = upcomingUserCount(queue, current);
   const restCount = state.playback.queueRest ?? 0;
+  // A station's queue cannot be edited, so its upcoming rows offer no edits.
+  const stationPlaying = state.playback.stationPlaying === true;
+
+  // Upcoming autoplay songs leave the user's list for their own section, unless
+  // that section is hidden, so no song disappears from the drawer.
+  const autoplayEntries: QueueEntry[] = [];
+  queue.forEach((track, index) => {
+    if (index > current && track.autoplay)
+      autoplayEntries.push({ track, index });
+  });
+  const showAutoplay =
+    state.playback.autoplayStation !== false && autoplayEntries.length > 0;
+  const listEntries: QueueEntry[] = queue.flatMap((track, index) =>
+    showAutoplay && index > current && track.autoplay ? [] : [{ track, index }],
+  );
+  const settings = state.settings;
+  const repeating = (state.playback.repeatMode ?? "off") !== "off";
+  const toggleAutoplay = (): void => {
+    void controller.setAutoplay(!settings.autoplay).catch(reportActionError);
+  };
 
   const playQueueItem = (index: number): void => {
     if (!queue[index]) return;
@@ -138,60 +217,31 @@ export function QueueDrawer(): JSX.Element | null {
     reportQueueEdit(controller.moveQueueItem(from, to, queue[from]?.id));
   };
 
-  const renderRow = (track: Track, index: number): JSX.Element => {
+  const renderRow = ({ track, index }: QueueEntry): JSX.Element => {
     const active = index === current;
     const upcoming = index > current;
+    const editable = upcoming && !stationPlaying;
     return (
       <li
         onDragOver={(event) => {
-          if (!upcoming || dragFrom.current === undefined) return;
+          if (!editable || dragFrom.current === undefined) return;
           event.preventDefault();
         }}
         onDrop={(event) => {
           const from = dragFrom.current;
           dragFrom.current = undefined;
-          if (from === undefined || !upcoming || from === index) return;
+          if (from === undefined || !editable || from === index) return;
           event.preventDefault();
           moveTo(from, index);
         }}
       >
         <div
           className={`queue-row-shell ${active ? "is-active" : ""}`.trim()}
-          data-context-kind="track"
-          data-context-id={track.id}
-          data-context-title={track.title}
-          data-context-artist={track.artistName}
-          {...(upcoming ? { "data-context-queue-index": String(index) } : {})}
-          {...(track.albumRef
-            ? {
-                "data-context-album-ref": serializeContextRefs(track.albumRef),
-              }
-            : {})}
-          {...(track.artistRefs?.length
-            ? {
-                "data-context-artist-refs": serializeContextRefs(
-                  track.artistRefs,
-                ),
-              }
-            : {})}
-          {...(track.albumTitle
-            ? { "data-context-album": track.albumTitle }
-            : {})}
-          {...(track.artwork?.url
-            ? { "data-context-artwork": track.artwork.url }
-            : {})}
-          {...(track.resourceType
-            ? { "data-context-resource-type": track.resourceType }
-            : {})}
-          {...(track.catalogId
-            ? { "data-context-catalog-id": track.catalogId }
-            : {})}
-          {...(track.catalogUrl
-            ? { "data-context-catalog-url": track.catalogUrl }
-            : {})}
-          draggable={upcoming}
+          {...trackContextAttributes(track)}
+          {...(editable ? { "data-context-queue-index": String(index) } : {})}
+          draggable={editable}
           onDragStart={(event) => {
-            if (!upcoming) return;
+            if (!editable) return;
             dragFrom.current = index;
             if (event.dataTransfer) {
               event.dataTransfer.effectAllowed = "move";
@@ -220,7 +270,7 @@ export function QueueDrawer(): JSX.Element | null {
             {active ? <span className="now-playing-label">Playing</span> : null}
           </button>
           <div className="queue-row-tools">
-            {upcoming ? (
+            {editable ? (
               <>
                 <button
                   className="queue-row-action"
@@ -258,26 +308,36 @@ export function QueueDrawer(): JSX.Element | null {
                 </button>
               </>
             ) : null}
-            <button
-              className="queue-row-more"
-              type="button"
-              aria-label={`More actions for ${track.title} by ${track.artistName}`}
-              title="More actions"
-              aria-haspopup="menu"
-              onClick={(event) => {
-                const target = event.currentTarget.closest<HTMLElement>(
-                  "[data-context-kind], [data-context-track-id]",
-                );
-                if (target) requestContextMenu(target, event.currentTarget);
-              }}
-            >
-              <MoreHorizontal aria-hidden="true" size={17} />
-            </button>
+            {moreAction(track)}
           </div>
         </div>
       </li>
     );
   };
+
+  // Autoplay rows play on click; they have no edit controls and no drag.
+  const renderAutoplayRow = ({ track, index }: QueueEntry): JSX.Element => (
+    <li key={`${track.id}-${index}`}>
+      <div className="queue-row-shell" {...trackContextAttributes(track)}>
+        <button
+          className="queue-row"
+          type="button"
+          aria-label={`Play ${track.title} by ${track.artistName}`}
+          onClick={() => playQueueItem(index)}
+        >
+          <span className="queue-index" aria-hidden="true">
+            {index + 1}
+          </span>
+          <Artwork track={track} size="sm" alt="" />
+          <span className="queue-copy">
+            <strong title={track.title}>{track.title}</strong>
+            <small title={track.artistName}>{track.artistName}</small>
+          </span>
+        </button>
+        <div className="queue-row-tools">{moreAction(track)}</div>
+      </div>
+    </li>
+  );
 
   return (
     <aside
@@ -328,20 +388,22 @@ export function QueueDrawer(): JSX.Element | null {
               <ListPlus aria-hidden="true" size={15} />
               Save as playlist
             </button>
-            <button
-              type="button"
-              aria-label="Clear up next"
-              disabled={upcomingCount === 0}
-              onClick={() => reportQueueEdit(controller.clearUpNext())}
-            >
-              <ListX aria-hidden="true" size={15} />
-              Clear
-            </button>
+            {stationPlaying ? null : (
+              <button
+                type="button"
+                aria-label="Clear up next"
+                disabled={upcomingCount === 0}
+                onClick={() => reportQueueEdit(controller.clearUpNext())}
+              >
+                <ListX aria-hidden="true" size={15} />
+                Clear
+              </button>
+            )}
           </div>
           <div className="queue-scroll">
             <VirtualList
-              items={queue}
-              getKey={(track, index) => `${track.id}-${index}`}
+              items={listEntries}
+              getKey={({ track, index }) => `${track.id}-${index}`}
               renderRow={renderRow}
               className="queue-list"
               aria-label="Queued songs"
@@ -354,6 +416,36 @@ export function QueueDrawer(): JSX.Element | null {
                   ? "1 more song is added as the queue plays."
                   : `${restCount.toLocaleString()} more songs are added as the queue plays.`}
               </p>
+            ) : null}
+            {showAutoplay ? (
+              <section
+                className="queue-autoplay"
+                aria-labelledby="queue-autoplay-heading"
+              >
+                <div className="queue-autoplay-head">
+                  <h3 id="queue-autoplay-heading">Autoplay</h3>
+                  <button
+                    className={`queue-autoplay-toggle ${settings.autoplay ? "is-active" : ""}`.trim()}
+                    type="button"
+                    aria-label="Autoplay"
+                    aria-pressed={settings.autoplay}
+                    disabled={repeating}
+                    title={
+                      repeating
+                        ? "Turn off Repeat to use Autoplay"
+                        : settings.autoplay
+                          ? "Turn off Autoplay"
+                          : "Turn on Autoplay"
+                    }
+                    onClick={toggleAutoplay}
+                  >
+                    <InfinityIcon aria-hidden="true" size={16} />
+                  </button>
+                </div>
+                <ol className="queue-autoplay-list" aria-label="Autoplay songs">
+                  {autoplayEntries.map(renderAutoplayRow)}
+                </ol>
+              </section>
             ) : null}
           </div>
         </>

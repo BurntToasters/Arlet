@@ -7,6 +7,7 @@ import {
   Disc3,
   FolderPlus,
   Forward,
+  Info,
   LibraryBig,
   Link,
   ListPlus,
@@ -38,10 +39,12 @@ import {
   trackRatingTarget,
 } from "../app/ratings.ts";
 import type { Track } from "../domain/music.ts";
+import { catalogSongIdOf } from "../musickit/song-info.ts";
 import type { TrackNavigation } from "../musickit/song-navigation.ts";
 import type { Route } from "../routing/router.ts";
 import { getState, ratingKey } from "../state.ts";
 import { requestPlaylistDialog } from "./playlist-events.ts";
+import { requestSongInfo } from "./SongInfoDialog.tsx";
 import {
   reportActionError,
   reportNotice,
@@ -331,8 +334,18 @@ export function buildItems({
   const libraryItems: MenuItem[] = [];
   const goToItems: MenuItem[] = [];
   const createItems: MenuItem[] = [];
+  const infoItems: MenuItem[] = [];
 
   if (track) {
+    // Library-only songs have no catalog entry to read, so Get Info is hidden.
+    if (catalogSongIdOf(track)) {
+      infoItems.push({
+        id: "get-info",
+        label: "Get Info",
+        icon: Info,
+        action: run(() => requestSongInfo(track, restoreTarget)),
+      });
+    }
     const playNow = (): void => {
       const parentAction =
         target.parentKind === "playlist"
@@ -627,20 +640,24 @@ export function buildItems({
   }
 
   if (target.kind === "playlist" || target.kind === "folder" || !target.kind) {
+    // Right-clicking a folder creates inside it; elsewhere the root is used.
+    const parentFolderId = target.kind === "folder" ? target.id : undefined;
     createItems.push(
       {
         id: "new-playlist",
         label: "New playlist",
         icon: Plus,
         action: run(() => {
-          requestPlaylistDialog("create", [], restoreTarget);
+          requestPlaylistDialog("create", [], restoreTarget, parentFolderId);
         }),
       },
       {
         id: "new-folder",
         label: "New playlist folder",
         icon: FolderPlus,
-        action: run(() => requestPlaylistDialog("folder")),
+        action: run(() =>
+          requestPlaylistDialog("folder", [], undefined, parentFolderId),
+        ),
       },
     );
   }
@@ -651,6 +668,7 @@ export function buildItems({
     playbackItems,
     libraryItems,
     goToItems,
+    infoItems,
     createItems,
     appItems,
   ]);

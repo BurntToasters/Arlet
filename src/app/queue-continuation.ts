@@ -5,7 +5,11 @@ import { errorMessage } from "./controller-support.ts";
 import {
   QUEUE_REFILL_SIZE,
   QUEUE_REFILL_THRESHOLD,
+  appendTargetIndex,
+  lastUserIndex,
   shuffledCopy,
+  upcomingUserCount,
+  withoutUpcomingAutoplay,
 } from "./queue-window.ts";
 import { getState, setQueueRest } from "../state.ts";
 import type { PlaybackContext } from "./playback.ts";
@@ -56,21 +60,28 @@ export function createQueueContinuation(
    */
   const startRepeatPass = (): boolean => {
     const { queue, queueIndex, pendingRestore } = getState().playback;
-    const last = queue.at(-1);
+    // The collection ends at the user's last song; autoplay songs follow it.
+    const lastIndex = lastUserIndex(queue);
+    const last = queue[lastIndex];
     if (!last || pendingRestore || session.station) return false;
-    if (queueIndex !== queue.length - 1) return false;
+    if (queueIndex !== lastIndex) return false;
     if (
       session.startHistory.length === 0 ||
       !isSameTrack(queue[0], session.historyAnchor)
     ) {
       return false;
     }
+    // playLater lands before the autoplay songs, so the pass starts there.
+    const from = appendTargetIndex(queue);
     // Once per last song, so a pass that failed is not retried on every event.
-    if (session.repeatPass?.from === queue.length || !repeatsAll()) {
+    if (session.repeatPass?.from === from || !repeatsAll()) {
       return false;
     }
-    session.repeatCycle ??= [...session.startHistory, ...queue];
-    session.repeatPass = { from: queue.length, anchor: last, count: 0 };
+    session.repeatCycle ??= [
+      ...session.startHistory,
+      ...withoutUpcomingAutoplay(queue, lastIndex),
+    ];
+    session.repeatPass = { from, anchor: last, count: 0 };
     setRest([...session.repeatCycle], last);
     return true;
   };
@@ -113,7 +124,7 @@ export function createQueueContinuation(
    * collection's next pass. Runs once at a time; a new play or `Clear`
    * drops a refill that is still in flight.
    */
-  const maybeRefillQueue = (): void => {
+  const maybeRefillQueue = (force = false): void => {
     if (session.refilling) return;
     if (session.repeatPass && !repeatsAll()) {
       dropRepeatPass();
@@ -127,10 +138,17 @@ export function createQueueContinuation(
       clearContinuation();
       return;
     }
-    if (queue.length - queueIndex - 1 >= QUEUE_REFILL_THRESHOLD) return;
+    if (
+      !force &&
+      upcomingUserCount(queue, queueIndex) >= QUEUE_REFILL_THRESHOLD
+    )
+      return;
     const generation = session.restGeneration;
     const chunk = session.queueRest.slice(0, QUEUE_REFILL_SIZE);
     const instance = getMusic();
+    // readPlaybackModes reports the UI's shuffle, even while a keep-order lease
+    // holds MusicKit's shuffle off. MusicKit then keeps playLater's order, so
+    // the chunk is still shuffled here.
     const shuffled =
       instance !== undefined &&
       instance !== null &&
@@ -138,10 +156,14 @@ export function createQueueContinuation(
     session.refilling = true;
     let inserted: Track[] = [];
     // A background refill never toasts; the user did not start it.
-    void insertTracks("playLater", shuffled ? shuffledCopy(chunk) : chunk, {
-      quiet: true,
-      isCurrent: () => generation === session.restGeneration,
-    })
+    session.refillSettled = insertTracks(
+      "playLater",
+      shuffled ? shuffledCopy(chunk) : chunk,
+      {
+        quiet: true,
+        isCurrent: () => generation === session.restGeneration,
+      },
+    )
       .then((tracks) => {
         inserted = tracks;
       })
@@ -170,10 +192,27 @@ export function createQueueContinuation(
     tracks: readonly Track[],
   ): void => {
     if (token !== session.restGeneration || tracks.length === 0) return;
-    const anchor = session.restAnchor ?? getState().playback.queue.at(-1);
+    // The later pages belong to the collection the Play started, so shuffle
+    // off can put them back in order.
+    session.collection = [...session.collection, ...tracks];
+    const queue = getState().playback.queue;
+    const anchor =
+      session.restAnchor ?? queue[lastUserIndex(queue)] ?? queue.at(-1);
     if (!anchor) return;
     setRest([...session.queueRest, ...tracks], anchor);
     maybeRefillQueue();
+  };
+
+  /**
+   * Waits for a refill in flight to land, so a shuffle toggle plans against
+   * the queue the refill leaves behind.
+   */
+  const settleRefills = async (): Promise<void> => {
+    for (let round = 0; round < 4 && session.refilling; round += 1) {
+      const pending = session.refillSettled;
+      if (!pending) break;
+      await pending;
+    }
   };
 
   return {
@@ -181,6 +220,7 @@ export function createQueueContinuation(
     clearContinuation,
     maybeRefillQueue,
     appendContinuation,
+    settleRefills,
     continuationToken: (): number => session.restGeneration,
   };
 }

@@ -9,6 +9,7 @@ import {
 } from "../library/cache.ts";
 import { createLibraryCacheCoordinator } from "./library-cache-coordinator.ts";
 import { safeNextPath } from "../musickit/response.ts";
+import { loadReplay } from "../musickit/replay.ts";
 import type { MusicSource } from "../domain/music.ts";
 import {
   appendLibraryCollectionItems,
@@ -469,6 +470,14 @@ export function createLibraryLoader(
       Promise.resolve().then(() =>
         libraryMethod(client, "getRecommendations")(10),
       ),
+      // Replay runs beside the Home shelves. Its failure is logged and reads as
+      // no Replay, so it never fails Home or counts toward its status.
+      Promise.resolve()
+        .then(() => loadReplay(requireMusic()))
+        .catch((error: unknown) => {
+          log(`Replay unavailable: ${safeErrorMessage(error)}`);
+          return undefined;
+        }),
     ]);
     if (!isCurrent()) return;
 
@@ -477,7 +486,10 @@ export function createLibraryLoader(
     let recentPlaylists = current.recentPlaylists;
     let heavyRotation = current.heavyRotation;
     let recommendations = current.recommendations;
-    const [recentResult, heavyResult, recommendationResult] = results;
+    const [recentResult, heavyResult, recommendationResult, replayResult] =
+      results;
+    const replay =
+      replayResult.status === "fulfilled" ? replayResult.value : undefined;
     if (recentResult.status === "fulfilled") {
       successful += 1;
       // Home resources include stations, which HomeState does not type yet.
@@ -516,6 +528,7 @@ export function createLibraryLoader(
       errors,
       lastUpdatedAt: successful > 0 ? updatedAt : current.lastUpdatedAt,
       stale: hasData && successful < 3,
+      replay: replay ?? null,
     });
     if (successful === 0) {
       throw new Error(

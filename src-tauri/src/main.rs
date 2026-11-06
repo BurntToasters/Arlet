@@ -233,6 +233,7 @@ fn main() {
             commands::get_beta_updater_target,
             commands::open_support_page,
             commands::open_about_link,
+            commands::open_subscribe_link,
             clipboard_paste::paste_clipboard_text,
             tray::quit_ready,
             music_diagnostic::open_music_diagnostic,

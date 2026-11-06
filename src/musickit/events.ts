@@ -2,6 +2,7 @@ import {
   getState,
   setPlaybackStatus,
   setCurrentTrack,
+  setPlaybackBitrate,
   setPlaybackPosition,
   setPlaybackError,
 } from "../state.ts";
@@ -9,7 +10,13 @@ import { normalizeTrack } from "./normalize.ts";
 import { friendlyPlaybackMessage, mapErrorToCode } from "./errors.ts";
 import { redactSensitive } from "../platform/redact.ts";
 import type { PlaybackState } from "../domain/music.ts";
-import { endSeek, seekAwarePosition, syncMusicKitQueue } from "./player.ts";
+import {
+  endSeek,
+  isSelectingSong,
+  readMusicKitBitrate,
+  seekAwarePosition,
+  syncMusicKitQueue,
+} from "./player.ts";
 import {
   isLiveMediaItem,
   liveMetadataFromEvent,
@@ -42,6 +49,8 @@ export interface MusicKitEventHandlers {
   onAuthorizationChange?: () => void;
   /** MusicKit reported a volume. The caller decides whether it is new. */
   onMusicVolumeChange?: (volume: number) => void;
+  /** Diagnostics sink for runtime changes that Arlet did not request. */
+  log?: (message: string) => void;
   /**
    * True while a parked queue stands for a stopped player, so MusicKit's stop
    * and now-playing echoes must not overwrite it.
@@ -84,13 +93,21 @@ export function registerMusicKitEvents(
     // `oldState` is the state being left; without `state`, ask the player.
     const state =
       typeof event.state === "number" ? event.state : instance.playbackState;
-    if (typeof state === "number") setPlaybackStatus(mapPlaybackState(state));
+    if (typeof state === "number") {
+      const status = mapPlaybackState(state);
+      // MusicKit's own stop before Arlet's selection is not the user's stop.
+      if (status === "stopped" && isSelectingSong(instance)) return;
+      setPlaybackStatus(status);
+    }
     onStateChange?.();
   };
   let lastItemId: string | undefined;
   const onNowPlayingItemChange = (event: Record<string, unknown>): void => {
     if (ignored()) return;
     const item = (event.item ?? null) as MusicKit.MediaItem | null;
+    // An empty item during Arlet's own selection is the stop echo, not a real
+    // end of the queue.
+    if (!item && isSelectingSong(instance)) return;
     // Live text belongs to one stream. Drop it when the item changes, and
     // always when the new item is not live.
     if (!item || !isLiveMediaItem(item) || item.id !== lastItemId) {
@@ -156,6 +173,31 @@ export function registerMusicKitEvents(
 
   const onPlaybackModeChange = (): void => {
     onModeChange?.();
+  };
+
+  // MusicKit can turn autoplay on or off by itself. The app's own toggle
+  // writes MusicKit before it saves settings, so the comparison waits one
+  // microtask for that save. A runtime-only change is kept in memory and is
+  // never saved.
+  let loggedAutoplayMismatch: boolean | undefined;
+  const onAutoplayEnabledChange = (): void => {
+    if (ignored()) return;
+    queueMicrotask(() => {
+      const runtimeEnabled = instance.autoplayEnabled;
+      if (typeof runtimeEnabled !== "boolean") return;
+      if (runtimeEnabled === getState().settings.autoplay) {
+        loggedAutoplayMismatch = undefined;
+      } else if (loggedAutoplayMismatch !== runtimeEnabled) {
+        // Log only: MusicKit may flip autoplay itself, and the saved setting
+        // must never follow it.
+        loggedAutoplayMismatch = runtimeEnabled;
+        handlers.log?.(
+          `MusicKit reports Autoplay ${runtimeEnabled ? "on" : "off"}, which differs from the saved setting. The saved setting is unchanged.`,
+        );
+      }
+      // Autoplay rows appear or disappear with the queue, so re-sync it.
+      onQueueItemsChange({});
+    });
   };
 
   const listeners: Array<{
@@ -227,6 +269,24 @@ export function registerMusicKitEvents(
     });
   }
 
+  // MusicKit picks the bitrate itself when the quality is "automatic", and it
+  // reports each change, so the displayed value follows the runtime.
+  const bitrateName = optionalEventName("playbackBitrateDidChange");
+  if (bitrateName) {
+    listeners.push({
+      name: bitrateName,
+      callback: () => setPlaybackBitrate(readMusicKitBitrate(instance)),
+    });
+  }
+
+  const autoplayName = optionalEventName("autoplayEnabledDidChange");
+  if (autoplayName) {
+    listeners.push({
+      name: autoplayName,
+      callback: onAutoplayEnabledChange,
+    });
+  }
+
   // Reports every level MusicKit exposes, including echoes of levels this app
   // wrote. The caller tells those apart from outside changes.
   const volumeName = optionalEventName("playbackVolumeDidChange");
@@ -256,6 +316,7 @@ export function registerMusicKitEvents(
     });
   }
 
+  setPlaybackBitrate(readMusicKitBitrate(instance));
   for (const listener of listeners) {
     instance.addEventListener(listener.name, listener.callback);
   }

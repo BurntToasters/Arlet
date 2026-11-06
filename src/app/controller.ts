@@ -12,6 +12,7 @@ import {
 import type { BrowseShelfKind, loadBrowseCharts } from "../musickit/browse.ts";
 import { safeNextPath } from "../musickit/response.ts";
 import { registerMusicKitEvents } from "../musickit/events.ts";
+import { mapErrorToCode } from "../musickit/errors.ts";
 import type { SearchGroupKind } from "../musickit/search.ts";
 import {
   loadCuratorPage,
@@ -21,6 +22,10 @@ import {
   type CuratorPlaylistsPage,
   type PlaylistCuratorRef,
 } from "../musickit/curators.ts";
+import { loadRecordLabel } from "../musickit/record-labels.ts";
+import { loadActivity } from "../musickit/activities.ts";
+import { loadReplay } from "../musickit/replay.ts";
+import { loadSongInfo } from "../musickit/song-info.ts";
 import type { CuratorKind } from "../routing/router.ts";
 import { syncMusicKitQueue } from "../musickit/player.ts";
 import {
@@ -43,9 +48,14 @@ import {
   getState,
   setAccountSummary,
   setAuthState,
+  type AudioQuality,
   setCurrentTrack,
+  setActivityState,
   setDeveloperTokenExpiry,
+  setHomeState,
   setInitializationState,
+  setRecordLabelState,
+  setSongInfoState,
   setSettings,
   setSleepTimer,
   setUpdateState,
@@ -59,8 +69,12 @@ import {
 } from "../state.ts";
 import type { InvokeFunction } from "./settings.ts";
 import type {
+  Activity,
   MusicSource,
   RatingValue,
+  RecordLabel,
+  ReplaySummary,
+  SongInfo,
   Station,
   Track,
 } from "../domain/music.ts";
@@ -69,6 +83,7 @@ import type { DiagnosticsStore } from "../diagnostics/store.ts";
 import { createSupportReport } from "../diagnostics/support-report.ts";
 import type { GateEnvironment } from "../phase0/gate-session.ts";
 import { redactSensitive, registerSensitiveValue } from "../platform/redact.ts";
+import { openSubscribeLink } from "../platform/support.ts";
 import { createUpdaterService, type UpdaterService } from "../updater.ts";
 import {
   createAppleMusicLibraryClient,
@@ -145,6 +160,8 @@ const ACTIVITY_COMMANDS = [
 ] as const;
 /** Longest wait for the queue save before an update installs (as tray.rs). */
 const QUIT_SAVE_TIMEOUT_MS = 1_500;
+/** How long after a song Play starts before its autoplay station is checked. */
+const AUTOPLAY_STATION_CHECK_MS = 10_000;
 
 export interface ControllerDependencies {
   initializeMusicKit?: typeof initializeMusicKit;
@@ -195,6 +212,14 @@ export interface AppController {
   loadPlaylistCurator(
     playlistId: string,
   ): Promise<PlaylistCuratorRef | undefined>;
+  /** Resolves undefined when a newer label load has superseded this one. */
+  loadRecordLabel(id: string): Promise<RecordLabel | undefined>;
+  /** Resolves undefined when a newer activity load has superseded this one. */
+  loadActivity(id: string): Promise<Activity | undefined>;
+  /** Apple Replay, also stored on Home. Resolves undefined when there is none. */
+  loadReplay(): Promise<ReplaySummary | undefined>;
+  /** Get Info for a song. Resolves undefined when a newer request superseded it. */
+  loadSongInfo(track: Track): Promise<SongInfo | undefined>;
   playStation(station: Station): Promise<void>;
   loadAlbum(
     id: string,
@@ -224,7 +249,11 @@ export interface AppController {
     description?: string,
     tracks?: readonly Track[] | readonly string[],
   ): Promise<LibraryEntity | undefined>;
-  createPlaylistFolder(name: string): Promise<LibraryEntity | undefined>;
+  /** `parentFolderId` puts the new folder inside an existing one. */
+  createPlaylistFolder(
+    name: string,
+    parentFolderId?: string,
+  ): Promise<LibraryEntity | undefined>;
   addTracksToPlaylist(
     playlistId: string,
     tracks: readonly Track[] | readonly string[],
@@ -317,6 +346,10 @@ export interface AppController {
   setAutoCheckUpdates(enabled: boolean): Promise<void>;
   /** Rejects when the runtime has no writable autoplay; saves only on success. */
   setAutoplay(enabled: boolean): Promise<void>;
+  /** Writes the MusicKit bitrate for the quality; saves only on success. */
+  setAudioQuality(quality: AudioQuality): Promise<void>;
+  /** Opens Apple's subscribe page; throws when MusicKit has no link. */
+  openSubscribe(): Promise<void>;
   setTrayIcon(enabled: boolean): Promise<void>;
   /** Writes or removes the Windows sign-in entry; the Rust side owns the registry write. */
   setLaunchAtStartup(enabled: boolean): Promise<void>;
@@ -517,12 +550,52 @@ export function createAppController(
   });
   const trackNavigation = createTrackNavigationResolver(requireMusic);
   const { requireLibrary, ensureLibraryCache } = library;
+  // MusicKit refuses its autoplay station without saying so, and the UI shows
+  // no sign of it. After a song Play starts, log once if the queue has none.
+  let autoplayCheckTimer: ReturnType<typeof setTimeout> | undefined;
+  let playSequence = 0;
+  /** A newer Play, or a station, takes over from the Play that armed the check. */
+  const cancelAutoplayCheck = (): void => {
+    playSequence += 1;
+    if (autoplayCheckTimer !== undefined) clearTimeout(autoplayCheckTimer);
+    autoplayCheckTimer = undefined;
+  };
+  const checkAutoplayStation = (): void => {
+    autoplayCheckTimer = undefined;
+    const state = getState();
+    if (!state.settings.autoplay) return;
+    if (state.playback.modeCapabilities?.autoplay !== true) return;
+    if (state.playback.autoplayStation !== false) return;
+    log(
+      "Autoplay station unavailable for this account; Autoplay songs are off for this queue.",
+    );
+  };
+  /** Every song Play goes through here, so each one arms the check. */
+  const playSongs = async (
+    ...args: Parameters<typeof playback.playTracks>
+  ): Promise<number | undefined> => {
+    cancelAutoplayCheck();
+    const mine = playSequence;
+    const token = await playback.playTracks(...args);
+    // A superseded Play, or one that started nothing, arms no check.
+    if (mine === playSequence && token !== undefined) {
+      autoplayCheckTimer = setTimeout(
+        checkAutoplayStation,
+        AUTOPLAY_STATION_CHECK_MS,
+      );
+    }
+    return token;
+  };
+  const playStationAndCheck = (station: Station): Promise<void> => {
+    cancelAutoplayCheck();
+    return playback.playStation(station);
+  };
   const collections = createCollectionPlayback({
     requireMusic: requirePlayableMusic,
     getMusic: () => music,
     requireLibrary,
-    playTracks: playback.playTracks,
-    setShuffleMode: playback.setShuffleMode,
+    playTracks: playSongs,
+    setShuffleMode: playback.setShuffleModeForPlay,
     continuationToken: playback.continuationToken,
     appendContinuation: playback.appendContinuation,
     log,
@@ -536,9 +609,9 @@ export function createAppController(
     options?: PlayOptions,
   ): Promise<void> => {
     collections.invalidate();
-    return playback
-      .playTracks(tracks, startIndex, undefined, options)
-      .then(() => undefined);
+    return playSongs(tracks, startIndex, undefined, options).then(
+      () => undefined,
+    );
   };
   const playCollection = collections.play;
   let stationResolver:
@@ -561,7 +634,7 @@ export function createAppController(
     log,
     playTracks,
     seek: playback.seek,
-    playStation: playback.playStation,
+    playStation: playStationAndCheck,
     // Play waits for a handoff's stop() still in flight.
     beforeResume: () => streamRelease.settled(),
     playIntent: playback.playIntent,
@@ -674,6 +747,8 @@ export function createAppController(
     try {
       const instance = await initialize();
       music = instance;
+      // Records MusicKit's startup bitrate before any write below.
+      preferences.captureStartupBitrate(instance);
       setUserTokenGuard(instance, {
         blocked: isSessionExpired,
         onRejected: (error, path) => accounts.suspectSession(error, path),
@@ -710,6 +785,9 @@ export function createAppController(
             log(`Media playback error: ${message}`);
             autoSkip.onPlaybackError(error);
             accounts.suspectSession(error);
+            if (mapErrorToCode(error) === "SUBSCRIPTION_REQUIRED") {
+              void accounts.refreshSubscription();
+            }
           },
           undefined,
           () => playback.syncPlaybackModes(instance),
@@ -723,12 +801,14 @@ export function createAppController(
               // Saved on the same debounce as a drag, so it survives a restart.
               preferences.scheduleVolumeSave();
             },
+            log,
           },
         );
         playback.syncPlaybackModes(instance);
       }
       syncMusicKitQueue(instance);
       preferences.applyAutoplaySetting(instance);
+      preferences.applyAudioQuality(instance);
       restoreAuthProbe = installAuthPopupProbe(log);
       setInitializationState({ status: "ready" });
       log("MusicKit initialized successfully.");
@@ -737,6 +817,7 @@ export function createAppController(
       if (!isAuthorized(instance)) clearRecentSearches();
       if (isAuthorized(instance)) {
         setAuthState({ status: "authorized" });
+        void accounts.refreshSubscription();
         const cachePromise = ensureLibraryCache();
         const storefront = String(instance.storefrontId ?? "").trim();
         const nowPlaying = instance.nowPlayingItem
@@ -772,6 +853,12 @@ export function createAppController(
       }
     }
   };
+
+  // Each loader counts its own requests; an older response never overwrites a newer one.
+  let recordLabelRequestId = 0;
+  let activityRequestId = 0;
+  let replayRequestId = 0;
+  let songInfoRequestId = 0;
 
   const controller: AppController = {
     initialize: initializeController,
@@ -833,10 +920,83 @@ export function createAppController(
     },
     loadPlaylistCurator: (playlistId) =>
       loadPlaylistCurator(requireMusic(), playlistId),
+    async loadRecordLabel(id: string): Promise<RecordLabel | undefined> {
+      const account = accounts.generation();
+      const requestId = ++recordLabelRequestId;
+      const current = (): boolean =>
+        requestId === recordLabelRequestId && account === accounts.generation();
+      setRecordLabelState({ status: "loading", id });
+      try {
+        const page = await loadRecordLabel(requireMusic(), id);
+        if (!current()) return undefined;
+        setRecordLabelState({ status: "success", id, page });
+        return page;
+      } catch (error) {
+        if (!current()) return undefined;
+        setRecordLabelState({
+          status: "error",
+          id,
+          error: safeErrorMessage(error),
+        });
+        throw error;
+      }
+    },
+    async loadActivity(id: string): Promise<Activity | undefined> {
+      const account = accounts.generation();
+      const requestId = ++activityRequestId;
+      const current = (): boolean =>
+        requestId === activityRequestId && account === accounts.generation();
+      setActivityState({ status: "loading", id });
+      try {
+        const page = await loadActivity(requireMusic(), id);
+        if (!current()) return undefined;
+        setActivityState({ status: "success", id, page });
+        return page;
+      } catch (error) {
+        if (!current()) return undefined;
+        setActivityState({
+          status: "error",
+          id,
+          error: safeErrorMessage(error),
+        });
+        throw error;
+      }
+    },
+    async loadReplay(): Promise<ReplaySummary | undefined> {
+      const account = accounts.generation();
+      const requestId = ++replayRequestId;
+      const replay = await loadReplay(requireMusic());
+      if (requestId !== replayRequestId || account !== accounts.generation()) {
+        return undefined;
+      }
+      setHomeState({ replay: replay ?? null });
+      return replay;
+    },
+    async loadSongInfo(track: Track): Promise<SongInfo | undefined> {
+      const account = accounts.generation();
+      const requestId = ++songInfoRequestId;
+      const current = (): boolean =>
+        requestId === songInfoRequestId && account === accounts.generation();
+      setSongInfoState({ status: "loading", id: track.id });
+      try {
+        const info = await loadSongInfo(requireMusic(), track);
+        if (!current()) return undefined;
+        setSongInfoState({ status: "success", id: track.id, info });
+        return info;
+      } catch (error) {
+        if (!current()) return undefined;
+        setSongInfoState({
+          status: "error",
+          id: track.id,
+          error: safeErrorMessage(error),
+        });
+        throw error;
+      }
+    },
 
     playStation(station: Station): Promise<void> {
       collections.invalidate();
-      return playback.playStation(station);
+      return playStationAndCheck(station);
     },
 
     loadAlbum(
@@ -999,7 +1159,7 @@ export function createAppController(
       if (!station) {
         throw new Error(`No station is available for this ${target.kind}.`);
       }
-      await playback.playStation(station);
+      await playStationAndCheck(station);
     },
     async queueCollection(kind, id, source, where): Promise<void> {
       const instance = requireMusic();
@@ -1103,6 +1263,14 @@ export function createAppController(
     setAutoCheckUpdates: preferences.setAutoCheckUpdates,
 
     setAutoplay: preferences.setAutoplay,
+
+    setAudioQuality: preferences.setAudioQuality,
+
+    async openSubscribe(): Promise<void> {
+      const url = requireMusic().subscribeURL;
+      if (!url) throw new Error("Subscribe link is not available.");
+      await openSubscribeLink(url);
+    },
 
     setTrayIcon: preferences.setTrayIcon,
 
@@ -1209,6 +1377,7 @@ export function createAppController(
       stopOnlineReload?.();
       playbackSession.stop();
       stopPauseListener();
+      cancelAutoplayCheck();
       collections.invalidate();
       stopSleepTimerPositions();
       sleepTimer.cancel();

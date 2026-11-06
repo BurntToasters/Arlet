@@ -15,6 +15,8 @@ export interface CreatePlaylistRequest {
   name: string;
   description?: string;
   tracks?: readonly Track[] | readonly string[];
+  /** Library folder to create the playlist in; omitted means the root. */
+  parentFolderId?: string;
 }
 
 /**
@@ -100,6 +102,7 @@ export function createPlaylistEditing(
           request.description && request.description.trim().length > 0
             ? request.description.trim()
             : undefined,
+        parentFolderId: request.parentFolderId,
         ...(firstChunk.length > 0 ? { tracks: firstChunk } : {}),
       });
       const items = asLibraryEntities(raw);
@@ -140,13 +143,14 @@ export function createPlaylistEditing(
 
     async createPlaylistFolder(
       name: string,
+      parentFolderId?: string,
     ): Promise<LibraryEntity | undefined> {
       const trimmed = name.trim();
       if (!trimmed) throw new Error("Folder name is required.");
       const raw = await libraryMethod(
         requireLibrary(),
         "createPlaylistFolder",
-      )({ name: trimmed });
+      )({ name: trimmed, parentFolderId });
       const items = asLibraryEntities(raw);
       await library.refreshPlaylistsAfterMutation(
         "Playlist list refresh failed after folder create",

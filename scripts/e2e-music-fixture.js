@@ -2,6 +2,134 @@
 export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
 
 /**
+ * Live MusicKit surface (MusicKit JS v3 3.2526.0; docs/TESTING.md "MusicKit
+ *   parity"). window.MusicKit.PlayerRepeatMode is { none: 0, one: 1, all: 2 }
+ *   with the reverse names too. PlayerShuffleMode is { off: 0, songs: 1 } with
+ *   reverse names, and PlaybackBitrate is { STANDARD: 64, HIGH: 256 } with
+ *   reverse names. PlaybackStates holds live numbers: none 0, loading 1,
+ *   playing 2, paused 3, stopped 4, ended 5, seeking 6, waiting 8, stalled 9,
+ *   completed 10.
+ * There is no instance.player. shuffle, shuffleMode, repeatMode, volume,
+ *   nowPlayingItem, nowPlayingItemIndex, changeToMediaAtIndex,
+ *   changeToMediaItem and queue all sit on the instance. queue is always there
+ *   as a live Queue record: with configure({ nativeQueueEdit: true }) it has
+ *   splice, otherwise the base record (no splice, so the app rebuilds), and
+ *   the autoplay getters (header, Autoplay) read on it either way.
+ * Repeat (repeatMode 0 none, 1 one, 2 all): the setter accepts only 0, 1 and 2,
+ *   and a change emits repeatModeDidChange with the bare new mode.
+ *   Repeat One: Next and Previous restart the playing song ("restartRepeatOne",
+ *   index unchanged, time 0), and a song that ends replays ("finishRepeatOne").
+ *   Repeat All: Next and a song that ends go to index 0 at the end of the
+ *   queue ("finishWrap"), and Previous on index 0 goes to the last song.
+ *   Repeat none: Previous on index 0 restarts the song ("restartFirst").
+ * Shuffle (MusicKit v3 Shuffler; docs/TESTING.md "MusicKit parity"): shuffleMode
+ *   is 0 off or 1 songs, and only those two values are accepted. setQueue
+ *   with shuffle on shuffles the queue around startWith and leaves the
+ *   position where it was, so the position then points at a random song.
+ *   Setting shuffleMode to a new value records the add order in
+ *   queue.unshuffledIds, shuffles or unshuffles the queue, moves the position
+ *   to the playing song, then emits queueItemsDidChange, queuePositionDidChange
+ *   (only when the position moved) and shuffleModeDidChange. shuffle = true or
+ *   false is a write-only alias for shuffleMode 1 or 0. Native splice, playNext
+ *   and playLater keep unshuffledIds in step; a splice does not move the queue
+ *   index or refuse the playing song, as live spliceQueueItems does.
+ *   While shuffle is on, Next, Previous and a finished song walk the queue in
+ *   order (honouring repeat). Shuffles draw from a PRNG seeded with
+ *   MUSIC_FIXTURE_SEED and re-seeded by reset(). Duplicate IDs follow
+ *   unshuffleQueue's quirk: a repeated ID maps to its last add-order index,
+ *   so one copy is lost when shuffle turns off.
+ * Payloads as live: queueItemsDidChange is the bare item array;
+ *   nowPlayingItemDidChange is { item } (stop() sends item null);
+ *   shuffleModeDidChange and repeatModeDidChange are bare numbers;
+ *   queuePositionDidChange is { oldPosition, position }; playbackVolumeDidChange
+ *   is { type: "volumechange" } with no level, so readers use instance.volume.
+ *   Queue.position is writable: its setter moves the index and emits
+ *   queuePositionDidChange only when it changes.
+ * Selection stop (live MKInstance.changeToMediaAtIndex and changeToMediaItem,
+ *   which call instance.stop() first; configure({ selectStops: false }) turns
+ *   it off, the old behaviour; default true and reset() restores it): the
+ *   fixture records { type: "selectStop", index }, then emits
+ *   nowPlayingItemDidChange { item: undefined } (the live nowPlayingItem setter
+ *   with undefined) and, only when the state was not already stopped (live
+ *   setPlaybackState returns early on no change), playbackStateDidChange
+ *   { oldState, state: 4, nowPlayingItem: previous }. Until the new item is
+ *   set, instance.nowPlayingItem reads undefined. The new item then plays, so
+ *   playbackStateDidChange { oldState: 4, state: 2 } follows the item change.
+ *   Next, Previous and a finished song do not stop, as live does not. The stop
+ *   pair is not a "stop" transition: instance.stop() still records that alone.
+ *   Quirk kept from live: this path sends item undefined, while instance.stop()
+ *   below still sends item null.
+ * Station queues (live ContinuousPlaybackController and BaseShuffler or
+ *   BaseRepeatable): setQueue({ station }), or setQueue({ url }) with a
+ *   /station/ URL, starts one, and snapshot().queue.isStation reads true.
+ *   Shuffle and repeat then read 0 and their writes do nothing, with no event.
+ *   playNext, playLater and clearQueue reject with an MKError whose errorCode
+ *   is "UNSUPPORTED_ERROR" and live's text for that method (Prepending, Appending
+ *   or Clearing the Queue), and record { type: "stationRejected", method }.
+ *   Stored shuffle and repeat values return when the station is left. A
+ *   non-station setQueue, setCurrentTrack, seedQueue or reset() leaves it.
+ *   clearQueue on a songs queue empties it (live Queue.clear), recorded as
+ *   { type: "clearQueue" }.
+ * Autoplay (live SerialPlaybackController and PlaybackController, MusicKit
+ *   3.2526.0; configure({ autoplayStation }) picks the station answer, default
+ *   "refused"; reset() restores it). A songs setQueue with autoplayEnabled on
+ *   and repeat none POSTs /v1/me/stations/continuous and awaits it. "refused"
+ *   records that call as status 403 and adds no autoplay songs, so
+ *   snapshot().queue.autoplay.hasStation stays false. "ok" records 200, then
+ *   POST /v1/me/stations/next-tracks/{id} for each top-up, and keeps up to 10
+ *   upcoming autoplay songs after the user songs: ids autoplay-1, autoplay-2,
+ *   ..., titles "Autoplay Song N", with isAutoplay true on the item.
+ *   Top-up runs only while the station exists, autoplay is on, repeat is none,
+ *   the queue is not a station, and 50 or fewer unplayed user songs remain
+ *   (live maxQueueSizeForAutoplay). It runs after a setQueue, after the current
+ *   song advances (selectIndex, queue position), after a native splice or
+ *   remove, and after autoplayEnabled turns on. It records { type:
+ *   "autoplayTopUp", ids }; a removal records { type: "autoplayRemoved", ids }.
+ *   Queue getters on instance.queue (live Queue): autoplayItems, userAddedItems,
+ *   unplayedAutoplayItems and unplayedUserItems (both from the position on,
+ *   the current song included, as live slice(position)), appendTargetIndex
+ *   (the first autoplay index while the position is before it, else length) and
+ *   hasAutoplayStation. snapshot().queue.autoplay is { ids, appendTargetIndex,
+ *   hasStation }. playLater inserts at appendTargetIndex; playNext does not.
+ *   Setting autoplayEnabled emits autoplayEnabledDidChange with the bare
+ *   boolean. false removes the upcoming autoplay songs and drops the station;
+ *   true starts one again, as live startAutoplay does (same POST).
+ *   Setting repeatMode to one or all removes the upcoming autoplay songs; none
+ *   tops up. The shuffleMode and repeatMode setters apply even while the
+ *   current song is an autoplay song, as live does: live gates them through
+ *   canSetShuffleMode and canSetRepeatMode, which read false there (fixture
+ *   getters match). The shuffle order leaves autoplay songs at the end, as live
+ *   userAddedItems does. setCurrentTrack and seedQueue end any station without
+ *   starting one. finishWithAutoplay keeps its refused-mode result (it appends an
+ *   "autoplay-N" song, as scripts/e2e-desktop.js expects); under "ok" it moves to
+ *   the next autoplay song instead.
+ *
+ * Bitrate (live BitrateCalculator, MusicKit 3.2526.0; docs/TESTING.md "MusicKit
+ *   parity"): instance.bitrate reads and writes 64 or 256. A change emits
+ *   playbackBitrateDidChange with { bitrate } (live's payload; no previous
+ *   value and no bare number) and records { type: "bitrate", value }. Setting
+ *   the current value does nothing, as live does. Live's startup is STANDARD
+ *   (64) unless configure({ bitrate }) passes one; the fixture starts at 256
+ *   instead, so the scenarios keep the high setting. configure({
+ *   startupBitrate }) sets the value that the next reset() or initialization
+ *   applies, and the startup value then returns to 256. reset() sets the
+ *   bitrate to that startup value without recording a transition.
+ *   emitBitrateChange(value) changes the bitrate the way live's downlink
+ *   calculator does on a network change (only 64 or 256) and emits the same
+ *   event. snapshot().bitrate is { current, startup }.
+ * Subscription (live storekit, MusicKit 3.2526.0): configure({ subscription:
+ *   false }) makes instance.hasMusicSubscription() resolve false (a Promise,
+ *   as live) and instance.previewOnly true. The default is subscription true,
+ *   and reset() restores it. Like live, the answer needs an authorized user.
+ *   Preview-only playback reports a 30-second duration in playbackTimeDidChange,
+ *   since live takes the duration from the audio element, which plays the
+ *   preview clip. Item durationInMillis is not rewritten, as live does not.
+ *   configure({ subscriptionDelayMs }) delays that promise (default 0).
+ *   instance.subscribeURL is live's storekit deeplink for subscribe:
+ *   https://finance-app.itunes.apple.com/deeplink?p=subscribe.
+ *   instance.storefrontCountryCode is "us". snapshot().subscription is { has,
+ *   previewOnly }, where has is the value hasMusicSubscription() resolves.
+ *
  * UI polish ids (scripts/e2e-polish.js; docs/TESTING.md "UI polish"). Served
  * only at their own catalog paths, and the search term "polish" finds them.
  * album-polish: 2 discs, 4 tracks (703 s), editorial notes with HTML and a
@@ -55,8 +183,9 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  *     authorizationStatusDidChange {}; true sets it back the same way.
  *   emitPlaybackDuration(240) emits playbackDurationDidChange
  *     { currentPlaybackDuration: 240 }.
- *   emitPlaybackVolume(0.4) sets instance.volume, then emits
- *     playbackVolumeDidChange { volume: 0.4 }.
+ *   emitPlaybackVolume(0.4) sets the level (recorded as a "volume" transition),
+ *     then emits playbackVolumeDidChange { type: "volumechange" }. The volume
+ *     setter emits the same event only when the level changes.
  *   setLive(true) marks the current item attributes.isLive; the app clears
  *     live metadata when nowPlayingItemDidChange carries a non-live item.
  *   emitTimedMetadata({ title, artist }) emits timedMetadataDidChange
@@ -70,7 +199,7 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  *   MusicKit.configure(options) records the option names and
  *     suppressErrorDialog (never a token) in snapshot().configure.
  *   stop() records a "stop" transition and, like MusicKit, emits
- *     playbackStateDidChange (stopped) and nowPlayingItemDidChange {}.
+ *     playbackStateDidChange (stopped) and nowPlayingItemDidChange { item: null }.
  *   configure({ rejectMeStatus: 403 }) makes every /v1/me request reject
  *     with an MKError-shaped error (errorCode "ACCESS_DENIED", status and
  *     data.status); the request is still recorded. 0 or null clears it.
@@ -115,6 +244,10 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  *   playlist-pin-art there with its cover signed 2026-01-01, so the link has
  *   expired. Unknown library ids answer { data: [] } on detail and ?ids=.
  *
+ * Shuffle across the collection (scripts/e2e-musickit-parity.js): album-long
+ *   is a library album of six songs, long-1 to long-6, and playlist-big is
+ *   1200 songs, past the 500-song shuffle limit.
+ *
  * Saving a queue as a playlist (scripts/e2e-save-queue.js): POST
  *   /v1/me/library/playlists creates "saved-playlist-N" with the first track
  *   batch, and POST /v1/me/library/playlists/{id}/tracks appends the rest.
@@ -123,14 +256,74 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  *   order, each add carrying its IDs and a failed flag. configure({
  *   failNextPlaylistAdd: { nth: 3 } }) rejects the nth add POST once (set
  *   once: false to repeat every nth); reset() clears all playlists and counts.
+ *
+ * Catalog extras (scripts/e2e-catalog-extras.js; docs/TESTING.md "Catalog
+ *   extras"). Replay: GET /v1/me/music-summaries with filter[year]=latest
+ *   returns one music-summaries resource (year 2026) with the requested views
+ *   (top-songs, top-albums, top-artists; five items each). Any other
+ *   filter[year] is recorded and answered 400. configure({ replay }) takes
+ *   "data" (default), "empty" ({ data: [] }, as Apple sends with no Replay) or
+ *   "error" (404); reset() restores "data". snapshot().controls.replay.
+ *   Record labels: GET /v1/catalog/us/record-labels/{id}?views=latest-releases,
+ *   top-releases. rl-fixture-1 "Fixture Records" and rl-fixture-2 "Second
+ *   Label" have three albums in each view, all distinct, and an HTML
+ *   description. album-1 gets a record-labels relationship to rl-fixture-1 when
+ *   the request has include=record-labels; with include=tracks too, the track
+ *   page still comes. album-1 has no catalog form.
+ *   Activities: GET /v1/catalog/us/activities/{id}?include=playlists.
+ *   act-fixture-1 "Workout" has 14 playlists in relationships.playlists.data
+ *   and a next link (/v1/catalog/us/activities/act-fixture-1/playlists?offset=14),
+ *   which answers { data: [] }. act-fixture-2 "Recovery" has 3 playlists, no next.
+ *   Search: a types list naming record-labels or activities adds that group,
+ *   with two results, for any term. Other search responses are unchanged.
+ *   Songs: GET /v1/catalog/us/songs/{id} and ?ids= answer song-a and song-c
+ *   with composerName, isrc, discNumber, trackNumber, releaseDate and genreNames.
+ *   song-a has contentRating "explicit" and composerName "<b>Composer</b> A",
+ *   so the app must render it as text. Apple sends no copyright or recordLabel
+ *   on songs; albums carry both. include=albums on a song links the catalog
+ *   album cat-album-1 (GET /v1/catalog/us/albums/cat-album-1: recordLabel,
+ *   copyright, genreNames, releaseDate). Its include=record-labels links
+ *   rl-fixture-1.
+ *   Playlist folders: POST /v1/me/library/playlist-folders creates
+ *   "saved-folder-N" under relationships.parent (or at the root) and records
+ *   { id, name, parentId } in snapshot().playlistMutations.folders, with
+ *   parentId null at the root. POST /v1/me/library/playlists with
+ *   relationships.parent adds parentId to its playlistMutations.creates entry;
+ *   with no parent the entry is unchanged. GET
+ *   /v1/me/library/playlist-folders/{id}/children lists the items created under
+ *   that parent in this session, after the seed children.
  */
 
-function installMusicKitFixture() {
+// The page receives this function as text, so the seed is passed in as an
+// argument (see musicFixtureSource) rather than read from module scope.
+function installMusicKitFixture(fixtureSeed) {
   if (window.__ARLET_E2E_MUSIC__) return;
 
-  const PLAYING = 5;
-  const PAUSED = 4;
-  const STOPPED = 8;
+  const PLAYING = 2;
+  const PAUSED = 3;
+  const STOPPED = 4;
+  // Live MusicKit v3 enums. Each has its names and the reverse numbers, as
+  // a TypeScript numeric enum does.
+  const PlayerRepeatMode = {
+    none: 0,
+    one: 1,
+    all: 2,
+    0: "none",
+    1: "one",
+    2: "all",
+  };
+  const PlayerShuffleMode = { off: 0, songs: 1, 0: "off", 1: "songs" };
+  const PlaybackBitrate = {
+    STANDARD: 64,
+    HIGH: 256,
+    64: "STANDARD",
+    256: "HIGH",
+  };
+  const REPEAT_MODES = [
+    PlayerRepeatMode.none,
+    PlayerRepeatMode.one,
+    PlayerRepeatMode.all,
+  ];
   const events = {
     playbackStateDidChange: "playbackStateDidChange",
     nowPlayingItemDidChange: "nowPlayingItemDidChange",
@@ -140,9 +333,13 @@ function installMusicKitFixture() {
     queuePositionDidChange: "queuePositionDidChange",
     shuffleModeDidChange: "shuffleModeDidChange",
     repeatModeDidChange: "repeatModeDidChange",
-    // Not listened to by the app yet; the discovery controls emit them.
+    autoplayEnabledDidChange: "autoplayEnabledDidChange",
+    // The app's events reader (src/musickit/events.ts) listens to these; the
+    // event controls in the header emit them.
     authorizationStatusDidChange: "authorizationStatusDidChange",
     playbackDurationDidChange: "playbackDurationDidChange",
+    // Live bitrate event; the harness's optional-API check reads it.
+    playbackBitrateDidChange: "playbackBitrateDidChange",
     playbackVolumeDidChange: "playbackVolumeDidChange",
     timedMetadataDidChange: "timedMetadataDidChange",
     metadataDidChange: "metadataDidChange",
@@ -276,13 +473,23 @@ function installMusicKitFixture() {
   const trackWithoutArtwork = track("song-no-art", "Track Without Artwork");
   delete trackWithoutArtwork.attributes.artwork;
 
+  // Library song for Get Info. Its catalog twin is numeric, so the app reads it
+  // through the catalog route; it is served by id only, not in any list.
+  const getInfoSong = track("get-info-song", "Info Track", "Fixture Album");
+  getInfoSong.attributes.playParams = {
+    id: "get-info-song",
+    kind: "song",
+    catalogId: "1700000001",
+  };
   const resource = (id) =>
     (id === "song-no-art" ? trackWithoutArtwork : undefined) ??
+    (id === "get-info-song" ? getInfoSong : undefined) ??
     playlistItems.find((item) => item.id === id) ??
     topSongItems.find((item) => item.id === id) ??
     bigItems.find((item) => item.id === id) ??
     catalogPlaylistItems.find((item) => item.id === id) ??
     albumItems.find((item) => item.id === id) ??
+    longAlbumItems.find((item) => item.id === id) ??
     [
       ...polishAlbumTracks,
       ...polishSparseTracks,
@@ -312,6 +519,36 @@ function installMusicKitFixture() {
       trackCount: albumItems.length,
     },
   };
+  // Six songs, long-1 to long-6 in album order, for the shuffle group that
+  // starts an album from its third song.
+  const longAlbumItems = Array.from({ length: 6 }, (_, index) =>
+    track(`long-${index + 1}`, `Long Track ${index + 1}`, "Long Album"),
+  );
+  const longAlbum = {
+    id: "album-long",
+    type: "library-albums",
+    attributes: {
+      name: "Long Album",
+      artistName: "Fixture Artist",
+      trackCount: longAlbumItems.length,
+    },
+  };
+
+  // Seeded PRNG (mulberry32 over an FNV-1a hash of the seed), so a given seed
+  // always produces the same shuffles.
+  const createRandom = (seedText) => {
+    let hash = 2166136261;
+    for (const char of seedText) {
+      hash ^= char.charCodeAt(0);
+      hash = Math.imul(hash, 16777619);
+    }
+    return () => {
+      hash = (hash + 0x6d2b79f5) | 0;
+      let mixed = Math.imul(hash ^ (hash >>> 15), 1 | hash);
+      mixed = (mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed)) ^ mixed;
+      return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+    };
+  };
 
   const state = {
     configured: false,
@@ -320,7 +557,32 @@ function installMusicKitFixture() {
     transitions: [],
     queue: [],
     queueIndex: 0,
-    shuffleHistory: [],
+    // Live shuffle: shuffleMode 0 off or 1 songs, and the add-order song IDs
+    // that unshuffleQueue restores (header comment).
+    shuffleMode: PlayerShuffleMode.off,
+    unshuffledIds: [],
+    random: createRandom(fixtureSeed),
+    // Live modes and volume, read and written through the instance.
+    repeatMode: PlayerRepeatMode.none,
+    volume: 1,
+    // Bitrate (header comment). The startup value applies at the next reset().
+    bitrate: PlaybackBitrate.HIGH,
+    startupBitrate: PlaybackBitrate.HIGH,
+    // Subscription (header comment). The delay applies to hasMusicSubscription().
+    subscription: true,
+    subscriptionDelayMs: 0,
+    // Selection stop on changeToMediaAtIndex and changeToMediaItem (header).
+    selectStops: true,
+    // Station queue (header); cleared by a songs queue, reset() and clearing.
+    isStation: false,
+    // Autoplay (header): the station answer, the station ID while one exists
+    // (null otherwise), the last autoplay song number and autoplayEnabled.
+    autoplayStation: "refused",
+    autoplayStationId: null,
+    autoplaySerial: 0,
+    autoplayEnabled: true,
+    // True only while the selection stop's nowPlayingItem clear is emitted.
+    nowPlayingCleared: false,
     contextTarget: undefined,
     delayPaths: [],
     rejectPaths: [],
@@ -374,6 +636,12 @@ function installMusicKitFixture() {
     artworkGrid: false,
     // Pinned playlist artwork (header comment); off by default.
     pinArtListExpired: false,
+    // Replay answer (header comment): "data", "empty" or "error".
+    replay: "data",
+    // Playlist folders created in this session (header comment).
+    createdFolders: [],
+    nextCreatedFolderId: 1,
+    playlistFolderCreates: [],
     // Discovery controls (header comment); all off by default.
     delayTerms: {},
     rejectQueryKeys: [],
@@ -421,12 +689,70 @@ function installMusicKitFixture() {
     }
   };
   const currentItem = () => state.queue[state.queueIndex] ?? null;
+  // Records a volume level and reports whether it changed. Callers decide
+  // whether to emit playbackVolumeDidChange.
+  const applyVolume = (value) => {
+    const changed = state.volume !== value;
+    state.volume = value;
+    state.transitions.push({ type: "volume", value });
+    return changed;
+  };
+  // Records a bitrate and emits playbackBitrateDidChange { bitrate } when it
+  // changes, as live BitrateCalculator's setter does. reset() passes record
+  // false, because it clears the transitions before it restores the bitrate.
+  const setBitrate = (value, record = true) => {
+    if (value === state.bitrate) return false;
+    state.bitrate = value;
+    if (record) state.transitions.push({ type: "bitrate", value });
+    emit(events.playbackBitrateDidChange, { bitrate: value });
+    return true;
+  };
+  // Live hasMusicSubscription needs an authorized user with a subscription.
+  const hasSubscription = () =>
+    state.subscription && instance.isAuthorized === true;
+  // Preview-only playback reports the 30-second clip's duration (header).
+  const playbackDurationNow = () => (instance.previewOnly ? 30 : 180);
+  // Station queues read shuffle and repeat as 0 (live BaseShuffler and
+  // BaseRepeatable). The stored values are kept and return after the station.
+  const shuffleModeOf = () =>
+    state.isStation ? PlayerShuffleMode.off : state.shuffleMode;
+  const repeatModeOf = () =>
+    state.isStation ? PlayerRepeatMode.none : state.repeatMode;
+  // setQueue({ station }) or a station URL starts a station queue.
+  const isStationOptions = (options) =>
+    (options?.station !== undefined && options?.station !== null) ||
+    (typeof options?.url === "string" && /\/station\//u.test(options.url));
+  // Live ContinuousPlaybackController rejects with UNSUPPORTED_ERROR.
+  const stationRejected = (method, message) => {
+    state.transitions.push({ type: "stationRejected", method });
+    const error = new Error(message);
+    error.errorCode = "UNSUPPORTED_ERROR";
+    error.reason = "UNSUPPORTED_ERROR";
+    return error;
+  };
   const queueRecord = {
     get items() {
       return state.queue;
     },
     get position() {
       return state.queue.length ? state.queueIndex : -1;
+    },
+    // Live Queue.position is writable: the setter moves the index and emits
+    // queuePositionDidChange only when the position changes. Out-of-range
+    // values are ignored, and nothing else (playback, the item) changes.
+    set position(value) {
+      if (
+        !Number.isInteger(value) ||
+        value < 0 ||
+        value >= state.queue.length ||
+        value === state.queueIndex
+      ) {
+        return;
+      }
+      const oldPosition = queueRecord.position;
+      state.queueIndex = value;
+      emit(events.queuePositionDidChange, { oldPosition, position: value });
+      topUpAutoplay();
     },
     get length() {
       return state.queue.length;
@@ -437,6 +763,33 @@ function installMusicKitFixture() {
     item(index) {
       return state.queue[index] ?? null;
     },
+    // Live Queue getters (header, Autoplay). Unplayed songs start at the
+    // position, as live slice(position) does, so the current song counts.
+    get autoplayItems() {
+      return state.queue.filter((item) => item.isAutoplay === true);
+    },
+    get userAddedItems() {
+      return state.queue.filter((item) => item.isAutoplay !== true);
+    },
+    get unplayedAutoplayItems() {
+      return state.queue
+        .slice(Math.max(0, queueRecord.position))
+        .filter((item) => item.isAutoplay === true);
+    },
+    get unplayedUserItems() {
+      return state.queue
+        .slice(Math.max(0, queueRecord.position))
+        .filter((item) => item.isAutoplay !== true);
+    },
+    get appendTargetIndex() {
+      let end = state.queue.length;
+      const first = state.queue.findIndex((item) => item.isAutoplay === true);
+      if (first !== -1 && queueRecord.position < first) end = first;
+      return end;
+    },
+    get hasAutoplayStation() {
+      return state.autoplayStationId !== null;
+    },
   };
 
   const syncProviderQueue = (emitQueue = true, emitCurrent = true) => {
@@ -446,24 +799,13 @@ function installMusicKitFixture() {
         0,
         Math.min(state.queueIndex, state.queue.length - 1),
       );
-    if (emitQueue) {
-      emit(events.queueItemsDidChange, {
-        queue: queueRecord,
-        items: state.queue,
-        currentItemIndex: state.queueIndex,
-        currentItem: currentItem(),
-      });
-    }
+    if (emitQueue) emit(events.queueItemsDidChange, [...state.queue]);
     if (emitCurrent) {
-      emit(events.nowPlayingItemDidChange, {
-        item: currentItem(),
-        queue: queueRecord,
-        currentItemIndex: state.queueIndex,
-      });
+      emit(events.nowPlayingItemDidChange, { item: currentItem() });
       // A new item starts at zero with a known duration, as MusicKit reports it.
       emit(events.playbackTimeDidChange, {
         currentPlaybackTime: 0,
-        currentPlaybackDuration: 180,
+        currentPlaybackDuration: playbackDurationNow(),
       });
     }
   };
@@ -515,7 +857,218 @@ function installMusicKitFixture() {
     })),
     index: state.queue.length ? state.queueIndex : -1,
     activeId: currentItem()?.id ?? null,
+    isStation: state.isStation,
+    unshuffledIds: [...state.unshuffledIds],
+    autoplay: {
+      ids: queueRecord.autoplayItems.map((item) => item.id),
+      appendTargetIndex: queueRecord.appendTargetIndex,
+      hasStation: queueRecord.hasAutoplayStation,
+    },
   });
+
+  // Mirrors MusicKit's Shuffler. Each helper only rewrites state; the caller
+  // emits the events.
+  const shuffledCopy = (items) => {
+    const copy = [...items];
+    for (let index = copy.length - 1; index > 0; index -= 1) {
+      const pick = Math.floor(state.random() * (index + 1));
+      [copy[index], copy[pick]] = [copy[pick], copy[index]];
+    }
+    return copy;
+  };
+  const sameOrder = (a, b) =>
+    a.length === b.length && a.every((item, index) => item === b[index]);
+  // The item at the current position is set aside and leads the queue; the
+  // rest are shuffled, and redrawn while the order comes out unchanged. The
+  // position itself is not moved.
+  const shuffleQueue = () => {
+    const position = state.queue.length ? state.queueIndex : -1;
+    const rest = [...state.queue];
+    const current =
+      position > -1 &&
+      position < rest.length &&
+      rest[position].isAutoplay !== true
+        ? rest.splice(position, 1)
+        : [];
+    // Live Shuffler shuffles userAddedItems only, so autoplay songs keep the end.
+    const autoplay = rest.filter((item) => item.isAutoplay === true);
+    const userRest = rest.filter((item) => item.isAutoplay !== true);
+    let shuffled = shuffledCopy(userRest);
+    while (shuffled.length > 1 && sameOrder(shuffled, userRest)) {
+      shuffled = shuffledCopy(userRest);
+    }
+    state.queue = [...current, ...shuffled, ...autoplay];
+  };
+  // Restores add order from unshuffledIds. A repeated ID maps to its last
+  // index, so its copies overwrite one another in the sparse array and one
+  // copy is lost (the live quirk). Items not in the list follow in queue order.
+  const unshuffleQueue = () => {
+    const position = state.queue.length ? state.queueIndex : -1;
+    const playing = position > -1 ? state.queue[position] : undefined;
+    const indexById = new Map();
+    state.unshuffledIds.forEach((id, index) => indexById.set(id, index));
+    const sparse = [];
+    const extras = [];
+    let remembered;
+    state.queue.forEach((item, index) => {
+      const target = indexById.get(item.id);
+      if (target === undefined) {
+        extras.push(item);
+        return;
+      }
+      sparse[target] = item;
+      if (index === position) remembered = target;
+    });
+    // filter() skips the holes that the sparse array leaves.
+    const compacted = sparse.filter(() => true);
+    state.queue = [...compacted, ...extras];
+    if (playing !== undefined) {
+      // The remembered slot is filled (by the surviving copy when one was
+      // lost), so its position among the compacted items is always in range.
+      // A playing extra has no add-order slot, so it sits after the compacted
+      // items. Live quirk, on purpose (docs/TESTING.md "Shuffle model"): the
+      // remembered value is the UNcompacted slot from the id-to-index map, so
+      // it can be past the end, or point at another copy, once a repeated copy
+      // is lost. Readers tolerate that: currentItem() is null-safe and
+      // shuffleQueue ignores a position outside the queue.
+      state.queueIndex =
+        remembered ?? compacted.length + extras.indexOf(playing);
+    }
+  };
+  // Replaces the queue as setQueue does: add order is recorded, then with
+  // shuffle on the queue is shuffled around `index`.
+  const replaceQueue = (items, index) => {
+    state.queue = items;
+    state.queueIndex = index;
+    state.unshuffledIds = items.map((item) => item.id);
+    if (shuffleModeOf() === PlayerShuffleMode.songs) shuffleQueue();
+  };
+
+  // Autoplay (header comment). Live bag defaults: maxQueueSizeForAutoplay 50
+  // and maxUpcomingTracksToMaintain 10.
+  const AUTOPLAY_STATION_ID = "ra.autoplay-fixture";
+  const AUTOPLAY_QUEUE_LIMIT = 50;
+  const AUTOPLAY_UPCOMING_LIMIT = 10;
+  const recordAutoplayRequest = (method, path, status) => {
+    state.requests.push({ method, path, status, startedAt: Date.now() });
+  };
+  const autoplayMediaItem = (id, number) => {
+    const item = track(id, `Autoplay Song ${number}`);
+    item.isAutoplay = true;
+    if (!state.artworkTemplate) return item;
+    const templated = templateArtwork(item, id);
+    return { ...templated, artwork: clone(templated.attributes.artwork) };
+  };
+  // Live Queue.splice per song, so each removal emits queueItemsDidChange.
+  // Only songs after the position go, as live stopAutoplay and repeat do.
+  // Autoplay runs inside playback calls (setQueue, selectIndex, splice, the
+  // repeat and autoplay setters). A fixture bug there must not throw into the
+  // app, so a failure is recorded as an autoplayError transition instead.
+  const guardAutoplay = (step, work) => {
+    try {
+      work();
+    } catch (error) {
+      state.transitions.push({
+        type: "autoplayError",
+        step,
+        message: String(error?.message ?? error),
+      });
+    }
+  };
+  const removeUpcomingAutoplay = () =>
+    guardAutoplay("remove", () => {
+      const removed = [];
+      for (
+        let index = state.queue.length - 1;
+        index > queueRecord.position;
+        index -= 1
+      ) {
+        if (state.queue[index].isAutoplay !== true) continue;
+        removed.unshift(state.queue[index].id);
+        state.queue.splice(index, 1);
+        emit(events.queueItemsDidChange, [...state.queue]);
+      }
+      if (removed.length > 0) {
+        state.transitions.push({ type: "autoplayRemoved", ids: removed });
+      }
+    });
+  // Live SerialPlaybackController.queueAutoplayTracks: the limit counts the
+  // upcoming autoplay songs after the position, then the songs are appended
+  // at appendTargetIndex (one queueItemsDidChange, as one splice).
+  const topUpAutoplay = () =>
+    guardAutoplay("topUp", () => {
+      if (
+        state.autoplayStationId === null ||
+        state.isStation ||
+        !state.autoplayEnabled ||
+        state.repeatMode !== PlayerRepeatMode.none ||
+        queueRecord.length === 0 ||
+        queueRecord.unplayedUserItems.length > AUTOPLAY_QUEUE_LIMIT
+      ) {
+        return;
+      }
+      const playingAutoplay = currentItem()?.isAutoplay === true ? 1 : 0;
+      const need =
+        AUTOPLAY_UPCOMING_LIMIT -
+        queueRecord.unplayedAutoplayItems.length +
+        playingAutoplay;
+      if (need <= 0) return;
+      const ids = [];
+      const items = [];
+      for (let count = 0; count < need; count += 1) {
+        state.autoplaySerial += 1;
+        const id = `autoplay-${state.autoplaySerial}`;
+        ids.push(id);
+        items.push(autoplayMediaItem(id, state.autoplaySerial));
+      }
+      recordAutoplayRequest(
+        "POST",
+        `/v1/me/stations/next-tracks/${AUTOPLAY_STATION_ID}`,
+        200,
+      );
+      state.queue.splice(queueRecord.appendTargetIndex, 0, ...items);
+      state.transitions.push({ type: "autoplayTopUp", ids });
+      emit(events.queueItemsDidChange, [...state.queue]);
+    });
+  // Live startAutoplay: a songs queue with autoplay on, repeat none and no
+  // station yet asks for one. "refused" answers 403 and the queue gets none.
+  const startAutoplayStation = () =>
+    guardAutoplay("start", () => {
+      if (
+        state.autoplayStationId !== null ||
+        state.isStation ||
+        !state.autoplayEnabled ||
+        state.repeatMode !== PlayerRepeatMode.none ||
+        queueRecord.length === 0
+      ) {
+        return;
+      }
+      const ok = state.autoplayStation === "ok";
+      recordAutoplayRequest(
+        "POST",
+        "/v1/me/stations/continuous",
+        ok ? 200 : 403,
+      );
+      if (!ok) return;
+      state.autoplayStationId = AUTOPLAY_STATION_ID;
+      topUpAutoplay();
+    });
+  // Live stopAutoplay: the station goes, and unplayed autoplay songs with it.
+  const stopAutoplayStation = () => {
+    state.autoplayStationId = null;
+    removeUpcomingAutoplay();
+  };
+  // Live autoplayEnabled setter: it publishes the bare boolean only on a
+  // change, and the controller then starts or stops autoplay.
+  const setAutoplayEnabled = (value) => {
+    const next = Boolean(value);
+    if (next === state.autoplayEnabled) return;
+    state.autoplayEnabled = next;
+    emit(events.autoplayEnabledDidChange, next);
+    if (next) startAutoplayStation();
+    else stopAutoplayStation();
+  };
+  const readAutoplayEnabled = () => state.autoplayEnabled;
 
   // A playlist past the queue cap. "big-0001" is a catalog song Apple marks
   // unstreamable (no playParams), as removed songs appear in the API.
@@ -1434,6 +1987,510 @@ function installMusicKitFixture() {
     ...Object.keys(discoveryPlaylists).flatMap(discoveryPlaylistTracks),
   ];
 
+  // Catalog extras (header comment). Built once here; the routes pick from
+  // these lists. Replay first.
+  const REPLAY_MODES = ["data", "empty", "error"];
+  const REPLAY_TOP_SONGS = [
+    ["Glass Harbor", "Mira Vale", "Harbor Lights"],
+    ["Paper Moons Rising", "Kenji Holt", "Paper Moons"],
+    ["Lantern Road", "Ada Ruiz", "Lantern Road"],
+    ["Quiet Engine Hum", "Tom Ostrander", "Quiet Engine"],
+    ["Night Cargo Blues", "The Lantern Choir", "Night Cargo"],
+  ];
+  const REPLAY_TOP_ALBUMS = [
+    ["Harbor Lights", "Mira Vale"],
+    ["Paper Moons", "Kenji Holt"],
+    ["Lantern Road", "Ada Ruiz"],
+    ["Quiet Engine", "Tom Ostrander"],
+    ["Night Cargo", "The Lantern Choir"],
+  ];
+  const REPLAY_TOP_ARTISTS = [
+    "Mira Vale",
+    "Kenji Holt",
+    "Ada Ruiz",
+    "Tom Ostrander",
+    "The Lantern Choir",
+  ];
+  const replaySong = (index) => {
+    const [name, artistName, albumName] = REPLAY_TOP_SONGS[index];
+    const id = `replay-song-${index + 1}`;
+    return {
+      id,
+      type: "songs",
+      attributes: {
+        name,
+        artistName,
+        albumName,
+        durationInMillis: 200_000 + index * 7_000,
+        trackNumber: index + 1,
+        genreNames: ["Pop"],
+        url: `https://music.apple.com/us/song/${id}/${id}`,
+        artwork: polishArtwork(id),
+        playParams: { id, kind: "song", catalogId: id },
+      },
+    };
+  };
+  const replayAlbum = (index) => {
+    const [name, artistName] = REPLAY_TOP_ALBUMS[index];
+    const id = `replay-album-${index + 1}`;
+    return {
+      id,
+      type: "albums",
+      attributes: {
+        name,
+        artistName,
+        releaseDate: `${2019 + index}-06-01`,
+        trackCount: 10,
+        genreNames: ["Pop"],
+        url: `https://music.apple.com/us/album/${id}/${id}`,
+        artwork: polishArtwork(id),
+        playParams: { id, kind: "album" },
+      },
+    };
+  };
+  const replayArtist = (index) => {
+    const id = `replay-artist-${index + 1}`;
+    return {
+      id,
+      type: "artists",
+      attributes: {
+        name: REPLAY_TOP_ARTISTS[index],
+        genreNames: ["Pop"],
+        url: `https://music.apple.com/us/artist/${id}/${id}`,
+        artwork: polishArtwork(id),
+      },
+    };
+  };
+  const REPLAY_VIEWS = {
+    "top-songs": [0, 1, 2, 3, 4].map(replaySong),
+    "top-albums": [0, 1, 2, 3, 4].map(replayAlbum),
+    "top-artists": [0, 1, 2, 3, 4].map(replayArtist),
+  };
+  // Requested views only; a view the fixture lacks answers { data: [] }.
+  const replayResponse = (params) => {
+    const requested = listParam(params.views);
+    const names = requested.length ? requested : Object.keys(REPLAY_VIEWS);
+    return {
+      data: [
+        {
+          id: "music-summary-2026",
+          type: "music-summaries",
+          attributes: { year: 2026 },
+          views: Object.fromEntries(
+            names.map((name) => [
+              name,
+              {
+                data: Object.hasOwn(REPLAY_VIEWS, name)
+                  ? REPLAY_VIEWS[name].map(clone)
+                  : [],
+              },
+            ]),
+          ),
+        },
+      ],
+    };
+  };
+  // A wrong filter[year] is refused whatever configure({ replay }) says.
+  const fixtureHttpError = (status, code) => {
+    const error = new Error(String(status));
+    error.errorCode = code;
+    error.reason = code;
+    error.status = status;
+    error.data = { status, errors: [{ status: String(status), code }] };
+    return error;
+  };
+  const replayFailureFor = (pathname, params) => {
+    if (pathname !== "/v1/me/music-summaries") return undefined;
+    if (params["filter[year]"] !== "latest") {
+      return { status: 400, code: "INVALID_ARGUMENT" };
+    }
+    if (state.replay === "error") return { status: 404, code: "NOT_FOUND" };
+    return undefined;
+  };
+
+  // Record labels: three distinct albums per view, for each label.
+  const RECORD_LABELS = {
+    "rl-fixture-1": {
+      name: "Fixture Records",
+      artistName: "Fixture Artist",
+      description: {
+        standard: "Independent <b>fixture</b> releases & reissues.",
+        short: "Fixture releases",
+      },
+    },
+    "rl-fixture-2": {
+      name: "Second Label",
+      artistName: "Second Artist",
+      description: {
+        standard: "A <i>second</i> label, for the label views.",
+        short: "Second label",
+      },
+    },
+  };
+  const LABEL_VIEWS = {
+    "latest-releases": { title: "Latest", year: 2026 },
+    "top-releases": { title: "Top", year: 2020 },
+  };
+  const recordLabelAlbum = (labelId, view, number) => {
+    const label = RECORD_LABELS[labelId];
+    const { title, year } = LABEL_VIEWS[view];
+    const id = `${labelId}-${view}-${number}`;
+    return {
+      id,
+      type: "albums",
+      attributes: {
+        name: `${label.name} ${title} ${number}`,
+        artistName: label.artistName,
+        releaseDate: `${year}-0${number}-01`,
+        trackCount: 10,
+        recordLabel: label.name,
+        copyright: `℗ ${year} ${label.name}`,
+        url: `https://music.apple.com/us/album/${id}/${id}`,
+        artwork: polishArtwork(id),
+        playParams: { id, kind: "album" },
+      },
+    };
+  };
+  const RECORD_LABEL_ALBUMS = Object.fromEntries(
+    Object.keys(RECORD_LABELS).map((labelId) => [
+      labelId,
+      Object.fromEntries(
+        Object.keys(LABEL_VIEWS).map((view) => [
+          view,
+          [1, 2, 3].map((number) => recordLabelAlbum(labelId, view, number)),
+        ]),
+      ),
+    ]),
+  );
+  const recordLabelResource = (id) => ({
+    id,
+    type: "record-labels",
+    attributes: {
+      name: RECORD_LABELS[id].name,
+      description: clone(RECORD_LABELS[id].description),
+      url: `https://music.apple.com/us/record-label/${id}/${id}`,
+      artwork: polishArtwork(id),
+    },
+  });
+  // The relationship form, as album detail links a label.
+  const recordLabelRef = (id) => ({
+    id,
+    type: "record-labels",
+    href: `/v1/catalog/us/record-labels/${id}`,
+    attributes: { name: RECORD_LABELS[id].name },
+  });
+  const recordLabelResponse = (id, params) => {
+    const resource = recordLabelResource(id);
+    const views = listParam(params.views);
+    if (views.length) {
+      resource.views = Object.fromEntries(
+        views.map((name) => [
+          name,
+          {
+            data: Object.hasOwn(RECORD_LABEL_ALBUMS[id], name)
+              ? RECORD_LABEL_ALBUMS[id][name].map(clone)
+              : [],
+          },
+        ]),
+      );
+    }
+    return { data: [resource] };
+  };
+
+  // Activities: act-fixture-1 pages 14 playlists in one response, so a client
+  // that caps at 10, or follows `next`, is detectable.
+  const ACTIVITIES = {
+    "act-fixture-1": {
+      name: "Workout",
+      description: {
+        standard: "Playlists for <b>training</b> days.",
+        short: "Training",
+      },
+      playlistCount: 14,
+      paged: true,
+    },
+    "act-fixture-2": {
+      name: "Recovery",
+      description: { standard: "Slow songs for rest days.", short: "Rest" },
+      playlistCount: 3,
+      paged: false,
+    },
+  };
+  const activityResource = (id) => ({
+    id,
+    type: "activities",
+    attributes: {
+      name: ACTIVITIES[id].name,
+      description: clone(ACTIVITIES[id].description),
+      url: `https://music.apple.com/us/activity/${id}/${id}`,
+      artwork: polishArtwork(id),
+      playParams: { id, kind: "activity" },
+    },
+  });
+  const activityPlaylist = (activityId, number) => {
+    const id = `${activityId}-pl-${String(number).padStart(2, "0")}`;
+    return {
+      id,
+      type: "playlists",
+      attributes: {
+        name: `${ACTIVITIES[activityId].name} Mix ${number}`,
+        curatorName: "Apple Music",
+        trackCount: 10,
+        artwork: polishArtwork(id),
+        playParams: { id, kind: "playlist" },
+      },
+    };
+  };
+  const activityResponse = (id, params) => {
+    const resource = activityResource(id);
+    if (listParam(params.include).includes("playlists")) {
+      const { playlistCount, paged } = ACTIVITIES[id];
+      const playlists = {
+        data: Array.from({ length: playlistCount }, (_, index) =>
+          activityPlaylist(id, index + 1),
+        ),
+      };
+      if (paged) {
+        playlists.next = `/v1/catalog/us/activities/${id}/playlists?offset=${playlistCount}`;
+      }
+      resource.relationships = { playlists };
+    }
+    return { data: [resource] };
+  };
+
+  // Search groups for record labels and activities: two results each, and only
+  // for the types the request names.
+  const catalogExtraSearchGroups = (params) => {
+    const types = listParam(params.types);
+    const groups = {};
+    if (types.includes("record-labels")) {
+      groups["record-labels"] = {
+        data: Object.keys(RECORD_LABELS).map((id) => recordLabelResource(id)),
+      };
+    }
+    if (types.includes("activities")) {
+      groups.activities = {
+        data: Object.keys(ACTIVITIES).map((id) => activityResource(id)),
+      };
+    }
+    return groups;
+  };
+
+  // Catalog song details. song-a is the library song "Track A" in its catalog
+  // form; songs carry no copyright or recordLabel from Apple.
+  const CATALOG_SONGS = {
+    "song-a": {
+      name: "Track A",
+      trackNumber: 1,
+      discNumber: 1,
+      isrc: "USFIX2600001",
+      composerName: "<b>Composer</b> A",
+      genreNames: ["Pop", "Alternative"],
+      releaseDate: "2026-03-01",
+      contentRating: "explicit",
+    },
+    "song-c": {
+      name: "Track C",
+      trackNumber: 3,
+      discNumber: 1,
+      isrc: "USFIX2600003",
+      composerName: "Composer C",
+      genreNames: ["Alternative"],
+      releaseDate: "2026-03-01",
+    },
+    // Get Info's catalog twin for get-info-song: a numeric ID, as Apple sends.
+    1700000001: {
+      name: "Info Track",
+      trackNumber: 1,
+      discNumber: 1,
+      isrc: "USFIX2600009",
+      composerName: "<b>Composer</b> A",
+      genreNames: ["Pop", "Alternative"],
+      releaseDate: "2026-03-01",
+      contentRating: "explicit",
+    },
+  };
+  const catalogSongResource = (id) => {
+    const { name, ...details } = CATALOG_SONGS[id];
+    return {
+      id,
+      type: "songs",
+      attributes: {
+        name,
+        artistName: "Fixture Artist",
+        albumName: "Fixture Album",
+        durationInMillis: 180_000,
+        ...details,
+        artwork: polishArtwork(id),
+        playParams: { id, kind: "song", catalogId: id },
+      },
+    };
+  };
+
+  // The catalog album that song-a and song-c belong to (include=albums).
+  const catalogAlbumRef = () => ({
+    id: "cat-album-1",
+    type: "albums",
+    href: "/v1/catalog/us/albums/cat-album-1",
+    attributes: { name: "Fixture Album" },
+  });
+  const catalogAlbumResource = (params) => {
+    const resource = {
+      id: "cat-album-1",
+      type: "albums",
+      attributes: {
+        name: "Fixture Album",
+        artistName: "Fixture Artist",
+        releaseDate: "2026-03-01",
+        trackCount: albumItems.length,
+        genreNames: ["Pop", "Alternative"],
+        recordLabel: RECORD_LABELS["rl-fixture-1"].name,
+        copyright: "℗ 2026 Fixture Records",
+        url: "https://music.apple.com/us/album/fixture-album/cat-album-1",
+        artwork: polishArtwork("cat-album-1"),
+        playParams: { id: "cat-album-1", kind: "album" },
+      },
+    };
+    if (listParam(params.include).includes("record-labels")) {
+      resource.relationships = {
+        "record-labels": { data: [recordLabelRef("rl-fixture-1")] },
+      };
+    }
+    return resource;
+  };
+  // include=albums links the song's catalog album; Get Info reads it.
+  const catalogSongWithIncludes = (id, params) => {
+    const resource = catalogSongResource(id);
+    if (listParam(params.include).includes("albums")) {
+      resource.relationships = { albums: { data: [catalogAlbumRef()] } };
+    }
+    return resource;
+  };
+
+  // album-1 links its record label when the request asks for record-labels.
+  const albumRelationships = (pathname, path, call) => {
+    const relationships = {};
+    if (
+      pathname === "/v1/me/library/albums/album-1" &&
+      listParam(requestParams(path, call).include).includes("record-labels")
+    ) {
+      relationships["record-labels"] = {
+        data: [recordLabelRef("rl-fixture-1")],
+      };
+    }
+    return relationships;
+  };
+  const albumDetailResponse = (pathname, path, call) => {
+    const resource = clone(album);
+    const relationships = albumRelationships(pathname, path, call);
+    if (Object.keys(relationships).length) {
+      resource.relationships = relationships;
+    }
+    return { data: [resource] };
+  };
+  // include=tracks carries the track page; record-labels may ride along.
+  const includesTrackPage = (call) => {
+    const include = listParam(call.query?.include);
+    return (
+      include.includes("tracks") &&
+      include.every((name) => name === "tracks" || name === "record-labels")
+    );
+  };
+
+  // Playlist folders and the playlists created under them (header comment).
+  const parentIdOf = (payload) => {
+    const ref = payload.relationships?.parent?.data?.[0];
+    return ref && typeof ref.id === "string" && ref.id.length > 0
+      ? ref.id
+      : undefined;
+  };
+  const createLibraryFolder = (body) => {
+    const payload = body && typeof body === "object" ? body : {};
+    const attributes =
+      payload.attributes && typeof payload.attributes === "object"
+        ? payload.attributes
+        : {};
+    const name =
+      typeof attributes.name === "string" && attributes.name.trim()
+        ? attributes.name.trim()
+        : "Untitled Folder";
+    const parentId = parentIdOf(payload) ?? null;
+    const id = `saved-folder-${state.nextCreatedFolderId}`;
+    state.nextCreatedFolderId += 1;
+    const folder = {
+      id,
+      parentId,
+      resource: {
+        id,
+        type: "library-playlist-folders",
+        attributes: { name },
+      },
+    };
+    state.createdFolders.push(folder);
+    state.playlistFolderCreates.push({ id, name, parentId });
+    return folder;
+  };
+  const createdChildrenFor = (pathname) => {
+    const match = pathname.match(/\/playlist-folders\/([^/]+)\/children$/u);
+    if (!match) return [];
+    const parentId = decodeURIComponent(match[1]);
+    return [
+      ...state.createdFolders
+        .filter((entry) => entry.parentId === parentId)
+        .map((entry) => clone(entry.resource)),
+      ...state.createdPlaylists
+        .filter((entry) => entry.parentId === parentId)
+        .map((entry) => clone(entry.resource)),
+    ];
+  };
+
+  // Routes for the catalog extras; undefined means "not one of these".
+  const catalogExtrasResponse = (pathname, path, call) => {
+    const params = requestParams(path, call);
+    if (pathname === "/v1/me/music-summaries") {
+      return state.replay === "empty" ? { data: [] } : replayResponse(params);
+    }
+    const labelRoute = pathname.match(
+      /^\/v1\/catalog\/us\/record-labels\/([^/]+)$/u,
+    );
+    if (labelRoute) {
+      const id = decodeURIComponent(labelRoute[1]);
+      return Object.hasOwn(RECORD_LABELS, id)
+        ? recordLabelResponse(id, params)
+        : { data: [] };
+    }
+    const activityRoute = pathname.match(
+      /^\/v1\/catalog\/us\/activities\/([^/]+)$/u,
+    );
+    if (activityRoute) {
+      const id = decodeURIComponent(activityRoute[1]);
+      return Object.hasOwn(ACTIVITIES, id)
+        ? activityResponse(id, params)
+        : { data: [] };
+    }
+    if (pathname === "/v1/catalog/us/songs" && params.ids !== undefined) {
+      const ids = listParam(params.ids).filter((id) =>
+        Object.hasOwn(CATALOG_SONGS, id),
+      );
+      if (ids.length) {
+        return {
+          data: ids.map((id) => catalogSongWithIncludes(id, params)),
+        };
+      }
+    }
+    if (pathname === "/v1/catalog/us/albums/cat-album-1") {
+      return { data: [catalogAlbumResource(params)] };
+    }
+    const songRoute = pathname.match(/^\/v1\/catalog\/us\/songs\/([^/]+)$/u);
+    if (songRoute) {
+      const id = decodeURIComponent(songRoute[1]);
+      if (Object.hasOwn(CATALOG_SONGS, id)) {
+        return { data: [catalogSongWithIncludes(id, params)] };
+      }
+    }
+    return undefined;
+  };
+
   const artistResponse = (id, params) => {
     const attributes = { name: DISCOVERY_ARTIST_NAMES[id] };
     if (ARTIST_ARTWORK[id]) attributes.artwork = clone(ARTIST_ARTWORK[id]);
@@ -1627,6 +2684,7 @@ function installMusicKitFixture() {
         limit,
       );
     }
+    Object.assign(results, catalogExtraSearchGroups(params));
     return { results };
   };
   const suggestionsResponse = (params) => {
@@ -1815,6 +2873,7 @@ function installMusicKitFixture() {
   // Detail paths whose `include=tracks` form carries the first track page.
   const TRACK_DETAIL_PATHS = new Set([
     "/v1/me/library/albums/album-1",
+    "/v1/me/library/albums/album-long",
     "/v1/me/library/playlists/playlist-1",
     "/v1/me/library/playlists/playlist-big",
     "/v1/catalog/us/playlists/pl.catalog-fixture",
@@ -2041,6 +3100,7 @@ function installMusicKitFixture() {
     const refs = data.filter(
       (ref) => ref && typeof ref.id === "string" && ref.id.length > 0,
     );
+    const parentId = parentIdOf(payload);
     const id = `saved-playlist-${state.nextCreatedPlaylistId}`;
     state.nextCreatedPlaylistId += 1;
     const playlist = {
@@ -2057,12 +3117,14 @@ function installMusicKitFixture() {
         },
       },
       tracks: refs.map(savedPlaylistTrack),
+      parentId,
     };
     state.createdPlaylists.push(playlist);
     state.playlistCreates.push({
       id,
       name,
       trackIds: playlist.tracks.map((item) => item.id),
+      ...(parentId ? { parentId } : {}),
     });
     return playlist;
   };
@@ -2104,6 +3166,9 @@ function installMusicKitFixture() {
     if (call.method !== "POST") return undefined;
     if (pathname === "/v1/me/library/playlists") {
       return { data: [clone(createLibraryPlaylist(call.body).resource)] };
+    }
+    if (pathname === "/v1/me/library/playlist-folders") {
+      return { data: [clone(createLibraryFolder(call.body).resource)] };
     }
     const add = playlistAddRequest(pathname, call.body);
     if (!add) return undefined;
@@ -2259,13 +3324,15 @@ function installMusicKitFixture() {
     if (artwork !== undefined) return artwork;
     const discovered = discoveryResponse(pathname, path, call);
     if (discovered !== undefined) return discovered;
+    const extras = catalogExtrasResponse(pathname, path, call);
+    if (extras !== undefined) return extras;
     if (pathname === "/v1/me/storefront") {
       return { data: [{ id: "us", type: "storefronts" }] };
     }
     // `include=tracks` carries the first track page in `relationships.tracks`,
     // with the same `next` as the tracks endpoint, so callers page on as before.
     if (
-      call.query?.include === "tracks" &&
+      includesTrackPage(call) &&
       (TRACK_DETAIL_PATHS.has(pathname) || createdPlaylistFor(pathname))
     ) {
       const detail = responseFor(pathname, { method: "GET" });
@@ -2273,6 +3340,7 @@ function installMusicKitFixture() {
       const [resource] = detail.data ?? [];
       if (resource) {
         resource.relationships = {
+          ...albumRelationships(pathname, pathname, call),
           tracks: {
             data: page.data,
             ...(page.next ? { next: page.next } : {}),
@@ -2361,7 +3429,7 @@ function installMusicKitFixture() {
       };
     }
     if (pathname === "/v1/me/library/albums/album-1") {
-      return itemResponse(album);
+      return albumDetailResponse(pathname, path, call);
     }
     if (String(path).includes(secondAlbumPage)) {
       return { data: albumItems.slice(2).map(clone) };
@@ -2371,6 +3439,12 @@ function installMusicKitFixture() {
         data: albumItems.slice(0, 2).map(clone),
         next: secondAlbumPage,
       };
+    }
+    if (pathname === "/v1/me/library/albums/album-long") {
+      return itemResponse(longAlbum);
+    }
+    if (pathname === "/v1/me/library/albums/album-long/tracks") {
+      return { data: longAlbumItems.map(clone) };
     }
     const songMatch = pathname.match(
       /^\/v1\/(?:me\/library|catalog\/us)\/songs\/([^/]+)$/u,
@@ -2457,19 +3531,24 @@ function installMusicKitFixture() {
       });
     }
     if (/\/playlist-folders(?:\/[^/]+)?\/children$/u.test(pathname)) {
+      // Items created under this folder in the session follow the seed items.
+      const created = createdChildrenFor(pathname);
       if (state.libraryView) {
         if (pathname.includes("/fixture-playlists-root/")) {
-          return { data: [clone(libraryViewFolder)] };
+          return { data: [clone(libraryViewFolder), ...created] };
         }
         if (pathname.includes(`/${LIBRARY_VIEW_FOLDER_ID}/`)) {
           return {
-            data: libraryViewPlaylists
-              .filter((item) => libraryViewFolderMembers.includes(item.id))
-              .map(clone),
+            data: [
+              ...libraryViewPlaylists
+                .filter((item) => libraryViewFolderMembers.includes(item.id))
+                .map(clone),
+              ...created,
+            ],
           };
         }
       }
-      return { data: [] };
+      return { data: created };
     }
     if (pathname === "/v1/me/library/playlist-folders") {
       return {
@@ -2535,6 +3614,7 @@ function installMusicKitFixture() {
       return { data: Object.values(navResources).map(clone) };
     }
     if (pathname === "/v1/catalog/us/search") {
+      const extras = catalogExtraSearchGroups(requestParams(path, call));
       // Only a term containing "polish" reaches the polish ids.
       if (/polish/iu.test(String(call.query?.term ?? ""))) {
         return {
@@ -2542,10 +3622,13 @@ function installMusicKitFixture() {
             albums: { data: [clone(polishAlbum), clone(polishSparseAlbum)] },
             playlists: { data: [clone(polishPlaylist)] },
             songs: { data: polishAlbumTracks.map(clone) },
+            ...extras,
           },
         };
       }
-      return { results: { songs: { data: topSongItems.map(clone) } } };
+      return {
+        results: { songs: { data: topSongItems.map(clone) }, ...extras },
+      };
     }
     return { data: [] };
   };
@@ -2644,6 +3727,13 @@ function installMusicKitFixture() {
       request.status = status;
       throw error;
     }
+    const replayFailure = replayFailureFor(pathText.split("?", 1)[0], params);
+    if (replayFailure) {
+      const error = fixtureHttpError(replayFailure.status, replayFailure.code);
+      request.error = error.message;
+      request.status = replayFailure.status;
+      throw error;
+    }
     const response = templateArtwork(responseFor(pathText, request));
     request.completedAt = Date.now();
     request.response = clone(response);
@@ -2691,17 +3781,14 @@ function installMusicKitFixture() {
     state.transitions.push({ type: "apiReset", generation: apiGeneration });
   };
 
-  const selectIndex = async (index, transitionType = "selectIndex") => {
+  const assertSelectable = (index) => {
     if (!Number.isInteger(index) || index < 0 || index >= state.queue.length) {
       throw new Error(`Fixture queue index unavailable: ${index}`);
     }
+  };
+  const selectIndex = async (index, transitionType = "selectIndex") => {
+    assertSelectable(index);
     state.queueIndex = index;
-    if (transitionType === "selectIndex") state.shuffleHistory = [index];
-    else if (transitionType === "next" || transitionType === "finishNext") {
-      state.shuffleHistory.push(index);
-    } else if (transitionType === "previous" && state.shuffleHistory.length) {
-      state.shuffleHistory.pop();
-    }
     state.transitions.push({
       type: transitionType,
       index,
@@ -2709,7 +3796,52 @@ function installMusicKitFixture() {
       total: state.queue.length,
     });
     syncProviderQueue(true, true);
+    topUpAutoplay();
     return index;
+  };
+  // Live MKInstance.changeToMediaAtIndex and changeToMediaItem call stop()
+  // first (header comment). The nowPlayingItem clear comes before the state
+  // change, as in live stopMediaAndCleanup. Then the new item plays.
+  const selectWithStop = async (index) => {
+    if (!state.selectStops) return selectIndex(index);
+    assertSelectable(index);
+    const previous = currentItem();
+    const oldState = instance.playbackState;
+    state.transitions.push({ type: "selectStop", index });
+    state.nowPlayingCleared = true;
+    emit(events.nowPlayingItemDidChange, { item: undefined });
+    if (oldState !== STOPPED) {
+      instance.playbackState = STOPPED;
+      emit(events.playbackStateDidChange, {
+        oldState,
+        state: STOPPED,
+        nowPlayingItem: previous,
+      });
+    }
+    state.nowPlayingCleared = false;
+    const pending = selectIndex(index);
+    instance.playbackState = PLAYING;
+    emit(events.playbackStateDidChange, {
+      oldState: STOPPED,
+      state: PLAYING,
+      nowPlayingItem: currentItem(),
+    });
+    return pending;
+  };
+  // Repeat One (Next, Previous) and Previous on the first song restart the
+  // playing song in place: the index stays put and the time goes to zero.
+  const restartCurrent = (type) => {
+    state.transitions.push({
+      type,
+      index: state.queueIndex,
+      id: currentItem()?.id ?? null,
+      total: state.queue.length,
+    });
+    emit(events.playbackTimeDidChange, {
+      currentPlaybackTime: 0,
+      currentPlaybackDuration: 180,
+    });
+    return state.queueIndex;
   };
 
   // Native queue edits exist only when configure({ nativeQueueEdit: true }),
@@ -2722,7 +3854,9 @@ function installMusicKitFixture() {
     }
   };
   // Mirrors MusicKit v3 `Queue.splice(start, deleteCount, mediaItems)`,
-  // which is synchronous and returns the removed MediaItems. A configured
+  // which is synchronous and returns the removed MediaItems. Like the live
+  // spliceQueueItems, it leaves the queue index alone and does not refuse to
+  // remove the playing item; the app decides what plays next. A configured
   // delay makes it async so a provider change can land mid-edit.
   const spliceNative = (start, deleteCount, items) => {
     if (
@@ -2734,20 +3868,14 @@ function installMusicKitFixture() {
     ) {
       throw new Error(`Fixture queue splice unavailable: ${start}`);
     }
-    const end = Math.min(state.queue.length, start + deleteCount);
-    if (
-      deleteCount > 0 &&
-      start <= state.queueIndex &&
-      state.queueIndex < end
-    ) {
-      throw new Error("Fixture queue cannot remove the current item.");
-    }
     const removed = state.queue.splice(start, deleteCount, ...items);
-    if (start < state.queueIndex) {
-      state.queueIndex += items.length - removed.length;
-    } else if (start === state.queueIndex && items.length > 0) {
-      state.queueIndex += items.length;
-    }
+    // The live splice applies the same arguments to the add-order IDs, so a
+    // repeated song loses only the occurrence at `start`, not every copy.
+    state.unshuffledIds.splice(
+      start,
+      deleteCount,
+      ...items.map((item) => item.id),
+    );
     if (removed.length > 0) {
       state.transitions.push({
         type: "nativeRemove",
@@ -2763,6 +3891,7 @@ function installMusicKitFixture() {
       });
     }
     syncProviderQueue(true, false);
+    topUpAutoplay();
     return removed;
   };
   const nativeQueue = Object.create(queueRecord);
@@ -2799,50 +3928,138 @@ function installMusicKitFixture() {
     return itemIds.filter((id) => !state.unplayableIds.includes(id));
   };
 
-  const player = {
-    queue: queueRecord,
-    shuffle: false,
-    // MusicKit v3 reads shuffle through `shuffleMode` (0 off, 1 songs).
-    get shuffleMode() {
-      return this.shuffle ? 1 : 0;
-    },
-    set shuffleMode(value) {
-      this.shuffle = value === 1;
-    },
-    repeatMode: 0,
-    volume: 1,
-    get nowPlayingItem() {
-      return state.playingOverride ?? currentItem();
-    },
-    get nowPlayingItemIndex() {
-      return state.queue.length ? state.queueIndex : -1;
-    },
-    changeToMediaAtIndex: (index) => selectIndex(index),
-    changeToMediaItem: (descriptor) => {
-      const id = typeof descriptor === "string" ? descriptor : descriptor?.id;
-      const index = state.queue.findIndex((item) => item.id === id);
-      return selectIndex(index);
-    },
-  };
-
   instance = {
     developerToken: "fixture-developer-token",
     musicUserToken: "fixture-music-user-token",
     isAuthorized: true,
     storefrontId: "us",
+    storefrontCountryCode: "us",
+    // Live instance.bitrate: 64 or 256 (header comment). Setting it emits only
+    // on a change.
+    get bitrate() {
+      return state.bitrate;
+    },
+    set bitrate(value) {
+      setBitrate(value);
+    },
+    // Live hasMusicSubscription: a Promise that resolves after subscriptionDelayMs.
+    async hasMusicSubscription() {
+      if (state.subscriptionDelayMs > 0) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, state.subscriptionDelayMs),
+        );
+      }
+      return hasSubscription();
+    },
+    // Live preview-only mode is the no-subscription mode (header comment).
+    get previewOnly() {
+      return !state.subscription;
+    },
+    // The live storekit deeplink for subscribe, with no extra parameters.
+    get subscribeURL() {
+      return "https://finance-app.itunes.apple.com/deeplink?p=subscribe";
+    },
     // Removing this property simulates a runtime without autoplay support.
-    autoplayEnabled: true,
+    get autoplayEnabled() {
+      return readAutoplayEnabled();
+    },
+    set autoplayEnabled(value) {
+      setAutoplayEnabled(value);
+    },
+    // Live Capabilities: Shuffle and Repeat are not settable while the current
+    // song is an autoplay song (header comment).
+    get canSetShuffleMode() {
+      return currentItem()?.isAutoplay !== true;
+    },
+    get canSetRepeatMode() {
+      return currentItem()?.isAutoplay !== true;
+    },
     playbackState: STOPPED,
-    player,
+    // Live v3 keeps these on the instance; there is no `player` object.
+    // `shuffle` is write-only in live v3: it is an alias for shuffleMode.
+    set shuffle(value) {
+      instance.shuffleMode =
+        value === true ? PlayerShuffleMode.songs : PlayerShuffleMode.off;
+    },
+    // MusicKit v3 reads shuffle through `shuffleMode` (0 off, 1 songs).
+    get shuffleMode() {
+      return shuffleModeOf();
+    },
+    set shuffleMode(value) {
+      // Live BaseShuffler ignores the write on a station: no change, no event.
+      if (
+        state.isStation ||
+        value === state.shuffleMode ||
+        (value !== PlayerShuffleMode.off && value !== PlayerShuffleMode.songs)
+      ) {
+        return;
+      }
+      const playingId = currentItem()?.id;
+      const oldPosition = queueRecord.position;
+      state.shuffleMode = value;
+      if (value === PlayerShuffleMode.songs) shuffleQueue();
+      else unshuffleQueue();
+      // Live quirk, on purpose (docs/TESTING.md "Shuffle model"): live sets the
+      // position to queue.indexForItem(nowPlayingItem.id), which is the FIRST
+      // copy of a repeated song, so the playing copy can change here.
+      // The position moves to the playing song before any event fires.
+      if (playingId !== undefined) {
+        const index = state.queue.findIndex((item) => item.id === playingId);
+        if (index > -1) state.queueIndex = index;
+      }
+      state.transitions.push({
+        type: "shuffleMode",
+        mode: value,
+        index: queueRecord.position,
+        id: currentItem()?.id ?? null,
+      });
+      emit(events.queueItemsDidChange, [...state.queue]);
+      if (queueRecord.position !== oldPosition) {
+        emit(events.queuePositionDidChange, {
+          oldPosition,
+          position: queueRecord.position,
+        });
+      }
+      emit(events.shuffleModeDidChange, value);
+    },
+    get repeatMode() {
+      return repeatModeOf();
+    },
+    // Only the live values 0, 1 and 2 are accepted. A change emits the new mode.
+    // On a station the write is ignored (live BaseRepeatable), with no event.
+    set repeatMode(value) {
+      if (
+        state.isStation ||
+        !REPEAT_MODES.includes(value) ||
+        value === state.repeatMode
+      ) {
+        return;
+      }
+      state.repeatMode = value;
+      emit(events.repeatModeDidChange, value);
+      // Live onRepeatModeChange: none tops up, one and all drop upcoming autoplay.
+      if (value === PlayerRepeatMode.none) topUpAutoplay();
+      else removeUpcomingAutoplay();
+    },
+    get nowPlayingItemIndex() {
+      return state.queue.length ? state.queueIndex : -1;
+    },
+    changeToMediaItem: (descriptor) => {
+      const id = typeof descriptor === "string" ? descriptor : descriptor?.id;
+      const index = state.queue.findIndex((item) => item.id === id);
+      return selectWithStop(index);
+    },
     api: createApi(0),
     get queueItems() {
       return state.queue;
     },
     get queue() {
-      if (!state.nativeQueueEdit) return undefined;
-      // Test-only: a runtime that exposes Queue but not its undocumented
-      // splice, so the app must rebuild. The base record has no splice.
-      return state.hideQueueSplice ? queueRecord : nativeQueue;
+      // Live always has instance.queue, and Arlet reads the autoplay flags
+      // from it (hasAutoplayStation, autoplayItems). Without nativeQueueEdit
+      // it is the base record, which has no splice, so the app rebuilds.
+      // Test-only: hideQueueSplice does the same with the flags present.
+      if (!state.nativeQueueEdit || state.hideQueueSplice) return queueRecord;
+      return nativeQueue;
     },
     get currentPlaybackQueueItemIndex() {
       return state.queue.length ? state.queueIndex : -1;
@@ -2851,14 +4068,16 @@ function installMusicKitFixture() {
       return currentItem();
     },
     get nowPlayingItem() {
-      return state.playingOverride ?? currentItem();
+      return state.nowPlayingCleared ? undefined : currentItem();
     },
     get volume() {
-      return player.volume;
+      return state.volume;
     },
+    // The event carries no level, so readers take it from instance.volume.
     set volume(value) {
-      player.volume = value;
-      state.transitions.push({ type: "volume", value });
+      if (applyVolume(value)) {
+        emit(events.playbackVolumeDidChange, { type: "volumechange" });
+      }
     },
     addEventListener(name, callback) {
       const callbacks = state.listeners.get(name) ?? new Set();
@@ -2926,30 +4145,39 @@ function installMusicKitFixture() {
         idsFromOptions(options),
         options,
       );
-      state.queue = itemIds.map(mediaItem);
+      const items = itemIds.map(mediaItem);
       // MusicKit positions the new queue on `startWith` (index or item ID).
+      // With shuffle on, the position then points at whatever song the shuffle
+      // left there.
       const startWith = options?.startWith;
       const startIndex =
         typeof startWith === "string"
-          ? state.queue.findIndex((item) => item.id === startWith)
+          ? items.findIndex((item) => item.id === startWith)
           : Number.isInteger(startWith)
             ? startWith
             : 0;
-      state.queueIndex =
-        startIndex >= 0 && startIndex < state.queue.length ? startIndex : 0;
-      state.shuffleHistory = [state.queueIndex];
+      // A station replaces the queue as a station; any other setQueue leaves it.
+      state.isStation = isStationOptions(options);
+      // A new queue ends the old station (live replaceQueue, stopAutoplay).
+      state.autoplayStationId = null;
+      replaceQueue(
+        items,
+        startIndex >= 0 && startIndex < items.length ? startIndex : 0,
+      );
       state.transitions.push({
         type: "setQueue",
         ids: [...itemIds],
         index: state.queueIndex,
         options: clone(options),
         shape: Object.keys(options ?? {}),
-        shuffle: player.shuffle,
+        shuffle: shuffleModeOf() === PlayerShuffleMode.songs,
       });
       syncProviderQueue(true, true);
+      // Live setQueue awaits the station requests before it resolves.
+      startAutoplayStation();
       return queueRecord;
     },
-    changeToMediaAtIndex: (index) => selectIndex(index),
+    changeToMediaAtIndex: (index) => selectWithStop(index),
     async play() {
       // `rejectPlayTimes` rejects only the next N plays, as a song MusicKit
       // queued but could not start.
@@ -2980,34 +4208,34 @@ function installMusicKitFixture() {
       this.playbackState = STOPPED;
       state.transitions.push({ type: "stop" });
       emit(events.playbackStateDidChange, { state: STOPPED });
-      emit(events.nowPlayingItemDidChange, {});
+      emit(events.nowPlayingItemDidChange, { item: null });
     },
     async skipToNextItem() {
       if (!state.queue.length) return -1;
-      const index = player.shuffle
-        ? state.queueIndex > 0
-          ? state.queueIndex - 1
-          : state.queue.length - 1
-        : state.queueIndex + 1 < state.queue.length
+      if (state.repeatMode === PlayerRepeatMode.one) {
+        return restartCurrent("restartRepeatOne");
+      }
+      // Linear under shuffle too: the queue already holds the shuffled order.
+      const index =
+        state.queueIndex + 1 < state.queue.length
           ? state.queueIndex + 1
-          : player.repeatMode === 1
+          : state.repeatMode === PlayerRepeatMode.all
             ? 0
             : state.queueIndex;
       return selectIndex(index, "next");
     },
     async skipToPreviousItem() {
       if (!state.queue.length) return -1;
-      const priorShuffleIndex =
-        player.shuffle && state.shuffleHistory.length > 1
-          ? state.shuffleHistory[state.shuffleHistory.length - 2]
-          : undefined;
+      if (state.repeatMode === PlayerRepeatMode.one) {
+        return restartCurrent("restartRepeatOne");
+      }
       const index =
-        priorShuffleIndex ??
-        (state.queueIndex > 0
+        state.queueIndex > 0
           ? state.queueIndex - 1
-          : player.repeatMode === 1
+          : state.repeatMode === PlayerRepeatMode.all
             ? state.queue.length - 1
-            : 0);
+            : undefined;
+      if (index === undefined) return restartCurrent("restartFirst");
       return selectIndex(index, "previous");
     },
     async seekToTime(time) {
@@ -3017,7 +4245,7 @@ function installMusicKitFixture() {
       }
       emit(events.playbackTimeDidChange, {
         currentPlaybackTime: time,
-        currentPlaybackDuration: 180,
+        currentPlaybackDuration: playbackDurationNow(),
       });
     },
     async playNext(options) {
@@ -3026,8 +4254,16 @@ function installMusicKitFixture() {
         idsFromOptions(options),
         options,
       );
+      if (state.isStation) {
+        throw stationRejected(
+          "playNext",
+          "Prepending to the Queue is not supported for this type of playback",
+        );
+      }
       const start = Math.min(state.queue.length, state.queueIndex + 1);
-      state.queue.splice(start, 0, ...itemIds.map(mediaItem));
+      const added = itemIds.map(mediaItem);
+      state.queue.splice(start, 0, ...added);
+      state.unshuffledIds.splice(start, 0, ...added.map((item) => item.id));
       state.transitions.push({
         type: "playNext",
         ids: [...itemIds],
@@ -3041,13 +4277,39 @@ function installMusicKitFixture() {
         idsFromOptions(options),
         options,
       );
-      state.queue.push(...itemIds.map(mediaItem));
+      if (state.isStation) {
+        throw stationRejected(
+          "playLater",
+          "Appending to the Queue is not supported for this type of playback",
+        );
+      }
+      // Live appendToQueue splices at appendTargetIndex, before autoplay songs.
+      // Add order only tracks user songs, so the IDs go on the end of it.
+      const start = queueRecord.appendTargetIndex;
+      const added = itemIds.map(mediaItem);
+      state.queue.splice(start, 0, ...added);
+      state.unshuffledIds.push(...added.map((item) => item.id));
       state.transitions.push({
         type: "playLater",
         ids: [...itemIds],
         shape: Object.keys(options ?? {}),
       });
       syncProviderQueue(true, false);
+    },
+    // Live Queue.clear empties the queue. A station rejects it instead.
+    async clearQueue() {
+      if (state.isStation) {
+        throw stationRejected(
+          "clearQueue",
+          "Clearing the Queue is not supported for this type of playback",
+        );
+      }
+      state.queue = [];
+      state.unshuffledIds = [];
+      state.queueIndex = 0;
+      state.transitions.push({ type: "clearQueue" });
+      syncProviderQueue(true, true);
+      return queueRecord;
     },
   };
 
@@ -3070,7 +4332,7 @@ function installMusicKitFixture() {
   };
 
   const fixture = {
-    seed: "arlet-playlist-continuation-2026-10-08",
+    seed: fixtureSeed,
     /** Lets every held authorize() call finish; returns how many it released. */
     releaseAuthorize() {
       return releaseHeldAuthorize();
@@ -3171,6 +4433,14 @@ function installMusicKitFixture() {
       if (Object.prototype.hasOwnProperty.call(options, "artworkGrid")) {
         state.artworkGrid = options.artworkGrid === true;
       }
+      if (Object.prototype.hasOwnProperty.call(options, "replay")) {
+        if (!REPLAY_MODES.includes(options.replay)) {
+          throw new Error(
+            `Fixture replay mode unknown: ${String(options.replay)}`,
+          );
+        }
+        state.replay = options.replay;
+      }
       if (Object.prototype.hasOwnProperty.call(options, "pinArtListExpired")) {
         state.pinArtListExpired = options.pinArtListExpired === true;
       }
@@ -3220,6 +4490,41 @@ function installMusicKitFixture() {
       if (Object.prototype.hasOwnProperty.call(options, "hangAuthorize")) {
         state.hangAuthorize = options.hangAuthorize === true;
       }
+      if (Object.prototype.hasOwnProperty.call(options, "selectStops")) {
+        state.selectStops = options.selectStops !== false;
+      }
+      if (Object.prototype.hasOwnProperty.call(options, "autoplayStation")) {
+        const value = options.autoplayStation;
+        if (value !== "refused" && value !== "ok") {
+          throw new Error(
+            `Fixture autoplayStation must be "refused" or "ok": ${value}`,
+          );
+        }
+        state.autoplayStation = value;
+      }
+      if (Object.prototype.hasOwnProperty.call(options, "startupBitrate")) {
+        const value = Number(options.startupBitrate);
+        if (
+          value !== PlaybackBitrate.STANDARD &&
+          value !== PlaybackBitrate.HIGH
+        ) {
+          throw new Error(
+            `Fixture startupBitrate must be 64 or 256: ${options.startupBitrate}`,
+          );
+        }
+        state.startupBitrate = value;
+      }
+      if (Object.prototype.hasOwnProperty.call(options, "subscription")) {
+        state.subscription = options.subscription !== false;
+      }
+      if (
+        Object.prototype.hasOwnProperty.call(options, "subscriptionDelayMs")
+      ) {
+        state.subscriptionDelayMs = Math.max(
+          0,
+          Number(options.subscriptionDelayMs) || 0,
+        );
+      }
       return this.snapshot();
     },
     reset() {
@@ -3235,6 +4540,9 @@ function installMusicKitFixture() {
       state.playlistAdds = [];
       state.createdPlaylists = [];
       state.nextCreatedPlaylistId = 1;
+      state.createdFolders = [];
+      state.nextCreatedFolderId = 1;
+      state.playlistFolderCreates = [];
       state.delayMs = 800;
       state.repeatPlaylistCursor = false;
       state.rejectPlay = false;
@@ -3260,6 +4568,7 @@ function installMusicKitFixture() {
       state.artworkTemplate = "";
       state.artworkGrid = false;
       state.pinArtListExpired = false;
+      state.replay = "data";
       state.delayTerms = {};
       state.rejectQueryKeys = [];
       state.repeatViewCursor = false;
@@ -3268,23 +4577,40 @@ function installMusicKitFixture() {
       state.rejectAuthorize = false;
       state.hangAuthorize = false;
       releaseHeldAuthorize();
+      state.selectStops = true;
+      state.subscription = true;
+      state.subscriptionDelayMs = 0;
+      // The configured startup applies here, then the startup returns to 256.
+      setBitrate(state.startupBitrate, false);
+      state.startupBitrate = PlaybackBitrate.HIGH;
+      state.nowPlayingCleared = false;
+      state.isStation = false;
+      state.autoplayStation = "refused";
+      state.autoplayStationId = null;
+      state.autoplaySerial = 0;
       state.queue = [];
       state.queueIndex = 0;
-      state.shuffleHistory = [];
-      player.shuffle = false;
-      player.repeatMode = 0;
-      player.volume = 1;
+      const shuffleChanged = state.shuffleMode !== PlayerShuffleMode.off;
+      state.shuffleMode = PlayerShuffleMode.off;
+      state.unshuffledIds = [];
+      state.random = createRandom(fixtureSeed);
+      // The setter emits only when the mode actually changes.
+      instance.repeatMode = PlayerRepeatMode.none;
+      state.volume = 1;
       instance.playbackState = STOPPED;
       syncProviderQueue(true, true);
-      emit(events.shuffleModeDidChange, { shuffle: false });
-      emit(events.repeatModeDidChange, { repeatMode: 0 });
+      if (shuffleChanged) {
+        emit(events.shuffleModeDidChange, PlayerShuffleMode.off);
+      }
       return true;
     },
     setCurrentTrack(id) {
       const item = mediaItem(String(id));
-      state.queue = [item];
-      state.queueIndex = 0;
-      state.shuffleHistory = [0];
+      // A single song replaces any station queue, as a songs queue does. It
+      // ends the autoplay station too, but starts none (header comment).
+      state.isStation = false;
+      state.autoplayStationId = null;
+      replaceQueue([item], 0);
       instance.playbackState = PLAYING;
       state.transitions.push({ type: "seedCurrent", id: item.id });
       syncProviderQueue(true, true);
@@ -3303,27 +4629,12 @@ function installMusicKitFixture() {
       syncProviderQueue(true, true);
       return true;
     },
-    // Mirrors MusicKit turning shuffle on mid-song: the current item moves to
-    // the front and items are published while the position is still stale;
-    // the position moves afterwards. The playing item never changes.
+    // Turning shuffle on mid-song, as the app does it: the playing song keeps
+    // its place as the position moves to it (shuffleMode setter). Returns
+    // false with nothing playing.
     shuffleLikeMusicKit() {
-      const playing = currentItem();
-      if (!playing) return false;
-      const staleIndex = state.queueIndex;
-      const others = state.queue.filter((_, index) => index !== staleIndex);
-      others.reverse();
-      state.playingOverride = playing;
-      state.queue = [playing, ...others];
-      player.shuffle = true;
-      state.transitions.push({ type: "shuffleReorder", staleIndex });
-      emit(events.queueItemsDidChange, {
-        items: state.queue,
-        currentItemIndex: staleIndex,
-      });
-      state.queueIndex = 0;
-      state.playingOverride = undefined;
-      emit(events.queuePositionDidChange, { position: 0 });
-      emit(events.shuffleModeDidChange, { shuffle: true });
+      if (!currentItem()) return false;
+      instance.shuffleMode = PlayerShuffleMode.songs;
       return true;
     },
     // MusicKit publishes an MKError when a song fails as it starts playing.
@@ -3343,16 +4654,12 @@ function installMusicKitFixture() {
       if (!state.queue.length) return false;
       let nextIndex = state.queueIndex;
       let transitionType = "finishRepeatOne";
-      if (player.repeatMode === 2) {
-        // Repeat one retains the current occurrence on natural completion.
-      } else if (player.shuffle) {
-        nextIndex =
-          state.queueIndex > 0 ? state.queueIndex - 1 : state.queue.length - 1;
-        transitionType = "finishNext";
+      if (state.repeatMode === PlayerRepeatMode.one) {
+        // Repeat One replays the same song when it ends naturally.
       } else if (state.queueIndex + 1 < state.queue.length) {
         nextIndex = state.queueIndex + 1;
         transitionType = "finishNext";
-      } else if (player.repeatMode === 1) {
+      } else if (state.repeatMode === PlayerRepeatMode.all) {
         nextIndex = 0;
         transitionType = "finishWrap";
       } else {
@@ -3373,10 +4680,22 @@ function installMusicKitFixture() {
      */
     finishWithAutoplay() {
       if (!state.queue.length) return false;
+      if (state.autoplayStation === "ok") {
+        // With a station the autoplay songs are already queued (header comment).
+        const next = state.queueIndex + 1;
+        if (
+          next < state.queue.length &&
+          state.queue[next].isAutoplay === true &&
+          state.repeatMode === PlayerRepeatMode.none
+        ) {
+          return selectIndex(next, "finishAutoplay");
+        }
+        return this.finishCurrentTrack();
+      }
+      // Refused mode keeps the old result the desktop check relies on.
       if (
         state.queueIndex + 1 >= state.queue.length &&
-        player.repeatMode === 0 &&
-        !player.shuffle &&
+        state.repeatMode === PlayerRepeatMode.none &&
         instance.autoplayEnabled === true
       ) {
         state.queue.push(mediaItem(`autoplay-${state.queue.length + 1}`));
@@ -3387,11 +4706,21 @@ function installMusicKitFixture() {
     /** Adds or removes `autoplayEnabled` and emits a mode change so the app re-reads it. */
     setAutoplayAvailable(available) {
       if (available) {
-        if (!("autoplayEnabled" in instance)) instance.autoplayEnabled = true;
+        if (!("autoplayEnabled" in instance)) {
+          // Puts back the accessor that delete removed, and keeps the old
+          // result of true (no event, as a plain assignment had none).
+          Object.defineProperty(instance, "autoplayEnabled", {
+            configurable: true,
+            enumerable: true,
+            get: readAutoplayEnabled,
+            set: setAutoplayEnabled,
+          });
+          state.autoplayEnabled = true;
+        }
       } else {
         delete instance.autoplayEnabled;
       }
-      emit(events.shuffleModeDidChange, { shuffle: player.shuffle });
+      emit(events.shuffleModeDidChange, shuffleModeOf());
       return "autoplayEnabled" in instance;
     },
     selectContext(idOrTarget) {
@@ -3408,6 +4737,12 @@ function installMusicKitFixture() {
         item.attributes?.artistName ?? "Fixture Artist";
       target.dataset.contextAlbum = item.attributes?.albumName ?? "";
       target.dataset.contextResourceType = item.type ?? "library-songs";
+      // Only numeric catalog IDs, the form Apple sends; other fixture IDs keep
+      // the target they had, so their menus are unchanged.
+      const catalogId = String(item.attributes?.playParams?.catalogId ?? "");
+      if (/^\d+$/u.test(catalogId)) {
+        target.dataset.contextCatalogId = catalogId;
+      }
       if (id === "nav-multi") {
         target.dataset.contextAlbumRef = JSON.stringify({
           id: "nav-album",
@@ -3462,6 +4797,18 @@ function installMusicKitFixture() {
       });
       return true;
     },
+    // A bitrate change as live's downlink calculator makes it (header comment).
+    // Returns whether the value changed.
+    emitBitrateChange(value) {
+      const bitrate = Number(value);
+      if (
+        bitrate !== PlaybackBitrate.STANDARD &&
+        bitrate !== PlaybackBitrate.HIGH
+      ) {
+        throw new Error(`Fixture bitrate change must be 64 or 256: ${value}`);
+      }
+      return setBitrate(bitrate);
+    },
     // An external sign-in change: isAuthorized flips, then the event fires.
     emitAuthorizationStatus(authorized) {
       instance.isAuthorized = authorized === true;
@@ -3480,8 +4827,8 @@ function installMusicKitFixture() {
       if (!Number.isFinite(value) || value < 0 || value > 1) {
         throw new Error(`Fixture volume out of range: ${volume}`);
       }
-      instance.volume = value;
-      emit(events.playbackVolumeDidChange, { volume: value });
+      applyVolume(value);
+      emit(events.playbackVolumeDidChange, { type: "volumechange" });
       return true;
     },
     // Marks the current item live or not. A live item is station-type with
@@ -3512,11 +4859,12 @@ function installMusicKitFixture() {
       return emitLiveMetadata(events.metadataDidChange, metadata);
     },
     seedQueue(count) {
-      state.queue = Array.from({ length: count }, (_, index) =>
-        mediaItem(`bulk-${index}`),
+      state.isStation = false;
+      state.autoplayStationId = null;
+      replaceQueue(
+        Array.from({ length: count }, (_, index) => mediaItem(`bulk-${index}`)),
+        0,
       );
-      state.queueIndex = 0;
-      state.shuffleHistory = [0];
       state.transitions.push({ type: "seedQueue", total: count });
       syncProviderQueue(true, true);
       return true;
@@ -3539,6 +4887,7 @@ function installMusicKitFixture() {
         playlistMutations: {
           creates: clone(state.playlistCreates),
           adds: clone(state.playlistAdds),
+          folders: clone(state.playlistFolderCreates),
           created: state.createdPlaylists.map((entry) => ({
             id: entry.id,
             trackIds: entry.tracks.map((item) => item.id),
@@ -3546,10 +4895,15 @@ function installMusicKitFixture() {
           })),
         },
         modes: {
-          shuffle: player.shuffle === true,
-          repeat: player.repeatMode,
+          shuffle: shuffleModeOf() === PlayerShuffleMode.songs,
+          repeat: repeatModeOf(),
         },
-        volume: player.volume,
+        volume: state.volume,
+        bitrate: { current: state.bitrate, startup: state.startupBitrate },
+        subscription: {
+          has: hasSubscription(),
+          previewOnly: instance.previewOnly,
+        },
         authorized: instance.isAuthorized === true,
         apiGeneration,
         authorizeHeld: state.authorizeReleases.length,
@@ -3579,6 +4933,12 @@ function installMusicKitFixture() {
           repeatPlaylistCursor: state.repeatPlaylistCursor,
           repeatViewCursor: state.repeatViewCursor,
           pinArtListExpired: state.pinArtListExpired,
+          replay: state.replay,
+          selectStops: state.selectStops,
+          autoplayStation: state.autoplayStation,
+          subscription: state.subscription,
+          subscriptionDelayMs: state.subscriptionDelayMs,
+          startupBitrate: state.startupBitrate,
         },
         configure: state.configureOptions
           ? clone(state.configureOptions)
@@ -3591,17 +4951,20 @@ function installMusicKitFixture() {
 
   const musicKit = {
     Events: events,
+    PlayerRepeatMode,
+    PlayerShuffleMode,
+    PlaybackBitrate,
     PlaybackStates: {
-      completed: 0,
-      ended: 1,
-      loading: 2,
-      none: 3,
-      paused: PAUSED,
+      none: 0,
+      loading: 1,
       playing: PLAYING,
-      seeking: 6,
-      stalled: 7,
+      paused: PAUSED,
       stopped: STOPPED,
-      waiting: 9,
+      ended: 5,
+      seeking: 6,
+      waiting: 8,
+      stalled: 9,
+      completed: 10,
     },
     configure(options) {
       state.configured = true;
@@ -3621,4 +4984,4 @@ function installMusicKitFixture() {
   window.MusicKit = musicKit;
 }
 
-export const musicFixtureSource = `(${installMusicKitFixture.toString()})();`;
+export const musicFixtureSource = `(${installMusicKitFixture.toString()})(${JSON.stringify(MUSIC_FIXTURE_SEED)});`;

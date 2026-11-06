@@ -8,6 +8,7 @@ import {
 } from "../app/playlist-editing.ts";
 import { useAppController, useAppSlices } from "../app/context.tsx";
 import type { Track } from "../domain/music.ts";
+import type { LibraryEntity } from "../state.ts";
 import { reportActionError, reportNotice } from "./action-errors.ts";
 import {
   PLAYLIST_DIALOG_REQUEST,
@@ -30,14 +31,26 @@ interface DialogState {
   restoreFocus?: HTMLElement;
 }
 
+interface FolderOption {
+  id: string;
+  label: string;
+}
+
+/** Each nesting level adds one dash before the folder name. */
+const FOLDER_LEVEL_MARK = "— ";
+
 type PlaylistController = Pick<
   AppController,
   | "loadLibrarySection"
   | "searchPlaylists"
   | "createPlaylist"
   | "addTracksToPlaylist"
-  | "createPlaylistFolder"
->;
+> & {
+  createPlaylistFolder(
+    name: string,
+    parentFolderId?: string,
+  ): Promise<LibraryEntity | undefined>;
+};
 
 function recordValue(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object"
@@ -89,22 +102,88 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function isFolderEntity(item: LibraryEntity): boolean {
+  if (item.isFolder === true) return true;
+  return [item.type, item.kind, item.resourceType].some(
+    (value) =>
+      typeof value === "string" && value.toLowerCase().includes("folder"),
+  );
+}
+
+/**
+ * The folders a playlist or folder can be created in, in tree order, each
+ * after its parent. Folders the user cannot edit are left out with their
+ * contents. The library root is not listed; it is the empty option.
+ */
+function folderOptions(items: readonly LibraryEntity[]): FolderOption[] {
+  const folders = new Map<string, LibraryEntity>();
+  for (const item of items) {
+    if (isFolderEntity(item) && !folders.has(item.id)) {
+      folders.set(item.id, item);
+    }
+  }
+  const childrenOf = new Map<string, LibraryEntity[]>();
+  const roots: LibraryEntity[] = [];
+  for (const folder of folders.values()) {
+    const parentId = textValue(folder.parentId);
+    if (parentId && folders.has(parentId)) {
+      childrenOf.set(parentId, [...(childrenOf.get(parentId) ?? []), folder]);
+    } else {
+      roots.push(folder);
+    }
+  }
+  const options: FolderOption[] = [];
+  const visited = new Set<string>();
+  const visit = (folder: LibraryEntity, depth: number): void => {
+    if (visited.has(folder.id) || folder.canEdit === false) return;
+    visited.add(folder.id);
+    const name = textValue(folder.name, folder.title) ?? folder.id;
+    options.push({
+      id: folder.id,
+      label: `${FOLDER_LEVEL_MARK.repeat(depth)}${name}`,
+    });
+    for (const child of childrenOf.get(folder.id) ?? []) {
+      visit(child, depth + 1);
+    }
+  };
+  for (const root of roots) visit(root, 0);
+  return options;
+}
+
+/**
+ * The folder a dialog was opened from. The context menu passes the element
+ * that was right-clicked, so a folder heading or a row inside a folder both
+ * resolve to that folder. Anywhere else, the answer is the library root.
+ */
+function folderOfOpener(opener: HTMLElement | undefined): string {
+  const folder = opener?.closest<HTMLElement>(".playlist-folder");
+  const heading = folder?.querySelector<HTMLElement>(
+    ':scope > [data-context-kind="folder"]',
+  );
+  return heading?.dataset.contextId ?? "";
+}
+
 async function createPlaylistWithTracks(
   controller: PlaylistController,
   name: string,
   description: string,
   tracks: readonly Track[],
+  parentFolderId: string,
 ): Promise<void> {
   const input = {
     name,
     description: description || undefined,
     tracks: tracks.length ? tracks : undefined,
+    parentFolderId: parentFolderId || undefined,
   };
   await controller.createPlaylist(input);
 }
 
 export function PlaylistDialogs(): JSX.Element | null {
   const controller = useAppController();
+  // Widened to the folder method's parent argument, which the controller
+  // passes straight through to the playlist editing service.
+  const playlistController: PlaylistController = controller;
   const state = useAppSlices("library");
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [query, setQuery] = useState("");
@@ -115,6 +194,7 @@ export function PlaylistDialogs(): JSX.Element | null {
   const [error, setError] = useState<string | undefined>();
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [parentFolderId, setParentFolderId] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
   // Bumped whenever a dialog opens or closes. Async work for an earlier
@@ -147,6 +227,9 @@ export function PlaylistDialogs(): JSX.Element | null {
       setResults([]);
       setName("");
       setDescription("");
+      setParentFolderId(
+        detail.parentFolderId ?? folderOfOpener(detail.restoreFocus),
+      );
       setError(undefined);
       setBusy(false);
       setLoadingPlaylists(detail.mode === "picker");
@@ -173,6 +256,18 @@ export function PlaylistDialogs(): JSX.Element | null {
     () => localPlaylists(playlistItems),
     [playlistItems],
   );
+  const folderItems = state.library.details.playlistFolder.items;
+  const folderChoices = useMemo(
+    () => folderOptions([...folderItems, ...playlistItems]),
+    [folderItems, playlistItems],
+  );
+  // A preselected folder that is no longer listed falls back to the library
+  // root, so the select and the request agree.
+  const selectedFolderId = folderChoices.some(
+    (option) => option.id === parentFolderId,
+  )
+    ? parentFolderId
+    : "";
 
   useEffect(() => {
     if (dialog?.mode !== "picker") return undefined;
@@ -281,8 +376,8 @@ export function PlaylistDialogs(): JSX.Element | null {
       }
       setBusy(true);
       setError(undefined);
-      void controller
-        .createPlaylistFolder(trimmed)
+      void playlistController
+        .createPlaylistFolder(trimmed, selectedFolderId)
         .then(() => {
           if (isOpenDialog(generation)) closeDialog();
         })
@@ -305,6 +400,7 @@ export function PlaylistDialogs(): JSX.Element | null {
       trimmed,
       description.trim(),
       seedTracks,
+      selectedFolderId,
     )
       .then(() => {
         if (!isOpenDialog(generation)) return;
@@ -464,6 +560,23 @@ export function PlaylistDialogs(): JSX.Element | null {
                 />
               </label>
             )}
+            <label>
+              <span>Folder</span>
+              <select
+                value={selectedFolderId}
+                disabled={busy}
+                onChange={(event) =>
+                  setParentFolderId(event.currentTarget.value)
+                }
+              >
+                <option value="">Library</option>
+                {folderChoices.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
             {!folder && dialog.tracks.length ? (
               <p className="playlist-dialog-seed">
                 {dialog.tracks.length === 1
