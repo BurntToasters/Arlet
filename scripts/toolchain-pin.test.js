@@ -8,28 +8,52 @@ import {
   isSupportedNodeVersion,
   isVersionAtLeast,
   parseVersion,
+  readPinnedRustToolchain,
 } from "./npm-safe-update.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (file) => readFileSync(path.join(root, file), "utf8");
+const rustPinStep =
+  /- name: Read pinned Rust version\n\s+id: rust-pin\n\s+shell: bash\n\s+run: echo "version=\$\(node scripts\/rust-toolchain\.mjs\)" >> "\$GITHUB_OUTPUT"/u;
+const pinnedToolchain =
+  /toolchain: \$\{\{ steps\.rust-pin\.outputs\.version \}\}/gu;
 
 // Failure modes: a floating "stable" channel lets each new Rust release break
 // CI with new lints; CI and local builds use different compilers; the npm
-// helper scripts install a toolchain other than the pinned one.
+// helper scripts install a toolchain other than the pinned one; a workflow
+// reads the pin before checkout or skips it entirely.
 test("Rust toolchain is pinned to one exact version everywhere", () => {
-  const channel = /^channel\s*=\s*"([^"]+)"/mu.exec(
-    read("rust-toolchain.toml"),
-  )?.[1];
-  assert.match(channel ?? "", /^\d+\.\d+\.\d+$/u, "pin an exact x.y.z");
+  const channel = readPinnedRustToolchain(root);
+  assert.match(channel, /^\d+\.\d+\.\d+$/u, "pin an exact x.y.z");
 
-  const ci = /^\s*RUST_VERSION:\s*"([^"]+)"/mu.exec(
-    read(".github/workflows/ci.yml"),
-  )?.[1];
-  assert.equal(ci, channel, "CI RUST_VERSION must match rust-toolchain.toml");
+  for (const file of [
+    ".github/workflows/ci.yml",
+    ".github/workflows/musickit-canary.yml",
+  ]) {
+    const workflow = read(file);
+    assert.doesNotMatch(workflow, /RUST_VERSION/u, `${file} uses a pin env`);
+    assert.match(workflow, rustPinStep, `${file} must extract the pin`);
+    assert.equal(
+      workflow.match(pinnedToolchain)?.length ?? 0,
+      workflow.match(/uses: dtolnay\/rust-toolchain/gu)?.length ?? 0,
+      `${file} must pass the extracted pin to every Rust toolchain step`,
+    );
+  }
 
-  const scripts = JSON.parse(read("package.json")).scripts;
-  assert.doesNotMatch(scripts["rust:update"], /\bstable\b/u);
-  assert.doesNotMatch(scripts["rust:targets:win"], /\bstable\b/u);
+  for (const [name, command] of Object.entries(
+    JSON.parse(read("package.json")).scripts,
+  ).filter(([name]) => name.startsWith("rust:"))) {
+    assert.doesNotMatch(
+      command,
+      /\b\d+\.\d+\.\d+\b/u,
+      `${name} pins a version`,
+    );
+    assert.match(
+      command,
+      /node scripts\/rust-toolchain\.mjs/u,
+      `${name} must derive the pin`,
+    );
+  }
 });
 
 test("Node and npm update environment versions fail closed at exact boundaries", () => {
