@@ -293,7 +293,27 @@ pub async fn open_subscribe_link(url: String) -> Result<(), String> {
     open_url_off_ui_thread(subscribe_link_url(&url)?).await
 }
 
-#[cfg(windows)]
+/// Name of the file, in the isolated E2E profile root, that E2E builds append
+/// each would-be opened link to.
+#[cfg(feature = "e2e")]
+const E2E_OPENED_LINKS_FILE: &str = "opened-links.jsonl";
+
+/// E2E builds record the link instead of opening it: one JSON line per call,
+/// appended to the isolated profile root. No browser page opens.
+#[cfg(feature = "e2e")]
+fn open_in_default_browser(url: &str) -> Result<(), String> {
+    use std::io::Write;
+    let root = crate::app_paths::e2e_profile_root()?;
+    let line = serde_json::json!({ "url": url }).to_string();
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(root.join(E2E_OPENED_LINKS_FILE))
+        .map_err(|error| format!("Could not record the opened link: {error}"))?;
+    writeln!(file, "{line}").map_err(|error| format!("Could not record the opened link: {error}"))
+}
+
+#[cfg(all(windows, not(feature = "e2e")))]
 fn open_in_default_browser(url: &str) -> Result<(), String> {
     use windows::core::{w, HSTRING, PCWSTR};
     use windows::Win32::UI::Shell::ShellExecuteW;
@@ -319,7 +339,7 @@ fn open_in_default_browser(url: &str) -> Result<(), String> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(feature = "e2e")))]
 fn open_in_default_browser(_url: &str) -> Result<(), String> {
     Err("Opening the browser is supported on Windows only.".to_string())
 }

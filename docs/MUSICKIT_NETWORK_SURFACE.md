@@ -44,7 +44,9 @@ error.
 `{type}` is `library-songs`, `library-albums`, or `library-playlists` for
 library IDs (`i.`, `l.`, `p.` prefixes), and `songs`, `albums`, or `playlists`
 for catalog IDs. Apple's public API has no endpoint to rename, delete, reorder,
-or remove tracks from playlists, so Arlet does not offer those actions.
+or remove tracks from playlists, so Arlet does not offer those actions. The
+playlist right-click menu's "Edit in Apple Music" instead opens the playlist on
+music.apple.com in the default browser, through `open_subscribe_link`.
 
 ### Beta.5 Catalog and Library Endpoints
 

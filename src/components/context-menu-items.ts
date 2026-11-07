@@ -12,6 +12,7 @@ import {
   Link,
   ListPlus,
   Music2,
+  Pencil,
   Pin,
   PinOff,
   Play,
@@ -563,6 +564,25 @@ export function buildItems({
           .copyText(catalogUrl)
           .then(() => reportNotice("Link copied."))
           .catch(() => reportActionError("Could not copy the link."));
+      }),
+    });
+  }
+
+  if (
+    target.kind === "playlist" &&
+    target.editInAppleMusic === true &&
+    target.id &&
+    target.source !== "catalog"
+  ) {
+    const playlistId = target.id;
+    goToItems.push({
+      id: "edit-in-apple-music",
+      label: "Edit in Apple Music",
+      icon: Pencil,
+      action: run(() => {
+        void controller
+          .openPlaylistInAppleMusic(playlistId)
+          .catch(() => reportActionError("Could not open Apple Music."));
       }),
     });
   }

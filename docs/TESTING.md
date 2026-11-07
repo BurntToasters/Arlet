@@ -1707,8 +1707,9 @@ request, and a check that reads only Arlet's request would miss a reshuffle.
 
 `scripts/e2e-catalog-extras.js` is the `catalog-extras` scenario. It covers
 Replay shelves on Home, record label pages, activity pages, Search groups for
-record labels and activities, a Get Info song dialog, and choosing a parent
-folder when creating a playlist or folder.
+record labels and activities, a Get Info song dialog, choosing a parent folder
+when creating a playlist or folder, and the Edit in Apple Music context-menu
+item on editable library playlists.
 
 - Replay shelves on Home read
   `GET /v1/me/music-summaries?filter[year]=latest&views=top-artists,top-albums,top-songs`.
@@ -1726,6 +1727,16 @@ folder when creating a playlist or folder.
   track, duration, content rating, ISRC, label, and copyright. It is text only,
   and nothing in it is navigable.
 - Creating a playlist or folder lets you choose a parent folder.
+- Edit in Apple Music appears on an editable library playlist in the sidebar
+  pin, the playlist list on `#/library/playlists`, and the playlist page header.
+  Its click calls `open_subscribe_link` with
+  `https://music.apple.com/library/playlist/{id}` once. Search results, albums,
+  songs, catalog playlists, read-only playlists, folders, and Home cards do not
+  show it. An E2E build (feature `e2e`) does not open a link: `open_in_default_browser`
+  appends `{"url": ...}` to `opened-links.jsonl` in the isolated profile root,
+  for every opener. The checks count that file's lines before and after each
+  click: a shown area adds exactly one line with the playlist URL, and the
+  absent probes add none.
 
 Failure scenarios to cover before changing production code:
 
@@ -1744,6 +1755,16 @@ Failure scenarios to cover before changing production code:
 - Get Info shows another song's fields, or renders the song's metadata as HTML
   instead of plain text.
 - A playlist created "in" a folder lands at the root.
+- Edit in Apple Music is missing from an editable library playlist in the
+  sidebar pin, the playlist list, or the playlist page header.
+- Edit in Apple Music shows in search results, on an album, on a song row
+  (playlist page or album page), on a catalog playlist, on a read-only library
+  playlist, on a folder, or on a Home card.
+- Clicking Edit in Apple Music opens a URL that is not on `music.apple.com`, or
+  names another playlist's ID.
+- Clicking Edit in Apple Music opens the link more than once.
+- A real browser page opens during the test, because a click reached the real
+  `open_subscribe_link` command instead of the E2E build's recording path.
 
 Check names:
 
@@ -1755,10 +1776,15 @@ Check names:
 - `Search shows record labels and activities`
 - `Get Info shows the song's composer, ISRC, and label as plain text`
 - `New playlist can be created inside a folder`
+- `Edit in Apple Music shows for an editable library playlist in the sidebar, the playlist list, and the playlist page, and opens its music.apple.com library link once`
+- `Edit in Apple Music is absent from search results, albums, songs, catalog playlists, read-only playlists, and folders`
 
 Artifacts: `catalog-extras-groups.json` is the per-group trace: the fixture
 requests and transitions each check caused, keyed `replayData`, `replayEmpty`,
-`label`, `albumLink`, `activity`, `search`, `info`, and `folder`. The harness
+`label`, `albumLink`, `activity`, `search`, `info`, `folder`, `editShown`, and
+`editAbsent`. The Edit in Apple Music checks put each recorded
+`opened-links.jsonl` line and each area's result in the report.json check
+details. The harness
 also writes `catalog-extras-trace.json`, but it does so after the scenario's
 reset, so that file holds the post-reset snapshot and not the scenario's
 requests. Screenshots: `screenshot-catalog-replay.png`,

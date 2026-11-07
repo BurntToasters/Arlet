@@ -125,12 +125,13 @@ Not subscribed: `storefrontCountryCodeDidChange` and
 ## Not possible through the public API
 
 Apple's public Apple Music API has no endpoints for these actions, so Arlet does
-not offer them.
+not make these changes through the API. For playlists it links out to Apple
+Music instead.
 
-| Action                          | Public API status | What Arlet does                                                              |
-| ------------------------------- | ----------------- | ---------------------------------------------------------------------------- |
-| Rename a playlist               | No endpoint       | Not offered                                                                  |
-| Delete a playlist               | No endpoint       | Not offered                                                                  |
-| Reorder playlist tracks         | No endpoint       | Not offered                                                                  |
-| Remove a track from a playlist  | No endpoint       | Not offered. Removing a song in Playing Next changes only the playing queue. |
-| Remove an item from the library | No endpoint       | Not offered                                                                  |
+| Action                          | Public API status | What Arlet does                                                                                                                                                                                 |
+| ------------------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Rename a playlist               | No endpoint       | Editing is offered through "Edit in Apple Music" in the playlist right-click menu, which opens the playlist on music.apple.com                                                                  |
+| Delete a playlist               | No endpoint       | Editing is offered through "Edit in Apple Music" in the playlist right-click menu, which opens the playlist on music.apple.com                                                                  |
+| Reorder playlist tracks         | No endpoint       | Editing is offered through "Edit in Apple Music" in the playlist right-click menu, which opens the playlist on music.apple.com                                                                  |
+| Remove a track from a playlist  | No endpoint       | Editing is offered through "Edit in Apple Music" in the playlist right-click menu, which opens the playlist on music.apple.com. Removing a song in Playing Next changes only the playing queue. |
+| Remove an item from the library | No endpoint       | Not offered                                                                                                                                                                                     |
