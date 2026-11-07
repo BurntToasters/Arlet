@@ -8,7 +8,7 @@ import {
   RefreshCw,
   Search,
 } from "lucide-preact";
-import { useEffect, useMemo } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { JSX } from "preact";
 import {
   useAppController,
@@ -677,6 +677,41 @@ export function HomeView(): JSX.Element {
     [heavyItems],
   );
   const loading = home.status === "loading" || home.status === "refreshing";
+  const [today, setToday] = useState(() => new Date());
+  const [announcement, setAnnouncement] = useState("");
+  // Set by the user's refresh action; only that refresh gets "Home updated.".
+  const refreshAsked = useRef(false);
+  const refreshStarted = useRef(false);
+
+  useEffect(() => {
+    let timer = 0;
+    const armMidnight = (): void => {
+      const now = new Date();
+      const midnight = new Date(now);
+      midnight.setHours(24, 0, 0, 0);
+      timer = window.setTimeout(() => {
+        setToday(new Date());
+        armMidnight();
+      }, midnight.getTime() - now.getTime());
+    };
+    armMidnight();
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (loading) {
+      refreshStarted.current = refreshAsked.current;
+      setAnnouncement("Loading Home…");
+      return;
+    }
+    if (refreshAsked.current && refreshStarted.current) {
+      refreshAsked.current = false;
+      refreshStarted.current = false;
+      setAnnouncement(home.status === "success" ? "Home updated." : "");
+      return;
+    }
+    setAnnouncement("");
+  }, [loading, home.status]);
 
   useEffect(() => {
     if (!authorized) return;
@@ -684,6 +719,7 @@ export function HomeView(): JSX.Element {
   }, [authorized, controller]);
 
   const refresh = (): void => {
+    refreshAsked.current = true;
     run(() => controller.loadHome({ refresh: true }));
   };
 
@@ -709,7 +745,7 @@ export function HomeView(): JSX.Element {
               weekday: "long",
               month: "long",
               day: "numeric",
-            }).format(new Date())}
+            }).format(today)}
           </span>
           {authorized ? (
             <button
@@ -728,6 +764,9 @@ export function HomeView(): JSX.Element {
           ) : null}
         </div>
       </div>
+      <p className="sr-only" role="status">
+        {announcement}
+      </p>
 
       {!authorized ? (
         <>
@@ -792,10 +831,10 @@ export function HomeView(): JSX.Element {
           </section>
         </>
       ) : (
-        <div className="home-feed" aria-live="polite">
+        <div className="home-feed">
           <DiscoverySection
             id="recently-played"
-            eyebrow="Recently played"
+            eyebrow="Jump back in"
             title="Recently Played"
             description="Pick up where you left off."
             section={home.recentPlaylists}
@@ -866,7 +905,10 @@ export function HomeView(): JSX.Element {
           ) : null}
           {home.stale ? (
             <p className="home-section-stale" role="status">
-              Some Home sections could not be refreshed. Try again.
+              Some Home sections could not be refreshed.{" "}
+              <button className="quiet-button" type="button" onClick={refresh}>
+                Try again
+              </button>
             </p>
           ) : null}
           <div className="home-feed-search">

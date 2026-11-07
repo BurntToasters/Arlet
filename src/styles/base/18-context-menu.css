@@ -43,7 +43,7 @@
 .context-menu-item kbd {
   color: var(--text-muted);
   font-family: var(--font-ui);
-  font-size: 9px;
+  font-size: 11px;
   white-space: nowrap;
 }
 

@@ -158,13 +158,15 @@
 .queue-row:hover {
   background: var(--surface-hover);
 }
-.queue-row.is-active {
-  background: var(--surface-active);
+/* The active shell carries the single highlight, so the row stays clear. */
+.queue-row.is-active,
+.queue-row-shell.is-active .queue-row:hover {
+  background: transparent;
 }
 .queue-index {
   color: var(--text-faint);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   text-align: center;
 }
 .queue-index svg {
@@ -184,11 +186,11 @@
 }
 .queue-copy small {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .now-playing-label {
   color: var(--accent-strong);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
 }
 

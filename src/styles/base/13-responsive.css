@@ -198,9 +198,11 @@
     gap: 6px 12px;
     padding: 9px 14px 10px;
   }
+  /* Keeps the track clear of the absolute actions and transport. */
   .player-track {
     grid-column: 1;
     grid-row: 1;
+    padding-right: 156px;
   }
   .player-center {
     display: contents;

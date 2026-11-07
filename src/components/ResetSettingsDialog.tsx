@@ -1,9 +1,7 @@
 import { RotateCcw } from "lucide-preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useRef, useState } from "preact/hooks";
 import type { JSX } from "preact";
-
-const FOCUSABLE_SELECTOR =
-  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+import { useModalDialog } from "./use-modal-dialog.ts";
 
 export interface ResetSettingsDialogProps {
   onCancel: () => void;
@@ -20,18 +18,15 @@ export function ResetSettingsDialog({
   const [resetting, setResetting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    const previousFocus = document.activeElement as HTMLElement | null;
+  useModalDialog(dialogRef, {
     // Cancel gets focus so Enter never resets by accident.
-    const focusTimer = window.setTimeout(
-      () => cancelButton.current?.focus(),
-      0,
-    );
-    return () => {
-      window.clearTimeout(focusTimer);
-      previousFocus?.focus?.();
-    };
-  }, []);
+    initialFocus: () => cancelButton.current,
+    deferFocus: true,
+    onEscape: (event) => {
+      event.preventDefault();
+      if (!resetting) onCancel();
+    },
+  });
 
   const confirm = (): void => {
     setResetting(true);
@@ -44,40 +39,11 @@ export function ResetSettingsDialog({
     });
   };
 
-  const onDialogKeyDown = (event: KeyboardEvent): void => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      if (!resetting) onCancel();
-      return;
-    }
-    if (event.key !== "Tab") return;
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    const focusable = Array.from(
-      dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
-    );
-    if (focusable.length === 0) {
-      event.preventDefault();
-      return;
-    }
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    const active = document.activeElement;
-    if (
-      (event.shiftKey && (active === first || !dialog.contains(active))) ||
-      (!event.shiftKey && (active === last || !dialog.contains(active)))
-    ) {
-      event.preventDefault();
-      (event.shiftKey ? last : first)?.focus();
-    }
-  };
-
   return (
     <div className="update-modal-scrim" role="presentation">
       <section
         ref={dialogRef}
         className="update-modal"
-        onKeyDown={onDialogKeyDown}
         role="alertdialog"
         aria-modal="true"
         aria-busy={resetting}

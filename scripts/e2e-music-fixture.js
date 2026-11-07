@@ -170,6 +170,9 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  *   makes every page after the first point at itself. configure({
  *   failNextLibraryPage: { path: "playlist-big/tracks?offset=300" } }) fails
  *   the next GET whose path contains `path` (once unless once is false).
+ *   configure({ rejectSkip: true }) rejects every skipToNextItem() call until
+ *   cleared, so Next fails the way a failed Windows media "next" would; the
+ *   rejection is recorded as { type: "skipRejected" }. reset() clears it.
  *   configure({ holdSetQueue: true }) holds queue rebuilds until releaseSetQueue() resolves
  *   them. configure({ rejectSetQueue: true }) rejects every setQueue() call
  *   (after any hold) until cleared, for a failed Play. configure({
@@ -269,7 +272,9 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  *   Record labels: GET /v1/catalog/us/record-labels/{id}?views=latest-releases,
  *   top-releases. rl-fixture-1 "Fixture Records" and rl-fixture-2 "Second
  *   Label" have three albums in each view, all distinct, and an HTML
- *   description. Library albums never carry a record-labels relationship, as on
+ *   description. configure({ longLabelDescription: true }) gives rl-fixture-1
+ *   a description over 160 characters, so its page collapses it behind More;
+ *   reset() restores the short one. Library albums never carry a record-labels relationship, as on
  *   Apple. configure({ albumCatalogTwin: true }) makes album-1 link its catalog
  *   twin cat-album-1 under relationships.catalog when the request has
  *   include=catalog; reset() turns it off, so album-1 stays library-only.
@@ -595,6 +600,10 @@ function installMusicKitFixture(fixtureSeed) {
     repeatPlaylistCursor: false,
     rejectPlay: false,
     rejectPlayTimes: 0,
+    // Test-only: every skipToNextItem() rejects until cleared.
+    rejectSkip: false,
+    // Test-only: rl-fixture-1 gets a description over 160 characters.
+    longLabelDescription: false,
     // Test-only: every setQueue() rejects until cleared, so a Play's queue
     // setup can fail deterministically.
     rejectSetQueue: false,
@@ -2168,12 +2177,17 @@ function installMusicKitFixture(fixtureSeed) {
       ),
     ]),
   );
+  const LONG_LABEL_DESCRIPTION =
+    "Independent <b>fixture</b> releases, reissues, and archival collections from working artists across several decades, curated for listeners who want the complete catalogue of one small imprint.";
   const recordLabelResource = (id) => ({
     id,
     type: "record-labels",
     attributes: {
       name: RECORD_LABELS[id].name,
-      description: clone(RECORD_LABELS[id].description),
+      description:
+        id === "rl-fixture-1" && state.longLabelDescription
+          ? { standard: LONG_LABEL_DESCRIPTION, short: "Fixture releases" }
+          : clone(RECORD_LABELS[id].description),
       url: `https://music.apple.com/us/record-label/${id}/${id}`,
       artwork: polishArtwork(id),
     },
@@ -4228,6 +4242,10 @@ function installMusicKitFixture(fixtureSeed) {
       emit(events.nowPlayingItemDidChange, { item: null });
     },
     async skipToNextItem() {
+      if (state.rejectSkip) {
+        state.transitions.push({ type: "skipRejected" });
+        throw new Error("Fixture skip rejected");
+      }
       if (!state.queue.length) return -1;
       if (state.repeatMode === PlayerRepeatMode.one) {
         return restartCurrent("restartRepeatOne");
@@ -4423,6 +4441,14 @@ function installMusicKitFixture(fixtureSeed) {
       if (Object.prototype.hasOwnProperty.call(options, "rejectSetQueue")) {
         state.rejectSetQueue = options.rejectSetQueue === true;
       }
+      if (Object.prototype.hasOwnProperty.call(options, "rejectSkip")) {
+        state.rejectSkip = options.rejectSkip === true;
+      }
+      if (
+        Object.prototype.hasOwnProperty.call(options, "longLabelDescription")
+      ) {
+        state.longLabelDescription = options.longLabelDescription === true;
+      }
       if (Object.prototype.hasOwnProperty.call(options, "nativeQueueEdit")) {
         state.nativeQueueEdit = options.nativeQueueEdit === true;
       }
@@ -4568,6 +4594,8 @@ function installMusicKitFixture(fixtureSeed) {
       state.rejectPlay = false;
       state.rejectPlayTimes = 0;
       state.rejectSetQueue = false;
+      state.rejectSkip = false;
+      state.longLabelDescription = false;
       state.playlistPrepended = false;
       state.unresolvedIds = [];
       state.detailsSkipLookup = false;
@@ -4951,6 +4979,8 @@ function installMusicKitFixture(fixtureSeed) {
           rejectPlay: state.rejectPlay,
           rejectPlayTimes: state.rejectPlayTimes,
           rejectSetQueue: state.rejectSetQueue,
+          rejectSkip: state.rejectSkip,
+          longLabelDescription: state.longLabelDescription,
           repeatPlaylistCursor: state.repeatPlaylistCursor,
           repeatViewCursor: state.repeatViewCursor,
           pinArtListExpired: state.pinArtListExpired,

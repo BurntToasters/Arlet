@@ -128,6 +128,13 @@ the ones the custom title bar uses, the full-screen pair Now Playing uses
 (`set-fullscreen`, `is-fullscreen`), and `set-size` for the native E2E.
 Tauri's isolation pattern is the next step if the grant ever needs to grow.
 
+Accepted risk: MusicKit JS loads from Apple's CDN at the unpinned URL
+`https://js-cdn.music.apple.com/musickit/v3/musickit.js`, as Apple requires.
+Because the URL is unpinned, the script cannot carry a Subresource Integrity
+hash. It runs in the main window, which can call Arlet's native commands.
+Arlet accepts this risk. The CSP allows scripts only from `'self'` and that
+CDN host, and each native command validates its own input.
+
 Now-playing artwork is fetched by Windows itself for the media overlay, so
 only `*.mzstatic.com` and `*.apple.com` artwork URLs are passed on; any other
 host would learn the user's IP address.

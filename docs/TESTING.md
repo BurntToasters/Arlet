@@ -1803,6 +1803,82 @@ requests. Screenshots: `screenshot-catalog-replay.png`,
 `screenshot-catalog-label.png`, `screenshot-catalog-activity.png`, and
 `screenshot-catalog-info.png`.
 
+## UI audit fixes
+
+`scripts/e2e-ui-audit.js` is the `ui-audit` scenario. It runs in the native
+suite before Session restore. It writes `ui-audit-trace.json` and these
+screenshots to the artifact folder: `screenshot-ui-audit-now-playing.png`,
+`screenshot-ui-audit-narrow-player.png`, `screenshot-ui-audit-shelf.png`, and
+`screenshot-ui-audit-queue.png`. Each check's `detail` holds the measured
+values.
+
+Failure scenarios to cover before changing production code:
+
+- Now Playing's Up Next list stretches a few rows over the full panel height,
+  leaving large gaps between rows. The list is a grid that grows to fill its
+  panel.
+- At 720 px wide or less, the absolutely positioned queue button in the player
+  bar covers the Favorite button.
+- A card shelf with only one or two cards stretches its grid columns while each
+  card stops at its 320 px maximum width, so cards sit unevenly with large gaps.
+  This applies to artist, album, label, and Home shelves.
+- After keyboard navigation, the focused page heading (`h1` with
+  `tabindex="-1"`) shows the browser's default focus ring.
+- The playing row in Playing Next shows two tints, because the row container
+  and the row button both use the active background.
+- The selected Search source tab uses accent text on an accent tint and is hard
+  to read.
+- The licenses dialog lets Tab move focus behind it, does not return focus to
+  the button that opened it, or shows "No packages found." when the license list
+  fails to load instead of an error.
+- A modal dialog (reset settings, keyboard shortcuts, Get Info, update ready,
+  playlist dialogs, Now Playing, the narrow sidebar drawer, and licenses) lets
+  Tab leave it, or loses its opener's focus on close, after the dialogs move to
+  one shared focus-trap hook.
+- Home marks its whole feed as a live region, so a screen reader reads the
+  entire feed again on every refresh.
+- Home's "Some Home sections could not be refreshed" notice has no button to
+  try again.
+- Home's date never updates after midnight.
+- A Home section's eyebrow repeats its heading, for example "Recently played"
+  above "Recently Played".
+- A long record label description fills the page header instead of collapsing
+  behind More.
+- A Windows media control command (play, pause, next, previous, seek, shuffle)
+  fails without any log line, or its listener fails to start without any log
+  line.
+- Text in the main views renders smaller than 11 px.
+- On wide windows the content column stays at 960 px and leaves large empty
+  margins. It should grow to 1180 px.
+- The curator, record label, and activity pages behave differently for sign-in,
+  loading, and error states after they move to one shared page scaffold.
+- A screenshot taken right after a theme change captures the theme cross-fade.
+  The `settings-*-narrow-dark.png` screenshots in `scripts/e2e-polish.js`
+  showed a dimmed mid-transition frame. The screenshot must wait until the
+  theme transition ends.
+
+Check names:
+
+- `Up Next rows in Now Playing stack without gaps when only a few songs are queued`
+- `at 360 px the queue button does not cover the Favorite button`
+- `a shelf with two cards keeps the same card width as a full shelf`
+- `the page heading shows no focus outline after keyboard navigation`
+- `the playing row in Playing Next has one even highlight`
+- `the selected Search source tab uses the main text color`
+- `the licenses dialog keeps Tab inside, returns focus to its opener, and shows an error when licenses fail to load`
+- `modal dialogs keep Tab inside and return focus to their opener`
+- `Home announces refreshes in one status line instead of the whole feed`
+- `Home's refresh notice offers a Try again button`
+- `a long record label description is collapsed behind More`
+- `a failed Windows media control command is written to the log`
+- `no text in the main views is smaller than 11 px`
+- `the content column grows to 1180 px on wide windows`
+
+Failure modes 11, 12, and 17 are checked by reading the code and by the
+existing Home, curator, label, and activity checks staying green. They have no
+new check. Failure mode 18 is guarded by the polish scenario waiting for the
+theme transition before its dark screenshots.
+
 ## Release-only evidence
 
 The following checks require a Windows release environment and are kept out of

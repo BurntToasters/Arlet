@@ -30,6 +30,7 @@ import { IconButton } from "./IconButton.tsx";
 import { liveSubtitle } from "./PlayerBar.tsx";
 import { VirtualList } from "./VirtualList.tsx";
 import { reportActionError } from "./action-errors.ts";
+import { useModalDialog } from "./use-modal-dialog.ts";
 import { PlaybackProgress, TransportControls } from "./TransportControls.tsx";
 import { VolumeControl } from "./VolumeControl.tsx";
 import { displayArtistLinks } from "./artist-links.ts";
@@ -39,8 +40,6 @@ import {
   toggleWindowFullscreen,
 } from "./window-fullscreen.ts";
 
-const FOCUSABLE =
-  "button:not(:disabled), input:not(:disabled), [href], [tabindex]:not([tabindex='-1'])";
 /** Matches the `.now-playing` exit transition in 24-now-playing.css. */
 const CLOSE_TRANSITION_MS = 200;
 
@@ -127,19 +126,19 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
-    const opener = openerRef.current;
-    return () => {
-      // Closing already returned focus; only reclaim it if it is still lost
-      // inside this dialog (or on the body) when the dialog unmounts.
-      const active = document.activeElement;
-      if (
-        opener?.isConnected &&
-        (!active || active === document.body || active.closest(".now-playing"))
-      ) {
-        opener.focus();
-      }
-    };
   }, []);
+
+  // Trapping pauses during the exit fade, so Tab reaches the page behind.
+  // Focus returns to the opener on close or unmount, if it was lost here.
+  useModalDialog(dialogRef, {
+    active: !closing,
+    returnFocus: () => openerRef.current,
+    onEscape: (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void closeNowPlayingLeavingFullscreen();
+    },
+  });
 
   useEffect(() => {
     // The exit transition hands focus back at once, so keys and clicks reach
@@ -177,30 +176,6 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
     void toggleWindowFullscreen()
       .then(setFullscreenState)
       .catch(reportActionError);
-  };
-
-  const onKeyDown = (event: KeyboardEvent): void => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      void closeNowPlayingLeavingFullscreen();
-      return;
-    }
-    const dialog = dialogRef.current;
-    if (event.key !== "Tab" || !dialog) return;
-    const focusable = [...dialog.querySelectorAll<HTMLElement>(FOCUSABLE)];
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (!first || !last) return;
-    const active = document.activeElement;
-    const outside = !dialog.contains(active);
-    if (event.shiftKey && (active === first || outside)) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && (active === last || outside)) {
-      event.preventDefault();
-      first.focus();
-    }
   };
 
   const navigateTo = (kind: "album" | "artist", ref: MusicEntityRef): void => {
@@ -241,7 +216,6 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
       aria-label="Now Playing"
       tabIndex={-1}
       ref={dialogRef}
-      onKeyDown={onKeyDown}
     >
       {backdropUrl ? (
         <img

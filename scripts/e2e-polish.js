@@ -2083,6 +2083,9 @@ async function aboutLinks(page, check, artifactDir) {
           `return document.documentElement.dataset.theme === "dark";`,
         )),
     );
+    // The theme cross-fade must end before the dark screenshots, or they
+    // capture a dimmed mid-transition frame (docs/TESTING.md "UI audit fixes").
+    await waitForThemeTransition(page);
     await saveScreenshot(
       "settings-about-expanded-narrow-dark.png",
       "about-heading",
@@ -2204,6 +2207,19 @@ async function compactShell(page, check) {
   } finally {
     await page.send("Emulation.clearDeviceMetricsOverride", {});
   }
+}
+
+/**
+ * Waits until no CSS transition or animation is running, so a screenshot
+ * taken after a theme change shows the settled colors. Bounded, so a page
+ * with a long-running animation cannot hang the scenario.
+ */
+async function waitForThemeTransition(page, timeoutMs = 2000) {
+  await waitFor(
+    page,
+    `document.getAnimations().filter((animation) => animation.playState === "running").length === 0`,
+    timeoutMs,
+  );
 }
 
 async function fullscreen(page, check) {

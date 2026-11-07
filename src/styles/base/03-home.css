@@ -205,7 +205,7 @@
 
 .home-discovery-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(184px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(184px, 1fr));
   gap: 12px;
 }
 
@@ -273,7 +273,7 @@
 .home-discovery-copy small,
 .home-discovery-source {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .home-discovery-source {

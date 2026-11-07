@@ -1,10 +1,4 @@
-import {
-  AlertCircle,
-  ChevronDown,
-  ListMusic,
-  LoaderCircle,
-  UserRound,
-} from "lucide-preact";
+import { ListMusic, LoaderCircle } from "lucide-preact";
 import type { ComponentChildren, JSX } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import {
@@ -16,7 +10,6 @@ import { safeErrorMessage } from "../app/controller-support.ts";
 import { reportActionError } from "../components/action-errors.ts";
 import { Artwork } from "../components/Artwork.tsx";
 import { CardActions, CardShell } from "../components/CardActions.tsx";
-import { SkeletonCardGrid, SkeletonStatus } from "../components/Skeleton.tsx";
 import type { Playlist } from "../domain/music.ts";
 import type { CuratorPage } from "../musickit/curators.ts";
 import {
@@ -25,9 +18,17 @@ import {
 } from "../musickit/normalize.ts";
 import type { CuratorKind } from "../routing/router.ts";
 import { EmptyState } from "./EmptyState.tsx";
+import { CatalogNotes, CatalogPage, type CatalogLoad } from "./CatalogPage.tsx";
 
-type CuratorLoad =
-  { status: "error"; message: string } | { status: "ready"; page: CuratorPage };
+type CuratorLoad = CatalogLoad<CuratorPage>;
+
+const CURATOR_TEXTS = {
+  heading: "Curator",
+  loadingLabel: "Loading curator",
+  signInTitle: "Sign in to open this curator",
+  signInDescription: "Connect your Apple Music account to see its playlists.",
+  errorTitle: "Curator could not be loaded",
+};
 
 /** Playlists read past the first page, with the state of the next request. */
 interface MoreState {
@@ -135,32 +136,6 @@ function CuratorShelf({
   );
 }
 
-/** Collapsed notes under the header, like an album's "More". */
-function CuratorNotes({ notes }: { notes: string }): JSX.Element {
-  const [open, setOpen] = useState(false);
-  return (
-    <section className="library-detail-more curator-notes">
-      <button
-        className="library-detail-more-toggle"
-        type="button"
-        aria-expanded={open}
-        aria-controls="curator-notes-panel"
-        onClick={() => setOpen((value) => !value)}
-      >
-        About <ChevronDown aria-hidden="true" size={14} />
-      </button>
-      <div
-        id="curator-notes-panel"
-        className="library-detail-more-body"
-        hidden={!open}
-      >
-        {/* Plain text: Apple's line breaks survive, its markup does not. */}
-        <p className="library-detail-notes">{notes}</p>
-      </div>
-    </section>
-  );
-}
-
 /** An Apple Music curator: header, then grouped shelves or one playlist grid. */
 export function CuratorView({
   id,
@@ -225,155 +200,129 @@ export function CuratorView({
       );
   };
 
-  if (!authorized) {
+  const renderPage = (page: CuratorPage): JSX.Element => {
+    const curatorBackdrop = page.artwork?.url;
+    // Apple's groups replace the flat list, so an empty group is not shown.
+    const groups = page.groups.filter((group) => group.playlists.length > 0);
+    const playlists = [...page.playlists, ...(moreFor?.playlists ?? [])];
+    const nextPath = moreFor ? moreFor.next : page.next;
+    const hasFlatShelf = playlists.length > 0 || nextPath !== undefined;
+
     return (
-      <EmptyState
-        icon={UserRound}
-        title="Sign in to open this curator"
-        description="Connect your Apple Music account to see its playlists."
-        action={
-          <button
-            className="primary-button"
-            type="button"
-            disabled={
-              state.initialization.status !== "ready" ||
-              state.auth.pending === true
-            }
-            onClick={() => void controller.authorize().catch(reportActionError)}
+      <div className="curator-page" data-curator-kind={page.kind}>
+        <header
+          className={`library-detail-hero curator-header${
+            curatorBackdrop ? " has-hero-backdrop" : ""
+          }`}
+        >
+          {curatorBackdrop ? (
+            <img
+              className="detail-hero-backdrop"
+              src={normalizeArtworkUrl(
+                curatorBackdrop,
+                ARTWORK_BACKDROP_BUCKET,
+              )}
+              alt=""
+              aria-hidden="true"
+              decoding="async"
+            />
+          ) : null}
+          <div className="library-detail-art">
+            <Artwork
+              track={{
+                title: page.name,
+                artistName: "Curator",
+                artwork: page.artwork,
+              }}
+              size="hero"
+              alt={`${page.name} artwork`}
+              priority
+            />
+          </div>
+          <div className="library-detail-copy">
+            <span className="eyebrow">
+              {page.kind === "apple" ? "Apple Music curator" : "Curator"}
+            </span>
+            <h1 tabIndex={-1}>{page.name}</h1>
+            {page.notes ? (
+              <CatalogNotes
+                key={page.id}
+                notes={page.notes}
+                label="About"
+                panelId="curator-notes-panel"
+                className="curator-notes"
+              />
+            ) : null}
+          </div>
+        </header>
+        {groups.length ? (
+          groups.map((group, index) => (
+            <CuratorShelf
+              key={group.id}
+              id={`curator-group-${index}`}
+              title={group.name}
+              shelf="group"
+            >
+              <PlaylistGrid playlists={group.playlists} />
+            </CuratorShelf>
+          ))
+        ) : hasFlatShelf ? (
+          <CuratorShelf
+            id="curator-playlists"
+            title="Playlists"
+            shelf="playlists"
           >
-            {state.auth.pending === true ? "Signing in…" : "Sign in"}
-          </button>
-        }
-      />
+            <PlaylistGrid playlists={playlists} />
+            {nextPath ? (
+              <div className="curator-more">
+                <button
+                  className="secondary-button curator-load-more"
+                  type="button"
+                  aria-busy={moreFor?.busy ? true : undefined}
+                  disabled={moreFor?.busy}
+                  onClick={() => loadMore(nextPath)}
+                >
+                  {moreFor?.busy ? (
+                    <LoaderCircle
+                      className="spin"
+                      aria-hidden="true"
+                      size={16}
+                    />
+                  ) : null}{" "}
+                  Load more
+                </button>
+                {moreFor?.error ? (
+                  <p className="curator-more-error" role="status">
+                    Could not load more playlists. {moreFor.error}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+          </CuratorShelf>
+        ) : (
+          <EmptyState
+            icon={ListMusic}
+            title="No playlists"
+            description="Apple Music did not return playlists for this curator."
+            compact
+          />
+        )}
+      </div>
     );
-  }
-
-  if (!current) {
-    return (
-      <>
-        <h1 className="sr-only" tabIndex={-1}>
-          Curator
-        </h1>
-        <SkeletonStatus label="Loading curator">
-          <SkeletonCardGrid count={6} />
-        </SkeletonStatus>
-      </>
-    );
-  }
-
-  if (current.status === "error") {
-    return (
-      <EmptyState
-        icon={AlertCircle}
-        title="Curator could not be loaded"
-        description={current.message}
-        action={
-          <button
-            className="secondary-button"
-            type="button"
-            onClick={() => setAttempt((value) => value + 1)}
-          >
-            Try again
-          </button>
-        }
-      />
-    );
-  }
-
-  const { page } = current;
-  const curatorBackdrop = page.artwork?.url;
-  // Apple's groups replace the flat list, so an empty group is not shown.
-  const groups = page.groups.filter((group) => group.playlists.length > 0);
-  const playlists = [...page.playlists, ...(moreFor?.playlists ?? [])];
-  const nextPath = moreFor ? moreFor.next : page.next;
-  const hasFlatShelf = playlists.length > 0 || nextPath !== undefined;
+  };
 
   return (
-    <div className="curator-page" data-curator-kind={page.kind}>
-      <header
-        className={`library-detail-hero curator-header${
-          curatorBackdrop ? " has-hero-backdrop" : ""
-        }`}
-      >
-        {curatorBackdrop ? (
-          <img
-            className="detail-hero-backdrop"
-            src={normalizeArtworkUrl(curatorBackdrop, ARTWORK_BACKDROP_BUCKET)}
-            alt=""
-            aria-hidden="true"
-            decoding="async"
-          />
-        ) : null}
-        <div className="library-detail-art">
-          <Artwork
-            track={{
-              title: page.name,
-              artistName: "Curator",
-              artwork: page.artwork,
-            }}
-            size="hero"
-            alt={`${page.name} artwork`}
-            priority
-          />
-        </div>
-        <div className="library-detail-copy">
-          <span className="eyebrow">
-            {page.kind === "apple" ? "Apple Music curator" : "Curator"}
-          </span>
-          <h1 tabIndex={-1}>{page.name}</h1>
-          {page.notes ? (
-            <CuratorNotes key={page.id} notes={page.notes} />
-          ) : null}
-        </div>
-      </header>
-      {groups.length ? (
-        groups.map((group, index) => (
-          <CuratorShelf
-            key={group.id}
-            id={`curator-group-${index}`}
-            title={group.name}
-            shelf="group"
-          >
-            <PlaylistGrid playlists={group.playlists} />
-          </CuratorShelf>
-        ))
-      ) : hasFlatShelf ? (
-        <CuratorShelf
-          id="curator-playlists"
-          title="Playlists"
-          shelf="playlists"
-        >
-          <PlaylistGrid playlists={playlists} />
-          {nextPath ? (
-            <div className="curator-more">
-              <button
-                className="secondary-button curator-load-more"
-                type="button"
-                aria-busy={moreFor?.busy ? true : undefined}
-                disabled={moreFor?.busy}
-                onClick={() => loadMore(nextPath)}
-              >
-                {moreFor?.busy ? (
-                  <LoaderCircle className="spin" aria-hidden="true" size={16} />
-                ) : null}{" "}
-                Load more
-              </button>
-              {moreFor?.error ? (
-                <p className="curator-more-error" role="status">
-                  Could not load more playlists. {moreFor.error}
-                </p>
-              ) : null}
-            </div>
-          ) : null}
-        </CuratorShelf>
-      ) : (
-        <EmptyState
-          icon={ListMusic}
-          title="No playlists"
-          description="Apple Music did not return playlists for this curator."
-          compact
-        />
-      )}
-    </div>
+    <CatalogPage
+      texts={CURATOR_TEXTS}
+      authorized={authorized}
+      signInPending={state.auth.pending === true}
+      signInDisabled={
+        state.initialization.status !== "ready" || state.auth.pending === true
+      }
+      onSignIn={() => void controller.authorize().catch(reportActionError)}
+      load={current}
+      onRetry={() => setAttempt((value) => value + 1)}
+      renderPage={renderPage}
+    />
   );
 }

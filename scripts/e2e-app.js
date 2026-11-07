@@ -52,6 +52,7 @@ import { runAuditFixes } from "./e2e-audit-fixes.js";
 import { runAuditRegressions } from "./e2e-audit-regressions.js";
 import { runDeepRegressions } from "./e2e-deep-regressions.js";
 import { runHandoffSettingsRegressions } from "./e2e-handoff-settings-regressions.js";
+import { runUiAudit } from "./e2e-ui-audit.js";
 import { runSessionRestore } from "./e2e-session-restore.js";
 import { sleep } from "./e2e-helpers.js";
 import { connectCdp, findPageTarget } from "./e2e-cdp.js";
@@ -185,6 +186,7 @@ const SCENARIO_REGISTRY = [
   // After radio-artist and discovery: its station checks fill the station and
   // genre caches those scenarios assert on.
   ["musickit-parity", runMusicKitParity],
+  ["ui-audit", runUiAudit],
   // Last in the full suite because it signs out at the end.
   ["session-restore", runSessionRestore],
 ];

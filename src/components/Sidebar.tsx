@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
 } from "preact/hooks";
+import { useModalDialog } from "./use-modal-dialog.ts";
 import {
   Album,
   Clock3,
@@ -268,13 +269,6 @@ function useCompactShell(): boolean {
   return compact;
 }
 
-/** Enabled buttons and inputs in the drawer, in tab order. */
-function drawerControls(drawer: HTMLElement | null): HTMLElement[] {
-  return Array.from(
-    drawer?.querySelectorAll<HTMLElement>("button, input") ?? [],
-  ).filter((node) => !node.matches(":disabled, [aria-disabled='true']"));
-}
-
 export function Sidebar(): JSX.Element {
   const state = useAppSlices(
     "account",
@@ -296,7 +290,6 @@ export function Sidebar(): JSX.Element {
   // Only a re-render trigger; the checks below read the live breakpoint.
   const compactShell = useCompactShell();
   const drawerOpen = useAppSelector((store) => store.ui.sidebarOpen);
-  const drawerWasOpen = useRef(drawerOpen);
 
   useEffect(() => {
     if (state.navigation.kind === "search") setQuery(state.navigation.query);
@@ -311,59 +304,25 @@ export function Sidebar(): JSX.Element {
     }
   }, [compactShell, drawerOpen]);
 
-  // Opening the drawer moves focus into it. Closing it returns focus to the
-  // menu button, unless focus already went somewhere else (such as the page
-  // heading after a route change).
-  useLayoutEffect(() => {
-    const wasOpen = drawerWasOpen.current;
-    drawerWasOpen.current = drawerOpen;
-    if (!isCompactShell() || wasOpen === drawerOpen) return;
-    if (drawerOpen) {
-      drawerRef.current?.querySelector<HTMLElement>(".sidebar-link")?.focus();
-      return;
-    }
-    const active = document.activeElement;
-    if (
-      !active ||
-      active === document.body ||
-      drawerRef.current?.contains(active)
-    ) {
+  // Compact drawer only: opening moves focus in, closing returns it to the
+  // menu button unless focus already went elsewhere. Escape closes it.
+  useModalDialog(drawerRef, {
+    // Read live: compactShell is only a re-render trigger and can lag.
+    active: drawerOpen && isCompactShell(),
+    escapeAnywhere: true,
+    // Same control set as the drawer checks: enabled buttons and inputs.
+    selector: "button, input",
+    initialFocus: () =>
+      drawerRef.current?.querySelector<HTMLElement>(".sidebar-link"),
+    returnFocus: () =>
+      document.querySelector<HTMLElement>(".mobile-menu-button"),
+    onEscape: (event) => {
+      if (event.defaultPrevented) return;
+      event.preventDefault();
+      setUiState({ sidebarOpen: false });
       document.querySelector<HTMLElement>(".mobile-menu-button")?.focus();
-    }
-  }, [compactShell, drawerOpen]);
-
-  // While the drawer is open it is modal: Esc closes it and Tab cycles inside.
-  useLayoutEffect(() => {
-    if (!drawerOpen) return undefined;
-    const onKeyDown = (event: KeyboardEvent): void => {
-      const drawer = drawerRef.current;
-      if (event.defaultPrevented || !drawer || !isCompactShell()) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setUiState({ sidebarOpen: false });
-        document.querySelector<HTMLElement>(".mobile-menu-button")?.focus();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const controls = drawerControls(drawer);
-      const first = controls[0];
-      const last = controls.at(-1);
-      if (!first || !last) return;
-      const active = document.activeElement;
-      const inside = active instanceof Node && drawer.contains(active);
-      if (event.shiftKey) {
-        if (!inside || active === first) {
-          event.preventDefault();
-          last.focus();
-        }
-      } else if (!inside || active === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [compactShell, drawerOpen]);
+    },
+  });
 
   const navigate = (route: Route): void => {
     router.navigate(route);

@@ -3,9 +3,7 @@ import { useEffect, useRef } from "preact/hooks";
 import type { JSX } from "preact";
 import { useAppController, useAppSlices } from "../app/context.tsx";
 import { lazyView } from "./lazy.tsx";
-
-const FOCUSABLE_SELECTOR =
-  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+import { useModalDialog } from "./use-modal-dialog.ts";
 
 // Release notes are only parsed when the modal shows them, so the Markdown
 // renderer stays out of the entry bundle. The modal itself stays in the entry.
@@ -36,18 +34,15 @@ export function UpdateReadyModal(): JSX.Element | null {
   const open =
     (state.updates.promptOpen || installing) && Boolean(state.updates.version);
 
-  useEffect(() => {
-    if (!open) return undefined;
-    const previousFocus = document.activeElement as HTMLElement | null;
-    const focusTimer = window.setTimeout(
-      () => restartButton.current?.focus(),
-      0,
-    );
-    return () => {
-      window.clearTimeout(focusTimer);
-      previousFocus?.focus?.();
-    };
-  }, [controller, open]);
+  useModalDialog(dialogRef, {
+    active: open,
+    initialFocus: () => restartButton.current,
+    deferFocus: true,
+    onEscape: (event) => {
+      event.preventDefault();
+      controller.dismissUpdate();
+    },
+  });
 
   // Installing disables both buttons, which drops focus to <body> and out of
   // the dialog's key handling; the dialog itself holds focus instead.
@@ -58,41 +53,12 @@ export function UpdateReadyModal(): JSX.Element | null {
   if (!open) return null;
 
   const version = state.updates.version ?? "the latest version";
-  const onDialogKeyDown = (event: KeyboardEvent): void => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      controller.dismissUpdate();
-      return;
-    }
-    if (event.key !== "Tab") return;
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    const focusable = Array.from(
-      dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
-    );
-    if (focusable.length === 0) {
-      event.preventDefault();
-      return;
-    }
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    const active = document.activeElement;
-    if (
-      (event.shiftKey && (active === first || !dialog.contains(active))) ||
-      (!event.shiftKey && (active === last || !dialog.contains(active)))
-    ) {
-      event.preventDefault();
-      (event.shiftKey ? last : first)?.focus();
-    }
-  };
-
   return (
     <div className="update-modal-scrim" role="presentation">
       <section
         ref={dialogRef}
         className="update-modal"
         tabIndex={-1}
-        onKeyDown={onDialogKeyDown}
         role="dialog"
         aria-modal="true"
         aria-busy={installing}
