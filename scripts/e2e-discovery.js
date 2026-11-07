@@ -388,6 +388,101 @@ async function libraryArtist(page, check) {
       String(catalog[0].query?.views ?? "").includes("full-albums"),
     { ready, library: pathsOf(library), catalog: pathsOf(catalog) },
   );
+  await libraryArtistViewsFail(page, check);
+  await artistAlbumPageFails(page, check);
+}
+
+const ALBUM_CARDS = ".artist-albums .library-card";
+const albumTitles = (page) =>
+  page.evaluate(
+    `return [...document.querySelectorAll(${q(`${ALBUM_CARDS} .library-card-copy strong`)})].map((node) => node.textContent.trim());`,
+  );
+
+// Views rejected: the albums come from the catalog artist, never from the
+// library relationship (404 here, as on a real account) or the name fallback.
+async function libraryArtistViewsFail(page, check) {
+  await fixtureCall(page, "reset");
+  await home(page);
+  await fixtureCall(page, "configure", [{ rejectQueryKeys: ["views"] }]);
+  try {
+    const ready = await openHash(
+      page,
+      "#/artist/library-artist-views",
+      `${heroIs("Discovery Artist")} && document.querySelectorAll(${q(ALBUM_CARDS)}).length >= 30`,
+      20_000,
+    );
+    // An earlier visit may have cached 30 albums: wait for this load's own
+    // catalog albums read, then for the page to settle on its result.
+    const settled = await waitFor(
+      page,
+      `window.__ARLET_E2E_MUSIC__.snapshot().requests.some((item) => item.path.split("?")[0] === ${q(`${ARTIST_PATH}/albums`)} && item.completedAt)`,
+      20_000,
+    );
+    const thirty = await waitFor(
+      page,
+      `document.querySelectorAll(${q(ALBUM_CARDS)}).length === 30`,
+      5_000,
+    );
+    const count = await page.evaluate(
+      `return document.querySelectorAll(${q(ALBUM_CARDS)}).length;`,
+    );
+    const snap = await snapshot(page);
+    const catalogAlbums = snap.requests.filter(
+      (item) => pathOnly(item) === `${ARTIST_PATH}/albums`,
+    );
+    check(
+      "library artist lists its catalog albums when the views fail",
+      ready && settled && thirty && count === 30 && catalogAlbums.length >= 1,
+      {
+        ready,
+        settled,
+        count,
+        catalogAlbums: pathsOf(catalogAlbums),
+        titles: (await albumTitles(page)).slice(0, 5),
+      },
+    );
+  } finally {
+    await fixtureCall(page, "reset");
+  }
+}
+
+// The second full-albums page fails: the first 25 stay on the page.
+async function artistAlbumPageFails(page, check) {
+  await fixtureCall(page, "reset");
+  await home(page);
+  await fixtureCall(page, "configure", [
+    { rejectPaths: ["/view/full-albums?offset=25"] },
+  ]);
+  try {
+    const ready = await openHash(
+      page,
+      "#/artist/library-artist-views",
+      `${heroIs("Discovery Artist")} && document.querySelectorAll(${q(ALBUM_CARDS)}).length >= 25`,
+      20_000,
+    );
+    // The failed page must have settled before the count is final.
+    const settled = await waitFor(
+      page,
+      `window.__ARLET_E2E_MUSIC__.snapshot().requests.some((item) => item.path.includes("/view/full-albums?offset=25") && item.error)`,
+      20_000,
+    );
+    // An earlier visit may have cached 30 albums; this load settles on 25.
+    const kept = await waitFor(
+      page,
+      `document.querySelectorAll(${q(ALBUM_CARDS)}).length === 25`,
+      5_000,
+    );
+    const count = await page.evaluate(
+      `return document.querySelectorAll(${q(ALBUM_CARDS)}).length;`,
+    );
+    check(
+      "artist page keeps the albums it loaded when a later album page fails",
+      ready && settled && kept && count === 25,
+      { ready, settled, count, titles: (await albumTitles(page)).slice(0, 5) },
+    );
+  } finally {
+    await fixtureCall(page, "reset");
+  }
 }
 
 async function albumShelves(page, check) {

@@ -526,7 +526,9 @@
 
 /* Collapsed "More" notes under the header; they do not stretch the hero. */
 .library-detail-more {
-  margin: -12px 0 22px;
+  /* Vertical only: the horizontal auto margins from .content-scroll > * center it. */
+  margin-top: -12px;
+  margin-bottom: 22px;
   padding: 0 4px;
 }
 

@@ -1182,6 +1182,16 @@ Artist page (`views` and `extend` in one request):
   banner]
 - A library artist renders its library record without its catalog views.
   [library artist reads its catalog twin, then the catalog views]
+- A library artist whose catalog views fail lists only the albums already in
+  the library (matched by artist name), or none. On a real account, the
+  library artist albums relationship answered 404, and the page then showed
+  2 of the artist's albums. The fixture answers that relationship with 404 for
+  `library-artist-views`. [library artist lists its catalog albums when the
+  views fail]
+- A later album page fails and the page drops the albums it already loaded,
+  then falls back to the library albums. `configure({ rejectPaths:
+["/view/full-albums?offset=25"] })` fails the second page. [artist page
+  keeps the albums it loaded when a later album page fails]
 
 Album shelves (`include=tracks` with `views`, album `album-discover`):
 
@@ -1746,6 +1756,8 @@ Failure scenarios to cover before changing production code:
 - A label page shows another label's releases, because it reuses a previous
   label's response.
 - An album's record label link is missing, or opens the wrong label's page.
+- An album's More section sits outside the centered page column instead of
+  lining up with the album header.
 - A library album request asks for `record-labels`, which Apple does not
   document for library albums and may refuse.
 - An activity page loads more than 10 playlists, or pages past the first
@@ -1771,7 +1783,7 @@ Check names:
 - `Replay shows this year's top songs, albums, and artists`
 - `Replay with no data shows an empty state, not an error`
 - `a record label page shows its latest and top releases`
-- `an album's record label opens its label page`
+- `an album's More section lines up with its header, and its record label opens its label page`
 - `an activity page lists its playlists`
 - `Search shows record labels and activities`
 - `Get Info shows the song's composer, ISRC, and label as plain text`

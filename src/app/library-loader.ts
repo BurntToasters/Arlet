@@ -695,10 +695,10 @@ export function createLibraryLoader(
     if (client && typeof client.getArtistAlbums === "function") {
       // The artist's own albums relationship lists every album, not just
       // those on the first loaded page of the whole library.
+      const albums: LibraryEntity[] = [];
+      let cursor: string | undefined;
       try {
-        const albums: LibraryEntity[] = [];
         const seen = new Set<string>();
-        let cursor: string | undefined;
         let loaded = first;
         do {
           // Apple pages an artist's albums (25 at a time in the catalog).
@@ -712,9 +712,14 @@ export function createLibraryLoader(
         } while (cursor && albums.length < MAX_DETAIL_ITEMS);
         return albums;
       } catch (error) {
+        const failed = cursor?.split("?", 1)[0] ?? `${source} artist albums`;
+        log(
+          `Artist albums request failed (${failed}): ${safeErrorMessage(error)}`,
+        );
+        // A later page failed: keep the albums already loaded.
+        if (albums.length > 0) return albums;
         // Fall back to the loaded library so a failed relationship request
         // does not leave the artist with no albums.
-        log(`Artist albums request failed: ${safeErrorMessage(error)}`);
       }
     }
     // A catalog artist is not in the library, so the library holds none of

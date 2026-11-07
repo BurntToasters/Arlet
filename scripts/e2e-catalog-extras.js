@@ -62,7 +62,8 @@ const CHECKS = {
   replayData: "Replay shows this year's top songs, albums, and artists",
   replayEmpty: "Replay with no data shows an empty state, not an error",
   label: "a record label page shows its latest and top releases",
-  albumLink: "an album's record label opens its label page",
+  albumLink:
+    "an album's More section lines up with its header, and its record label opens its label page",
   activity: "an activity page lists its playlists",
   search: "Search shows record labels and activities",
   info: "Get Info shows the song's composer, ISRC, and label as plain text",
@@ -411,6 +412,14 @@ async function checkAlbumLabelLinkWithTwin(page, check) {
     `document.querySelector(".library-detail-more-toggle")`,
     15_000,
   );
+  // The More section shares the header's centered column: same left edge.
+  const edges = await readPage(
+    page,
+    `const hero = document.querySelector(".library-detail-hero")?.getBoundingClientRect();
+     const more = document.querySelector(".library-detail-more")?.getBoundingClientRect();
+     return hero && more ? { hero: hero.left, more: more.left } : null;`,
+  );
+  const aligned = edges !== null && Math.abs(edges.hero - edges.more) <= 1;
   await page.evaluate(
     `document.querySelector(".library-detail-more-toggle")?.click(); return true;`,
   );
@@ -451,6 +460,7 @@ async function checkAlbumLabelLinkWithTwin(page, check) {
   check(
     CHECKS.albumLink,
     moreShown &&
+      aligned &&
       linkShown &&
       href === `#/label/${LABEL_1.id}` &&
       landed &&
@@ -458,6 +468,7 @@ async function checkAlbumLabelLinkWithTwin(page, check) {
       twinAsksLabel,
     {
       moreShown,
+      edges,
       linkShown,
       href,
       landed,
@@ -784,6 +795,18 @@ async function waitForLines(profileRoot, count, timeoutMs) {
 
 /** Dispatches a real contextmenu event on the element, then waits for the menu. */
 async function openMenuOn(page, selector) {
+  // A row can re-render while a page is still loading and drop the first
+  // event, so a menu that does not open gets one more right-click.
+  let menu = await openMenuOnce(page, selector);
+  if (menu.target && !menu.opened) {
+    await closeMenu(page);
+    await sleep(500);
+    menu = await openMenuOnce(page, selector);
+  }
+  return menu;
+}
+
+async function openMenuOnce(page, selector) {
   const target = await page.evaluate(`
     const node = document.querySelector(${q(selector)});
     if (!node) return null;

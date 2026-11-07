@@ -146,6 +146,8 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  * artist-views: every view populated; editorialNotes with HTML and a script
  *   that sets window.__ARLET_DISCOVERY_XSS__; editorialArtwork.bannerUber.
  *   top-songs (8) and full-albums (30) page at 5 and 25 for the inline view.
+ *   library-artist-views links it; GET /v1/me/library/artists/
+ *   library-artist-views/albums answers 404, as seen on a real account.
  * artist-views-sparse: only top-songs and full-albums; no notes or artwork.
  *   Other requested views come back as { data: [] }.
  * album-discover: 4 tracks; other-versions (1), related-albums (3) and
@@ -3730,6 +3732,16 @@ function installMusicKitFixture(fixtureSeed) {
       error.data = { status };
       request.error = error.message;
       request.status = status;
+      throw error;
+    }
+    // On a real account, a library artist's albums relationship answered 404.
+    if (
+      pathText.split("?", 1)[0] ===
+      "/v1/me/library/artists/library-artist-views/albums"
+    ) {
+      const error = fixtureHttpError(404, "NOT_FOUND");
+      request.error = error.message;
+      request.status = 404;
       throw error;
     }
     const replayFailure = replayFailureFor(pathText.split("?", 1)[0], params);
