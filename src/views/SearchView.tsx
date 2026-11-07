@@ -43,6 +43,7 @@ import {
   clearRecentSearches,
   removeRecentSearch,
 } from "../state.ts";
+import { serializeRoute } from "../routing/router.ts";
 
 export function trackContextData(track: Track): Record<string, string> {
   return {
@@ -121,9 +122,9 @@ const GROUP_TITLES: Record<SearchGroupKind, string> = {
 function overviewHref(item: SearchItem): string | undefined {
   switch (item.kind) {
     case "record-labels":
-      return `#/label/${encodeURIComponent(item.recordLabel.id)}`;
+      return serializeRoute({ kind: "label", id: item.recordLabel.id });
     case "activities":
-      return `#/activity/${encodeURIComponent(item.activity.id)}`;
+      return serializeRoute({ kind: "activity", id: item.activity.id });
     default:
       return undefined;
   }
@@ -744,7 +745,7 @@ export function SearchView(): JSX.Element {
                 subtitle="Record label"
                 kindLabel="Record Label"
                 artwork={label.artwork}
-                href={`#/label/${encodeURIComponent(label.id)}`}
+                href={serializeRoute({ kind: "label", id: label.id })}
               />
             ))}
           </div>
@@ -759,7 +760,7 @@ export function SearchView(): JSX.Element {
                 subtitle="Activity"
                 kindLabel="Activity"
                 artwork={activity.artwork}
-                href={`#/activity/${encodeURIComponent(activity.id)}`}
+                href={serializeRoute({ kind: "activity", id: activity.id })}
               />
             ))}
           </div>

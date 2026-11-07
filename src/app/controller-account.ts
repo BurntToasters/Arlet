@@ -321,6 +321,8 @@ export function createControllerAccount(
 
   /** Bumped on each subscription lookup; only the newest one may write. */
   let subscriptionSequence = 0;
+  /** The account generation the shown subscription status belongs to. */
+  let subscriptionGeneration: number | undefined;
 
   const refreshSubscription = async (): Promise<void> => {
     if (getState().auth.status !== "authorized") return;
@@ -332,7 +334,12 @@ export function createControllerAccount(
     // the sequence; either makes this answer stale.
     const isCurrent = (): boolean =>
       sequence === subscriptionSequence && generation === accountGeneration;
-    setAccountSubscription("unknown");
+    // A recheck for the same account keeps the known status until the answer
+    // lands, so the Previews only notice does not flicker on each error.
+    if (subscriptionGeneration !== generation) {
+      subscriptionGeneration = generation;
+      setAccountSubscription("unknown");
+    }
     if (!instance || typeof instance.hasMusicSubscription !== "function") {
       return;
     }

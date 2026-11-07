@@ -28,7 +28,7 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 - **Ver:** Updated version to `v0.4.0-beta.5`.
 - **Fix:** Repeat One and Repeat All were swapped. Repeat One now shows a Repeat-1 icon, and with Repeat One on, Next and Previous move between songs.
 - **Fix:** Shuffle covers the whole album or playlist, including the songs before the one you started, as in Apple Music. Turning shuffle off returns to the album or playlist order after the current song, including playlists with the same song twice.
-- **Fix:** Resumed queues and queue edits are no longer reshuffled.
+- **Fix:** Resumed queues and queue edits are no longer reshuffled, and choosing a song in Playing Next with shuffle on plays that song in the order you see.
 - **Fix:** Choosing a song to play next no longer flashes the player or the Windows media controls.
 - **UI:** On stations, Shuffle and Repeat are hidden, and Play Next, Play Later, and Clear explain why they're unavailable.
 - **NEW - Autoplay:** Autoplay songs show under their own `Autoplay` heading with an on/off toggle. Play Later goes before them, and Clear keeps them. Turning Repeat on turns them off. They're never saved into your queue, a playlist, or a handoff.

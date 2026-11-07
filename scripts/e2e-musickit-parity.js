@@ -65,6 +65,8 @@ const SHUFFLE_CHECKS = {
     "a parked queue resumed with shuffle on keeps its saved order and still shows shuffle on",
   offKeeps: "turning shuffle off after a kept-order resume does not reshuffle",
   rebuildKeeps: "a queue rebuild with shuffle on keeps the edited order",
+  selectionKeeps:
+    "choosing a Playing Next song while the shuffled order is held plays that song and keeps the order",
 };
 
 // Check names copied verbatim from docs/TESTING.md ("MusicKit parity", Selection and stations).
@@ -660,6 +662,57 @@ async function checkRebuildKeepsEditedOrder(page, check) {
   }
 }
 
+/**
+ * After the rebuild above, Arlet holds MusicKit's shuffle off and shows shuffle
+ * on. Choosing a later row must select it in that held order: writing shuffle
+ * on first would make MusicKit reshuffle, and the old index would name another
+ * song.
+ */
+async function checkSelectionKeepsHeldOrder(page, check) {
+  const before = await snapshot(page);
+  const held =
+    before.modes.shuffle === false && (await shufflePressed(page)) === "true";
+  const drawerReady = await openDrawer(page, before.queue.items.length);
+  try {
+    const mark = await transitionCount(page);
+    const chosen = await page.evaluate(`
+      const rows = [...document.querySelectorAll(${q(DRAWER_ROWS)})];
+      const active = rows.findIndex((row) => row.querySelector('button.queue-row[aria-current="true"]'));
+      const row = active < 0 ? undefined : rows[active + 2];
+      const button = row?.querySelector("button.queue-row");
+      if (!button) return null;
+      const title = button.querySelector(".queue-copy strong")?.textContent ?? null;
+      button.click();
+      return title;`);
+    const playing =
+      chosen !== null && (await waitFor(page, `${TITLE} === ${q(chosen)}`));
+    const after = await snapshot(page);
+    const pressed = await shufflePressed(page);
+    check(
+      SHUFFLE_CHECKS.selectionKeeps,
+      held &&
+        drawerReady &&
+        playing &&
+        sameList(titlesOf(after), titlesOf(before)) &&
+        after.modes.shuffle === false &&
+        pressed === "true",
+      {
+        held,
+        drawerReady,
+        chosen,
+        nowPlaying: await readPage(page, TITLE),
+        before: titlesOf(before),
+        after: titlesOf(after),
+        providerShuffle: after.modes.shuffle,
+        pressed,
+        transitions: await transitionsSince(page, mark),
+      },
+    );
+  } finally {
+    await closeDrawer(page);
+  }
+}
+
 async function saveScreenshot(page, file) {
   const shot = await page.send("Page.captureScreenshot", { format: "png" });
   await writeFile(file, Buffer.from(shot.data, "base64"));
@@ -981,7 +1034,7 @@ const AUTOPLAY_CHECKS = {
   clear: "Clear removes queued songs and keeps the autoplay songs",
   repeat: "Repeat on removes autoplay songs and Repeat off brings them back",
   toggle:
-    "the Playing Next autoplay toggle turns autoplay off, removes its songs, and saves the setting",
+    "the Playing Next autoplay toggle turns autoplay off, removes its songs, saves the setting, and stays to turn it back on",
   modes: "shuffle and repeat are disabled while an autoplay song plays",
   saved:
     "the saved session, stream handoff, and Save as playlist leave out upcoming autoplay songs",
@@ -1399,6 +1452,7 @@ async function checkAutoplayToggle(page, check) {
   let saved = false;
   let after = null;
   let shownAfter = null;
+  let reenabled = false;
   let restored = false;
   try {
     clicked = await clickSelector(page, AUTOPLAY_TOGGLE_SELECTOR);
@@ -1410,8 +1464,14 @@ async function checkAutoplayToggle(page, check) {
     saved = await waitForSavedAutoplay(page, false);
     after = await snapshot(page);
     shownAfter = await readDrawerAutoplay(page);
+    // The toggle stays in the drawer with Autoplay off and turns it back on.
+    if (shownAfter?.toggle?.pressed === "false") {
+      reenabled =
+        (await clickSelector(page, AUTOPLAY_TOGGLE_SELECTOR)) &&
+        (await waitForSavedAutoplay(page, true));
+    }
   } finally {
-    // Autoplay goes back on through Settings, so later checks still get it.
+    // Safety net: later checks need Autoplay on.
     restored = await setAutoplaySetting(page, true);
   }
   check(
@@ -1426,11 +1486,14 @@ async function checkAutoplayToggle(page, check) {
       saved &&
       after !== null &&
       autoplayItems(after).length === 0 &&
-      userItems(after).length === PLAYLIST_SIZE,
+      userItems(after).length === PLAYLIST_SIZE &&
+      shownAfter?.toggle?.disabled === false &&
+      reenabled,
     {
       before: before.toggle,
       shownAfter,
       saved,
+      reenabled,
       restored,
       userSongs: after ? userItems(after).length : null,
       transitions: await transitionsSince(page, at),
@@ -2046,6 +2109,8 @@ const PREVIEW_CHECKS = {
   notice:
     "without a subscription, Arlet shows Previews only with a Subscribe button",
   subscribed: "with a subscription, no Previews only notice shows",
+  steady:
+    "a subscription recheck keeps Previews only shown while the answer is pending",
   refused: "open_subscribe_link refuses non-Apple and non-https links",
 };
 const BITRATE_HIGH = 256;
@@ -2182,11 +2247,11 @@ async function ensureSignedInSafetyNet(page) {
 }
 
 /** Counts every sample in which a .preview-notice exists, from mutations and a 20 ms poll. */
-function startNoticeWatch(page) {
+function startNoticeWatch(page, { absent = false } = {}) {
   return page.evaluate(`
     const state = { seen: 0, observer: null, timer: 0 };
     const look = () => {
-      if (document.querySelector(".preview-notice")) state.seen += 1;
+      if (Boolean(document.querySelector(".preview-notice")) !== ${absent}) state.seen += 1;
     };
     state.observer = new MutationObserver(look);
     state.observer.observe(document.body, {
@@ -2200,7 +2265,7 @@ function startNoticeWatch(page) {
     return true;`);
 }
 
-/** Stops the notice watch and returns how many samples saw the notice. */
+/** Stops the notice watch and returns how many samples matched (seen, or missing with `absent`). */
 function stopNoticeWatch(page) {
   return page.evaluate(`
     const state = window.__ARLET_PARITY_NOTICE__;
@@ -2403,6 +2468,32 @@ async function checkUnsubscribedNotice(page, check) {
   );
 }
 
+/**
+ * Without a subscription, a recheck (each SUBSCRIPTION_REQUIRED error starts
+ * one) keeps the notice up while it is pending instead of hiding it.
+ */
+async function checkRecheckKeepsNotice(page, check) {
+  await fixtureCall(page, "configure", [
+    { subscription: false, subscriptionDelayMs: SUBSCRIPTION_DELAY_MS },
+  ]);
+  const shownBefore = await waitFor(page, NOTICE_SHOWN, 4000);
+  let watch = { seen: -1 };
+  let rechecked = false;
+  await startNoticeWatch(page, { absent: true });
+  try {
+    rechecked = await recheckSubscription(page);
+    await sleep(SUBSCRIPTION_DELAY_MS + 800);
+  } finally {
+    watch = await stopNoticeWatch(page);
+  }
+  const shownAfter = await readPage(page, NOTICE_SHOWN);
+  check(
+    PREVIEW_CHECKS.steady,
+    shownBefore && rechecked && watch.seen === 0 && shownAfter === true,
+    { shownBefore, rechecked, missingSamples: watch.seen, shownAfter },
+  );
+}
+
 /** With a subscription, the notice never appears, not even while the check is pending. */
 async function checkSubscribedNoNotice(page, check) {
   await fixtureCall(page, "configure", [
@@ -2504,6 +2595,9 @@ export async function runMusicKitParity({ page, check, logDir, artifactDir }) {
       );
       await guarded(check, SHUFFLE_CHECKS.rebuildKeeps, () =>
         checkRebuildKeepsEditedOrder(page, check),
+      );
+      await guarded(check, SHUFFLE_CHECKS.selectionKeeps, () =>
+        checkSelectionKeepsHeldOrder(page, check),
       );
     } finally {
       traces.shuffleModel = await transitionsSince(page, at);
@@ -2642,16 +2736,21 @@ export async function runMusicKitParity({ page, check, logDir, artifactDir }) {
     const at = await transitionCount(page);
     await installSubscriptionCounter(page);
     try {
+      // First, while the account is still a subscriber: a recheck keeps the
+      // known status, so the notice must never appear.
+      await guarded(check, PREVIEW_CHECKS.subscribed, () =>
+        checkSubscribedNoNotice(page, check),
+      );
       await guarded(check, PREVIEW_CHECKS.notice, () =>
         checkUnsubscribedNotice(page, check),
       );
-      // Captured while the notice is up, before the subscribed case clears it.
+      // Captured while the notice is up, before the finally block clears it.
       await saveScreenshot(
         page,
         join(artifactDir, "screenshot-musickit-parity-preview.png"),
       );
-      await guarded(check, PREVIEW_CHECKS.subscribed, () =>
-        checkSubscribedNoNotice(page, check),
+      await guarded(check, PREVIEW_CHECKS.steady, () =>
+        checkRecheckKeepsNotice(page, check),
       );
     } finally {
       // Restore a subscriber and re-check, so the notice clears for later groups.
@@ -2659,6 +2758,7 @@ export async function runMusicKitParity({ page, check, logDir, artifactDir }) {
         { subscription: true, subscriptionDelayMs: 0 },
       ]);
       await fixtureCall(page, "emitAuthorizationStatus", [true]);
+      await waitFor(page, `!document.querySelector(".preview-notice")`, 4000);
       await stopSubscriptionCounter(page);
       traces.preview = await transitionsSince(page, at);
       await ensureSignedInSafetyNet(page);

@@ -190,6 +190,7 @@ export function QueueDrawer(): JSX.Element | null {
   // A station's queue cannot be edited, so its upcoming rows offer no edits.
   const stationPlaying = state.playback.stationPlaying === true;
 
+  const settings = state.settings;
   // Upcoming autoplay songs leave the user's list for their own section, unless
   // that section is hidden, so no song disappears from the drawer.
   const autoplayEntries: QueueEntry[] = [];
@@ -199,10 +200,16 @@ export function QueueDrawer(): JSX.Element | null {
   });
   const showAutoplay =
     state.playback.autoplayStation !== false && autoplayEntries.length > 0;
+  // With Autoplay off the section stays, empty, so its toggle can turn
+  // Autoplay back on. A station has no autoplay songs.
+  const showAutoplayOff =
+    !settings.autoplay &&
+    !stationPlaying &&
+    queue.length > 0 &&
+    state.playback.modeCapabilities?.autoplay === true;
   const listEntries: QueueEntry[] = queue.flatMap((track, index) =>
     showAutoplay && index > current && track.autoplay ? [] : [{ track, index }],
   );
-  const settings = state.settings;
   const repeating = (state.playback.repeatMode ?? "off") !== "off";
   const toggleAutoplay = (): void => {
     void controller.setAutoplay(!settings.autoplay).catch(reportActionError);
@@ -417,7 +424,7 @@ export function QueueDrawer(): JSX.Element | null {
                   : `${restCount.toLocaleString()} more songs are added as the queue plays.`}
               </p>
             ) : null}
-            {showAutoplay ? (
+            {showAutoplay || showAutoplayOff ? (
               <section
                 className="queue-autoplay"
                 aria-labelledby="queue-autoplay-heading"
@@ -442,9 +449,14 @@ export function QueueDrawer(): JSX.Element | null {
                     <InfinityIcon aria-hidden="true" size={16} />
                   </button>
                 </div>
-                <ol className="queue-autoplay-list" aria-label="Autoplay songs">
-                  {autoplayEntries.map(renderAutoplayRow)}
-                </ol>
+                {showAutoplay ? (
+                  <ol
+                    className="queue-autoplay-list"
+                    aria-label="Autoplay songs"
+                  >
+                    {autoplayEntries.map(renderAutoplayRow)}
+                  </ol>
+                ) : null}
               </section>
             ) : null}
           </div>

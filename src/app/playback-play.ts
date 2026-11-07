@@ -83,14 +83,24 @@ export function createPlayRequests(context: PlaybackContext) {
     suspectSession?.(error);
   };
 
-  /** One play request. `current` gates state writes; `mayStart` gates audio. */
-  const beginPlayRequest = (instance?: MusicKit.MusicKitInstance) => {
+  /**
+   * One play request. `current` gates state writes; `mayStart` gates audio.
+   *
+   * A `selection` moves within the queue MusicKit already holds. It keeps the
+   * station and the shuffle hold: writing shuffle on would make MusicKit
+   * reshuffle the queue just before the chosen position is selected.
+   */
+  const beginPlayRequest = (
+    instance?: MusicKit.MusicKitInstance,
+    options: { selection?: boolean } = {},
+  ) => {
     const intent = ++session.playIntent;
-    // Any new play replaces a station; playStation sets it again after this.
-    session.station = undefined;
-    const shuffleReady = preparePlaybackModesForPlay(
-      instance ?? requireMusic(),
-    );
+    let shuffleReady = true;
+    if (!options.selection) {
+      // Any new play replaces a station; playStation sets it again after this.
+      session.station = undefined;
+      shuffleReady = preparePlaybackModesForPlay(instance ?? requireMusic());
+    }
     const pauses = session.pauseCount;
     return {
       current: (): boolean => intent === session.playIntent,

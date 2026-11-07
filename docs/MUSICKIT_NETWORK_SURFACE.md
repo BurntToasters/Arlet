@@ -48,18 +48,17 @@ or remove tracks from playlists, so Arlet does not offer those actions.
 
 ### Beta.5 Catalog and Library Endpoints
 
-| Method | Path                                                                                | Purpose                                                                                                                                                    |
-| ------ | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| GET    | `/v1/me/music-summaries?filter[year]=latest&views=top-artists,top-albums,top-songs` | Replay shelves on Home. A 404, an empty `data` list, or three empty shelves shows nothing and no error.                                                    |
-| GET    | `/v1/catalog/{sf}/record-labels/{id}?views=latest-releases,top-releases`            | Record label page                                                                                                                                          |
-| GET    | `/v1/catalog/{sf}/albums/{id}?include=record-labels`                                | Catalog album: the record label link and copyright, with its views                                                                                         |
-| GET    | `/v1/me/library/albums/{id}?include=tracks,catalog,record-labels`                   | Library album: its label link. If Apple rejects `record-labels` here, the album is requested again without it (`tracks,catalog`), so the page still loads. |
-| GET    | `/v1/catalog/{sf}/songs/{id}?include=albums`                                        | Get Info: the song, then its album                                                                                                                         |
-| GET    | `/v1/catalog/{sf}/activities/{id}?include=playlists`                                | Activity page. At most 10 playlists are read.                                                                                                              |
-| GET    | `/v1/catalog/{sf}/playlists?ids=…`                                                  | Activity playlists that Apple sends as bare references, in one batch                                                                                       |
-| GET    | `/v1/catalog/{sf}/search?with=topResults&limit=10&types=…`                          | Overview search. Its `types` list includes `record-labels` and `activities`, which have no See all page.                                                   |
-| POST   | `/v1/me/library/playlists`                                                          | Create a playlist. A chosen folder is sent as a `parent` relationship.                                                                                     |
-| POST   | `/v1/me/library/playlist-folders`                                                   | Create a folder. A chosen parent folder is sent as a `parent` relationship.                                                                                |
+| Method | Path                                                                                | Purpose                                                                                                                                    |
+| ------ | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| GET    | `/v1/me/music-summaries?filter[year]=latest&views=top-artists,top-albums,top-songs` | Replay shelves on Home. A 404, an empty `data` list, or three empty shelves shows nothing and no error.                                    |
+| GET    | `/v1/catalog/{sf}/record-labels/{id}?views=latest-releases,top-releases`            | Record label page                                                                                                                          |
+| GET    | `/v1/catalog/{sf}/albums/{id}?include=record-labels`                                | Catalog album: the record label link and copyright, with its views. A library album reads its label from this request on its catalog twin. |
+| GET    | `/v1/catalog/{sf}/songs/{id}?include=albums`                                        | Get Info: the song, then its album                                                                                                         |
+| GET    | `/v1/catalog/{sf}/activities/{id}?include=playlists`                                | Activity page. At most 10 playlists are read.                                                                                              |
+| GET    | `/v1/catalog/{sf}/playlists?ids=…`                                                  | Activity playlists that Apple sends as bare references, in one batch                                                                       |
+| GET    | `/v1/catalog/{sf}/search?with=topResults&limit=10&types=…`                          | Overview search. Its `types` list includes `record-labels` and `activities`, which have no See all page.                                   |
+| POST   | `/v1/me/library/playlists`                                                          | Create a playlist. A chosen folder is sent as a `parent` relationship.                                                                     |
+| POST   | `/v1/me/library/playlist-folders`                                                   | Create a folder. A chosen parent folder is sent as a `parent` relationship.                                                                |
 
 ### MusicKit-Initiated Requests
 

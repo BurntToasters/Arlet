@@ -44,13 +44,9 @@ type PlaylistController = Pick<
   | "loadLibrarySection"
   | "searchPlaylists"
   | "createPlaylist"
+  | "createPlaylistFolder"
   | "addTracksToPlaylist"
-> & {
-  createPlaylistFolder(
-    name: string,
-    parentFolderId?: string,
-  ): Promise<LibraryEntity | undefined>;
-};
+>;
 
 function recordValue(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object"
@@ -181,9 +177,6 @@ async function createPlaylistWithTracks(
 
 export function PlaylistDialogs(): JSX.Element | null {
   const controller = useAppController();
-  // Widened to the folder method's parent argument, which the controller
-  // passes straight through to the playlist editing service.
-  const playlistController: PlaylistController = controller;
   const state = useAppSlices("library");
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [query, setQuery] = useState("");
@@ -376,7 +369,7 @@ export function PlaylistDialogs(): JSX.Element | null {
       }
       setBusy(true);
       setError(undefined);
-      void playlistController
+      void controller
         .createPlaylistFolder(trimmed, selectedFolderId)
         .then(() => {
           if (isOpenDialog(generation)) closeDialog();

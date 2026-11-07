@@ -372,6 +372,17 @@ async function checkLabelPage(page, check, artifactDir) {
 
 async function checkAlbumLabelLink(page, check) {
   await closeOverlays(page);
+  // Library albums have no record-labels relationship on Apple: album-1 links
+  // its catalog twin, and the label comes from that twin.
+  await fixtureCall(page, "configure", [{ albumCatalogTwin: true }]);
+  try {
+    await checkAlbumLabelLinkWithTwin(page, check);
+  } finally {
+    await fixtureCall(page, "configure", [{ albumCatalogTwin: false }]);
+  }
+}
+
+async function checkAlbumLabelLinkWithTwin(page, check) {
   const at = await mark(page);
   await go(page, `#/album/${ALBUM_ID}`);
   const moreShown = await waitFor(
@@ -400,18 +411,39 @@ async function checkAlbumLabelLink(page, check) {
     `location.hash === ${q(`#/label/${LABEL_1.id}`)} && document.querySelector(".record-label-page h1")?.textContent.trim() === ${q(LABEL_1.name)}`,
     15_000,
   );
-  const albumRequests = (await rawSince(page, at)).filter((request) =>
-    pathOf(request).includes(ALBUM_ID),
+  const requests = await rawSince(page, at);
+  const includesOf = (request) =>
+    String(paramsOf(request).include ?? "").split(",");
+  const albumRequests = requests.filter((request) =>
+    pathOf(request).startsWith(`/v1/me/library/albums/${ALBUM_ID}`),
+  );
+  const twinRequests = requests.filter((request) =>
+    pathOf(request).endsWith("/albums/cat-album-1"),
+  );
+  // Only the catalog twin is asked for its label.
+  const libraryAsksLabel = albumRequests.some((request) =>
+    includesOf(request).includes("record-labels"),
+  );
+  const twinAsksLabel = twinRequests.some((request) =>
+    includesOf(request).includes("record-labels"),
   );
   check(
     CHECKS.albumLink,
-    moreShown && linkShown && href === `#/label/${LABEL_1.id}` && landed,
+    moreShown &&
+      linkShown &&
+      href === `#/label/${LABEL_1.id}` &&
+      landed &&
+      !libraryAsksLabel &&
+      twinAsksLabel,
     {
       moreShown,
       linkShown,
       href,
       landed,
+      libraryAsksLabel,
+      twinAsksLabel,
       requests: albumRequests.map(summarize),
+      twinRequests: twinRequests.map(summarize),
     },
   );
 }

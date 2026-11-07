@@ -24,7 +24,6 @@ import {
 } from "../musickit/curators.ts";
 import { loadRecordLabel } from "../musickit/record-labels.ts";
 import { loadActivity } from "../musickit/activities.ts";
-import { loadReplay } from "../musickit/replay.ts";
 import { loadSongInfo } from "../musickit/song-info.ts";
 import type { CuratorKind } from "../routing/router.ts";
 import { syncMusicKitQueue } from "../musickit/player.ts";
@@ -52,7 +51,6 @@ import {
   setCurrentTrack,
   setActivityState,
   setDeveloperTokenExpiry,
-  setHomeState,
   setInitializationState,
   setRecordLabelState,
   setSongInfoState,
@@ -73,7 +71,6 @@ import type {
   MusicSource,
   RatingValue,
   RecordLabel,
-  ReplaySummary,
   SongInfo,
   Station,
   Track,
@@ -216,8 +213,6 @@ export interface AppController {
   loadRecordLabel(id: string): Promise<RecordLabel | undefined>;
   /** Resolves undefined when a newer activity load has superseded this one. */
   loadActivity(id: string): Promise<Activity | undefined>;
-  /** Apple Replay, also stored on Home. Resolves undefined when there is none. */
-  loadReplay(): Promise<ReplaySummary | undefined>;
   /** Get Info for a song. Resolves undefined when a newer request superseded it. */
   loadSongInfo(track: Track): Promise<SongInfo | undefined>;
   playStation(station: Station): Promise<void>;
@@ -857,7 +852,6 @@ export function createAppController(
   // Each loader counts its own requests; an older response never overwrites a newer one.
   let recordLabelRequestId = 0;
   let activityRequestId = 0;
-  let replayRequestId = 0;
   let songInfoRequestId = 0;
 
   const controller: AppController = {
@@ -961,16 +955,6 @@ export function createAppController(
         });
         throw error;
       }
-    },
-    async loadReplay(): Promise<ReplaySummary | undefined> {
-      const account = accounts.generation();
-      const requestId = ++replayRequestId;
-      const replay = await loadReplay(requireMusic());
-      if (requestId !== replayRequestId || account !== accounts.generation()) {
-        return undefined;
-      }
-      setHomeState({ replay: replay ?? null });
-      return replay;
     },
     async loadSongInfo(track: Track): Promise<SongInfo | undefined> {
       const account = accounts.generation();

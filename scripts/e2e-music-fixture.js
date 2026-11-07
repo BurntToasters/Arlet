@@ -267,9 +267,10 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  *   Record labels: GET /v1/catalog/us/record-labels/{id}?views=latest-releases,
  *   top-releases. rl-fixture-1 "Fixture Records" and rl-fixture-2 "Second
  *   Label" have three albums in each view, all distinct, and an HTML
- *   description. album-1 gets a record-labels relationship to rl-fixture-1 when
- *   the request has include=record-labels; with include=tracks too, the track
- *   page still comes. album-1 has no catalog form.
+ *   description. Library albums never carry a record-labels relationship, as on
+ *   Apple. configure({ albumCatalogTwin: true }) makes album-1 link its catalog
+ *   twin cat-album-1 under relationships.catalog when the request has
+ *   include=catalog; reset() turns it off, so album-1 stays library-only.
  *   Activities: GET /v1/catalog/us/activities/{id}?include=playlists.
  *   act-fixture-1 "Workout" has 14 playlists in relationships.playlists.data
  *   and a next link (/v1/catalog/us/activities/act-fixture-1/playlists?offset=14),
@@ -630,6 +631,9 @@ function installMusicKitFixture(fixtureSeed) {
     librarySize: 0,
     // Library songs, playlists and the playlist folder (header comment).
     libraryView: false,
+    // album-1 links its catalog twin cat-album-1 (header comment); off, so
+    // other suites keep a library-only album-1.
+    albumCatalogTwin: false,
     // Artwork URL template for responses and queue items; "" keeps seed URLs.
     artworkTemplate: "",
     // Artwork sizing data (ARTWORK_* below); off, so other suites never see it.
@@ -2367,16 +2371,17 @@ function installMusicKitFixture(fixtureSeed) {
     return resource;
   };
 
-  // album-1 links its record label when the request asks for record-labels.
+  // Library albums have no record-labels relationship on Apple. With
+  // configure({ albumCatalogTwin: true }), album-1 links its catalog twin when
+  // the request asks include=catalog; the label is read from that twin.
   const albumRelationships = (pathname, path, call) => {
     const relationships = {};
     if (
+      state.albumCatalogTwin &&
       pathname === "/v1/me/library/albums/album-1" &&
-      listParam(requestParams(path, call).include).includes("record-labels")
+      listParam(requestParams(path, call).include).includes("catalog")
     ) {
-      relationships["record-labels"] = {
-        data: [recordLabelRef("rl-fixture-1")],
-      };
+      relationships.catalog = { data: [catalogAlbumRef()] };
     }
     return relationships;
   };
@@ -4418,6 +4423,9 @@ function installMusicKitFixture(fixtureSeed) {
       if (Object.prototype.hasOwnProperty.call(options, "libraryView")) {
         state.libraryView = options.libraryView === true;
       }
+      if (Object.prototype.hasOwnProperty.call(options, "albumCatalogTwin")) {
+        state.albumCatalogTwin = options.albumCatalogTwin === true;
+      }
       if (Object.prototype.hasOwnProperty.call(options, "ratings")) {
         // Replaces the whole map; keys are `${type}:${id}`, values 1 or -1.
         state.ratings = Object.fromEntries(
@@ -4565,6 +4573,7 @@ function installMusicKitFixture(fixtureSeed) {
       state.libraryAdds = [];
       state.librarySize = 0;
       state.libraryView = false;
+      state.albumCatalogTwin = false;
       state.artworkTemplate = "";
       state.artworkGrid = false;
       state.pinArtListExpired = false;

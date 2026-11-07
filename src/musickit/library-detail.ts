@@ -351,20 +351,10 @@ export function createDetailMethods(
               views: ALBUM_PAGE_VIEWS,
               decorate,
             }
-          : {
-              include: "tracks,catalog,record-labels",
-              decorate,
-            },
-      ).catch(async (error: unknown) => {
-        // Record labels are an extra on library albums: without them the page
-        // still loads with its catalog ID and views, as before.
-        if (source === "catalog") throw error;
-        return getWithFirstTracks(
-          await albumPath(id, source),
-          normalizeAlbumResource,
-          { include: "tracks,catalog", decorate },
-        );
-      });
+          : // Library albums have no record-labels relationship; the label
+            // comes from the catalog twin below.
+            { include: "tracks,catalog", decorate },
+      );
       const catalogId =
         source === "library" ? detail.item?.catalogId : undefined;
       if (!detail.item || !catalogId) return detail;

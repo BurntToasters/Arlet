@@ -464,6 +464,9 @@ export function setShuffleMode(
   if (state.override) {
     // Keep a rebuild's provider override until it releases. Its cleanup reads
     // this latest user choice, never the value from before the rebuild.
+    // Turning shuffle on asks for a shuffle, so the release writes it instead
+    // of holding the edited order.
+    if (enabled && !state.desired) state.override.restoreOnRelease = true;
     state.desired = enabled;
     return true;
   }
@@ -483,7 +486,8 @@ export function setShuffleMode(
  * mode. The returned release only restores a lease it still owns. With
  * `restoreOnRelease: false`, releasing with shuffle on keeps MusicKit's order
  * (a keep-order lease) instead of writing shuffle on again, which would
- * reshuffle. Joining owners can only turn restoring off, never on.
+ * reshuffle. Joining owners can only turn restoring off, never on; only the
+ * user turning shuffle on during the override turns it back on.
  */
 export function acquireShuffleModeOverride(
   instance: MusicKit.MusicKitInstance,

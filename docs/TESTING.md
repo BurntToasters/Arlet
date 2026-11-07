@@ -1536,6 +1536,9 @@ Check names in `report.json`:
   random order.
 - A queue rebuild with shuffle on reshuffles the edited order, so an edit moves
   songs the user did not touch.
+- Choosing a Playing Next song while Arlet holds MusicKit's shuffle off writes
+  shuffle on first. MusicKit reshuffles, and the clicked position then plays a
+  different song.
 
 Check names in `report.json`:
 
@@ -1544,6 +1547,7 @@ Check names in `report.json`:
 - `a parked queue resumed with shuffle on keeps its saved order and still shows shuffle on`
 - `turning shuffle off after a kept-order resume does not reshuffle`
 - `a queue rebuild with shuffle on keeps the edited order`
+- `choosing a Playing Next song while the shuffled order is held plays that song and keeps the order`
 
 ### Selection and stations
 
@@ -1573,6 +1577,8 @@ Check names in `report.json`:
 - The Playing Next autoplay toggle hides the autoplay songs but leaves them
   playing, or turns autoplay off without saving the setting, so it is back on
   after a restart.
+- Turning Autoplay off from Playing Next empties its section, the toggle goes
+  with it, and Autoplay can only be turned back on in Settings.
 - The saved session, a stream handoff, or Save as playlist includes upcoming
   autoplay songs the user never chose.
 - The playlist refill counts autoplay songs as user songs, so it skips loading
@@ -1588,7 +1594,7 @@ Check names in `report.json`:
 - `Play Later adds songs before the autoplay songs`
 - `Clear removes queued songs and keeps the autoplay songs`
 - `Repeat on removes autoplay songs and Repeat off brings them back`
-- `the Playing Next autoplay toggle turns autoplay off, removes its songs, and saves the setting`
+- `the Playing Next autoplay toggle turns autoplay off, removes its songs, saves the setting, and stays to turn it back on`
 - `shuffle and repeat are disabled while an autoplay song plays`
 - `the saved session, stream handoff, and Save as playlist leave out upcoming autoplay songs`
 - `the playlist refill ignores autoplay songs when counting what is left`
@@ -1635,6 +1641,8 @@ Check names in `report.json`:
   clips look like a playback bug.
 - A subscriber sees Previews only while `hasMusicSubscription()` is still
   pending, and the notice never clears.
+- A non-subscriber's notice disappears and comes back on every recheck, such as
+  each preview that fails with `SUBSCRIPTION_REQUIRED`.
 - The Previews only notice has no Subscribe button, so there is no way to reach
   the Apple subscription.
 - Subscribe opens a link on a host other than `finance-app.itunes.apple.com`.
@@ -1644,6 +1652,7 @@ Check names in `report.json`:
 
 - `without a subscription, Arlet shows Previews only with a Subscribe button`
 - `with a subscription, no Previews only notice shows`
+- `a subscription recheck keeps Previews only shown while the answer is pending`
 - `open_subscribe_link refuses non-Apple and non-https links`
 
 The Rust command `open_subscribe_link(url)` in `src-tauri/src/commands.rs`
@@ -1706,7 +1715,10 @@ folder when creating a playlist or folder.
   With no Replay data, the shelves are hidden and no error is shown.
 - Record label pages read
   `GET /v1/catalog/{sf}/record-labels/{id}?views=latest-releases,top-releases`.
-  An album's "More" panel links its record label.
+  An album's "More" panel links its record label. A library album reads the
+  label from its catalog twin (`include=record-labels` on the catalog album);
+  the library album request never asks for record labels, which Apple does not
+  document for library albums.
 - Activity pages read `GET /v1/catalog/{sf}/activities/{id}?include=playlists`
   and list at most 10 playlists.
 - Search has record label and activity groups.
@@ -1723,6 +1735,8 @@ Failure scenarios to cover before changing production code:
 - A label page shows another label's releases, because it reuses a previous
   label's response.
 - An album's record label link is missing, or opens the wrong label's page.
+- A library album request asks for `record-labels`, which Apple does not
+  document for library albums and may refuse.
 - An activity page loads more than 10 playlists, or pages past the first
   response without a limit.
 - Search drops the new record label and activity groups, or files results under
@@ -1827,8 +1841,8 @@ developer token. The E2E harness does not run these:
 8. A natural song end: the Windows media controls do not flicker.
 9. A parked queue resumed with shuffle on keeps its order.
 10. Replay on an account with no Replay data shows no error.
-11. Album label links on library albums. Apple may reject
-    `include=record-labels` on library albums.
+11. Album label links on library albums: the label comes from the catalog
+    twin's `include=record-labels`.
 
 These external gates are intentionally opt-in and must run only on the release
 VM or a test machine with the appropriate credentials and signed artifacts.

@@ -495,27 +495,64 @@ export function createPlayback(context: ControllerContext) {
     const intent = session.playIntent;
     if (!collectionUsable()) return setShuffleModeNow("off");
     const before = getState().playback;
-    const playing = session.occurrences[before.queueIndex] ?? -1;
-    if (playing < 0) {
+    // Read before the write: MusicKit's unshuffle can drop a copy of a
+    // duplicate ID or leave it on the wrong copy, so the queue it leaves is
+    // not the true membership, and the recorded occurrence is the true one.
+    const playingBefore = session.occurrences[before.queueIndex] ?? -1;
+    const playingTrack = before.queue[before.queueIndex];
+    const queuedBefore = before.queue.filter((track) => !track.autoplay);
+    const restBefore = [...session.queueRest];
+    if (playingBefore < 0) {
       breakCollection();
       return setShuffleModeNow("off");
     }
-    const queued = before.queue.filter((track) => !track.autoplay);
-    const autoplay = before.queue.filter((track) => track.autoplay === true);
-    const rest = [...session.queueRest];
-    const anchor = session.restAnchor;
     const collection = session.collection;
-    // Set by the plan, which runs against the provider queue as it reads
-    // after the shuffle went off.
-    const result: { order?: RestoreOrder } = {};
-    session.refilling = true;
     try {
       // The explicit off reaches the provider at once: a held or stale edit
       // must not hold it back. The queue is restored once pending work settles.
       await setShuffleModeNow("off");
       await settleQueueEdits(instance);
       await continuation.settleRefills();
-      if (session.playIntent !== intent) return;
+    } catch (error) {
+      breakCollection();
+      throw error;
+    }
+    if (session.playIntent !== intent || !collectionUsable()) return;
+    // A refill during the wait moved songs from the front of the rest into
+    // the queue. Anything else that changed the rest leaves no usable order.
+    const consumed = restBefore.length - session.queueRest.length;
+    const restIntact =
+      consumed >= 0 &&
+      session.queueRest.every(
+        (track, index) => track === restBefore[consumed + index],
+      );
+    if (!restIntact) {
+      breakCollection();
+      return;
+    }
+    // The song may have ended during the wait. The now-playing song tells,
+    // not the queue position, which MusicKit's unshuffle can leave wrong.
+    const settled = getState().playback;
+    const songChanged =
+      settled.current !== undefined &&
+      !isSameTrack(settled.current, before.current ?? playingTrack);
+    const playing = songChanged
+      ? (session.occurrences[settled.queueIndex] ?? -1)
+      : playingBefore;
+    if (playing < 0) {
+      breakCollection();
+      return;
+    }
+    const queued = [...queuedBefore, ...restBefore.slice(0, consumed)];
+    const autoplay = settled.queue.filter((track) => track.autoplay === true);
+    const rest = [...session.queueRest];
+    const anchor = session.restAnchor;
+    // Set by the plan, which runs against the provider queue as it reads
+    // after the shuffle went off.
+    const result: { order?: RestoreOrder } = {};
+    // Set only now: a refill that was in flight clears the flag as it lands.
+    session.refilling = true;
+    try {
       setRest([]);
       await editQueueLogged(
         "Queue restore failed",
@@ -717,14 +754,9 @@ export function createPlayback(context: ControllerContext) {
         await playTracks(saved, index, undefined, { keepOrder: true });
         return;
       }
-      const request = beginPlayRequest(instance);
-      if (!request.shuffleReady) {
-        const error = new Error(
-          "Shuffle could not be restored before playback.",
-        );
-        reportPlayFailure("Queue item play failed", error);
-        throw error;
-      }
+      // A selection keeps MusicKit's order, so the clicked index still names
+      // the clicked song.
+      const request = beginPlayRequest(instance, { selection: true });
       syncMusicKitQueue(instance);
       const snapshot = getState().playback;
       if (
@@ -747,8 +779,10 @@ export function createPlayback(context: ControllerContext) {
           if (request.current()) setQueueSnapshot(snapshot.queue, index);
           return;
         }
-        // The rebuild drops the songs before the selected one.
+        // The rebuild drops the songs before the selected one, and replaces
+        // a station with plain songs.
         breakCollection();
+        session.station = undefined;
         log(
           "Queue selection unavailable; rebuilding the queue from the selected song.",
         );
@@ -1070,7 +1104,18 @@ export function createPlayback(context: ControllerContext) {
             await playback.playQueueItem(queueIndex + 1);
             return;
           }
-          log("Next with Repeat One: no next song yet.");
+          // The last loaded song: songs still waiting in the rest come in
+          // first, so Next moves on as it would mid-list.
+          if (session.queueRest.length > 0 || session.refilling) {
+            maybeRefillQueue(true);
+            await continuation.settleRefills();
+            const now = getState().playback;
+            if (now.queueIndex + 1 < now.queue.length) {
+              await playback.playQueueItem(now.queueIndex + 1);
+              return;
+            }
+          }
+          log("Next with Repeat One: no next song.");
           return;
         }
         await skipToNext(requireMusic());
