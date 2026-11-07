@@ -3,6 +3,7 @@ import {
   ListMusic,
   PictureInPicture2,
   Repeat,
+  Repeat1,
   Shuffle,
   Star,
 } from "lucide-preact";
@@ -31,6 +32,7 @@ import { SleepTimerButton } from "./SleepTimerButton.tsx";
 import { VolumeControl } from "./VolumeControl.tsx";
 import { reportActionError } from "./action-errors.ts";
 import { useSerializedContextRefs } from "./context-refs.ts";
+import { reopenPreviewNotice } from "./PreviewNotice.tsx";
 import { PlaybackProgress, TransportControls } from "./TransportControls.tsx";
 import { displayArtistLinks } from "./artist-links.ts";
 
@@ -297,6 +299,7 @@ export function PlayerBar(): JSX.Element {
           <IconButton
             icon={Shuffle}
             label="Toggle shuffle"
+            disabled={playback.queue[playback.queueIndex]?.autoplay === true}
             pressed={playback.shuffleMode === "songs"}
             className={playback.shuffleMode === "songs" ? "is-active" : ""}
             onClick={() =>
@@ -310,8 +313,9 @@ export function PlayerBar(): JSX.Element {
         ) : null}
         {playback.modeCapabilities?.repeat ? (
           <IconButton
-            icon={Repeat}
+            icon={playback.repeatMode === "one" ? Repeat1 : Repeat}
             label={`Repeat ${playback.repeatMode ?? "off"}`}
+            disabled={playback.queue[playback.queueIndex]?.autoplay === true}
             pressed={playback.repeatMode !== "off"}
             className={playback.repeatMode !== "off" ? "is-active" : ""}
             onClick={() =>
@@ -325,7 +329,17 @@ export function PlayerBar(): JSX.Element {
         {playback.error ? (
           <span className="player-error" title={playback.error.message}>
             <CircleAlert aria-hidden="true" size={15} strokeWidth={1.9} />
-            <span>{playerErrorLabel(playback.error.code)}</span>
+            {playback.error.code === "SUBSCRIPTION_REQUIRED" ? (
+              <button
+                className="player-error-action"
+                type="button"
+                onClick={reopenPreviewNotice}
+              >
+                {playerErrorLabel(playback.error.code)}
+              </button>
+            ) : (
+              <span>{playerErrorLabel(playback.error.code)}</span>
+            )}
           </span>
         ) : null}
         <VolumeControl />

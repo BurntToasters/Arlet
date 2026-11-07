@@ -99,6 +99,8 @@ export interface Track {
   trackNumber?: number;
   /** ISO date-time from Apple `attributes.dateAdded`, library items only. */
   dateAdded?: string;
+  /** A MusicKit autoplay song, never persisted. */
+  autoplay?: true;
 }
 
 export interface Album {
@@ -118,6 +120,10 @@ export interface Album {
   /** Plain-text editorial notes; Apple's HTML tags are removed. */
   editorialNotes?: string;
   recordLabel?: string;
+  /** The record label's catalog ID, for its label page; absent when Apple sends none. */
+  recordLabelId?: MusicId;
+  /** The record label's name from Apple's relationship, when it names one. */
+  recordLabelName?: string;
   copyright?: string;
   genreNames?: string[];
   /** From Apple `contentRating`; absent when Apple reports neither rating. */
@@ -197,6 +203,68 @@ export interface PlaylistFolder {
   children?: LibraryItem[];
 }
 
+/** A record label's catalog page: its latest and top releases. */
+export interface RecordLabel {
+  id: MusicId;
+  name: string;
+  /** Plain-text description; Apple's HTML tags are removed. */
+  description?: string;
+  artwork?: Artwork;
+  latestReleases: Album[];
+  topReleases: Album[];
+}
+
+/** An Apple Music activity and the playlists it lists (at most 10). */
+export interface Activity {
+  id: MusicId;
+  name: string;
+  artwork?: Artwork;
+  playlists: Playlist[];
+}
+
+/** Apple Music Replay for the latest year. An empty shelf is an empty list. */
+export interface ReplaySummary {
+  /** The year Apple reports; absent when Apple leaves it out. */
+  year?: string;
+  topSongs: Track[];
+  topAlbums: Album[];
+  topArtists: Artist[];
+}
+
+/** One record label or activity result in catalog search. */
+export interface SearchNamedItem {
+  id: MusicId;
+  name: string;
+  artwork?: Artwork;
+}
+
+export type SearchRecordLabel = SearchNamedItem;
+export type SearchActivity = SearchNamedItem;
+
+/**
+ * Get Info for one catalog song. Every string is plain text. `recordLabelId`
+ * is the album's label, for linking to its label page.
+ */
+export interface SongInfo {
+  /** Catalog song ID the fields belong to. */
+  id: MusicId;
+  title: string;
+  artistName: string;
+  albumTitle?: string;
+  composerName?: string;
+  isrc?: string;
+  genreNames: string[];
+  discNumber?: number;
+  trackNumber?: number;
+  /** `YYYY-MM-DD` (or `YYYY`) from Apple, when known. */
+  releaseDate?: string;
+  contentRating?: "explicit" | "clean";
+  durationMs?: number;
+  copyright?: string;
+  recordLabel?: string;
+  recordLabelId?: MusicId;
+}
+
 export interface PinnedPlaylist {
   id: MusicId;
   source: MusicSource;
@@ -247,6 +315,15 @@ export interface PlaybackState {
   };
   /** Session-only mute. Never persisted; `volume` keeps the unmuted level. */
   muted?: boolean;
+  /** Current MusicKit bitrate in kbps (64 or 256). Never persisted. */
+  bitrate?: number;
+  /**
+   * True while a station plays. Shuffle, repeat, and queue edits are then
+   * unavailable. Not saved with the session.
+   */
+  stationPlaying?: boolean;
+  /** Whether MusicKit has an autoplay station for this queue. Not saved. */
+  autoplayStation?: boolean;
   /** A restored queue waits here until the first play request. */
   pendingRestore?: PendingPlaybackRestore;
   sleepTimer?: SleepTimerState;

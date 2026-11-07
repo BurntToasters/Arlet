@@ -62,12 +62,40 @@ fn apply_mini(window: &WebviewWindow) -> Result<(), String> {
     window.set_always_on_top(true).map_err(stringify)
 }
 
+/// The saved geometry, or the same size centred on the mini window's monitor
+/// when no connected monitor shows enough of it (a monitor disconnected in
+/// mini mode). `window_state::restore` makes the same check at launch.
+fn reachable(window: &WebviewWindow, geometry: WindowState) -> WindowState {
+    let (monitors, scales) = window_state::monitor_rects(window);
+    if window_state::usable_state_scaled(geometry, &monitors, &scales).is_some() {
+        return geometry;
+    }
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return geometry;
+    };
+    let area = monitor.work_area();
+    let width = geometry.width.min(area.size.width);
+    let height = geometry.height.min(area.size.height);
+    WindowState {
+        x: area.position.x + ((area.size.width - width) / 2) as i32,
+        y: area.position.y + ((area.size.height - height) / 2) as i32,
+        width,
+        height,
+        ..geometry
+    }
+}
+
 fn apply_normal(window: &WebviewWindow, geometry: WindowState) -> Result<(), String> {
     window.set_always_on_top(false).map_err(stringify)?;
     if window.is_maximized().unwrap_or(false) {
         window.unmaximize().map_err(stringify)?;
     }
-    apply_normal_geometry(window, geometry)
+    apply_normal_geometry(window, reachable(window, geometry))
 }
 
 /// Restores geometry after a renderer failure. Mini entry always unmaximizes

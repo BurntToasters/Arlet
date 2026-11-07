@@ -3,6 +3,7 @@ import {
   Minimize,
   Radio,
   Repeat,
+  Repeat1,
   Shuffle,
   Star,
   ThumbsDown,
@@ -112,6 +113,8 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
   const disliked = rating === -1;
   const shuffling = playback.shuffleMode === "songs";
   const repeating = playback.repeatMode !== "off";
+  // Apple Music locks Shuffle and Repeat while an autoplay song plays.
+  const autoplaying = playback.queue[playback.queueIndex]?.autoplay === true;
   const live = useLiveMetadata();
   const liveText = current?.isLive
     ? liveSubtitle(live, current.title)
@@ -391,6 +394,7 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
                   <IconButton
                     icon={Shuffle}
                     label="Toggle shuffle"
+                    disabled={autoplaying}
                     pressed={shuffling}
                     className={shuffling ? "is-active" : ""}
                     onClick={() =>
@@ -402,8 +406,9 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
                 ) : null}
                 {playback.modeCapabilities?.repeat ? (
                   <IconButton
-                    icon={Repeat}
+                    icon={playback.repeatMode === "one" ? Repeat1 : Repeat}
                     label={`Repeat ${playback.repeatMode ?? "off"}`}
+                    disabled={autoplaying}
                     pressed={repeating}
                     className={repeating ? "is-active" : ""}
                     onClick={() => run(() => controller.cycleRepeatMode())}

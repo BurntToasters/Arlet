@@ -27,11 +27,21 @@
   recently played, artists, albums, songs, and playlists with folders, cached
   for a fast start.
 - **Home and Browse:** recently played playlists, heavy rotation, personal
-  recommendations, Apple Music charts, and radio stations.
-- **Search** the full Apple Music catalog or just your library.
-- **Playlists:** create playlists and folders, add songs, and pin favorites to
-  the sidebar.
-- **Queue control:** play now, play next, play later, shuffle, and repeat.
+  recommendations, Replay shelves with your top songs, albums, and artists,
+  Apple Music charts, and radio stations.
+- **Search** the full Apple Music catalog or just your library, including
+  record labels and activities.
+- **Playlists:** create playlists and folders (a new one can go inside a
+  folder), add songs, and pin favorites to the sidebar.
+- **Queue control:** play now, play next, play later, and Repeat One or All.
+  Shuffle covers the whole collection. Autoplay songs show under their own
+  heading with an on/off toggle.
+- **Song details and labels:** Get Info for a song, and record label pages
+  from album pages.
+- **Audio quality:** High (256 kbps, the default), Standard (64 kbps), or
+  Automatic. Settings shows the rate you are streaming at.
+- **Previews:** without an Apple Music subscription, Arlet plays previews and
+  shows a Previews only notice with a Subscribe button for Apple's page.
 - **Built for Windows:** media keys and the Windows media overlay, light and
   dark themes, and Mica or Acrylic window materials.
 - **Automatic, signed updates** on a stable or beta channel. Installers are
@@ -93,6 +103,9 @@
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): code layout and data flow.
 - [docs/SECURITY.md](docs/SECURITY.md): capabilities, tokens, logging.
+- [docs/MUSICKIT_FEATURE_COVERAGE.md](docs/MUSICKIT_FEATURE_COVERAGE.md): what
+  Arlet supports from MusicKit and the Apple Music API, what it leaves out, and
+  what Apple's public API cannot do.
 - [docs/RELEASE.md](docs/RELEASE.md): release machine setup and flow.
 - [docs/TESTING.md](docs/TESTING.md): test boundaries and E2E.
 

@@ -15,6 +15,11 @@ const PLAYLIST_IDS = [
   "song-f",
 ];
 const q = (value) => JSON.stringify(value);
+const sameIds = (actual, expected) =>
+  JSON.stringify(actual ?? []) === JSON.stringify(expected);
+/** The same songs in any order: a shuffled queue holds the same IDs. */
+const sameSet = (actual, expected) =>
+  sameIds([...(actual ?? [])].sort(), [...expected].sort());
 const waitFor = (page, expression, timeoutMs = 15000) =>
   pollFor(page, expression, timeoutMs, 50);
 
@@ -331,7 +336,7 @@ async function installHeldQueueEdit(page, key) {
       q(key) +
       "] = { held: false, rejected: false, heldOptions: null, replacements: [], postReject: [], originalSetQueue: original };",
     "  music.setQueue = async (options) => {",
-    "    const call = { ids: idsFromOptions(options), startWith: options?.startWith, shuffle: music.player.shuffle === true };",
+    "    const call = { ids: idsFromOptions(options), startWith: options?.startWith, shuffle: music.shuffleMode === window.MusicKit.PlayerShuffleMode.songs };",
     "    if (!audit.held) {",
     "      audit.held = true;",
     "      audit.heldOptions = call;",
@@ -455,8 +460,10 @@ async function shuffleRebuild(page, check, turnOff) {
     replacementBeforeReject.replacements.some(
       (call) => JSON.stringify(call.ids) === JSON.stringify(ALBUM_IDS),
     );
-  const replacementQueueIsWholeAlbum =
-    JSON.stringify(beforeReject.queueIds) === JSON.stringify(ALBUM_IDS);
+  const replacementQueueIsWholeAlbum = sameSet(
+    beforeReject.queueIds,
+    ALBUM_IDS,
+  );
   const observation = {
     initial: initial.state,
     installed,
@@ -480,7 +487,7 @@ async function shuffleRebuild(page, check, turnOff) {
     newerPlay.accepted &&
     beforeReject.title === "Album Track C" &&
     beforeReject.activeId === "album-c" &&
-    beforeReject.queueIndex === 2 &&
+    beforeReject.queueIds[beforeReject.queueIndex] === "album-c" &&
     replacementQueueIsWholeAlbum &&
     replacementOptionsContainWholeAlbum;
   const finalMode = turnOff ? !afterReject.shuffle : afterReject.shuffle;
@@ -498,15 +505,11 @@ async function shuffleRebuild(page, check, turnOff) {
       rebuildTierEnabled: beforeEdit.queueEdit?.native === false,
       editWasHeld: installed && heldEdit.held,
       editTemporarilyDisabledShuffle: duringEdit.shuffle === false,
+      // With shuffle on, the edit writes the order the drawer shows, so the
+      // expected edit is that displayed order without the row-3 song.
       oldEditHadExpectedRemoval:
         JSON.stringify(heldEdit.heldOptions?.ids) ===
-        JSON.stringify([
-          "song-a",
-          "song-duplicate",
-          "song-c",
-          "song-e",
-          "song-f",
-        ]),
+        JSON.stringify(beforeEdit.queueIds.filter((_id, index) => index !== 3)),
       newerAlbumTrackCPlayOwnsWholeQueue: replacementOwnsQueue,
       explicitUserOffWasAccepted: explicitOffAccepted,
       explicitUserOffReachedProvider: !turnOff || modeOffBeforeReject,
@@ -516,8 +519,15 @@ async function shuffleRebuild(page, check, turnOff) {
       heldAfterReject.postReject.length === 0 &&
       afterReject.title === "Album Track C" &&
       afterReject.activeId === "album-c" &&
-      afterReject.queueIndex === 2 &&
-      JSON.stringify(afterReject.queueIds) === JSON.stringify(ALBUM_IDS),
+      afterReject.queueIds[afterReject.queueIndex] === "album-c" &&
+      // The older rejected edit leaves the newer Play's queue as it was.
+      sameIds(afterReject.queueIds, beforeFailure.queueIds) &&
+      afterReject.queueIndex === beforeFailure.queueIndex &&
+      sameSet(afterReject.queueIds, ALBUM_IDS) &&
+      // An explicit Shuffle off returns the album to its own order.
+      (!turnOff ||
+        (sameIds(afterReject.queueIds, ALBUM_IDS) &&
+          afterReject.queueIndex === 2)),
     observation,
   );
   return observation;

@@ -9,11 +9,14 @@ library cache (fixed Rust commands, no SQL), settings, pins, the saved
 playback session (fixed load/save/delete commands, size- and item-capped),
 logging, window effects, the Windows media session, opening the diagnostic
 window, and full-screen toggling for Now Playing (`core:window:allow-set-fullscreen`
-and `core:window:allow-is-fullscreen`). Browser opening is limited to two fixed
-commands: `open_support_page` (no arguments, `https://rosie.run/support`) and
-`open_about_link`, which accepts only `project`, `release_notes`, or `license`
-and builds its GitHub URL in Rust, so web content cannot choose a URL. Both go
-through `open_in_default_browser`. There is no `shell`, `dialog`,
+and `core:window:allow-is-fullscreen`). Browser opening is limited to one fixed
+command and two validated links: `open_support_page` (no arguments,
+`https://rosie.run/support`), `open_about_link`, which accepts only
+`project`, `release_notes`, or `license` and builds its GitHub URL in
+Rust, so web content cannot choose a URL, and `open_subscribe_link`. All three
+go through `open_in_default_browser`. `open_subscribe_link` takes one URL, the
+MusicKit subscription deeplink, and is the only command that opens a page
+chosen by the webview; its rules are below. There is no `shell`, `dialog`,
 `notification`, `process`, or `global-shortcut` plugin, no arbitrary command
 execution, and remote Apple origins get no filesystem/shell/updater access.
 
@@ -156,6 +159,17 @@ any disk or OS call:
 - `set_window_fx`: exactly `acrylic`, `mica`, or `solid`.
 - `open_about_link`: exactly `project`, `release_notes`, or `license`; the URL
   is built in Rust.
+- `open_subscribe_link(url)`: `subscribe_link_url` in `src-tauri/src/commands.rs`
+  accepts only a URL that passes all of these: at most 2048 bytes; no spaces or
+  control characters; an `https` scheme (case-insensitive); no `@` (userinfo);
+  no `:` in the authority (so no port, not even `:443`); an ASCII host made of
+  letters, digits, `-`, and `.`; and a host equal to `apple.com` or ending in
+  `.apple.com` after parsing. Host case is folded to lowercase, so an uppercase
+  host is accepted. Trailing-dot hosts (`apple.com.`), non-ASCII
+  hosts, and backslash tricks are refused. A punycode (`xn--`) label is plain
+  ASCII, so it passes only when the host is `apple.com` or a subdomain of it. It opens the normalized URL that was
+  checked, through `open_url_off_ui_thread`. A refusal returns an error string
+  and opens nothing.
 - No argument from the page: `open_support_page`, `open_music_diagnostic`,
   `get_app_info`, `get_developer_token`, `get_beta_updater_target`,
   `get_log_dir`, `clear_logs`, `supports_window_fx`, `reset_settings`,

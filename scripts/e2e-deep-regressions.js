@@ -197,8 +197,8 @@ async function staleQueueSelection(page, check) {
   const initial = await startRow(page, 0, "Track A");
   await page.evaluate(`(() => {
     const instance = window.MusicKit.getInstance();
-    instance.player.changeToMediaAtIndex = undefined;
     instance.changeToMediaAtIndex = undefined;
+    if (typeof instance.changeToMediaAtIndex === "function") throw new Error("changeToMediaAtIndex could not be removed from the MusicKit instance");
     ${QUEUE_IDS_FROM_OPTIONS}
     const original = instance.setQueue.bind(instance);
     const audit = window.__DEEP_QUEUE_SELECTION__ = { held: false, released: false, retries: [] };
@@ -217,8 +217,7 @@ async function staleQueueSelection(page, check) {
   })()`);
   const indexedSelectionMethodsRemoved = await page.evaluate(`return (() => {
     const instance = window.MusicKit.getInstance();
-    return typeof instance.player.changeToMediaAtIndex !== "function" &&
-      typeof instance.changeToMediaAtIndex !== "function";
+    return typeof instance.changeToMediaAtIndex !== "function";
   })()`);
   await required(
     page,

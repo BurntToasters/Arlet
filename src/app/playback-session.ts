@@ -31,6 +31,25 @@ export const SESSION_SAVE_INTERVAL_MS = 30_000;
 
 const utf8Encoder = new TextEncoder();
 
+/**
+ * While a parked queue is being started, state briefly holds only the first
+ * batch. A save then would replace the saved session with that batch if the
+ * Play fails. The hold keeps the file intact until the Play succeeds or its
+ * caller has restored the parked queue.
+ */
+let restoreSaveHolds = 0;
+
+/** Holds session saves; the returned function releases the hold once. */
+export function holdPlaybackSessionSave(): () => void {
+  restoreSaveHolds += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    restoreSaveHolds = Math.max(0, restoreSaveHolds - 1);
+  };
+}
+
 const artworkSchema = z.object({
   url: z.string().check(z.startsWith("https://"), z.maxLength(2048)),
   width: z.number().check(z.nonnegative()),
@@ -345,7 +364,7 @@ export function createPlaybackSession(
   let chain: Promise<void> = Promise.resolve();
   let saveTimer: ReturnType<typeof setTimeout> | undefined;
   let lastSaveAt = Number.NEGATIVE_INFINITY;
-  let resuming: Promise<void> | undefined;
+  let resuming: Promise<boolean> | undefined;
   let observed = {
     queue: getState().playback.queue,
     index: getState().playback.queueIndex,
@@ -380,7 +399,8 @@ export function createPlaybackSession(
   };
 
   const persist = (): void => {
-    if (!canSave()) return;
+    // A resume's provisional batch must not overwrite the parked queue.
+    if (restoreSaveHolds > 0 || !canSave()) return;
     const { playback } = getState();
     const savedAt = now();
     const full = dependencies.fullQueue?.() ?? {
@@ -525,17 +545,19 @@ export function createPlaybackSession(
       });
   };
 
-  const resumeRestoredQueue = async (): Promise<void> => {
+  const resumeRestoredQueue = async (): Promise<boolean> => {
     const { playback } = getState();
     const pending = playback.pendingRestore;
-    if (!pending) return;
+    if (!pending) return false;
     // A handoff may still be stopping MusicKit. Capture ownership before
     // waiting so a newer play or account clear can supersede this resume.
     const resumeGeneration = generation;
     const resumeIntent = dependencies.playIntent?.();
     const resumePauseCount = dependencies.pauseCount?.();
     const queueVersion = accountDataReadVersion("queue");
-    let startedRestore = false;
+    // Only a resume that actually reached the provider consumes its parked
+    // queue; a failed one leaves it parked for the next Play.
+    let handled = false;
     const isCurrentResume = (): boolean =>
       generation === resumeGeneration &&
       getState().playback.pendingRestore === pending &&
@@ -545,21 +567,34 @@ export function createPlaybackSession(
         dependencies.pauseCount?.() === resumePauseCount) &&
       queueVersion !== undefined &&
       isAccountDataReadCurrent("queue", queueVersion);
+    /**
+     * A pause, a newer play, or an account change owns the press now. Its
+     * caller must not follow up with a normal Play.
+     */
+    const abandoned = (): boolean =>
+      generation !== resumeGeneration ||
+      (resumeIntent !== undefined &&
+        dependencies.playIntent?.() !== resumeIntent) ||
+      (resumePauseCount !== undefined &&
+        dependencies.pauseCount?.() !== resumePauseCount) ||
+      queueVersion === undefined ||
+      !isAccountDataReadCurrent("queue", queueVersion);
     try {
-      if (!isCurrentResume()) return;
+      // The parked queue was still current when resumePendingRestore checked
+      // it; only a fenced account can make the first check fail here.
+      if (!isCurrentResume()) return true;
       await dependencies.beforeResume?.();
       // A newer play may have started while the old provider stop settled.
       // Drop this resume before it can change the provider queue or seek.
-      if (!isCurrentResume()) return;
-      if (pending?.station && dependencies.playStation) {
+      if (!isCurrentResume()) return abandoned();
+      if (pending.station && dependencies.playStation) {
         // A station has no fixed songs or position to return to.
-        startedRestore = true;
         await dependencies.playStation(pending.station);
-        return;
+        handled = true;
+        return true;
       }
       // A parked queue keeps its saved order, so played songs never return.
       const current = getState().playback;
-      startedRestore = true;
       const played = dependencies.playTracks(
         current.queue,
         current.queueIndex,
@@ -568,6 +603,7 @@ export function createPlaybackSession(
       // playTracks registers its request before its first await.
       const intent = dependencies.playIntent?.();
       await played;
+      handled = true;
       const stillCurrent =
         generation === resumeGeneration &&
         getState().playback.pendingRestore === undefined &&
@@ -583,11 +619,11 @@ export function createPlaybackSession(
           );
         }
       }
+      return true;
     } finally {
-      // Cleared even on failure, so a stale restore cannot retry forever.
-      // A resume dropped before provider setup leaves its parked queue intact;
-      // an attempted resume only clears the exact restore it started with.
-      if (startedRestore && getState().playback.pendingRestore === pending) {
+      // A completed resume consumes the exact restore it started with. A
+      // failed one was restored by playTracks, so another Play can retry it.
+      if (handled && getState().playback.pendingRestore === pending) {
         setPendingRestore(undefined);
       }
     }
@@ -640,18 +676,29 @@ export function createPlaybackSession(
     isResuming: (): boolean => resuming !== undefined,
 
     resumePendingRestore(): Promise<boolean> {
-      // A second press while the first resume is running waits for it.
-      if (resuming) return resuming.then(() => true);
+      // A second press while the first resume is running waits for it, and
+      // gets the same answer: false when nothing was started.
+      if (resuming) return resuming;
       const { playback } = getState();
       if (!playback.pendingRestore) return Promise.resolve(false);
       if (playback.queue.length === 0) {
         setPendingRestore(undefined);
         return Promise.resolve(false);
       }
-      resuming = resumeRestoredQueue().finally(() => {
-        resuming = undefined;
+      const startResume = (): Promise<boolean> => {
+        resuming = resumeRestoredQueue().finally(() => {
+          resuming = undefined;
+        });
+        return resuming;
+      };
+      return startResume().then((handled) => {
+        if (handled) return true;
+        // The restore changed while the resume waited (a seek moved its
+        // position). The parked queue is still there, so this press starts
+        // the current one, as a fresh press would.
+        if (!getState().playback.pendingRestore) return false;
+        return startResume();
       });
-      return resuming.then(() => true);
     },
 
     async saveNow(): Promise<void> {

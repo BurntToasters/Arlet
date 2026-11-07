@@ -113,6 +113,22 @@ function copyForRoute(
         description: `Playlist ${route.id} is ready for a catalog detail view.`,
         icon: ListMusic,
       };
+    case "label":
+      // RouteView renders RecordLabelView; this copy only keeps the switch exhaustive.
+      return {
+        eyebrow: "Record label",
+        title: "Record label",
+        description: `Record label ${route.id} opens from its own page.`,
+        icon: Disc3,
+      };
+    case "activity":
+      // RouteView renders ActivityView; this copy only keeps the switch exhaustive.
+      return {
+        eyebrow: "Activity",
+        title: "Activity",
+        description: `Activity ${route.id} opens from its own page.`,
+        icon: ListMusic,
+      };
     case "curator":
       // RouteView renders CuratorView; this copy only keeps the switch exhaustive.
       return {

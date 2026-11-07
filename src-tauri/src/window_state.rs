@@ -114,7 +114,8 @@ pub fn remove_saved_state(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn monitor_rects(window: &WebviewWindow) -> (Vec<Rect>, Vec<f64>) {
+/// Each connected monitor's work area and scale factor.
+pub fn monitor_rects(window: &WebviewWindow) -> (Vec<Rect>, Vec<f64>) {
     window
         .available_monitors()
         .unwrap_or_default()

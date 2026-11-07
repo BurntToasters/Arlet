@@ -4,6 +4,9 @@ import type {
   Artist,
   Artwork,
   Playlist,
+  SearchActivity,
+  SearchNamedItem,
+  SearchRecordLabel,
   Station,
   Track,
 } from "../domain/music.ts";
@@ -21,18 +24,29 @@ import {
   type AppleMusicResource,
 } from "./normalize.ts";
 
-/** Catalog result groups in display order. */
-export const SEARCH_GROUP_KINDS: readonly SearchGroupKind[] = [
+/** Catalog result groups that have a "See all" page, in display order. */
+export const SEARCH_GROUP_KINDS = [
   "songs",
   "albums",
   "artists",
   "playlists",
   "stations",
   "curators",
-];
+] as const;
+
+export type PagedSearchGroupKind = (typeof SEARCH_GROUP_KINDS)[number];
+
+/**
+ * Overview-only groups: record labels and activities appear on the first page
+ * of results and have no "See all" page yet.
+ */
+export const SEARCH_OVERVIEW_GROUP_KINDS = [
+  "record-labels",
+  "activities",
+] as const;
 
 export type SearchGroupKind =
-  "songs" | "albums" | "artists" | "playlists" | "stations" | "curators";
+  PagedSearchGroupKind | (typeof SEARCH_OVERVIEW_GROUP_KINDS)[number];
 
 /** Apple type behind each group. Curators are Apple's editorial curators. */
 const GROUP_APPLE_TYPES: Record<SearchGroupKind, string> = {
@@ -42,12 +56,15 @@ const GROUP_APPLE_TYPES: Record<SearchGroupKind, string> = {
   playlists: "playlists",
   stations: "stations",
   curators: "apple-curators",
+  "record-labels": "record-labels",
+  activities: "activities",
 };
 
 /** Music videos are left out: playback is not supported for them. */
-const SEARCH_TYPES = SEARCH_GROUP_KINDS.map(
-  (kind) => GROUP_APPLE_TYPES[kind],
-).join(",");
+const SEARCH_TYPES = [
+  ...SEARCH_GROUP_KINDS.map((kind) => GROUP_APPLE_TYPES[kind]),
+  ...SEARCH_OVERVIEW_GROUP_KINDS.map((kind) => GROUP_APPLE_TYPES[kind]),
+].join(",");
 
 /** First-page size for the overview; "See all" pages use the larger size. */
 export const SEARCH_OVERVIEW_LIMIT = 10;
@@ -68,7 +85,9 @@ export type SearchItem =
   | { kind: "artists"; artist: Artist }
   | { kind: "playlists"; playlist: Playlist }
   | { kind: "stations"; station: Station }
-  | { kind: "curators"; curator: SearchCurator };
+  | { kind: "curators"; curator: SearchCurator }
+  | { kind: "record-labels"; recordLabel: SearchRecordLabel }
+  | { kind: "activities"; activity: SearchActivity };
 
 /** A typeahead row: a term to search for, or a result to open. */
 export type SearchSuggestion =
@@ -82,7 +101,9 @@ export type SearchPage =
   | { kind: "artists"; items: Artist[]; count: number }
   | { kind: "playlists"; items: Playlist[]; count: number }
   | { kind: "stations"; items: Station[]; count: number }
-  | { kind: "curators"; items: SearchCurator[]; count: number };
+  | { kind: "curators"; items: SearchCurator[]; count: number }
+  | { kind: "record-labels"; items: SearchRecordLabel[]; count: number }
+  | { kind: "activities"; items: SearchActivity[]; count: number };
 
 export interface CatalogSearchResult {
   songs: Track[];
@@ -91,8 +112,11 @@ export interface CatalogSearchResult {
   playlists: Playlist[];
   stations: Station[];
   curators: SearchCurator[];
-  /** Raw Apple item count per group; a full page means more may follow. */
-  counts: Record<SearchGroupKind, number>;
+  /** Overview-only groups; callers that build an empty result may leave them out. */
+  recordLabels?: SearchRecordLabel[];
+  activities?: SearchActivity[];
+  /** Raw Apple item count per paged group; a full page means more may follow. */
+  counts: Record<PagedSearchGroupKind, number>;
   top?: SearchItem;
 }
 
@@ -119,6 +143,19 @@ function normalizeList<T>(
 function normalizeCurator(
   resource: AppleMusicResource,
 ): SearchCurator | undefined {
+  const record = asRecord(resource);
+  const attributes = asRecord(record?.attributes);
+  const id = typeof record?.id === "string" ? record.id : "";
+  const name =
+    typeof attributes?.name === "string" ? attributes.name.trim() : "";
+  if (!id || !name) return undefined;
+  return { id, name, artwork: artworkFromUnknown(attributes?.artwork, 300) };
+}
+
+/** Id, name, and artwork of a record label or activity; no name, no item. */
+function normalizeNamedResource(
+  resource: AppleMusicResource,
+): SearchNamedItem | undefined {
   const record = asRecord(resource);
   const attributes = asRecord(record?.attributes);
   const id = typeof record?.id === "string" ? record.id : "";
@@ -157,6 +194,14 @@ export function searchItemFromResource(
     case "curators": {
       const curator = normalizeCurator(resource);
       return curator ? { kind: "curators", curator } : undefined;
+    }
+    case "record-labels": {
+      const recordLabel = normalizeNamedResource(resource);
+      return recordLabel ? { kind: "record-labels", recordLabel } : undefined;
+    }
+    case "activities": {
+      const activity = normalizeNamedResource(resource);
+      return activity ? { kind: "activities", activity } : undefined;
     }
     default:
       return undefined;
@@ -200,6 +245,8 @@ export async function searchCatalog(
       playlists: [],
       stations: [],
       curators: [],
+      recordLabels: [],
+      activities: [],
       counts: {
         songs: 0,
         albums: 0,
@@ -234,6 +281,14 @@ export async function searchCatalog(
     playlists: normalizeList(playlists, normalizePlaylistResource),
     stations: normalizeList(stations, normalizeStation),
     curators: normalizeList(curators, normalizeCurator),
+    recordLabels: normalizeList(
+      resourcesAt(results, "record-labels"),
+      normalizeNamedResource,
+    ),
+    activities: normalizeList(
+      resourcesAt(results, "activities"),
+      normalizeNamedResource,
+    ),
     counts: {
       songs: songs.length,
       albums: albums.length,
@@ -299,6 +354,18 @@ export async function searchCatalogPage(
       return { kind, items: normalizeList(resources, normalizeStation), count };
     case "curators":
       return { kind, items: normalizeList(resources, normalizeCurator), count };
+    case "record-labels":
+      return {
+        kind,
+        items: normalizeList(resources, normalizeNamedResource),
+        count,
+      };
+    case "activities":
+      return {
+        kind,
+        items: normalizeList(resources, normalizeNamedResource),
+        count,
+      };
   }
 }
 

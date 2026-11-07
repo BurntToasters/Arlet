@@ -5,12 +5,16 @@ import {
 } from "../musickit/errors.ts";
 import {
   changeToMediaAtIndex,
+  holdProviderShuffleOff,
+  isProviderShuffleHeldOff,
   queueDescriptorsForTracks,
   queueOptionsForTracks,
   preparePlaybackModesForPlay,
   readMusicKitQueue,
   readPlaybackModes,
+  syncMusicKitQueue,
 } from "../musickit/player.ts";
+import { labelOccurrences } from "../musickit/queue-edit.ts";
 import { isSameTrack, type Track } from "../domain/music.ts";
 import { normalizeTrack } from "../musickit/normalize.ts";
 import {
@@ -33,11 +37,16 @@ import {
   setPlaybackError,
   setPlaybackPosition,
   setPlaybackStatus,
+  setPendingRestore,
   setQueue,
+  setQueueRest,
+  setQueueSnapshot,
   subscribe,
 } from "../state.ts";
 import { errorMessage, safeErrorMessage } from "./controller-support.ts";
+import { holdPlaybackSessionSave } from "./playback-session.ts";
 import type { PlaybackContext } from "./playback.ts";
+import { beginQueueSetup } from "./queue-setup.ts";
 import type { QueueContinuation } from "./queue-continuation.ts";
 
 /** A Play that is not audible by then is not timed. */
@@ -74,14 +83,24 @@ export function createPlayRequests(context: PlaybackContext) {
     suspectSession?.(error);
   };
 
-  /** One play request. `current` gates state writes; `mayStart` gates audio. */
-  const beginPlayRequest = (instance?: MusicKit.MusicKitInstance) => {
+  /**
+   * One play request. `current` gates state writes; `mayStart` gates audio.
+   *
+   * A `selection` moves within the queue MusicKit already holds. It keeps the
+   * station and the shuffle hold: writing shuffle on would make MusicKit
+   * reshuffle the queue just before the chosen position is selected.
+   */
+  const beginPlayRequest = (
+    instance?: MusicKit.MusicKitInstance,
+    options: { selection?: boolean } = {},
+  ) => {
     const intent = ++session.playIntent;
-    // Any new play replaces a station; playStation sets it again after this.
-    session.station = undefined;
-    const shuffleReady = preparePlaybackModesForPlay(
-      instance ?? requireMusic(),
-    );
+    let shuffleReady = true;
+    if (!options.selection) {
+      // Any new play replaces a station; playStation sets it again after this.
+      session.station = undefined;
+      shuffleReady = preparePlaybackModesForPlay(instance ?? requireMusic());
+    }
     const pauses = session.pauseCount;
     return {
       current: (): boolean => intent === session.playIntent,
@@ -133,7 +152,11 @@ export function createPlayTracks(
     const chosen = queue[startIndex];
     const provider = readMusicKitQueue(instance);
     if (!provider) return startIndex;
-    const shuffled = readPlaybackModes(instance).shuffleMode === "songs";
+    // A keep-order lease holds MusicKit's shuffle off, so its order is the
+    // saved order even though the UI reports shuffle on.
+    const shuffled =
+      readPlaybackModes(instance).shuffleMode === "songs" &&
+      !isProviderShuffleHeldOff(instance);
     const matches: number[] = [];
     provider.items.forEach((item, index) => {
       if (isSameTrack(normalizeTrack(item), chosen)) matches.push(index);
@@ -222,6 +245,27 @@ export function createPlayTracks(
     );
     let batch = split.batch;
     let rest = split.rest;
+    const playbackBefore = getState().playback;
+    // A parked queue is replaced by the first batch below. Keep everything a
+    // failed Play must put back so the restore survives offline/5xx failures.
+    const parked = playbackBefore.pendingRestore
+      ? {
+          restore: playbackBefore.pendingRestore,
+          queue: [...playbackBefore.queue],
+          queueIndex: playbackBefore.queueIndex,
+          positionSeconds: playbackBefore.positionSeconds,
+          durationSeconds: playbackBefore.durationSeconds,
+          rest: [...session.queueRest],
+          restAnchor: session.restAnchor,
+        }
+      : undefined;
+    // The collection a failed Play puts back with the parked queue.
+    const parkedCollection = {
+      collection: session.collection,
+      intact: session.collectionIntact,
+      occurrences: session.occurrences,
+    };
+    const releaseSave = parked ? holdPlaybackSessionSave() : undefined;
     clearContinuation();
     const generation = session.restGeneration;
     const setProviderQueue = async (
@@ -238,13 +282,30 @@ export function createPlayTracks(
       );
     }
     clearPlaybackError();
-    let batchStart = split.startIndex;
-    setQueue([...batch], batchStart);
-    // The previous song's position would otherwise show until MusicKit's
-    // first time event, and Previous would read it as past the restart point.
-    setPlaybackPosition(0, (batch[batchStart]?.durationMs ?? 0) / 1000);
-    setPlaybackStatus("loading");
+    // Inserts wait on this while the Play replaces the provider queue, so they
+    // plan against the new queue instead of the one being replaced.
+    const releaseQueueSetup = beginQueueSetup(session);
     try {
+      // Live MusicKit reshuffles the whole queue on every setQueue while its
+      // shuffle is on, which would undo a resume's saved order. With keepOrder
+      // and shuffle on, hold MusicKit's shuffle off for this queue; the UI
+      // still reports shuffle on. This runs after beginPlayRequest, which
+      // lifts any earlier hold, and before the first setQueue.
+      if (options.keepOrder && shuffled && !holdProviderShuffleOff(instance)) {
+        log(
+          "Shuffle could not be held off; the saved order may be reshuffled.",
+        );
+      }
+      let batchStart = split.startIndex;
+      setQueue([...batch], batchStart);
+      // A Play starts a new collection: the whole list in the order it came.
+      session.collection = [...requestedTracks];
+      session.collectionIntact = true;
+      session.occurrences = [];
+      // The previous song's position would otherwise show until MusicKit's
+      // first time event, and Previous would read it as past the restart point.
+      setPlaybackPosition(0, (batch[batchStart]?.durationMs ?? 0) / 1000);
+      setPlaybackStatus("loading");
       // MusicKit's queue starts at the chosen song, so it never prepares a
       // different item first. A batch with no playable song moves on to the
       // next one rather than failing a Play that later songs could satisfy.
@@ -382,6 +443,19 @@ export function createPlayTracks(
         await startAudio(instance, request);
       }
       step(retriedById ? "play() after ID retry" : "play()");
+      // Labels the chosen song's collection index on the queue MusicKit now
+      // holds, after its own shuffle, so a duplicate names the copy playing.
+      if (request.current()) {
+        syncMusicKitQueue(instance);
+        const now = getState().playback;
+        session.occurrences = labelOccurrences(
+          session.collection,
+          now.queue,
+          now.queueIndex,
+          [],
+          requestedStart,
+        );
+      }
       if (generation === session.restGeneration) {
         setRest(rest, queue.at(-1));
         // The first batch is under the refill threshold; append the next
@@ -397,8 +471,25 @@ export function createPlayTracks(
     } catch (error) {
       // A superseded or signed-out play reports nothing.
       if (!request.current()) return undefined;
+      if (parked) {
+        // The provider never accepted this Play. Put the parked queue back
+        // with its index and position instead of leaving the first batch.
+        setQueueSnapshot(parked.queue, parked.queueIndex, false);
+        session.queueRest = parked.rest;
+        session.restAnchor = parked.restAnchor;
+        session.collection = parkedCollection.collection;
+        session.collectionIntact = parkedCollection.intact;
+        session.occurrences = parkedCollection.occurrences;
+        setQueueRest(parked.rest.length);
+        setPendingRestore(parked.restore);
+        setPlaybackPosition(parked.positionSeconds, parked.durationSeconds);
+        setPlaybackStatus("paused");
+      }
       reportPlayFailure("Play failed", error);
       throw error;
+    } finally {
+      releaseSave?.();
+      releaseQueueSetup();
     }
   };
 

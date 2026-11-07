@@ -813,6 +813,10 @@ export function LibraryView({
   const [viewStates, setViewStates] = useState<
     Partial<Record<LibrarySection, LibraryViewState>>
   >({});
+  // Keys whose last favorites lookup failed; they stop the filter waiting.
+  const [ratingFailures, setRatingFailures] = useState<
+    Partial<Record<LibrarySection, ReadonlySet<string>>>
+  >({});
   const ratings = useAppSelector((store) => store.ratings);
   const copy = SECTION_COPY[section];
   const capabilities = libraryViewCapabilities(section);
@@ -858,6 +862,7 @@ export function LibraryView({
     (resource) => !resource.isFolder,
   ).length;
   const totalCount = resources.filter((resource) => !resource.isFolder).length;
+  const failedRatings = ratingFailures[section];
   const favoritesPending =
     favoritesOn &&
     canAutoLoad &&
@@ -865,8 +870,14 @@ export function LibraryView({
       const key = resource.isFolder
         ? undefined
         : ratingKeyFor(resource, section);
-      return key !== undefined && ratings[key] === undefined;
+      return (
+        key !== undefined &&
+        ratings[key] === undefined &&
+        !failedRatings?.has(key)
+      );
     });
+  const favoritesFailed =
+    favoritesOn && canAutoLoad && Boolean(failedRatings?.size);
   const loadingAll =
     controlsActive &&
     canAutoLoad &&
@@ -882,7 +893,9 @@ export function LibraryView({
     ? `Loading full library… ${collection.items.length} loaded`
     : favoritesPending
       ? "Checking favorites…"
-      : undefined;
+      : favoritesFailed
+        ? "Could not check favorites"
+        : undefined;
 
   const { recentCards, trackResources } = useMemo(() => {
     if (section !== "recent") {
@@ -945,11 +958,38 @@ export function LibraryView({
   ]);
 
   useEffect(() => {
-    if (!favoritesOn || !canAutoLoad) return;
+    if (!favoritesOn || !canAutoLoad) return undefined;
     const targets = resources
       .filter((resource) => !resource.isFolder)
       .map((resource) => ratingTargetOf(resource, section));
-    if (targets.length) run(() => requestRatings(targets));
+    if (!targets.length) return undefined;
+    const keys = targets
+      .map((target) => ratingKeyOf(target))
+      .filter((key): key is string => key !== undefined);
+    let current = true;
+    // A retry shows the pending state again until it resolves or fails.
+    setRatingFailures((failures) =>
+      failures[section] === undefined
+        ? failures
+        : { ...failures, [section]: undefined },
+    );
+    run(async () => {
+      let failedKeys: readonly string[];
+      try {
+        failedKeys = await requestRatings(targets);
+      } catch {
+        failedKeys = keys;
+      }
+      if (!current) return;
+      const next = new Set(failedKeys);
+      setRatingFailures((failures) => ({
+        ...failures,
+        [section]: next.size ? next : undefined,
+      }));
+    });
+    return () => {
+      current = false;
+    };
   }, [favoritesOn, canAutoLoad, resources, section]);
 
   const patchView = (patch: Partial<LibraryViewState>): void => {

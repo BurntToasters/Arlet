@@ -632,7 +632,7 @@ async function searchResults(page, check) {
     "overview search asks every group with topResults and a limit of 10",
     overviewReady &&
       String(overview?.query?.types) ===
-        "songs,albums,artists,playlists,stations,apple-curators" &&
+        "songs,albums,artists,playlists,stations,apple-curators,record-labels,activities" &&
       String(overview?.query?.limit) === "10",
     { ready: overviewReady, query: overview?.query ?? null },
   );
@@ -920,6 +920,221 @@ async function browseCharts(page, check) {
   await page.evaluate(
     `document.querySelector(".browse-see-all-view .secondary-button")?.click(); return true;`,
   );
+}
+
+const REFRESH_BUTTON = 'button[aria-label="Refresh Browse"]';
+const REFRESH_IDLE = `(() => { const button = document.querySelector(${q(REFRESH_BUTTON)}); return Boolean(button) && !button.disabled && !button.querySelector(".spin"); })()`;
+const REFRESH_SPINNING = `Boolean(document.querySelector(${q(`${REFRESH_BUTTON} .spin`)}))`;
+const TOP_SONGS_SEE_ALL =
+  'section[aria-labelledby="browse-songs-heading"] button[aria-label="See all top songs"]';
+const SEE_ALL_LOAD_MORE = ".browse-see-all-view .browse-see-all-more button";
+const SEE_ALL_ROWS = ".browse-see-all-view .library-track-row";
+
+/** Clicks the first node a selector matches, and reports whether it found one. */
+const clickSelector = (page, selector) =>
+  page.evaluate(
+    `const node = document.querySelector(${q(selector)}); if (!node) return false; node.click(); return true;`,
+  );
+
+/**
+ * Opens Browse and refreshes it, so Top Songs has its first-page cursor, then
+ * opens its See all view. Returns what each step saw.
+ */
+async function openTopSongsSeeAll(page) {
+  await home(page);
+  const ready = await openHash(
+    page,
+    "#/browse",
+    `Boolean(document.querySelector(${q(REFRESH_BUTTON)})) && document.querySelectorAll(${q(`${BROWSE_SONGS} .library-track-row`)}).length > 0`,
+    15_000,
+  );
+  // The chart check leaves Top Songs with no next page, so a refresh is what
+  // gives the shelf its first-page cursor again.
+  const sinceRefresh = await requestCount(page);
+  const refreshed = await clickSelector(page, REFRESH_BUTTON);
+  const reloaded = await waitFor(
+    page,
+    `${FIXTURE}.snapshot().requests.length > ${sinceRefresh} && ${REFRESH_IDLE}`,
+    8000,
+  );
+  const seeAll = await clickSelector(page, TOP_SONGS_SEE_ALL);
+  const open = await waitFor(
+    page,
+    `Boolean(document.querySelector(".browse-see-all-view"))`,
+    8000,
+  );
+  const firstPage = await waitFor(
+    page,
+    `Boolean(document.querySelector(${q(SEE_ALL_LOAD_MORE)}))`,
+    8000,
+  );
+  return { ready, refreshed, reloaded, seeAll, open, firstPage };
+}
+
+/** Closes See all, after the fixture's delays and rejections are cleared. */
+async function leaveSeeAll(page) {
+  await fixtureCall(page, "reset");
+  await page.evaluate(
+    `document.querySelector(".browse-see-all-view .secondary-button")?.click(); return true;`,
+  );
+}
+
+/**
+ * A Browse refresh that fails while a See all page is loading. The page's
+ * response is dropped with the refresh, so the shelf must go back to idle
+ * with its cursor, and Load more appends the rest once.
+ */
+async function browseRefreshFailure(page, check) {
+  await fixtureCall(page, "reset");
+  try {
+    const opened = await openTopSongsSeeAll(page);
+    // The page is held past the refresh below, so its response lands after the
+    // refresh has started and is dropped.
+    await fixtureCall(page, "configure", [
+      { delayPaths: ["offset=20"], delayMs: 4000 },
+    ]);
+    const held = await clickSelector(page, SEE_ALL_LOAD_MORE);
+    const pending = await waitFor(
+      page,
+      `Boolean(document.querySelector(".browse-see-all-view .browse-feedback"))`,
+      4000,
+    );
+    await fixtureCall(page, "configure", [
+      { rejectPaths: ["/v1/catalog/us/charts"] },
+    ]);
+    const failedRefresh = await clickSelector(page, REFRESH_BUTTON);
+    const failed = await waitFor(
+      page,
+      `[...document.querySelectorAll(".library-stale-note")].some((node) => node.textContent.includes("Some charts could not be refreshed"))`,
+      8000,
+    );
+    await fixtureCall(page, "configure", [{ rejectPaths: [], delayPaths: [] }]);
+    const usable = await waitFor(
+      page,
+      `Boolean(document.querySelector(${q(SEE_ALL_LOAD_MORE)})) && !document.querySelector(".browse-see-all-view .browse-feedback")`,
+      8000,
+    );
+    const rowsBeforeMore = (await textOf(page, SEE_ALL_ROWS)).length;
+    const more = await clickSelector(page, SEE_ALL_LOAD_MORE);
+    const appended = await waitFor(
+      page,
+      `document.querySelectorAll(${q(SEE_ALL_ROWS)}).length > ${rowsBeforeMore}`,
+      8000,
+    );
+    const shown = await textOf(page, SEE_ALL_ROWS);
+    check(
+      "a failed Browse refresh during a See all page does not strand Load more; the next page appends once",
+      Object.values(opened).every(Boolean) &&
+        held &&
+        pending &&
+        failedRefresh &&
+        failed &&
+        usable &&
+        rowsBeforeMore === 20 &&
+        more &&
+        appended &&
+        shown.length === 30 &&
+        new Set(shown).size === 30,
+      {
+        opened,
+        held,
+        pending,
+        failedRefresh,
+        failed,
+        usable,
+        rowsBeforeMore,
+        rows: shown.length,
+        unique: new Set(shown).size,
+      },
+    );
+  } finally {
+    await leaveSeeAll(page);
+  }
+}
+
+/**
+ * Load More pressed while a Browse refresh is still running. The shelf must not
+ * follow its old cursor then, so no chart page is requested until the refresh
+ * ends, and the next page appends to the refreshed list once.
+ */
+async function browseRefreshRace(page, check) {
+  await fixtureCall(page, "reset");
+  try {
+    const opened = await openTopSongsSeeAll(page);
+    const shownBefore = (await textOf(page, SEE_ALL_ROWS)).length;
+    // Chart requests are held, so the refresh stays pending while Load more is
+    // pressed.
+    await fixtureCall(page, "configure", [
+      { delayPaths: ["/v1/catalog/us/charts"], delayMs: 4000 },
+    ]);
+    const sinceRefresh = await requestCount(page);
+    const refreshed = await clickSelector(page, REFRESH_BUTTON);
+    const pending = await waitFor(page, REFRESH_SPINNING, 4000);
+    const clicked = await clickSelector(page, SEE_ALL_LOAD_MORE);
+    await sleep(1000);
+    const stillPending = await page.evaluate(`return ${REFRESH_SPINNING};`);
+    const disabledWhilePending = await page.evaluate(
+      `const button = document.querySelector(${q(SEE_ALL_LOAD_MORE)}); return Boolean(button) && button.disabled === true;`,
+    );
+    const pagesWhilePending = sinceOf(await snapshot(page), sinceRefresh)
+      .filter(
+        (item) =>
+          pathOnly(item) === "/v1/catalog/us/charts" &&
+          String(item.path).includes("offset="),
+      )
+      .map((item) => item.path);
+    await fixtureCall(page, "configure", [{ delayPaths: [] }]);
+    const settled = await waitFor(page, REFRESH_IDLE, 8000);
+    const rowsAfterRefresh = (await textOf(page, SEE_ALL_ROWS)).length;
+    const more = await waitFor(
+      page,
+      `(() => { const button = document.querySelector(${q(SEE_ALL_LOAD_MORE)}); return Boolean(button) && !button.disabled; })()`,
+      8000,
+    );
+    const clickedAgain = await clickSelector(page, SEE_ALL_LOAD_MORE);
+    const appended = await waitFor(
+      page,
+      `document.querySelectorAll(${q(SEE_ALL_ROWS)}).length > ${rowsAfterRefresh}`,
+      8000,
+    );
+    const shown = await textOf(page, SEE_ALL_ROWS);
+    check(
+      "Load more during a Browse refresh is disabled until it ends, requests no chart page, and the next page appends once after it",
+      Object.values(opened).every(Boolean) &&
+        shownBefore === 20 &&
+        refreshed &&
+        pending &&
+        clicked &&
+        stillPending &&
+        disabledWhilePending &&
+        pagesWhilePending.length === 0 &&
+        settled &&
+        rowsAfterRefresh === 20 &&
+        more &&
+        clickedAgain &&
+        appended &&
+        shown.length === 30 &&
+        new Set(shown).size === 30,
+      {
+        opened,
+        shownBefore,
+        refreshed,
+        pending,
+        clicked,
+        stillPending,
+        disabledWhilePending,
+        pagesWhilePending,
+        settled,
+        rowsAfterRefresh,
+        more,
+        clickedAgain,
+        rows: shown.length,
+        unique: new Set(shown).size,
+      },
+    );
+  } finally {
+    await leaveSeeAll(page);
+  }
 }
 
 async function radioStations(page, check) {
@@ -1604,6 +1819,12 @@ export async function runDiscovery({ page, check, dataDir }) {
   );
   await group(check, "search results", () => searchResults(page, check));
   await group(check, "browse charts", () => browseCharts(page, check));
+  await group(check, "browse refresh failure", () =>
+    browseRefreshFailure(page, check),
+  );
+  await group(check, "browse refresh race", () =>
+    browseRefreshRace(page, check),
+  );
   await group(check, "radio stations", () => radioStations(page, check));
   await group(check, "live radio text", () => liveText(page, check));
   await group(check, "curator pages", () => curatorPages(page, check));

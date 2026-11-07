@@ -27,7 +27,11 @@ import type {
   LibraryCollectionState,
   LibraryDetailState,
   HomeState,
+  RecordLabelState,
+  ActivityState,
+  SongInfoState,
   AccountSummary,
+  SubscriptionStatus,
   LibraryDetailsState,
   LibraryState,
   UiState,
@@ -45,6 +49,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoCheckUpdates: true,
   updateChannel: "auto",
   volume: 1,
+  audioQuality: "high",
   autoplay: true,
   restoreSession: true,
   trayIcon: true,
@@ -122,6 +127,8 @@ function emptySearchGroups(): SearchResourceGroups {
     playlists: [],
     stations: [],
     curators: [],
+    recordLabels: [],
+    activities: [],
     paging: {},
     status: "idle",
   };
@@ -215,6 +222,7 @@ export function createInitialLibraryState(): LibraryState {
     account: {
       provider: "Apple Music",
       label: "Apple Music account",
+      subscription: "unknown",
     },
     hydrated: false,
     offline: false,
@@ -275,6 +283,9 @@ const initialState: RuntimeAppState = {
   home: createInitialHomeState(),
   browse: createInitialBrowseState(),
   radio: createInitialRadioState(),
+  recordLabel: { status: "idle" },
+  activity: { status: "idle" },
+  songInfo: { status: "idle" },
   ratings: {},
 };
 
@@ -399,6 +410,12 @@ export function setSessionExpired(expired: boolean): void {
       ...(expired ? { sessionExpired: true } : {}),
     },
   });
+}
+
+/** Subscription status from `hasMusicSubscription()`; "unknown" until it answers. */
+export function setAccountSubscription(subscription: SubscriptionStatus): void {
+  if (state.account.subscription === subscription) return;
+  setAccountSummary({ subscription });
 }
 
 export function setAccountSummary(patch: Partial<AccountSummary>): void {
@@ -649,6 +666,40 @@ export function setRadioState(patch: Partial<RadioState>): void {
   update({ ...state, radio: { ...state.radio, ...patch } });
 }
 
+/**
+ * These three slices replace whole rather than merge, so a previous label's
+ * page or song's fields cannot survive into a new request.
+ */
+export function setRecordLabelState(next: RecordLabelState): void {
+  update({
+    ...state,
+    recordLabel: {
+      ...next,
+      error: next.error ? sanitizeRenderableError(next.error) : undefined,
+    },
+  });
+}
+
+export function setActivityState(next: ActivityState): void {
+  update({
+    ...state,
+    activity: {
+      ...next,
+      error: next.error ? sanitizeRenderableError(next.error) : undefined,
+    },
+  });
+}
+
+export function setSongInfoState(next: SongInfoState): void {
+  update({
+    ...state,
+    songInfo: {
+      ...next,
+      error: next.error ? sanitizeRenderableError(next.error) : undefined,
+    },
+  });
+}
+
 /** Recent searches are per account, so they are dropped with the results. */
 export function addRecentSearch(term: string): void {
   const trimmed = normalizeRecentSearch(term);
@@ -699,7 +750,14 @@ export function resetDiscoveryState(): void {
 
 export function setPlaybackModes(
   patch: Partial<
-    Pick<PlaybackState, "shuffleMode" | "repeatMode" | "modeCapabilities">
+    Pick<
+      PlaybackState,
+      | "shuffleMode"
+      | "repeatMode"
+      | "modeCapabilities"
+      | "stationPlaying"
+      | "autoplayStation"
+    >
   >,
 ): void {
   update({ ...state, playback: { ...state.playback, ...patch } });
@@ -844,6 +902,16 @@ export function setVolume(volume: number): void {
   });
 }
 
+/** Records the bitrate MusicKit reports (kbps). Session-only; never persisted. */
+export function setPlaybackBitrate(bitrate: number | undefined): void {
+  const next =
+    bitrate !== undefined && Number.isFinite(bitrate) && bitrate > 0
+      ? bitrate
+      : undefined;
+  if (state.playback.bitrate === next) return;
+  update({ ...state, playback: { ...state.playback, bitrate: next } });
+}
+
 export function setQueue(queue: Track[], queueIndex = 0): void {
   const safeIndex =
     queue.length === 0
@@ -952,7 +1020,7 @@ export function resetState(): void {
   // These describe the MusicKit instance and the app build, not the
   // account. The instance outlives sign-out, so resetting them would leave
   // the volume slider, mode buttons, and token notice out of sync.
-  const { volume, muted, modeCapabilities, shuffleMode, repeatMode } =
+  const { volume, muted, modeCapabilities, shuffleMode, repeatMode, bitrate } =
     state.playback;
   const developerTokenExpiresAt = state.developerTokenExpiresAt;
   const initial = cloneInitialState();
@@ -965,6 +1033,7 @@ export function resetState(): void {
       modeCapabilities,
       shuffleMode,
       repeatMode,
+      bitrate,
     },
     developerTokenExpiresAt,
     settings,

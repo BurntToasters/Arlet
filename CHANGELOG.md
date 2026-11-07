@@ -5,7 +5,7 @@
 
 | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                                          | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
 | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.3/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.3/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.5/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0-beta.5/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -17,15 +17,55 @@
 > Key: https://tuxedo.rosie.run/GPG/BurntToasters_0xF2FBC20F_public.asc.
 >
 > This app is currently unstable. Bugs, issues, and rough edges are expected.
+> The `v0.4.0` betas are very unstable, and `v1.0.0` will be the first stable release.
 
 ### ℹ️ Enjoying Arlet? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
 
+## Changes in `v0.4.0-beta.5:`
+
+- **Ver:** Updated version to `v0.4.0-beta.5`.
+- **Fix:** Repeat One and Repeat All were swapped. Repeat One now shows a Repeat-1 icon, and with Repeat One on, Next and Previous move between songs.
+- **Fix:** Shuffle covers the whole album or playlist, including the songs before the one you started, as in Apple Music. Turning shuffle off returns to the album or playlist order after the current song, including playlists with the same song twice.
+- **Fix:** Resumed queues and queue edits are no longer reshuffled, and choosing a song in Playing Next with shuffle on plays that song in the order you see.
+- **Fix:** Choosing a song to play next no longer flashes the player or the Windows media controls.
+- **UI:** On stations, Shuffle and Repeat are hidden, and Play Next, Play Later, and Clear explain why they're unavailable.
+- **NEW - Autoplay:** Autoplay songs show under their own `Autoplay` heading with an on/off toggle. Play Later goes before them, and Clear keeps them. Turning Repeat on turns them off. They're never saved into your queue, a playlist, or a handoff.
+- **NEW - Audio quality:** A new setting with High (256 kbps, the default), Standard (64 kbps), and Automatic. It applies from the next song, and Settings shows the current streaming bitrate.
+- **UI:** Without an Apple Music subscription, Arlet shows a `Previews only` notice with a Subscribe button that opens Apple's page.
+- **NEW - Replay:** Home has Replay shelves.
+- **NEW - Record labels:** Record label pages, linked from albums, and Record Labels results in Search.
+- **NEW - Activities:** Activity pages, and Activities results in Search.
+- **NEW - Get Info:** A Get Info dialog for songs.
+- **NEW - Folder choice:** When creating a playlist or folder, you can choose a folder for it.
+- **Docs:** Added a MusicKit feature coverage document. It lists what Arlet supports, what it leaves out on purpose (such as lyrics, music videos, Lossless, and Atmos), and what Apple's public API doesn't allow.
+- **Carry-forward:** Everything in `v0.4.0-beta.4` is still included below.
+
+## Changes in `v0.4.0-beta.4:`
+
+- **Ver:** Updated version to `v0.4.0-beta.4`.
+- **Fix:** Queue edits now serialize per queue instead of racing: two quick Move up/down clicks apply in order on runtimes without MusicKit's `Queue.splice`; a watchdog abandons an edit that hangs more than 20 s and reloads the queue.
+- **Fix:** Save as playlist sends the queue in batches: one create carries the first 100 tracks, then sequential adds of up to 100. If a batch fails, the playlist keeps the saved songs and the dialog reports how many were saved versus how many could not be added.
+- **Fix:** A Play whose queue setup fails no longer discards a restored (parked) queue: the drawer keeps all songs, the saved position, and the saved session file; retrying Play starts the same queue.
+- **Fix:** A cached playlist or album whose refresh fails on a later page no longer collapses to its first page: the previous full list stays, the cache keeps its last complete copy, and the failure shows an error note.
+- **Fix:** Failed favorites lookups no longer leave the view stuck on "Checking favorites…"; it settles with a "Could not check favorites" state and works once the lookup succeeds.
+- **Fix:** Shortcuts stay inert underneath open dialogs: the reset-settings confirmation (`role="alertdialog"`) plus Ctrl+K, Ctrl+R, and Alt+Arrow no longer act behind it, while Escape still cancels.
+- **Fix:** Play Next or Play Later pressed while a queue setup is still running now applies against the new queue in order instead of landing in the old provider queue.
+- **Security:** The main window no longer gets a generic clipboard-read permission. Context-menu Paste calls a single `paste_clipboard_text` command after a trusted-gesture and editable-target check.
+- **Codebase:** Rust backend hardening: the music-diagnostic window opens asynchronously (fixes a Windows deadlock); it uses the E2E profile directory in test builds; the library cache caps per-section pages/bytes (512 pages / 64 MiB) evicting the oldest; the bundled-origin check compares the full origin including the port; reset-settings runs off the UI thread; settings temp files are removed after failed saves; the SMTC display-change key no longer collides on U+001F in titles.
+- **Testing:** Added native end-to-end checks for batched save-as-playlist with partial failure (600-song sequential-add assertion, short-save single create, failed-add keeps 300 and stops), loader robustness for cached pages, restore integrity after a failed Play, clipboard paste permissions, shortcuts staying inert around dialogs, and Play Next/Later during a slow Play. Runs save reports, traces, and screenshots for repeatable verification.
+- **Carry-forward:** Also fixed and tested in this release, building on `v0.4.0-beta.3`: progress-bar seeking, pinned playlist covers after a restart, Previous restarting a song more than 3 seconds in, Repeat All looping the whole collection, mini-player monitor rescue, Browse shelf recovery after a failed refresh, and late search/queue/mini-player fixes. All `v0.4.0-beta.3` changes are included below.
+
 ## Changes in `v0.4.0-beta.3:`
 
 - **Ver:** Updated version to `v0.4.0-beta.3`.
 - **Fix:** Clicking or dragging the progress bar seeks to where you release it, including when going back. Playback updates during a click no longer cancel it, and the playhead stays at the new position instead of jumping back while the song catches up. This applies to the player bar and Now Playing.
+- **Fix:** Pinned playlists with custom covers show their cover after a restart instead of a blank image, and a cover that can't load shows the playlist icon.
+- **Fix:** Previous more than 3 seconds into a song restarts it, as in Apple Music, instead of skipping to the song before. This includes a queue restored after Arlet restarts. Pressed on the song you started from, Previous steps back through the whole album or playlist instead of stopping 20 songs back.
+- **Fix:** Repeat All loops through the whole album or playlist, as in Apple Music, when you start from a song in the middle. Before, it only looped from the song you picked. Turning Repeat All off on the last song stops at the end again, Next stays available on the last song in the Windows media flyout and taskbar, and a restored queue goes around from the last song to the first and back.
+- **Fix:** Leaving the mini player after the monitor Arlet was on is disconnected opens the window on a connected screen, centred and at its usual size, instead of off-screen.
+- **Fix:** A Browse shelf can load more again after a refresh fails while its next page is loading, instead of staying stuck until the next successful refresh, and Load more during a refresh no longer adds songs from the charts being replaced.
 - **Fix:** Also fixed in `v0.4.0-beta.2`: a late search page no longer replaces songs playing from your Library, a queue rebuild no longer undoes a newer Pause, and the mini player keeps its layout after the window recovers from a crash.
 - **Codebase:** Development and CI use Node.js `26.13.0` and npm `12.2.1`. Node.js `24.22.1` or newer still works but is deprecated, and Node.js 22 is no longer supported.
 - **Codebase:** Beta releases update the beta update feed as soon as they are signed and uploaded again.

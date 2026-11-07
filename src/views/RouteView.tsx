@@ -45,6 +45,29 @@ const CuratorRoute = lazyView(
     ),
   },
 );
+const RecordLabelRoute = lazyView(
+  () =>
+    import("./RecordLabelView.tsx").then((module) => module.RecordLabelView),
+  {
+    name: "Record label",
+    loading: () => (
+      <SkeletonStatus label="Loading record label…">
+        <SkeletonCardGrid count={6} />
+      </SkeletonStatus>
+    ),
+  },
+);
+const ActivityRoute = lazyView(
+  () => import("./ActivityView.tsx").then((module) => module.ActivityView),
+  {
+    name: "Activity",
+    loading: () => (
+      <SkeletonStatus label="Loading activity…">
+        <SkeletonCardGrid count={6} />
+      </SkeletonStatus>
+    ),
+  },
+);
 const BrowseRoute = lazyView(
   () => import("./BrowseView.tsx").then((module) => module.BrowseView),
   {
@@ -151,6 +174,10 @@ export function RouteView({ route }: { route: Route }): JSX.Element {
             onReady={onViewReady}
           />
         );
+      case "label":
+        return <RecordLabelRoute id={route.id} onReady={onViewReady} />;
+      case "activity":
+        return <ActivityRoute id={route.id} onReady={onViewReady} />;
       case "settings":
         return <SettingsRoute onReady={onViewReady} />;
       case "library":

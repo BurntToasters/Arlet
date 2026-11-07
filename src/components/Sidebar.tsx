@@ -36,6 +36,7 @@ import { openSupportPage } from "../platform/support.ts";
 import { reportActionError, reportNotice } from "./action-errors.ts";
 import { draggedTracks, isTrackDrag } from "./track-selection.ts";
 import type { PinnedPlaylist } from "../domain/music.ts";
+import { artworkLinkExpired } from "../musickit/normalize.ts";
 import type { LibrarySection, Route } from "../routing/router.ts";
 
 interface NavItem {
@@ -180,14 +181,32 @@ function resolvePinDisplay(
     const source = (item as { source?: unknown }).source;
     if (source !== undefined && source !== pin.source) continue;
     const name = displayNameOf(item);
-    if (name) return { name, artworkUrl: artworkUrlOf(item) ?? pin.artworkUrl };
+    if (name) {
+      return {
+        name,
+        artworkUrl: liveLink(artworkUrlOf(item)) ?? liveLink(pin.artworkUrl),
+      };
+    }
   }
   // Saved with the pin, so a playlist outside the loaded list keeps its name.
-  return pin.name ? { name: pin.name, artworkUrl: pin.artworkUrl } : {};
+  return pin.name
+    ? { name: pin.name, artworkUrl: liveLink(pin.artworkUrl) }
+    : {};
 }
 
-function renderPinIcon(artworkUrl?: string): JSX.Element {
-  if (artworkUrl) {
+// A cover link that expires while Arlet runs has already loaded, so only
+// links that were dead at startup are dropped.
+const STARTED_AT = Date.now();
+
+/** Drops a signed cover link that had expired by startup; the pin lookup renews it. */
+function liveLink(url: string | undefined): string | undefined {
+  return url && !artworkLinkExpired(url, STARTED_AT) ? url : undefined;
+}
+
+/** A cover that fails to load falls back to the playlist icon. */
+function PinIcon({ artworkUrl }: { artworkUrl?: string }): JSX.Element {
+  const [failedUrl, setFailedUrl] = useState<string>();
+  if (artworkUrl && artworkUrl !== failedUrl) {
     return (
       <img
         className="sidebar-pin-art"
@@ -196,6 +215,7 @@ function renderPinIcon(artworkUrl?: string): JSX.Element {
         aria-hidden="true"
         loading="lazy"
         draggable={false}
+        onError={() => setFailedUrl(artworkUrl)}
       />
     );
   }
@@ -445,7 +465,7 @@ export function Sidebar(): JSX.Element {
           onClick={() => navigate(route)}
           {...dropHandlers(pin, name)}
         >
-          {renderPinIcon(display.artworkUrl)}
+          <PinIcon artworkUrl={display.artworkUrl} />
           <span>{name}</span>
         </button>
       );

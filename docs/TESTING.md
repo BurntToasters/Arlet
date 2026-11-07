@@ -71,7 +71,11 @@ page gets DevTools focus emulation and WebView2 switches that stop throttling
 a covered window. `scripts/e2e-foreground.js` samples the foreground window
 every 250 ms and writes `foreground.json`. The check fails if Arlet was ever
 the active window or a sized Arlet window overlapped the active one from
-above. `--foreground` opts out (no flag, no monitor).
+above. When the desktop itself is active (explorer's `Progman` or `WorkerW`),
+every window sits above it, so those samples only check that Arlet did not
+activate; `foreground.json` counts them as `desktopSamples`. A File Explorer
+window (`CabinetWClass`) is an ordinary app and is still checked for
+covering. `--foreground` opts out (no flag, no monitor).
 
 After each run, older `e2e-artifacts/<timestamp>` folders are pruned so only
 the newest 20 (the current run included) remain. Set `ARLET_E2E_KEEP_RUNS` to
@@ -97,8 +101,11 @@ Failure modes it covers:
 10. The open-source licenses dialog is empty.
 11. With Apple's CDN unreachable, the cached library is not shown, or the
     connection returning (an `online` event) does not reload to retry.
-12. A renderer crash leaves a blank window, or leaves no line in `arlet.log`
-    (WebView2 failures are written even with Debug Mode off).
+12. A renderer crash leaves a blank window, or leaves no line in `arlet.log`.
+    A renderer or browser process exit that Arlet must recover from is
+    written even with Debug Mode off. Failures WebView2 recovers from by
+    itself (utility, GPU, and frame processes) are written only with Debug
+    Mode on.
 
 The saved-settings reset/restart and legacy-cache migration run entirely
 inside the isolated root. Cleanup validates its absolute path and ownership
@@ -119,9 +126,15 @@ records `{atUnixMs,command,outcome}` lines in
 `e2e-account-clear-trace.jsonl` (`success`, `failure`,
 `injected_failure`, or `invalid_control`), capped at 64 KiB and 128 rows. The
 scenario injects each rejection independently, waits for all three clear
-calls to settle, checks that only the rejected data category remains fenced,
-then reloads and verifies the previous data stays hidden. It saves one trace
-artifact per category.
+calls to settle, and checks that only the rejected data category remains
+fenced. It then reloads with the fault still in place. Startup retries the
+clear for each fenced category, so the trace shows `injected_failure`, the
+fence stays, and the previous data stays hidden. The fault file is then
+removed and the app reloads again. The startup retry succeeds, the fence is
+lifted, and the previous data still stays hidden. The fault file is removed in
+a `finally`, so a failed check cannot leak it into later suites. The run saves
+one sign-out trace per category (`account-clear-<category>.jsonl`) and one
+restart trace per category (`account-clear-<category>-restart.jsonl`).
 
 For a focused diagnostic run, use
 `npm run test:e2e:app -- --skip-build --scenarios flows,discovery,account-session`
@@ -203,8 +216,12 @@ Failure scenarios to cover before changing production code:
 
 - A playback error badge outlives a later successful play.
 - Choosing a row in `Playing Next` drops earlier songs, breaks Previous, or
-  reorders a shuffled queue.
+  reorders a shuffled queue. Opening `Playing Next` on a parked queue leaves
+  the current row out of view.
 - A failed repeat or queue action is silent.
+- After a Play from mid-album, Repeat All at the end of the last song goes
+  back to the chosen song instead of the album's first song, and Repeat One
+  then repeats a different song.
 - A library-only song (no catalog ID) leaves the `songs` descriptor, which
   MusicKit's item loader resolves through `/v1/me/library/songs`.
 - With shuffle on, the chosen song does not play first (MusicKit shuffles on
@@ -244,6 +261,11 @@ are not playable. Failure scenarios:
   library copy can still play.
 - A playlist where every song is unavailable loops or shows a raw error.
 - `Play next` or `Play later` adds nothing because one song is unavailable.
+- `Play next` or `Play later` pressed while a Play is still replacing the
+  provider queue lands in the queue being replaced, so the next Play drops it.
+  (Covered by `unavailable`: the fixture holds `setQueue`, the menu inserts
+  during the hold, and the provider queue must show the inserted songs right
+  after the new Play's active song, in order.)
 - The user is not told that songs were skipped.
 - A song that fails when it starts playing (content unavailable, restricted,
   unsupported) stops the queue instead of skipping to the next song.
@@ -292,6 +314,22 @@ are not playable. Failure scenarios:
   appends its later pages to the newer queue. (Code-reviewed: the later pages
   carry the token their own Play returned; the race is not driven here.)
 
+`unavailable` also drives queue-integrity failures around a parked or
+restored queue. A failed Play must leave the parked queue's songs, index,
+seek position, and saved `playback-session.json` untouched, and the retry
+must start the same queue; a failed station Play must leave no station label
+for a later stream handoff. Both are checked with the fixture's held and
+rejected `setQueue`, and the saved file is read directly.
+
+The same scenario checks the insert-versus-setup race: a `Play next` pressed
+while a Play is still replacing the provider queue must queue into the new
+queue, in order, not the queue being replaced. The fixture holds `setQueue`
+for the new Play, the album's menu item is clicked during the hold, then the
+hold is released; the provider queue must show the album's songs directly
+after the new Play's active song. Queue setup is tracked in the playback
+session (`queueSetup`/`queueSetupGeneration`), and inserts wait for it before
+planning, then abort their writes if a newer setup starts.
+
 ## Layout
 
 - A horizontal scrollbar appears in the player or content area.
@@ -306,6 +344,28 @@ are not playable. Failure scenarios:
   of the header, or adds horizontal overflow.
 - An artist page matches `img.detail-hero-backdrop` instead of its own
   `artist-hero-banner` / `artist-hero-backdrop` selectors.
+
+## Pinned playlist artwork
+
+`pin-artwork` saves pins and reloads the app, and pins a playlist from its
+page while the Library list holds an expired link for it. Apple serves
+uploaded playlist covers from signed links (`X-Amz-Date` + `X-Amz-Expires`,
+24 hours), so a link saved with a pin goes dead a day later.
+
+- After a restart, a pin whose saved link has expired shows a broken image
+  until its playlist is opened.
+- The startup lookup skips pins that already have a name, so an expired link
+  is never replaced.
+- The fresh link is shown but not saved, so the next restart breaks again.
+- Pins whose saved link is still valid are looked up again on every start.
+- An image that fails to load for any other reason shows the browser's
+  broken-image glyph instead of the playlist icon.
+- Pinning while the Library list holds an expired link saves the name but no
+  cover, so the pin is never looked up again and shows the icon for good.
+- A playlist whose custom cover was removed keeps its dead saved link, so its
+  pin is looked up again on every start.
+- A lookup that fails or finds no playlist drops the saved link, so a
+  network error loses the cover.
 
 ## Keyboard and transport
 
@@ -330,8 +390,13 @@ fixture emits playback ticks, and holds `seekToTime` with
 - Stale ticks while `seekToTime` is in flight snap the thumb back to the old
   position before it settles.
 - An earlier seek that finishes late overrides a newer one.
-- A seek that never confirms freezes the slider instead of following
-  playback again.
+- A seek in flight for more than 3 seconds lets stale ticks snap the thumb
+  back before it finishes.
+- A stale tick just after the seek finishes snaps the thumb back.
+- A seek that finishes but no tick confirms, or that never finishes, freezes
+  the slider instead of following playback again.
+- A press whose release never reaches the window (focus lost mid-drag)
+  leaves the slider stuck at the pointer instead of following playback.
 
 ## Queue editing
 
@@ -347,6 +412,32 @@ fixture emits playback ticks, and holds `seekToTime` with
   path, and the shift itself is not driven here.)
 - `Save as playlist` saves only the songs already handed to MusicKit and
   leaves out the rest of a long playlist that the drawer says is coming.
+  It now sends the queue in batches: a create carries the first 100 tracks,
+  then sequential adds of up to 100 each, and a failed batch stops further
+  adds while keeping the songs already saved; the dialog reports how many
+  were saved versus how many could not be added.
+  `scripts/e2e-save-queue.js` proves it with a 600-song queue: one create
+  with the first 100 then sequential adds to 600, a short save that stays a
+  single create, and a failed third add that keeps 300 and stops.
+- A runtime without the undocumented `Queue.splice` rebuilds the queue for
+  every edit (`setQueue`, reselect, seek, resume). Two quick clicks used to
+  plan from the same local snapshot, run both rebuilds together, and finish by
+  reloading the queue because it changed underneath them. Edits on one
+  MusicKit instance now run in order: a pending edit waits for the edit ahead
+  to settle, then reads local state and plans, so the second click sees the
+  first result. Two Move ups apply in order, and a Move followed by a Remove
+  of another row produces the sequential result. The native tier queues the
+  same way, but its splices stay immediate.
+- A MusicKit call that never settles must not block future edits forever.
+  After a generous 20 s watchdog a pending edit abandons the stuck edit,
+  reloads the provider queue into local state, and continues. The abandoned
+  edit's late completion re-checks the abandoned condition around every await
+  and writes no local state (including no error toast for its lost race).
+- `scripts/e2e-queue-edit.js` hides `queue.splice` and delays `setQueue`, then
+  clicks two Move ups, and separately a Move and a Remove on another row,
+  before the first rebuild settles. It checks both provider orders and that no
+  queue-reloaded error toast appears. The watchdog is code-reviewed: a 20 s
+  hang is too long to drive in the deterministic suite.
 
 ## Ratings and library
 
@@ -385,13 +476,20 @@ fixture emits playback ticks, and holds `seekToTime` with
 - The mini player paints an opaque background over the native Acrylic/Mica
   effect while the bloom is shown.
 - The bloom renders for a track without artwork.
+- Leaving the mini player after the normal window's monitor is gone puts the
+  window back where that monitor was, out of reach.
+- The rescued window opens on another monitor than the mini player's, keeps
+  the mini size, or is larger than that monitor's work area.
+- A Win32 test helper moves a window that does not belong to the E2E
+  process.
 
 Checks in `scripts/e2e-mini-player.js`:
 
-| Check                                                              | Guards                                       |
-| ------------------------------------------------------------------ | -------------------------------------------- |
-| the mini player radiates its artwork over the native window effect | opaque background; bloom missing; scrollbars |
-| the mini player bloom adds no scrollbars at the 300x120 minimum    | bloom overflow at the minimum window size    |
+| Check                                                                       | Guards                                       |
+| --------------------------------------------------------------------------- | -------------------------------------------- |
+| the mini player radiates its artwork over the native window effect          | opaque background; bloom missing; scrollbars |
+| the mini player bloom adds no scrollbars at the 300x120 minimum             | bloom overflow at the minimum window size    |
+| leaving the mini player after its monitor is gone opens on a monitor in use | off-screen restore; wrong monitor or size    |
 
 ## Desktop controls
 
@@ -679,8 +777,9 @@ then turns it on through Settings for the rest of the run.
 - Turning it off keeps writing until restart.
 
 A native crash or a failed window start is written to `arlet.log` even with
-Debug Mode off, because nothing else records it. That path is not driven
-here.
+Debug Mode off, because nothing else records it. Routine native events, such
+as a pause on suspend or lid close, are written only with Debug Mode on. The
+crash path is not driven here.
 
 ## Rendering performance
 
@@ -800,6 +899,10 @@ Failure modes this pass must not have:
 - A library artist's page hero has no picture, although its catalog artist has
   artwork.
 - An album with no artwork shows no initials, or the wrong initials.
+- Run on its own, or after a scenario that leaves the app signed in, Home and
+  the library still hold data loaded before the artwork fixture was turned
+  on, so the views show none of its cards. (In the full suite `discovery`
+  leaves the app signed out first, which hid this.)
 
 Each check's `detail` in `report.json` holds the measurements: the rects of the
 artwork, content box and overlay, the row widths, and the kind of art each card
@@ -1129,6 +1232,13 @@ Browse charts (`/charts` with `genre`, `with`, `next`):
 - Top Songs See all repeats songs, or follows a next link that is not a chart
   path. [Top Songs See all pages through 30 songs with no duplicates, via the
   chart's next link]
+- A Browse refresh that fails while a See all page loads leaves that shelf
+  "loading" forever, so Load more never returns. [a failed Browse refresh during
+  a See all page does not strand Load more; the next page appends once]
+- Load more during a Browse refresh follows the old cursor, so a chart page for
+  the replaced list is requested and appended to the new one. [Load more during
+  a Browse refresh requests no chart page, and the next page appends once after
+  it]
 
 Radio station genres (`station-genres`, `station-genres/{id}/stations`):
 
@@ -1277,7 +1387,40 @@ and `parked queue order`). The rest are code-reviewed:
   shuffle on, each queue only the songs from the target index on, in saved
   order, and Play then seeks to the saved position. Previous steps back into
   history without queueing it. Restore from disk runs the same
-  `resumeRestoredQueue` path, but a restart is not driven here.
+  `resumeRestoredQueue` path, but a restart is not driven here. Past a song's
+  first 3 seconds, Previous restarts it, as in Apple Music: MusicKit's
+  `skipToPreviousItem` only restarts the first song or with Repeat One.
+  Failure modes: Previous at 0:42 into a later song plays the song before it;
+  the restart rebuilds or reselects the queue instead of seeking to 0:00; on
+  a parked queue it queues from the song before, or resumes at the saved
+  position instead of the start. A parked queue keeps only 20 songs before its
+  Play, so Previous stops 20 songs back (see `repeat all wrap`).
+- Repeat All (`repeat all wrap`): as in Apple Music, Repeat All loops through
+  the whole album or playlist. A Play started mid-album begins MusicKit's
+  queue at the chosen song, so MusicKit alone would loop from there. On the
+  last song Arlet adds the next pass, from the album's first song, as the
+  queue's rest; turning Repeat All off before that pass starts removes it. A
+  parked queue wraps the same way. Failure modes: Next or the end of the last
+  song loops back to the chosen song, so the songs before it never repeat;
+  the pass stays after Repeat All is turned off, so playback runs past the
+  album's end; a song added with Play Later after the pass is removed with
+  it; Next on the last parked song does nothing; Previous on the first parked
+  song restarts it instead of playing the last; the Windows media flyout and
+  taskbar Next are disabled on the last song with Repeat All on. Songs before
+  the chosen one (song 25 of a 30-song playlist): the pass starts 20 songs
+  before the chosen one, so songs 1 to 4 never repeat; Previous on the first
+  queued song stops stepping back after 20 songs instead of reaching song 1.
+  A parked queue keeps every song before the chosen one. Checks: after a Play
+  from song 25 and a park, Previous steps back 24 songs to song 1; after a
+  resume with Repeat All on, the pass repeats all 30 songs. Failure modes: a
+  parked queue keeps only the 20 songs before its Play, so Previous stops 20
+  songs back and a resumed pass starts at song 5 (26 songs, not 30).
+- Playing Next opens at the current song (`repeat all wrap`, the Playing Next
+  check): the drawer scrolls so the current row is near its top, with the songs
+  before it above, each time it opens. Failure modes: it opens at the top with
+  the current row out of view on a parked queue of 20 or more earlier songs;
+  a later song change while it stays open scrolls it. The later-change part is
+  code-reviewed (`VirtualList` `revealIndex` applies once per mount).
 - Lid close on Modern Standby (item 3): native-only. The decision logic (pause
   once on entering "lid closed and display off"; ignore the registration seed)
   is unit-tested in `src-tauri/src/system_events.rs`, and the wiring is
@@ -1309,6 +1452,318 @@ rejects `/v1/me` with a bare `403`, as the old token would. Driven by the check
   appears; clicking that disabled button cannot start authorization and must
   not be mistaken for a stale-API failure. Once the button is enabled, a click
   that still fails to authorize is a real sign-in failure.
+
+## MusicKit parity
+
+`scripts/e2e-musickit-parity.js` is the `musickit-parity` scenario. In the full
+suite it runs second to last, after `catalog-extras` and before
+`session-restore`, because its station checks fill the app's caches.
+`session-restore` stays last because it signs out at the end. The fixture
+(`scripts/e2e-music-fixture.js`) is being rebuilt to match live MusicKit v3
+`3.2526.0`, so these checks assert MusicKit's real behavior rather than
+Arlet's guess at it. The ground truth the fixture copies:
+
+- `PlayerRepeatMode`: none 0, one 1, all 2.
+- `PlayerShuffleMode`: off 0, songs 1.
+- `PlaybackStates`: none 0, loading 1, playing 2, paused 3, stopped 4, ended 5,
+  seeking 6, waiting 8, stalled 9, completed 10.
+- `PlaybackBitrate`: STANDARD 64, HIGH 256.
+- Autoplay: MusicKit keeps up to 10 `isAutoplay` songs after the user's songs
+  while there are 50 or fewer unplayed user songs. `playLater` inserts before
+  the autoplay songs (`appendTargetIndex`). Repeat on removes the autoplay
+  songs. Shuffle and repeat are disabled while an autoplay song plays.
+- Shuffle: the shuffler reshuffles on every `setQueue` while shuffle is on.
+  Unshuffling a queue with duplicate IDs lands on a stale position.
+- `changeToMediaAtIndex` calls `stop()` first, which publishes an empty
+  now-playing item and the stopped state.
+- Station queues ignore shuffle and repeat. `playNext`, `playLater`, and
+  `clearQueue` throw `UNSUPPORTED_ERROR`.
+- Non-subscribers get 30 s previews automatically. `hasMusicSubscription()` is
+  async. The subscribe URL is on `finance-app.itunes.apple.com`.
+
+Failure scenarios to cover before changing production code:
+
+### Canary
+
+- The fixture's enum or bitrate values drift from live MusicKit, so every other
+  check passes against a model MusicKit does not use.
+- MusicKit renames a playback state or changes a bitrate value, and the suite
+  keeps the old number without failing.
+- The live script stops keeping the queue model the fixture copies (autoplay,
+  the shuffler, `stop()` before a change), and the fixture drifts silently.
+- Arlet maps a repeat or shuffle enum differently from MusicKit, so the buttons
+  show one mode while MusicKit plays another.
+- The canary is skipped when MusicKit is not loaded, so the feature checks run
+  against the fixture alone and report a pass.
+
+Check names in `report.json`:
+
+- `live MusicKit repeat and shuffle enums match Arlet's mapping`
+- `live MusicKit playback states and bitrates match the E2E fixture`
+- `live MusicKit script keeps the queue model the E2E fixture copies`
+- `E2E fixture enums equal live MusicKit's`
+
+### Repeat
+
+- Repeat All loops one song because Arlet writes MusicKit repeat mode 1.
+- Repeat One writes mode 2, so the whole queue repeats instead of one song.
+- With Repeat One, a song that ends moves to the next song instead of playing
+  again.
+- With Repeat One, Next either stays on the same song or plays the next song
+  and drops Repeat One.
+- With Repeat One, Previous in the first 3 seconds goes to the last song
+  instead of the previous one.
+- With Repeat All, the last song ends into the chosen song rather than the
+  first song of the list.
+
+Check names in `report.json`:
+
+- `Repeat All writes MusicKit repeat mode 2 and Repeat One writes 1`
+- `with Repeat One, a song that ends plays again`
+- `with Repeat One, Next plays the next song and keeps Repeat One`
+- `with Repeat One, Previous in the first 3 seconds plays the previous song`
+- `with Repeat All, the last song ends into the first song`
+
+### Shuffle model
+
+- Shuffle on moves the playing song out of first place, so the song that was
+  playing is not the first one in the shuffled order.
+- A Play with shuffle on starts a different song, because MusicKit reshuffles
+  on `setQueue` and Arlet does not pass `startWith`.
+- A parked queue resumed with shuffle on is reshuffled, so the saved order and
+  the position the user left are lost.
+- Turning shuffle off after a kept-order resume reshuffles the queue into a
+  random order.
+- A queue rebuild with shuffle on reshuffles the edited order, so an edit moves
+  songs the user did not touch.
+- Choosing a Playing Next song while Arlet holds MusicKit's shuffle off writes
+  shuffle on first. MusicKit reshuffles, and the clicked position then plays a
+  different song.
+
+Check names in `report.json`:
+
+- `shuffle on puts the playing song first and keeps playing it`
+- `a Play with shuffle on starts the chosen song even though MusicKit reshuffles the queue`
+- `a parked queue resumed with shuffle on keeps its saved order and still shows shuffle on`
+- `turning shuffle off after a kept-order resume does not reshuffle`
+- `a queue rebuild with shuffle on keeps the edited order`
+- `choosing a Playing Next song while the shuffled order is held plays that song and keeps the order`
+
+### Selection and stations
+
+- Choosing a song in Playing Next calls `changeToMediaAtIndex`, which calls
+  `stop()` first, so the player and Windows media controls briefly clear.
+- During a station, Shuffle and Repeat show and fail when clicked, because
+  station queues ignore both.
+- During a station, Arlet's shuffle button shows on while MusicKit plays in
+  order.
+- Play Next during a station shows MusicKit's raw `UNSUPPORTED_ERROR` text
+  instead of an explanation.
+- Play Later or Clear during a station fails silently or shows the raw error.
+
+Check names in `report.json`:
+
+- `choosing a song in Playing Next never clears the player or the Windows media controls`
+- `during a station, shuffle and repeat are hidden`
+- `Play Next during a station explains it is unavailable instead of showing MusicKit's error`
+
+### Autoplay
+
+- Play Later songs show after the autoplay songs in Playing Next, while MusicKit
+  plays them before the autoplay songs.
+- Clear removes autoplay songs and MusicKit adds them straight back.
+- Repeat on leaves autoplay songs queued, so they keep playing after the user's
+  songs repeat.
+- The Playing Next autoplay toggle hides the autoplay songs but leaves them
+  playing, or turns autoplay off without saving the setting, so it is back on
+  after a restart.
+- Turning Autoplay off from Playing Next empties its section, the toggle goes
+  with it, and Autoplay can only be turned back on in Settings.
+- The saved session, a stream handoff, or Save as playlist includes upcoming
+  autoplay songs the user never chose.
+- The playlist refill counts autoplay songs as user songs, so it skips loading
+  the rest of the playlist.
+- Shuffle or Repeat can be clicked while an autoplay song plays, and the change
+  silently does nothing or reorders the autoplay songs.
+- An autoplay station Apple refuses is logged on every song end and shows an
+  empty Autoplay heading.
+
+Check names in `report.json`:
+
+- `autoplay songs show under an Autoplay heading after the queue`
+- `Play Later adds songs before the autoplay songs`
+- `Clear removes queued songs and keeps the autoplay songs`
+- `Repeat on removes autoplay songs and Repeat off brings them back`
+- `the Playing Next autoplay toggle turns autoplay off, removes its songs, saves the setting, and stays to turn it back on`
+- `shuffle and repeat are disabled while an autoplay song plays`
+- `the saved session, stream handoff, and Save as playlist leave out upcoming autoplay songs`
+- `the playlist refill ignores autoplay songs when counting what is left`
+- `an autoplay station Apple refuses is logged once and shows no Autoplay heading`
+
+### Shuffle across the collection
+
+- Turning shuffle on mid-album never plays the songs before the start song, so
+  the album's first tracks drop out of the queue.
+- Turning shuffle off leaves a random order instead of returning to album order
+  after the playing song.
+- In a playlist with a song twice, shuffle off continues from the first
+  occurrence rather than the one playing, so the wrong occurrence is selected.
+- With shuffle on, a list over 500 songs is capped or paginated, so the songs
+  before the start drop out.
+- Unshuffling a queue with duplicate IDs lands on a stale position, and the
+  queue shows the wrong song as playing.
+
+Check names in `report.json`:
+
+- `shuffle on mid-album includes the songs before the one you started from`
+- `shuffle off returns to album order after the playing song`
+- `shuffle off in a playlist with a song twice continues after the playing occurrence`
+- `shuffle on for a list over 500 songs still includes the songs before the start`
+
+### Audio quality
+
+- Audio quality Automatic writes a bitrate, overwriting the one MusicKit chose.
+- High and Standard write the wrong bitrate, so Settings shows one value while
+  MusicKit streams another.
+- The chosen quality is not saved, so it resets on the next launch.
+- A MusicKit bitrate change (`playbackBitrateDidChange`) does not reach
+  Settings, which keeps showing the old value.
+
+Check names in `report.json`:
+
+- `Audio quality High and Standard write MusicKit bitrate 256 and 64 and are saved`
+- `Audio quality Automatic leaves MusicKit's bitrate as MusicKit chose it`
+- `a MusicKit bitrate change shows in Settings`
+
+### Previews only
+
+- A non-subscriber sees a normal player with no Previews only notice, so 30 s
+  clips look like a playback bug.
+- A subscriber sees Previews only while `hasMusicSubscription()` is still
+  pending, and the notice never clears.
+- A non-subscriber's notice disappears and comes back on every recheck, such as
+  each preview that fails with `SUBSCRIPTION_REQUIRED`.
+- The Previews only notice has no Subscribe button, so there is no way to reach
+  the Apple subscription.
+- Subscribe opens a link on a host other than `finance-app.itunes.apple.com`.
+- The Subscribe link opener accepts a non-Apple or non-https URL.
+
+Check names in `report.json`:
+
+- `without a subscription, Arlet shows Previews only with a Subscribe button`
+- `with a subscription, no Previews only notice shows`
+- `a subscription recheck keeps Previews only shown while the answer is pending`
+- `open_subscribe_link refuses non-Apple and non-https links`
+
+The Rust command `open_subscribe_link(url)` in `src-tauri/src/commands.rs`
+accepts only `https`, host `apple.com` or `*.apple.com`, no userinfo, no port,
+and at most 2048 bytes. Its Rust tests are written before the command. They
+cover an `http` scheme, the other hosts `apple.com.evil.test` and
+`evilapple.com`, userinfo, an explicit port, an over-long URL, non-URL text,
+and an accepted `https://finance-app.itunes.apple.com/deeplink?p=subscribe`.
+
+Artifacts: the report is grouped as above. The run writes six screenshots:
+`screenshot-musickit-parity-repeat.png`, `screenshot-musickit-parity-shuffle.png`,
+`screenshot-musickit-parity-station.png`,
+`screenshot-musickit-parity-autoplay.png`,
+`screenshot-musickit-parity-collection.png`, and
+`screenshot-musickit-parity-preview.png`. The scenario also writes
+`musickit-parity-trace.json`, the fixture snapshot transitions for each group.
+The harness writes a file with that same name after the scenario returns, from
+a snapshot taken after the scenario's reset, so the harness's copy replaces the
+group trace. Focused run:
+`npm run test:e2e:app -- --skip-build --scenarios musickit-parity`.
+
+### Re-baselined checks (beta.5)
+
+The fixture now matches live MusicKit, so the existing checks below are
+re-baselined against it. Each must keep asserting Arlet's request (the
+`setQueue` ids and `startWith`) separately from the order MusicKit holds. A
+check that reads only the queue order MusicKit reports would pass for the wrong
+request, and a check that reads only Arlet's request would miss a reshuffle.
+
+- `scripts/e2e-desktop.js`: "system shuffle and repeat requests reach MusicKit",
+  and "autoplay continues past the queue end when enabled" (it runs on the
+  fixture's default refused station, where `finishWithAutoplay` appends an
+  autoplay song at the queue end).
+- `scripts/e2e-playlist-playback.js`: "shuffle can advance to a playlist
+  occurrence before the clicked row and return", "shuffle off follows playlist
+  order while preserving the clicked occurrence", "middle playlist occurrence
+  keeps the full paginated queue and selects that duplicate", "Playing Next
+  shows all playlist occurrences in MusicKit's shuffled order with the selected
+  occurrence active" (renamed in beta.5 from "...in order with the selected
+  occurrence active"), and "clicking Playing Next row 3 of 6 keeps the queue and
+  selects that index".
+- `scripts/e2e-queue-edit.js`: "editing with shuffle on keeps the explicit order
+  and restores shuffle".
+- `scripts/e2e-handoff-settings-regressions.js`: the `shuffleRebuild` group
+  (cases `shuffle-rebuild-retains-mode` and `shuffle-explicit-off-wins`).
+- `scripts/e2e-audit-fixes.js`: the `parkedQueueOrder` group.
+- `scripts/e2e-discovery.js`: "overview search asks every group with topResults
+  and a limit of 10". Its expected `types` now include `record-labels` and
+  `activities`, the overview-only groups with no See all page.
+
+## Catalog extras
+
+`scripts/e2e-catalog-extras.js` is the `catalog-extras` scenario. It covers
+Replay shelves on Home, record label pages, activity pages, Search groups for
+record labels and activities, a Get Info song dialog, and choosing a parent
+folder when creating a playlist or folder.
+
+- Replay shelves on Home read
+  `GET /v1/me/music-summaries?filter[year]=latest&views=top-artists,top-albums,top-songs`.
+  With no Replay data, the shelves are hidden and no error is shown.
+- Record label pages read
+  `GET /v1/catalog/{sf}/record-labels/{id}?views=latest-releases,top-releases`.
+  An album's "More" panel links its record label. A library album reads the
+  label from its catalog twin (`include=record-labels` on the catalog album);
+  the library album request never asks for record labels, which Apple does not
+  document for library albums.
+- Activity pages read `GET /v1/catalog/{sf}/activities/{id}?include=playlists`
+  and list at most 10 playlists.
+- Search has record label and activity groups.
+- Get Info opens a song info dialog with composer, genre, release date, disc and
+  track, duration, content rating, ISRC, label, and copyright. It is text only,
+  and nothing in it is navigable.
+- Creating a playlist or folder lets you choose a parent folder.
+
+Failure scenarios to cover before changing production code:
+
+- Replay shows an error when the account has no Replay data, instead of hiding
+  the shelves.
+- Replay shows another year's data, or requests a year other than `latest`.
+- A label page shows another label's releases, because it reuses a previous
+  label's response.
+- An album's record label link is missing, or opens the wrong label's page.
+- A library album request asks for `record-labels`, which Apple does not
+  document for library albums and may refuse.
+- An activity page loads more than 10 playlists, or pages past the first
+  response without a limit.
+- Search drops the new record label and activity groups, or files results under
+  the wrong group.
+- Get Info shows another song's fields, or renders the song's metadata as HTML
+  instead of plain text.
+- A playlist created "in" a folder lands at the root.
+
+Check names:
+
+- `Replay shows this year's top songs, albums, and artists`
+- `Replay with no data shows an empty state, not an error`
+- `a record label page shows its latest and top releases`
+- `an album's record label opens its label page`
+- `an activity page lists its playlists`
+- `Search shows record labels and activities`
+- `Get Info shows the song's composer, ISRC, and label as plain text`
+- `New playlist can be created inside a folder`
+
+Artifacts: `catalog-extras-groups.json` is the per-group trace: the fixture
+requests and transitions each check caused, keyed `replayData`, `replayEmpty`,
+`label`, `albumLink`, `activity`, `search`, `info`, and `folder`. The harness
+also writes `catalog-extras-trace.json`, but it does so after the scenario's
+reset, so that file holds the post-reset snapshot and not the scenario's
+requests. Screenshots: `screenshot-catalog-replay.png`,
+`screenshot-catalog-label.png`, `screenshot-catalog-activity.png`, and
+`screenshot-catalog-info.png`.
 
 ## Release-only evidence
 
@@ -1356,12 +1811,38 @@ the deterministic smoke gate:
   - Starting a song mid-playlist with shuffle on plays that song first
     (`setQueue` `startWith`), and the shuffle button reflects `shuffleMode`.
   - Queue remove, move, and clear use `Queue.splice` without restarting audio.
+    On a runtime without it, the same edits rebuild the queue and briefly
+    restart audio, one edit at a time (see "Queue editing"'s forced-rebuild
+    block, Phase 9: edits serialize per instance with a 20 s watchdog, and the
+    double Move up and Move+Remove serial scenarios run there).
   - A library-only (uploaded) song plays from the `songs` descriptor.
   - Favorite, Dislike, clear, and Add to Library reach Apple (check the Music app).
   - Autoplay continues after the queue ends when enabled.
   - `Start Station` for a catalog song, a library song, and an artist; Top
     Songs for a library artist.
   - A restored session resumes at the saved song and position.
+
+Beta.5 real-account checks, on a signed-in Apple Music account with Arlet's
+developer token. The E2E harness does not run these:
+
+1. Repeat All and Repeat One at a song's natural end, and Next and Previous with
+   Repeat One.
+2. Autoplay with Arlet's developer token: the status of
+   `POST /v1/me/stations/continuous`, whether the Autoplay heading shows, and
+   Play timing with autoplay on and off.
+3. Bitrate: whether `playbackBitrateDidChange` fires, and which song the new
+   quality starts on.
+4. No-subscription account: previews play, the Previews only notice shows, and
+   Subscribe opens the Apple page.
+5. Shuffle mid-album, and a playlist with a duplicate song.
+6. Clicking a Playing Next row: no flash in the player or the Windows media
+   controls.
+7. A station: Shuffle and Repeat are hidden, and Play Next shows the message.
+8. A natural song end: the Windows media controls do not flicker.
+9. A parked queue resumed with shuffle on keeps its order.
+10. Replay on an account with no Replay data shows no error.
+11. Album label links on library albums: the label comes from the catalog
+    twin's `include=record-labels`.
 
 These external gates are intentionally opt-in and must run only on the release
 VM or a test machine with the appropriate credentials and signed artifacts.

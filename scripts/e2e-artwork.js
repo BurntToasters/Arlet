@@ -334,13 +334,28 @@ async function runView(page, check, view, artifactDir) {
 // flow). So this suite signs in through Settings, as the other suites do.
 const AUTH_BUTTON = `[...document.querySelectorAll("button")].find((node) => ["Sign in", "Sign out"].includes(node.textContent.trim()))`;
 
+async function signedInNow(page) {
+  await page.evaluate(`location.hash = "#/settings"; return true;`);
+  await waitFor(page, `Boolean(${AUTH_BUTTON})`, 10_000);
+  return (
+    (await page.evaluate(
+      `return ${AUTH_BUTTON}?.textContent.trim() ?? null;`,
+    )) === "Sign out"
+  );
+}
+
 async function ensureSignedIn(page, check) {
   await page.evaluate(`location.hash = "#/settings"; return true;`);
   await waitFor(page, `Boolean(${AUTH_BUTTON})`, 10_000);
   const before = await page.evaluate(
     `return ${AUTH_BUTTON}?.textContent.trim() ?? null;`,
   );
+  const disabledAtFirst =
+    before === "Sign in" &&
+    (await page.evaluate(`return ${AUTH_BUTTON}?.disabled === true;`));
   if (before === "Sign in") {
+    // Straight after a sign-out the button can still be disabled.
+    await waitFor(page, `${AUTH_BUTTON}?.disabled === false`, 10_000);
     await page.evaluate(`${AUTH_BUTTON}.click(); return true;`);
   }
   const signedIn = await waitFor(
@@ -350,6 +365,7 @@ async function ensureSignedIn(page, check) {
   );
   check("artwork: signs in through Settings before the views", signedIn, {
     before,
+    disabledAtFirst,
   });
   return signedIn;
 }
@@ -403,6 +419,12 @@ async function endSignedIn(page, check) {
       `return ${AUTH_BUTTON}?.textContent.trim() ?? null;`,
     );
     if (detail.before === "Sign in") {
+      // Straight after the sign-out above, the button can still be disabled.
+      await waitFor(
+        page,
+        `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign in" && !node.disabled)`,
+        10_000,
+      );
       detail.signInClicked = await page.evaluate(`
         const button = [...document.querySelectorAll("button")]
           .find((node) => node.textContent.trim() === "Sign in" && !node.disabled);
@@ -450,6 +472,10 @@ export async function runArtwork({ page, check, artifactDir }) {
     await fixtureCall(page, "configure", [
       { artworkGrid: true, artworkTemplate: artworkTemplate(icon) },
     ]);
+    // Home and the library load once per session. Discovery, before this in
+    // the full suite, leaves the app signed out; on its own the app is still
+    // signed in with them loaded, so sign out the same way first.
+    if (await signedInNow(page)) await leaveSignedOut(page);
     await ensureSignedIn(page, check);
     for (const view of VIEWS) {
       await runView(page, check, view, artifactDir);

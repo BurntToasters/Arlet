@@ -35,7 +35,9 @@ import { UpdateReadyModal } from "../components/UpdateReadyModal.tsx";
 import { ContextMenu } from "../components/ContextMenu.tsx";
 import { PlaylistDialogs } from "../components/PlaylistDialogs.tsx";
 import { ShortcutOverlay } from "../components/ShortcutOverlay.tsx";
+import { SongInfoDialog } from "../components/SongInfoDialog.tsx";
 import { ActionToasts } from "../components/ActionToasts.tsx";
+import { PreviewNotice } from "../components/PreviewNotice.tsx";
 import { SessionExpiredNotice } from "../components/SessionExpiredNotice.tsx";
 import { TokenExpiryNotice } from "../components/TokenExpiryNotice.tsx";
 import type { DiagnosticsStore } from "../diagnostics/store.ts";
@@ -179,6 +181,7 @@ function AppLayout({
         event.key.toLowerCase() === "k" &&
         !miniActive
       ) {
+        if (hasOpenDialog()) return;
         event.preventDefault();
         router.navigate({ kind: "search", query: "" });
         // The Search view may render a few frames after navigation.
@@ -191,12 +194,15 @@ function AppLayout({
         };
         requestAnimationFrame(focusSearch);
       } else if (event.ctrlKey && event.key.toLowerCase() === "r") {
+        if (hasOpenDialog()) return;
         event.preventDefault();
         void controller.refreshCurrentData().catch(() => undefined);
       } else if (event.altKey && event.key === "ArrowLeft") {
+        if (hasOpenDialog()) return;
         event.preventDefault();
         router.back();
       } else if (event.altKey && event.key === "ArrowRight") {
+        if (hasOpenDialog()) return;
         event.preventDefault();
         router.forward();
       }
@@ -339,12 +345,14 @@ function AppLayout({
       <UpdateReadyModal />
       <ContextMenu />
       <PlaylistDialogs />
+      <SongInfoDialog />
       {shortcutsOpen ? (
         <ShortcutOverlay onClose={() => setShortcutsOpen(false)} />
       ) : null}
       <ActionToasts />
       <div className="notice-stack">
         <SessionExpiredNotice />
+        <PreviewNotice />
         <TokenExpiryNotice />
       </div>
     </div>

@@ -31,6 +31,7 @@
   .action-toast,
   .token-expiry-notice,
   .session-expired-notice,
+  .preview-notice,
   .selection-bar,
   .update-modal {
     background: Canvas;

@@ -6,7 +6,7 @@ import {
   SkipForward,
 } from "lucide-preact";
 import type { JSX } from "preact";
-import { useEffect, useState } from "preact/hooks";
+import { useLayoutEffect, useState } from "preact/hooks";
 import { usePlaybackPosition } from "../app/context.tsx";
 import { IconButton } from "./IconButton.tsx";
 
@@ -99,19 +99,24 @@ export function PlaybackProgress({
   // Chromium's change baseline, so the release would seek to the tick.
   const [scrubSeconds, setScrubSeconds] = useState<number | null>(null);
   const scrubbing = scrubSeconds !== null;
-  useEffect(() => {
+  // A layout effect, so the listeners are in place before the next frame; a
+  // blur straight after the press would otherwise be missed.
+  useLayoutEffect(() => {
     if (!scrubbing) return;
     // A release where the press started fires no change; drop the hold once
-    // the release's own change event has had its turn.
+    // the release's own change event has had its turn. A blur can swallow the
+    // release when focus leaves mid-drag, so it drops the hold too.
     let timer: number | undefined;
     const release = (): void => {
       timer = window.setTimeout(() => setScrubSeconds(null), 0);
     };
     window.addEventListener("pointerup", release);
     window.addEventListener("pointercancel", release);
+    window.addEventListener("blur", release);
     return () => {
       window.removeEventListener("pointerup", release);
       window.removeEventListener("pointercancel", release);
+      window.removeEventListener("blur", release);
       window.clearTimeout(timer);
     };
   }, [scrubbing]);

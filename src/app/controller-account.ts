@@ -2,15 +2,19 @@ import { authorize, isAuthorized, unauthorize } from "../musickit/auth.ts";
 import { probeUserToken } from "../musickit/catalog.ts";
 import type { AppleMusicLibraryClient } from "../musickit/library.ts";
 import {
+  ACCOUNT_DATA_CATEGORIES,
   beginAccountDataInvalidation,
   cancelAccountDataInvalidation,
   completeAccountDataClear,
+  storedBlockedAccountData,
+  type AccountDataCategory,
 } from "../platform/account-data.ts";
 import { registerSensitiveValue } from "../platform/redact.ts";
 import {
   clearRecentSearches,
   getState,
   resetState,
+  setAccountSubscription,
   setAccountSummary,
   setAuthPending,
   setAuthState,
@@ -88,8 +92,18 @@ export interface ControllerAccount {
   onMusicKitAuthorizationChange(instance: MusicKit.MusicKitInstance): void;
   /** Reports an error that may mean the Apple sign-in expired. */
   suspectSession(error: unknown, path?: string): void;
+  /**
+   * Asks MusicKit whether the account has a subscription. The status stays
+   * "unknown" while the lookup runs and when it fails. Never rejects.
+   */
+  refreshSubscription(): Promise<void>;
   /** Bumped on sign-in and sign-out; work started earlier must not land. */
   generation(): number;
+  /**
+   * Startup: clears again each category a failed clear left fenced, and
+   * releases its fence only on success. Never rejects.
+   */
+  retryBlockedAccountData(): Promise<void>;
 }
 
 interface SignInAttempt {
@@ -160,40 +174,67 @@ export function createControllerAccount(
     trackNavigation.clear();
   };
 
-  /** Clears each persisted category independently and releases its fence only on success. */
+  /** Local clear and log label for each persisted category. */
+  const persistedClears: Record<
+    AccountDataCategory,
+    { label: string; clear: () => Promise<void> }
+  > = {
+    library: {
+      label: "Library cache clear failed",
+      clear: () => library.clearLibraryCache(),
+    },
+    pins: {
+      label: "Pinned playlists clear failed",
+      clear: () => pinning.clearStored(),
+    },
+    queue: {
+      label: "Playback session clear failed",
+      clear: () => playbackSession.clear(),
+    },
+  };
+
+  /**
+   * Clears each listed category independently and releases its fence only on
+   * success. Every category is listed by default.
+   */
   const clearPersistedAccountData = async (
     ownsClear: () => boolean = () => true,
+    categories: readonly AccountDataCategory[] = ACCOUNT_DATA_CATEGORIES,
   ): Promise<void> => {
     const failures: string[] = [];
-    const clearCategory = async (
-      category: "library" | "pins" | "queue",
-      label: string,
-      clear: () => Promise<void>,
-    ): Promise<void> => {
-      try {
-        await clear();
-        // A later sign-out may have installed a newer durable fence while
-        // this clear was in flight. Only its owning transition may release it.
-        if (ownsClear()) completeAccountDataClear(category);
-      } catch (error) {
-        const message = safeErrorMessage(error);
-        log(`${label}: ${message}`);
-        failures.push(`${label}: ${message}`);
-      }
-    };
-    await Promise.all([
-      clearCategory("library", "Library cache clear failed", () =>
-        library.clearLibraryCache(),
-      ),
-      clearCategory("pins", "Pinned playlists clear failed", () =>
-        pinning.clearStored(),
-      ),
-      clearCategory("queue", "Playback session clear failed", () =>
-        playbackSession.clear(),
-      ),
-    ]);
+    await Promise.all(
+      categories.map(async (category) => {
+        const { label, clear } = persistedClears[category];
+        try {
+          await clear();
+          // A later sign-out may have installed a newer durable fence while
+          // this clear was in flight. Only its owning transition may release it.
+          if (ownsClear()) completeAccountDataClear(category);
+        } catch (error) {
+          const message = safeErrorMessage(error);
+          log(`${label}: ${message}`);
+          failures.push(`${label}: ${message}`);
+        }
+      }),
+    );
     if (failures.length > 0) {
       throw new Error(`Account data clear failed: ${failures.join("; ")}`);
+    }
+  };
+
+  const retryBlockedAccountData = async (): Promise<void> => {
+    const blocked = storedBlockedAccountData();
+    if (blocked.length === 0) return;
+    log(`Retrying account data clear at startup: ${blocked.join(", ")}.`);
+    const generation = accountGeneration;
+    // A sign-in or sign-out that starts during the retry installs its own
+    // fence, so this retry must not release it.
+    const ownsClear = (): boolean =>
+      accountGeneration === generation && !transitioning();
+    try {
+      await clearPersistedAccountData(ownsClear, blocked);
+    } catch (error) {
+      log(`Startup account data retry failed: ${safeErrorMessage(error)}`);
     }
   };
 
@@ -278,12 +319,50 @@ export function createControllerAccount(
     log,
   });
 
+  /** Bumped on each subscription lookup; only the newest one may write. */
+  let subscriptionSequence = 0;
+  /** The account generation the shown subscription status belongs to. */
+  let subscriptionGeneration: number | undefined;
+
+  const refreshSubscription = async (): Promise<void> => {
+    if (getState().auth.status !== "authorized") return;
+    const instance = context.getMusic();
+    subscriptionSequence += 1;
+    const sequence = subscriptionSequence;
+    const generation = accountGeneration;
+    // A sign-out or sign-in starts a new generation, and a newer lookup bumps
+    // the sequence; either makes this answer stale.
+    const isCurrent = (): boolean =>
+      sequence === subscriptionSequence && generation === accountGeneration;
+    // A recheck for the same account keeps the known status until the answer
+    // lands, so the Previews only notice does not flicker on each error.
+    if (subscriptionGeneration !== generation) {
+      subscriptionGeneration = generation;
+      setAccountSubscription("unknown");
+    }
+    if (!instance || typeof instance.hasMusicSubscription !== "function") {
+      return;
+    }
+    try {
+      const subscribed = await instance.hasMusicSubscription();
+      if (!isCurrent() || typeof subscribed !== "boolean") return;
+      setAccountSubscription(subscribed ? "active" : "none");
+    } catch (error) {
+      if (isCurrent()) {
+        log(`Subscription check failed: ${safeErrorMessage(error)}`);
+      }
+    }
+  };
+
   const onMusicKitAuthorizationChange = (
     instance: MusicKit.MusicKitInstance,
   ): void => {
     if (transitioning()) return;
     if (typeof instance.isAuthorized !== "boolean") return;
-    if (isAuthorized(instance)) return;
+    if (isAuthorized(instance)) {
+      void refreshSubscription();
+      return;
+    }
     if (getState().auth.status !== "authorized") return;
     handleSessionExpired("MusicKit no longer authorizes the session");
   };
@@ -372,6 +451,7 @@ export function createControllerAccount(
       if (await stopIfSignedOut()) return;
       // Keep the user token private to MusicKit; only expose auth status.
       setAuthState({ status: "authorized" });
+      void refreshSubscription();
       // A lookup made while the popup was open used the old sign-in; look
       // the playing song's rating up again for the new one.
       ratings.reset();
@@ -557,6 +637,8 @@ export function createControllerAccount(
     cancelSignIn,
     onMusicKitAuthorizationChange,
     suspectSession: (error, path) => sessionHealth.suspect(error, path),
+    refreshSubscription,
     generation: () => accountGeneration,
+    retryBlockedAccountData,
   };
 }

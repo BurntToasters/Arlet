@@ -98,6 +98,9 @@ function mergeRefs(
   };
 }
 
+/** Most resolved or in-flight lookups kept so duplicate requests still share. */
+const PENDING_LIMIT = 200;
+
 /** Shares pending song relationship requests for one MusicKit session. */
 export function createTrackNavigationResolver(
   requireMusic: () => MusicKit.MusicKitInstance,
@@ -141,7 +144,13 @@ export function createTrackNavigationResolver(
       let request = pending.get(key);
       if (!request) {
         request = load(track, source, storefront);
+        pending.delete(key);
         pending.set(key, request);
+        while (pending.size > PENDING_LIMIT) {
+          const oldest = pending.keys().next().value;
+          if (oldest === undefined) break;
+          pending.delete(oldest);
+        }
         void request.catch(() => {
           if (pending.get(key) === request) pending.delete(key);
         });

@@ -49,6 +49,40 @@ function currentIndex(snapshot) {
   return snapshot.queue?.index ?? -1;
 }
 
+const PLAYER_TITLE =
+  'document.querySelector(".player-bar .player-track-copy strong")?.textContent';
+/** Track A and Track C sit before the clicked row (playlist row 4) in playlist order. */
+const BEFORE_CLICKED_ROW_IDS = new Set(["song-a", "song-c"]);
+
+const sameIds = (actual, expected) =>
+  JSON.stringify(actual ?? []) === JSON.stringify(expected);
+/** The same songs in any order: MusicKit's shuffled queue holds the same IDs. */
+const sameSet = (actual, expected) =>
+  sameIds([...(actual ?? [])].sort(), [...expected].sort());
+
+const snapshotOf = (page) =>
+  page.evaluate("return window.__ARLET_E2E_MUSIC__.snapshot();");
+
+/** setQueue transitions in a snapshot, from a transition index on. */
+const setQueuesIn = (snapshot, from = 0) =>
+  snapshot.transitions.slice(from).filter((item) => item.type === "setQueue");
+
+const lastPlay = (snapshot) =>
+  snapshot.transitions.filter((item) => item.type === "play").at(-1);
+
+/** Presses a transport button and waits for MusicKit's queue index to move. */
+async function stepQueue(page, label) {
+  const from = (await snapshotOf(page)).queue.index;
+  await page.evaluate(
+    `document.querySelector('button[aria-label="${label}"]')?.click(); return true;`,
+  );
+  await waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().queue.index !== ${from}`,
+  );
+  return snapshotOf(page);
+}
+
 /** Exercises the real detail rows and player against the injected MusicKit fixture. */
 export async function runPlaylistPlayback({ page, check }) {
   await page.evaluate(`
@@ -97,9 +131,7 @@ export async function runPlaylistPlayback({ page, check }) {
     page,
     `document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Duplicate Occurrence"`,
   );
-  const playlistSnapshot = await page.evaluate(
-    "return window.__ARLET_E2E_MUSIC__.snapshot();",
-  );
+  const playlistSnapshot = await snapshotOf(page);
   const expectedPlaylistIds = [
     "song-a",
     "song-duplicate",
@@ -108,20 +140,32 @@ export async function runPlaylistPlayback({ page, check }) {
     "song-e",
     "song-f",
   ];
+  // Arlet's request: the whole paginated playlist in playlist order, started at
+  // the clicked row (startWith 3), with shuffle on. MusicKit's order is checked
+  // separately below: with shuffle on it reshuffles on setQueue.
+  const playlistRequest = setQueuesIn(playlistSnapshot)[0];
+  const playlistPlay = lastPlay(playlistSnapshot);
   check(
     "middle playlist occurrence keeps the full paginated queue and selects that duplicate",
     playlistStarted &&
       clicked.count >= 4 &&
-      JSON.stringify(ids(playlistSnapshot)) ===
-        JSON.stringify(expectedPlaylistIds) &&
-      currentIndex(playlistSnapshot) === 3,
+      sameIds(playlistRequest?.ids, expectedPlaylistIds) &&
+      playlistRequest?.options?.startWith === 3 &&
+      playlistRequest?.shuffle === true &&
+      sameSet(ids(playlistSnapshot), expectedPlaylistIds) &&
+      playlistSnapshot.queue?.activeId === "song-duplicate" &&
+      playlistPlay?.id === "song-duplicate" &&
+      playlistPlay?.index === currentIndex(playlistSnapshot),
     {
       clicked,
+      request: playlistRequest,
       queue: playlistSnapshot.queue,
       transitions: playlistSnapshot.transitions,
       requests: playlistSnapshot.requests,
     },
   );
+  // The chosen occurrence's index in MusicKit's shuffled queue.
+  const anchorIndex = currentIndex(playlistSnapshot);
 
   await page.evaluate(`
     document.querySelector('button[aria-label="Toggle Playing Next"]')?.click();
@@ -131,6 +175,7 @@ export async function runPlaylistPlayback({ page, check }) {
     page,
     `document.querySelectorAll(".queue-drawer .queue-list li").length === 6`,
   );
+  const drawerSnapshot = await snapshotOf(page);
   const drawer = await page.evaluate(`
     const list = document.querySelector(".queue-drawer .queue-list");
     const rows = [...(list?.querySelectorAll("li") ?? [])];
@@ -138,40 +183,47 @@ export async function runPlaylistPlayback({ page, check }) {
     return {
       count: rows.length,
       activeIndex: active ? rows.indexOf(active.closest("li")) : -1,
+      rowIds: rows.map((row) => row.querySelector("[data-context-id]")?.getAttribute("data-context-id") ?? null),
       titles: rows.map((row) => row.querySelector(".queue-copy strong")?.textContent),
     };
   `);
   check(
-    "Playing Next shows all playlist occurrences in order with the selected occurrence active",
+    "Playing Next shows all playlist occurrences in MusicKit's shuffled order with the selected occurrence active",
     drawerReady &&
-      drawer.activeIndex === 3 &&
+      drawer.count === 6 &&
+      drawer.activeIndex === currentIndex(drawerSnapshot) &&
+      sameIds(drawer.rowIds, ids(drawerSnapshot)) &&
+      sameIds(
+        drawer.titles,
+        drawerSnapshot.queue.items.map((item) => item.title),
+      ) &&
       drawer.titles.filter((title) => title === "Duplicate Occurrence")
         .length === 2,
     drawer,
   );
 
-  const beforeQueueSelect = await page.evaluate(
-    "return window.__ARLET_E2E_MUSIC__.snapshot();",
-  );
+  const beforeQueueSelect = await snapshotOf(page);
+  const thirdTitle = beforeQueueSelect.queue.items[2]?.title;
   await page.evaluate(`
     document.querySelector(".queue-drawer .queue-list li:nth-child(3) .queue-row")?.click();
     return true;
   `);
   const queueSelected = await waitFor(
     page,
-    `document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Track C"`,
+    `window.__ARLET_E2E_MUSIC__.snapshot().transitions.slice(${beforeQueueSelect.transitions.length}).some((item) => item.type === "selectIndex" && item.index === 2)`,
   );
-  const afterQueueSelect = await page.evaluate(
-    "return window.__ARLET_E2E_MUSIC__.snapshot();",
-  );
+  const afterQueueSelect = await snapshotOf(page);
   const queueSelectTransitions = afterQueueSelect.transitions.slice(
     beforeQueueSelect.transitions.length,
+  );
+  const queueSelectedTitle = await page.evaluate(
+    `return ${PLAYER_TITLE} ?? null;`,
   );
   check(
     "clicking Playing Next row 3 of 6 keeps the queue and selects that index",
     queueSelected &&
-      JSON.stringify(ids(afterQueueSelect)) ===
-        JSON.stringify(expectedPlaylistIds) &&
+      queueSelectedTitle === thirdTitle &&
+      sameIds(ids(afterQueueSelect), ids(beforeQueueSelect)) &&
       currentIndex(afterQueueSelect) === 2 &&
       queueSelectTransitions.every((item) => item.type !== "setQueue") &&
       queueSelectTransitions.some(
@@ -179,53 +231,63 @@ export async function runPlaylistPlayback({ page, check }) {
       ),
     { queue: afterQueueSelect.queue, transitions: queueSelectTransitions },
   );
-  // Restore the clicked occurrence so the shuffle checks below stay anchored.
+  // Restore the clicked occurrence (the song the Play started at), so the
+  // shuffle checks below start from it. Drawer rows are in queue order.
   await page.evaluate(`
-    document.querySelector(".queue-drawer .queue-list li:nth-child(4) .queue-row")?.click();
+    document.querySelector(".queue-drawer .queue-list li:nth-child(${anchorIndex + 1}) .queue-row")?.click();
     return true;
   `);
-  await waitFor(
+  const restored = await waitFor(
     page,
-    `document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Duplicate Occurrence"`,
+    `window.__ARLET_E2E_MUSIC__.snapshot().queue.index === ${anchorIndex} && document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Duplicate Occurrence"`,
   );
 
-  await page.evaluate(`
-    document.querySelector('button[aria-label="Next track"]')?.click();
-    return true;
-  `);
-  const nextAdvanced = await waitFor(
-    page,
-    `document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Track C"`,
+  // With shuffle on, Next walks MusicKit's shuffled queue in order. Walk until
+  // it reaches a playlist occurrence before the clicked row (Track A or Track
+  // C, both queued after the chosen occurrence), then Previous returns to it.
+  const repeatAllMode = await page.evaluate(
+    "return window.MusicKit.PlayerRepeatMode.all;",
   );
-  const afterNext = await page.evaluate(
-    "return window.__ARLET_E2E_MUSIC__.snapshot();",
-  );
-  await page.evaluate(`
-    document.querySelector('button[aria-label="Previous track"]')?.click();
-    return true;
-  `);
-  const previousRestored = await waitFor(
-    page,
-    `document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Duplicate Occurrence"`,
-  );
-  const afterPrevious = await page.evaluate(
-    "return window.__ARLET_E2E_MUSIC__.snapshot();",
-  );
+  const walkStart = await snapshotOf(page);
+  let walkEnd = walkStart;
+  let forward = 0;
+  while (
+    forward < walkStart.queue.items.length - 1 &&
+    !BEFORE_CLICKED_ROW_IDS.has(walkEnd.queue.activeId)
+  ) {
+    walkEnd = await stepQueue(page, "Next track");
+    forward += 1;
+  }
+  const reachedBeforeRow = BEFORE_CLICKED_ROW_IDS.has(walkEnd.queue.activeId);
+  let backEnd = walkEnd;
+  for (let step = 0; step < forward; step += 1) {
+    backEnd = await stepQueue(page, "Previous track");
+  }
   check(
     "shuffle can advance to a playlist occurrence before the clicked row and return",
-    nextAdvanced &&
-      previousRestored &&
-      currentIndex(afterNext) === 2 &&
-      currentIndex(afterPrevious) === 3 &&
-      afterPrevious.modes.shuffle === true &&
-      afterPrevious.modes.repeat === 1,
+    restored &&
+      reachedBeforeRow &&
+      forward > 0 &&
+      sameIds(ids(walkEnd), ids(walkStart)) &&
+      setQueuesIn(backEnd, walkStart.transitions.length).length === 0 &&
+      currentIndex(backEnd) === anchorIndex &&
+      backEnd.queue.activeId === "song-duplicate" &&
+      sameIds(ids(backEnd), ids(walkStart)) &&
+      backEnd.modes.shuffle === true &&
+      backEnd.modes.repeat === repeatAllMode,
     {
-      afterNext: afterNext.queue,
-      afterPrevious: afterPrevious.queue,
-      modes: afterPrevious.modes,
+      anchorIndex,
+      forward,
+      walkEnd: walkEnd.queue,
+      backEnd: backEnd.queue,
+      modes: backEnd.modes,
+      transitions: backEnd.transitions.slice(walkStart.transitions.length),
     },
   );
 
+  // Shuffle off: MusicKit unshuffles to playlist order and must keep the
+  // clicked occurrence playing at its playlist position.
+  const offStart = await snapshotOf(page);
   await page.evaluate(`
     document.querySelector('button[aria-label="Toggle shuffle"]')?.click();
     return true;
@@ -234,36 +296,25 @@ export async function runPlaylistPlayback({ page, check }) {
     page,
     `document.querySelector('button[aria-label="Toggle shuffle"]')?.getAttribute("aria-pressed") === "false"`,
   );
-  await page.evaluate(`
-    document.querySelector('button[aria-label="Next track"]')?.click();
-    return true;
-  `);
-  const linearNext = await waitFor(
-    page,
-    `document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Track E"`,
-  );
-  const linearNextSnapshot = await page.evaluate(
-    "return window.__ARLET_E2E_MUSIC__.snapshot();",
-  );
-  await page.evaluate(`
-    document.querySelector('button[aria-label="Previous track"]')?.click();
-    return true;
-  `);
-  const linearPrevious = await waitFor(
-    page,
-    `document.querySelector(".player-bar .player-track-copy strong")?.textContent === "Duplicate Occurrence"`,
-  );
-  const linearPreviousSnapshot = await page.evaluate(
-    "return window.__ARLET_E2E_MUSIC__.snapshot();",
-  );
+  const afterOff = await snapshotOf(page);
+  const offNext = await stepQueue(page, "Next track");
+  const offPrevious = await stepQueue(page, "Previous track");
   check(
     "shuffle off follows playlist order while preserving the clicked occurrence",
     shuffleDisabled &&
-      linearNext &&
-      linearPrevious &&
-      currentIndex(linearNextSnapshot) === 4 &&
-      currentIndex(linearPreviousSnapshot) === 3,
-    { next: linearNextSnapshot.queue, previous: linearPreviousSnapshot.queue },
+      sameIds(ids(afterOff), expectedPlaylistIds) &&
+      currentIndex(afterOff) === 3 &&
+      afterOff.queue.activeId === "song-duplicate" &&
+      offNext.queue.activeId === "song-e" &&
+      currentIndex(offNext) === 4 &&
+      currentIndex(offPrevious) === 3,
+    {
+      before: offStart.queue,
+      afterOff: afterOff.queue,
+      next: offNext.queue,
+      previous: offPrevious.queue,
+      transitions: afterOff.transitions.slice(offStart.transitions.length),
+    },
   );
 
   await page.evaluate(`
@@ -501,16 +552,19 @@ export async function runPlaylistPlayback({ page, check }) {
   const repeatAllAtStart = await page.evaluate(
     "return window.__ARLET_E2E_MUSIC__.snapshot();",
   );
+  // The album started at Track B. As in Apple Music, Repeat All goes on to
+  // the album's first song, not back to the song the Play started at.
   check(
-    "repeat all wraps to the beginning after natural completion",
+    "repeat all goes on to the album's first song after natural completion",
     repeatAllReady &&
-      repeatAllAtStart.transitions.some((item) => item.type === "finishWrap") &&
-      currentIndex(repeatAllAtStart) === 0,
+      repeatAllAtStart.transitions.some((item) => item.type === "finishNext") &&
+      repeatAllAtStart.queue?.activeId === "album-a",
     {
       queue: repeatAllAtStart.queue,
       transitions: repeatAllAtStart.transitions.slice(-3),
     },
   );
+  const repeatAllIndex = currentIndex(repeatAllAtStart);
 
   await page.evaluate(`
     document.querySelector('button[aria-label="Repeat all"]')?.click();
@@ -533,7 +587,8 @@ export async function runPlaylistPlayback({ page, check }) {
       repeatOneSnapshot.transitions.some(
         (item) => item.type === "finishRepeatOne",
       ) &&
-      currentIndex(repeatOneSnapshot) === 0,
+      currentIndex(repeatOneSnapshot) === repeatAllIndex &&
+      repeatOneSnapshot.queue?.activeId === "album-a",
     {
       queue: repeatOneSnapshot.queue,
       transitions: repeatOneSnapshot.transitions.slice(-3),

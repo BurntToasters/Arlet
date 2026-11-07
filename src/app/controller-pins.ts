@@ -1,5 +1,6 @@
 import type { MusicSource, PinnedPlaylist, Playlist } from "../domain/music.ts";
 import type { AppleMusicLibraryClient } from "../musickit/library.ts";
+import { artworkLinkExpired } from "../musickit/normalize.ts";
 import { getState, setPins } from "../state.ts";
 import {
   MAX_PINS,
@@ -51,7 +52,8 @@ export function createControllerPins(
    * Saves each pin's name and artwork, so the sidebar can show a pinned
    * playlist that is not in the loaded playlist list. Uses the loaded list
    * when it has the playlist (also picking up renames) and asks Apple for the
-   * rest. Runs once at a time; needs a signed-in library.
+   * rest, including pins whose saved cover link has expired. Runs once at a
+   * time; needs a signed-in library.
    */
   const resolveDetails = async (): Promise<void> => {
     if (resolvingPins) {
@@ -67,11 +69,30 @@ export function createControllerPins(
       const knownOf = (pin: PinnedPlaylist) =>
         listed.find((item) => item.id === pin.id) as
           { name?: unknown; artwork?: { url?: unknown } } | undefined;
-      // Pins that neither the list nor the saved pin can name. One batched
-      // request per source covers them; any pin it misses is looked up alone.
+      const knownArtworkOf = (pin: PinnedPlaylist): string | undefined => {
+        const url = knownOf(pin)?.artwork?.url;
+        return typeof url === "string" && !artworkLinkExpired(url)
+          ? url
+          : undefined;
+      };
+      // The list's cover link for a pin, when that link has expired.
+      const listedLinkExpired = (pin: PinnedPlaylist): boolean => {
+        const url = knownOf(pin)?.artwork?.url;
+        return typeof url === "string" && artworkLinkExpired(url);
+      };
+      // Pins that neither the list nor the saved pin can name, or that have no
+      // live cover because the list's or the saved link has expired. One
+      // batched request per source covers them; any pin it misses is looked up
+      // alone.
       const needsLookup = pins.filter(
-        (pin) => !knownOf(pin)?.name && !pin.name,
+        (pin) =>
+          (!knownOf(pin)?.name && !pin.name) ||
+          (!knownArtworkOf(pin) &&
+            (listedLinkExpired(pin) ||
+              (pin.artworkUrl !== undefined &&
+                artworkLinkExpired(pin.artworkUrl)))),
       );
+      const lookupIds = new Set(needsLookup.map((pin) => pin.id));
       const batched = new Map<string, Playlist>();
       const batchSources = [...new Set(needsLookup.map((pin) => pin.source))];
       await Promise.all(
@@ -98,32 +119,30 @@ export function createControllerPins(
       for (const pin of pins) {
         const known = knownOf(pin);
         let name = typeof known?.name === "string" ? known.name : undefined;
-        let artworkUrl =
-          typeof known?.artwork?.url === "string"
-            ? known.artwork.url
-            : undefined;
-        if (!name && !pin.name) {
-          const found = batched.get(pin.id);
-          if (found) {
-            name = found.name;
-            artworkUrl = found.artwork?.url;
-          } else {
+        let artworkUrl = knownArtworkOf(pin);
+        // Set when the lookup found the playlist with no cover, so the saved
+        // link is dead. A failed lookup or a missing playlist keeps the link.
+        let coverRemoved = false;
+        if (lookupIds.has(pin.id)) {
+          let found = batched.get(pin.id);
+          if (!found) {
             try {
-              const playlist = await client.getPlaylist(pin.id, pin.source);
-              name = playlist?.name;
-              artworkUrl = playlist?.artwork?.url;
+              found = await client.getPlaylist(pin.id, pin.source);
             } catch (error) {
               log(`Pinned playlist lookup failed: ${safeErrorMessage(error)}`);
             }
           }
+          name ??= found?.name;
+          artworkUrl ??= found?.artwork?.url;
+          coverRemoved = found !== undefined && !artworkUrl;
         }
-        if (
-          (name && name !== pin.name) ||
-          (artworkUrl && artworkUrl !== pin.artworkUrl)
-        ) {
+        const nextArtworkUrl = coverRemoved
+          ? undefined
+          : (artworkUrl ?? pin.artworkUrl);
+        if ((name && name !== pin.name) || nextArtworkUrl !== pin.artworkUrl) {
           updates.set(pin.id, {
             name: name ?? pin.name,
-            artworkUrl: artworkUrl ?? pin.artworkUrl,
+            artworkUrl: nextArtworkUrl,
           });
         }
       }
@@ -156,9 +175,14 @@ export function createControllerPins(
     const trimmed = id.trim();
     if (!trimmed) return;
     const current = getState().pins;
-    const next = current.some((pin) => pin.id === trimmed)
+    const pinned = current.some((pin) => pin.id === trimmed);
+    // Trimming to the limit would silently drop the new pin.
+    if (!pinned && current.length >= MAX_PINS) {
+      throw new Error(`You can pin up to ${MAX_PINS} playlists.`);
+    }
+    const next = pinned
       ? current.filter((pin) => pin.id !== trimmed)
-      : [...current, { id: trimmed, source }].slice(0, MAX_PINS);
+      : [...current, { id: trimmed, source }];
     setPins(next);
     await persistPins(next);
     void resolveDetails();

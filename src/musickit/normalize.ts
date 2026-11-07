@@ -11,6 +11,7 @@ import type {
   Playlist,
   PlaylistFolder,
   PlaylistTrackResourceType,
+  SongInfo,
   Track,
 } from "../domain/music.ts";
 
@@ -292,6 +293,29 @@ function validArtworkUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+// "20261030T210828Z", the AWS signature date format.
+const AMZ_DATE = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/u;
+
+/**
+ * True when `url` is a signed link past its expiry. Apple serves uploaded
+ * playlist covers from such links (`X-Amz-Date` plus `X-Amz-Expires`
+ * seconds, 24 hours), so a saved copy goes dead. Other links never expire.
+ */
+export function artworkLinkExpired(url: string, now = Date.now()): boolean {
+  let params: URLSearchParams;
+  try {
+    params = new URL(url).searchParams;
+  } catch {
+    return false;
+  }
+  const date = AMZ_DATE.exec(params.get("X-Amz-Date") ?? "");
+  const lifetime = Number(params.get("X-Amz-Expires"));
+  if (!date || !Number.isFinite(lifetime)) return false;
+  const [, year, month, day, hour, minute, second] = date.map(Number);
+  const signedAt = Date.UTC(year!, month! - 1, day, hour, minute, second);
+  return now >= signedAt + lifetime * 1000;
 }
 
 /** Fixed sizes for Apple artwork requests so the WebView HTTP cache hits. */
@@ -699,7 +723,7 @@ export function plainTextFromHtml(value: string): string {
 }
 
 /** Apple's `{ short, standard }` notes, or a plain string, as plain text. */
-function editorialText(value: unknown): string | undefined {
+export function editorialText(value: unknown): string | undefined {
   const record = asRecord(value);
   const raw =
     typeof value === "string"
@@ -845,4 +869,64 @@ export function normalizeTrackResource(
     return undefined;
   }
   return normalizeResourceTrack(resource, type);
+}
+
+/** One string field of Apple's response as plain text, or undefined. */
+function plainField(value: unknown): string | undefined {
+  const text = stringValue(value);
+  if (!text) return undefined;
+  return plainTextFromHtml(text) || undefined;
+}
+
+/**
+ * Get Info fields for a catalog song. `album` is the song's album, read with
+ * `include=record-labels`; it supplies the copyright, label, and label ID.
+ */
+export function normalizeSongInfo(
+  song: AppleMusicResource,
+  album?: AppleMusicResource,
+): SongInfo | undefined {
+  const id = resourceId(song);
+  if (!id) return undefined;
+  const attributes = attributesOf(song);
+  const albumAttributes = album ? attributesOf(album) : {};
+  const info: SongInfo = {
+    id,
+    title: plainField(attributes.name) ?? "Unknown Title",
+    artistName: plainField(attributes.artistName) ?? "Unknown Artist",
+    genreNames: stringList(attributes.genreNames)
+      .map((name) => plainTextFromHtml(name))
+      .filter((name) => name !== ""),
+  };
+  const albumTitle = plainField(attributes.albumName);
+  if (albumTitle) info.albumTitle = albumTitle;
+  const composerName = plainField(attributes.composerName);
+  if (composerName) info.composerName = composerName;
+  const isrc = plainField(attributes.isrc);
+  if (isrc) info.isrc = isrc;
+  const durationMs = positiveNumber(attributes.durationInMillis);
+  if (durationMs !== undefined && durationMs > 0) info.durationMs = durationMs;
+  const discNumber = positiveInteger(attributes.discNumber);
+  if (discNumber) info.discNumber = discNumber;
+  const trackNumber = positiveInteger(attributes.trackNumber);
+  if (trackNumber) info.trackNumber = trackNumber;
+  const releaseDate = stringValue(attributes.releaseDate);
+  if (releaseDate && /^\d{4}/u.test(releaseDate)) {
+    info.releaseDate = releaseDate;
+  }
+  const contentRating = stringValue(attributes.contentRating)?.toLowerCase();
+  if (contentRating === "explicit" || contentRating === "clean") {
+    info.contentRating = contentRating;
+  }
+  const copyright = plainField(albumAttributes.copyright);
+  if (copyright) info.copyright = copyright;
+  const recordLabel = plainField(albumAttributes.recordLabel);
+  if (recordLabel) info.recordLabel = recordLabel;
+  if (album) {
+    const recordLabelId = firstResourceId(
+      relationshipData(album, "record-labels"),
+    );
+    if (recordLabelId) info.recordLabelId = recordLabelId;
+  }
+  return info;
 }

@@ -9,6 +9,7 @@ import {
 } from "../library/cache.ts";
 import { createLibraryCacheCoordinator } from "./library-cache-coordinator.ts";
 import { safeNextPath } from "../musickit/response.ts";
+import { loadReplay } from "../musickit/replay.ts";
 import type { MusicSource } from "../domain/music.ts";
 import {
   appendLibraryCollectionItems,
@@ -51,6 +52,12 @@ const MAX_DETAIL_ITEMS = 9_999;
  * stops a cursor that never ends.
  */
 const MAX_LOAD_ALL_PAGES = 500;
+
+/**
+ * Detail request keys kept for stale checks. A newer request for one key
+ * replaces its entry; the oldest keys fall out once the map is past this cap.
+ */
+const DETAIL_REQUEST_LIMIT = 200;
 
 const OFFLINE_MESSAGE =
   "You're offline. Reconnect to load the latest from Apple Music.";
@@ -176,6 +183,20 @@ export function createLibraryLoader(
     { generation: number; load: Promise<void> }
   >();
   const detailRequests = new Map<string, number>();
+  // Every detail request gets a fresh number. A key can leave the map without
+  // its old number being handed out again, so stale continuations stay stale.
+  let detailRequestSequence = 0;
+  const beginDetailRequest = (requestKey: string): number => {
+    detailRequestSequence += 1;
+    detailRequests.delete(requestKey);
+    detailRequests.set(requestKey, detailRequestSequence);
+    while (detailRequests.size > DETAIL_REQUEST_LIMIT) {
+      const oldest = detailRequests.keys().next().value;
+      if (oldest === undefined) break;
+      detailRequests.delete(oldest);
+    }
+    return detailRequestSequence;
+  };
   let homeRequestId = 0;
   const clearLibraryCache = (): Promise<void> =>
     cache.clearLibraryCache(() => {
@@ -449,6 +470,14 @@ export function createLibraryLoader(
       Promise.resolve().then(() =>
         libraryMethod(client, "getRecommendations")(10),
       ),
+      // Replay runs beside the Home shelves. Its failure is logged and reads as
+      // no Replay, so it never fails Home or counts toward its status.
+      Promise.resolve()
+        .then(() => loadReplay(requireMusic()))
+        .catch((error: unknown) => {
+          log(`Replay unavailable: ${safeErrorMessage(error)}`);
+          return undefined;
+        }),
     ]);
     if (!isCurrent()) return;
 
@@ -457,7 +486,10 @@ export function createLibraryLoader(
     let recentPlaylists = current.recentPlaylists;
     let heavyRotation = current.heavyRotation;
     let recommendations = current.recommendations;
-    const [recentResult, heavyResult, recommendationResult] = results;
+    const [recentResult, heavyResult, recommendationResult, replayResult] =
+      results;
+    const replay =
+      replayResult.status === "fulfilled" ? replayResult.value : undefined;
     if (recentResult.status === "fulfilled") {
       successful += 1;
       // Home resources include stations, which HomeState does not type yet.
@@ -496,6 +528,7 @@ export function createLibraryLoader(
       errors,
       lastUpdatedAt: successful > 0 ? updatedAt : current.lastUpdatedAt,
       stale: hasData && successful < 3,
+      replay: replay ?? null,
     });
     if (successful === 0) {
       throw new Error(
@@ -715,12 +748,15 @@ export function createLibraryLoader(
     ) => Promise<{ items: LibraryEntity[]; next?: string }>,
     isCurrent: () => boolean,
     onPage?: (items: LibraryEntity[], next: string | undefined) => void,
-  ): Promise<{ items: LibraryEntity[]; next?: string } | undefined> => {
+  ): Promise<
+    { items: LibraryEntity[]; next?: string; failed?: string } | undefined
+  > => {
     const generation = cache.currentGeneration();
     const cacheSection = detailCacheSection(kind, id, source);
     const cursors = new Set<string>();
     let items = first.items;
     let cursor: string | undefined = followableCursor(first.next);
+    let failure: string | undefined;
     while (cursor && items.length < MAX_DETAIL_ITEMS) {
       if (cursors.has(cursor)) {
         log(`Detail paging stopped: Apple Music repeated a ${kind} page.`);
@@ -731,7 +767,8 @@ export function createLibraryLoader(
       try {
         page = await fetchPage(cursor);
       } catch (error) {
-        log(`Loading more ${kind} songs failed: ${safeErrorMessage(error)}`);
+        failure = safeErrorMessage(error);
+        log(`Loading more ${kind} songs failed: ${failure}`);
         break;
       }
       if (!isCurrent()) return undefined;
@@ -745,6 +782,8 @@ export function createLibraryLoader(
       onPage?.(items, cursor);
     }
     if (!isCurrent()) return undefined;
+    // A partial refresh must not replace the cache or the list already shown.
+    if (failure) return { items, next: cursor, failed: failure };
     try {
       await ensureLibraryCache(generation);
       if (!isCurrent()) return undefined;
@@ -799,8 +838,7 @@ export function createLibraryLoader(
       source === "library" ? requireLibrary() : requireMusicClient();
     const cacheSection = detailCacheSection(kind, id, source);
     const requestKey = detailRequestKey(kind, id, source);
-    const requestId = (detailRequests.get(requestKey) ?? 0) + 1;
-    detailRequests.set(requestKey, requestId);
+    const requestId = beginDetailRequest(requestKey);
     const isCurrent = (): boolean =>
       isAccountCurrent() && detailRequests.get(requestKey) === requestId;
     const labels = detailLabels(kind);
@@ -840,6 +878,19 @@ export function createLibraryLoader(
       }
     } else {
       setLoading();
+      // The cache still supplies the previous list while the refresh runs, so
+      // a failed later page can keep showing it instead of a partial first page.
+      try {
+        await ensureLibraryCache(generation);
+        if (!isAccountCurrent()) return;
+        const cached = await libraryCache.readSection<LibraryEntity>(
+          LIBRARY_CACHE_SCOPE,
+          cacheSection,
+        );
+        if (isCurrent() && cached?.items.length) stalePage = cached;
+      } catch (error) {
+        log(`${labels.read}: ${safeErrorMessage(error)}`);
+      }
     }
     if (!isAccountCurrent()) return;
     try {
@@ -888,6 +939,7 @@ export function createLibraryLoader(
             next,
             lastUpdatedAt: page.updatedAt,
             stale: false,
+            error: undefined,
           },
           id,
           source,
@@ -903,7 +955,21 @@ export function createLibraryLoader(
           isCurrent,
           quiet ? undefined : publish,
         );
-        if (all) publish(all.items, all.next);
+        if (!all) return;
+        if (all.failed) {
+          // The pages already on screen stay; the error note explains why the
+          // full refresh stopped and the cache keeps its last complete list.
+          setLibraryDetailState(
+            kind,
+            stalePage?.items.length
+              ? cachedDetailPatch(kind, stalePage, all.failed)
+              : { error: all.failed },
+            id,
+            source,
+          );
+          return;
+        }
+        publish(all.items, all.next);
       }
     } catch (error) {
       if (!isCurrent()) return;
@@ -1074,8 +1140,7 @@ export function createLibraryLoader(
     const section = `playlist-folder:${id ?? "root"}`;
     const generation = cache.currentGeneration();
     const requestKey = `playlist-folder:${id ?? "root"}`;
-    const requestId = (detailRequests.get(requestKey) ?? 0) + 1;
-    detailRequests.set(requestKey, requestId);
+    const requestId = beginDetailRequest(requestKey);
     const isCurrent = (): boolean =>
       isAccountGenerationCurrent(generation) &&
       detailRequests.get(requestKey) === requestId;

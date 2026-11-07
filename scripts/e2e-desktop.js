@@ -7,8 +7,6 @@
 import { spawnSync } from "node:child_process";
 import { sleep, waitFor as pollFor } from "./e2e-helpers.js";
 
-const PAUSED = 4;
-const PLAYING = 5;
 const FIFTEEN_MINUTES_MS = 15 * 60_000;
 // The 15-minute timer is shortened only while the scenario runs, so the
 // fire path is exercised without waiting a quarter of an hour.
@@ -127,7 +125,7 @@ async function startPlayback(page, songs) {
     return true;`);
   return waitFor(
     page,
-    "window.MusicKit.getInstance().playbackState === " + PLAYING,
+    "window.MusicKit.getInstance().playbackState === window.MusicKit.PlaybackStates.playing",
   );
 }
 
@@ -137,7 +135,7 @@ async function resumePlayback(page) {
   );
   return waitFor(
     page,
-    "window.MusicKit.getInstance().playbackState === " + PLAYING,
+    "window.MusicKit.getInstance().playbackState === window.MusicKit.PlaybackStates.playing",
   );
 }
 
@@ -292,7 +290,7 @@ export async function runDesktop({ page, check }) {
     await new Promise((resolve) => setTimeout(resolve, FAST_TIMER_MS + 700));
     const pausedAfterCancel = (await pauseCount(page)) > beforeCancel;
     const stillPlaying = await page.evaluate(
-      `return window.MusicKit.getInstance().playbackState === ${PLAYING};`,
+      `return window.MusicKit.getInstance().playbackState === window.MusicKit.PlaybackStates.playing;`,
     );
     check(
       "cancelling the sleep timer prevents the pause",
@@ -317,7 +315,7 @@ export async function runDesktop({ page, check }) {
       3000,
     );
     const pausedState = await page.evaluate(
-      `return window.MusicKit.getInstance().playbackState === ${PAUSED};`,
+      `return window.MusicKit.getInstance().playbackState === window.MusicKit.PlaybackStates.paused;`,
     );
     const endCleared = await sleepLabelCleared(page);
     check(
@@ -347,7 +345,7 @@ export async function runDesktop({ page, check }) {
     );
     const continued = await waitFor(
       page,
-      `window.MusicKit.getInstance().playbackState === ${PLAYING} && window.__ARLET_E2E_MUSIC__.snapshot().transitions.some((t) => t.type === "finishAutoplay")`,
+      `window.MusicKit.getInstance().playbackState === window.MusicKit.PlaybackStates.playing && window.__ARLET_E2E_MUSIC__.snapshot().transitions.some((t) => t.type === "finishAutoplay")`,
       3000,
     );
     check("autoplay continues past the queue end when enabled", continued);
@@ -434,13 +432,13 @@ export async function runDesktop({ page, check }) {
     const repeatAll = await emitNative(page, "windows-media-repeat", "all");
     const repeatAllApplied = await waitFor(
       page,
-      "window.__ARLET_E2E_MUSIC__.snapshot().modes.repeat === 1",
+      "window.__ARLET_E2E_MUSIC__.snapshot().modes.repeat === window.MusicKit.PlayerRepeatMode.all",
       3000,
     );
     const repeatOne = await emitNative(page, "windows-media-repeat", "one");
     const repeatOneApplied = await waitFor(
       page,
-      "window.__ARLET_E2E_MUSIC__.snapshot().modes.repeat === 2",
+      "window.__ARLET_E2E_MUSIC__.snapshot().modes.repeat === window.MusicKit.PlayerRepeatMode.one",
       3000,
     );
     await emitNative(page, "windows-media-repeat", "loop");
@@ -453,7 +451,7 @@ export async function runDesktop({ page, check }) {
       3000,
     );
     const unknownRepeatIgnored = await page.evaluate(
-      "return window.__ARLET_E2E_MUSIC__.snapshot().modes.repeat === 2;",
+      "return window.__ARLET_E2E_MUSIC__.snapshot().modes.repeat === window.MusicKit.PlayerRepeatMode.one;",
     );
     await emitNative(page, "windows-media-repeat", "off");
     check(

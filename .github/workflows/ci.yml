@@ -21,7 +21,6 @@ permissions:
 env:
   NODE_VERSION: "26.13.0"
   NPM_VERSION: "12.2.1"
-  RUST_VERSION: "1.98.1"
   CARGO_AUDIT_VERSION: "0.22.2"
 
 jobs:
@@ -53,9 +52,17 @@ jobs:
           cache: npm
       - name: Install npm 12
         run: npm install --global npm@${{ env.NPM_VERSION }} --ignore-scripts
+      - name: Read pinned Rust version
+        id: rust-pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node scripts/rust-toolchain.mjs)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
-          toolchain: ${{ env.RUST_VERSION }}
+          toolchain: ${{ steps.rust-pin.outputs.version }}
           components: rustfmt, clippy
       - name: Install Linux dependencies
         run: |
@@ -94,9 +101,17 @@ jobs:
           cache: npm
       - name: Install npm 12
         run: npm install --global npm@${{ env.NPM_VERSION }} --ignore-scripts
+      - name: Read pinned Rust version
+        id: rust-pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node scripts/rust-toolchain.mjs)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
-          toolchain: ${{ env.RUST_VERSION }}
+          toolchain: ${{ steps.rust-pin.outputs.version }}
           targets: ${{ matrix.target }}
           components: clippy
       - run: npm ci --ignore-scripts
@@ -138,9 +153,17 @@ jobs:
           cache: npm
       - name: Install npm 12
         run: npm install --global npm@${{ env.NPM_VERSION }} --ignore-scripts
+      - name: Read pinned Rust version
+        id: rust-pin
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node scripts/rust-toolchain.mjs)"
+          test -n "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
-          toolchain: ${{ env.RUST_VERSION }}
+          toolchain: ${{ steps.rust-pin.outputs.version }}
       - run: npm ci --ignore-scripts
       - name: npm audit (production)
         run: npm audit --omit=dev --audit-level=high

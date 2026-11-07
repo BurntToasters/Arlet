@@ -39,8 +39,10 @@ export function MediaSessionSync(): JSX.Element | null {
       playbackStatus: playbackStatus === "playing" ? "playing" : "paused",
       playEnabled: playbackStatus !== "playing",
       pauseEnabled: playbackStatus === "playing",
-      // More of a long playlist is still to be added after the last song.
-      nextEnabled: queueIndex < queueLength - 1 || queueRest > 0,
+      // More of a long playlist is still to be added after the last song,
+      // and Repeat All goes on from the last song to the first.
+      nextEnabled:
+        queueIndex < queueLength - 1 || queueRest > 0 || repeatMode === "all",
       // Previous restarts the song or steps back into the playlist, as the
       // in-app button does; a Play always starts at queue index 0.
       previousEnabled: true,

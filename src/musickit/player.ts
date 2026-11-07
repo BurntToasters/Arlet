@@ -1,7 +1,18 @@
 import { asRecord } from "./response.ts";
-import { idSource, isSameTrack, type Track } from "../domain/music.ts";
+import {
+  idSource,
+  isSameTrack,
+  type PlaybackState,
+  type Track,
+} from "../domain/music.ts";
 import { normalizeTrack } from "./normalize.ts";
-import { getState, setCurrentTrack, setQueue } from "../state.ts";
+import {
+  getState,
+  setCurrentTrack,
+  setPlaybackModes,
+  setPlaybackStatus,
+  setQueue,
+} from "../state.ts";
 
 export interface QueueSnapshot {
   items: MusicKit.MediaItem[];
@@ -20,12 +31,19 @@ interface ShuffleModeOverride {
   generation: number;
   enabled: boolean;
   owners: Set<symbol>;
+  /** False once an owner asked for MusicKit's order to be kept on release. */
+  restoreOnRelease: boolean;
 }
 
 interface ShuffleModeState {
   desired: boolean;
   generation: number;
   override?: ShuffleModeOverride;
+  /**
+   * Keep-order lease: MusicKit's shuffleMode stays off so it never reshuffles
+   * the order the user sees, while `desired` keeps reporting shuffle on.
+   */
+  keepOrder: boolean;
 }
 
 const shuffleModeStates = new WeakMap<
@@ -56,12 +74,16 @@ export function latestTransportIntent(): TransportIntent {
 
 /** A tick this close to a seek target confirms that the seek landed. */
 const SEEK_CONFIRM_SECONDS = 1.5;
-/** Longest wait for that tick before ticks are trusted again. */
+/** Longest wait for a seek to finish before its target stops being held. */
+const SEEK_PENDING_MS = 10_000;
+/** After a seek lands, longest wait for a tick to confirm it. */
 const SEEK_HOLD_MS = 3_000;
 
 interface PendingSeek {
   generation: number;
   seconds: number;
+  /** False while seekToTime() is in flight; true once it has resolved. */
+  landed: boolean;
   holdUntil: number;
 }
 
@@ -78,9 +100,20 @@ export function beginSeek(seconds: number, now = Date.now()): number {
   pendingSeek = {
     generation: seekGeneration,
     seconds,
-    holdUntil: now + SEEK_HOLD_MS,
+    landed: false,
+    holdUntil: now + SEEK_PENDING_MS,
   };
   return seekGeneration;
+}
+
+/**
+ * Records that `generation` landed and keeps holding stale ticks for
+ * SEEK_HOLD_MS more. Returns whether it is still the pending seek.
+ */
+export function settleSeek(generation: number, now = Date.now()): boolean {
+  if (pendingSeek?.generation !== generation) return false;
+  pendingSeek = { ...pendingSeek, landed: true, holdUntil: now + SEEK_HOLD_MS };
+  return true;
 }
 
 /**
@@ -99,6 +132,10 @@ export function endSeek(generation?: number): boolean {
 /** The position to show for a playback tick at `position`. */
 export function seekAwarePosition(position: number, now = Date.now()): number {
   if (!pendingSeek) return position;
+  // In flight, only the cap ends the hold; a tick at the target does not.
+  if (!pendingSeek.landed && now <= pendingSeek.holdUntil) {
+    return pendingSeek.seconds;
+  }
   if (
     now > pendingSeek.holdUntil ||
     Math.abs(position - pendingSeek.seconds) <= SEEK_CONFIRM_SECONDS
@@ -116,11 +153,67 @@ function playerRecord(
 }
 
 /**
+ * Song selections Arlet has in flight, per instance. MusicKit stops playback
+ * before it plays the chosen song, and that stop reports as an empty item and
+ * a stopped state. events.ts drops those echoes while a selection is in flight.
+ */
+const selectionsInFlight = new WeakMap<MusicKit.MusicKitInstance, number>();
+
+/** True while an Arlet-initiated song selection on `instance` has not settled. */
+export function isSelectingSong(instance: MusicKit.MusicKitInstance): boolean {
+  return (selectionsInFlight.get(instance) ?? 0) > 0;
+}
+
+function beginSelection(instance: MusicKit.MusicKitInstance): void {
+  selectionsInFlight.set(instance, (selectionsInFlight.get(instance) ?? 0) + 1);
+}
+
+function endSelection(instance: MusicKit.MusicKitInstance): void {
+  const remaining = (selectionsInFlight.get(instance) ?? 0) - 1;
+  if (remaining > 0) selectionsInFlight.set(instance, remaining);
+  else selectionsInFlight.delete(instance);
+}
+
+/**
+ * After a failed selection, the stop or empty item that events.ts dropped is
+ * gone for good, so read the instance once and apply a real stop.
+ */
+function rereadAfterFailedSelection(instance: MusicKit.MusicKitInstance): void {
+  const states = MusicKit.PlaybackStates;
+  const state = instance.playbackState;
+  const stopped =
+    state === states.stopped ||
+    state === states.ended ||
+    state === states.completed;
+  if (!stopped) return;
+  setPlaybackStatus("stopped");
+  if (!instance.nowPlayingItem) setCurrentTrack(undefined);
+}
+
+/**
  * Move within the provider-owned queue without rebuilding it. MusicKit JS
  * exposes this on Player in current runtimes and on the instance in some
  * compatible builds, so keep both shapes behind feature detection.
+ *
+ * Every Arlet song selection goes through here, so the selection is counted
+ * while it runs and its MusicKit stop echo is kept out of the store.
  */
 export async function changeToMediaAtIndex(
+  instance: MusicKit.MusicKitInstance,
+  index: number,
+): Promise<boolean> {
+  beginSelection(instance);
+  try {
+    return await selectInProviderQueue(instance, index);
+  } catch (error) {
+    rereadAfterFailedSelection(instance);
+    throw error;
+  } finally {
+    endSelection(instance);
+  }
+}
+
+async function selectInProviderQueue(
   instance: MusicKit.MusicKitInstance,
   index: number,
 ): Promise<boolean> {
@@ -162,13 +255,66 @@ function writableProperty(
   return key in record;
 }
 
+interface RepeatModeValues {
+  none: number;
+  one: number;
+  all: number;
+}
+
+interface ShuffleModeValues {
+  off: number;
+  songs: number;
+}
+
+/** Live MusicKit v3 numbers, used when the global enum is absent. */
+const FALLBACK_REPEAT_MODE: RepeatModeValues = { none: 0, one: 1, all: 2 };
+const FALLBACK_SHUFFLE_MODE: ShuffleModeValues = { off: 0, songs: 1 };
+
+/** Every key must be an integer; a partial enum is treated as absent. */
+function integerEnum<K extends string>(
+  value: unknown,
+  keys: readonly K[],
+): Record<K, number> | undefined {
+  const record = asRecord(value);
+  if (!record) return undefined;
+  const result = {} as Record<K, number>;
+  for (const key of keys) {
+    const entry = record[key];
+    if (typeof entry !== "number" || !Number.isInteger(entry)) return undefined;
+    result[key] = entry;
+  }
+  return result;
+}
+
 /**
- * MusicKit v3 exposes shuffle as `shuffleMode` (0 off, 1 songs); `shuffle`
- * is write-only there. Older shapes expose a readable `shuffle` boolean.
+ * Repeat numbers MusicKit uses. Live v3 is none 0, one 1, all 2, so reading
+ * the global enum keeps Arlet in step with the runtime that plays the music.
+ */
+function repeatModeValues(): RepeatModeValues {
+  const live =
+    typeof MusicKit === "undefined"
+      ? undefined
+      : integerEnum(MusicKit.PlayerRepeatMode, ["none", "one", "all"]);
+  return live ?? FALLBACK_REPEAT_MODE;
+}
+
+/** Shuffle numbers MusicKit uses: live v3 is off 0, songs 1. */
+function shuffleModeValues(): ShuffleModeValues {
+  const live =
+    typeof MusicKit === "undefined"
+      ? undefined
+      : integerEnum(MusicKit.PlayerShuffleMode, ["off", "songs"]);
+  return live ?? FALLBACK_SHUFFLE_MODE;
+}
+
+/**
+ * MusicKit v3 exposes shuffle as `shuffleMode` (off 0, songs 1, from the
+ * `PlayerShuffleMode` enum); `shuffle` is write-only there. Older shapes
+ * expose a readable `shuffle` boolean.
  */
 function readShuffle(record: Record<string, unknown>): boolean {
   const mode = record.shuffleMode;
-  if (typeof mode === "number") return mode === 1;
+  if (typeof mode === "number") return mode === shuffleModeValues().songs;
   if (typeof mode === "string") return mode === "songs";
   return record.shuffle === true;
 }
@@ -188,6 +334,7 @@ function shuffleModeState(
     state = {
       desired: readShuffle(playerRecord(instance)),
       generation: 0,
+      keepOrder: false,
     };
     shuffleModeStates.set(instance, state);
   }
@@ -200,7 +347,8 @@ function writeShuffleMode(
 ): boolean {
   try {
     if (writableProperty(record, "shuffleMode")) {
-      record.shuffleMode = enabled ? 1 : 0;
+      const values = shuffleModeValues();
+      record.shuffleMode = enabled ? values.songs : values.off;
     } else if (writableProperty(record, "shuffle")) {
       record.shuffle = enabled;
     } else {
@@ -212,6 +360,11 @@ function writeShuffleMode(
   }
 }
 
+/**
+ * Reads shuffle and repeat as Arlet's normalized modes. Live MusicKit v3
+ * reports repeat as a number (none 0, one 1, all 2); string names are
+ * accepted too, with "none" and "off" both meaning no repeat.
+ */
 export function readPlaybackModes(instance: MusicKit.MusicKitInstance): {
   shuffleMode: "off" | "songs";
   repeatMode: NormalizedRepeatMode;
@@ -221,23 +374,32 @@ export function readPlaybackModes(instance: MusicKit.MusicKitInstance): {
   const repeat = record.repeatMode;
   const shuffleState = shuffleModeStates.get(instance);
   const providerShuffle = readShuffle(record);
-  const shuffleMode =
-    shuffleState?.override !== undefined
-      ? shuffleState.desired
-        ? "songs"
-        : "off"
-      : providerShuffle
-        ? "songs"
-        : "off";
-  if (shuffleState && !shuffleState.override) {
+  // An override or keep-order lease holds the provider, so report the desired mode.
+  const held =
+    shuffleState?.override !== undefined || shuffleState?.keepOrder === true;
+  const shuffleMode = held
+    ? shuffleState?.desired
+      ? "songs"
+      : "off"
+    : providerShuffle
+      ? "songs"
+      : "off";
+  if (shuffleState && !held) {
     shuffleState.desired = providerShuffle;
   }
+  const repeatValues = repeatModeValues();
   const repeatMode: NormalizedRepeatMode =
-    repeat === 2 || repeat === "one"
-      ? "one"
-      : repeat === 1 || repeat === "all"
-        ? "all"
-        : "off";
+    typeof repeat === "number"
+      ? repeat === repeatValues.one
+        ? "one"
+        : repeat === repeatValues.all
+          ? "all"
+          : "off"
+      : repeat === "one"
+        ? "one"
+        : repeat === "all"
+          ? "all"
+          : "off";
   return {
     shuffleMode,
     repeatMode,
@@ -267,6 +429,31 @@ export function setAutoplayEnabled(
   }
 }
 
+/** Reads `bitrate` (kbps) from the instance, or undefined when it is not a number. */
+export function readMusicKitBitrate(
+  instance: MusicKit.MusicKitInstance,
+): number | undefined {
+  const value = (instance as unknown as Record<string, unknown>).bitrate;
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : undefined;
+}
+
+/** Writes `bitrate` on the instance; false when the runtime rejects it. */
+export function writeMusicKitBitrate(
+  instance: MusicKit.MusicKitInstance,
+  bitrate: number,
+): boolean {
+  const record = instance as unknown as Record<string, unknown>;
+  if (!writableProperty(record, "bitrate")) return false;
+  try {
+    record.bitrate = bitrate;
+    return record.bitrate === bitrate;
+  } catch {
+    return false;
+  }
+}
+
 export function setShuffleMode(
   instance: MusicKit.MusicKitInstance,
   enabled: boolean,
@@ -277,24 +464,39 @@ export function setShuffleMode(
   if (state.override) {
     // Keep a rebuild's provider override until it releases. Its cleanup reads
     // this latest user choice, never the value from before the rebuild.
+    // Turning shuffle on asks for a shuffle, so the release writes it instead
+    // of holding the edited order.
+    if (enabled && !state.desired) state.override.restoreOnRelease = true;
     state.desired = enabled;
     return true;
   }
-  if (!writeShuffleMode(record, enabled)) return false;
+  // The user's toggle always reaches MusicKit, so it ends a keep-order lease.
+  const keptOrder = state.keepOrder;
+  state.keepOrder = false;
+  if (!writeShuffleMode(record, enabled)) {
+    state.keepOrder = keptOrder;
+    return false;
+  }
   state.desired = enabled;
   return true;
 }
 
 /**
  * Temporarily changes the provider mode while preserving the user's desired
- * mode. The returned release only restores a lease it still owns.
+ * mode. The returned release only restores a lease it still owns. With
+ * `restoreOnRelease: false`, releasing with shuffle on keeps MusicKit's order
+ * (a keep-order lease) instead of writing shuffle on again, which would
+ * reshuffle. Joining owners can only turn restoring off, never on; only the
+ * user turning shuffle on during the override turns it back on.
  */
 export function acquireShuffleModeOverride(
   instance: MusicKit.MusicKitInstance,
   enabled: boolean,
+  options: { restoreOnRelease?: boolean } = {},
 ): (() => void) | undefined {
   const state = shuffleModeState(instance);
   const record = playerRecord(instance);
+  const restoreOnRelease = options.restoreOnRelease ?? true;
   const owner = Symbol("shuffle mode override");
   let override = state.override;
   if (override) {
@@ -303,16 +505,23 @@ export function acquireShuffleModeOverride(
       override.owners.delete(owner);
       return undefined;
     }
+    override.restoreOnRelease = override.restoreOnRelease && restoreOnRelease;
   } else {
-    state.desired = readShuffle(record);
+    // A keep-order lease already holds the user's desired mode. Reading the
+    // provider now would read off and overwrite that desired mode.
+    const keptOrder = state.keepOrder;
+    if (!keptOrder) state.desired = readShuffle(record);
+    state.keepOrder = false;
     override = {
       generation: ++state.generation,
       enabled,
       owners: new Set([owner]),
+      restoreOnRelease,
     };
     state.override = override;
     if (!writeShuffleMode(record, enabled)) {
       if (state.override === override) state.override = undefined;
+      state.keepOrder = keptOrder;
       return undefined;
     }
   }
@@ -326,21 +535,92 @@ export function acquireShuffleModeOverride(
     if (current.owners.size > 0) return;
     state.override = undefined;
     state.generation += 1;
-    writeShuffleMode(playerRecord(instance), state.desired);
+    const release = playerRecord(instance);
+    if (!current.restoreOnRelease && state.desired) {
+      // Hold MusicKit at off so it keeps the order, but still report shuffle on.
+      // The lease is set before the write: a change event read back during the
+      // write must report the desired on, not adopt the provider's transient off.
+      state.keepOrder = true;
+      if (!writeShuffleMode(release, false)) state.keepOrder = false;
+      return;
+    }
+    writeShuffleMode(release, state.desired);
   };
 }
 
-/** Restores the desired mode before a new play inspects or changes a queue. */
+/**
+ * Holds MusicKit's shuffle off while Arlet reports shuffle on, so an
+ * already-shuffled queue keeps its order. Records desired as on. During a
+ * temporary override the override owns the provider, so it is marked to keep
+ * order when released instead of being written now. Returns false when shuffle
+ * is not writable.
+ */
+export function holdProviderShuffleOff(
+  instance: MusicKit.MusicKitInstance,
+): boolean {
+  const record = playerRecord(instance);
+  if (!shuffleWritable(record)) return false;
+  const state = shuffleModeState(instance);
+  if (state.override) {
+    state.override.restoreOnRelease = false;
+    state.desired = true;
+    return true;
+  }
+  // Record the hold before the write: MusicKit's change event can read back
+  // synchronously, and an unheld read would adopt the transient off as desired
+  // and publish it to the UI. A failed write restores the earlier state.
+  const previous = { desired: state.desired, keepOrder: state.keepOrder };
+  state.desired = true;
+  state.keepOrder = true;
+  if (!writeShuffleMode(record, false)) {
+    state.desired = previous.desired;
+    state.keepOrder = previous.keepOrder;
+    return false;
+  }
+  return true;
+}
+
+/** True while a keep-order lease holds MusicKit's shuffle off. */
+export function isProviderShuffleHeldOff(
+  instance: MusicKit.MusicKitInstance,
+): boolean {
+  return shuffleModeStates.get(instance)?.keepOrder === true;
+}
+
+/**
+ * Drops any override or keep-order lease without writing to MusicKit. The
+ * provider keeps its current value, and the next read adopts it as desired.
+ */
+export function dropShuffleOverride(instance: MusicKit.MusicKitInstance): void {
+  const state = shuffleModeStates.get(instance);
+  if (!state) return;
+  if (state.override) {
+    state.override = undefined;
+    state.generation += 1;
+  }
+  state.keepOrder = false;
+}
+
+/**
+ * Restores the desired mode before a new play inspects or changes a queue.
+ * A new play also ends a keep-order lease, so MusicKit can shuffle afresh.
+ */
 export function preparePlaybackModesForPlay(
   instance: MusicKit.MusicKitInstance,
 ): boolean {
   const state = shuffleModeStates.get(instance);
-  if (!state?.override) return true;
+  if (!state || (!state.override && !state.keepOrder)) return true;
   state.override = undefined;
+  state.keepOrder = false;
   state.generation += 1;
   return writeShuffleMode(playerRecord(instance), state.desired);
 }
 
+/**
+ * Writes repeat mode. Numeric runtimes get live MusicKit v3 numbers (all 2,
+ * one 1, none 0), so Repeat All writes 2 and Repeat One writes 1. String
+ * runtimes get "none", "one", or "all".
+ */
 export function setRepeatMode(
   instance: MusicKit.MusicKitInstance,
   mode: NormalizedRepeatMode,
@@ -348,14 +628,17 @@ export function setRepeatMode(
   const record = playerRecord(instance);
   if (!writableProperty(record, "repeatMode")) return false;
   const current = record.repeatMode;
+  const repeatValues = repeatModeValues();
   const value =
     typeof current === "number"
       ? mode === "off"
-        ? 0
+        ? repeatValues.none
         : mode === "all"
-          ? 1
-          : 2
-      : mode;
+          ? repeatValues.all
+          : repeatValues.one
+      : mode === "off"
+        ? "none"
+        : mode;
   try {
     record.repeatMode = value;
     return readPlaybackModes(instance).repeatMode === mode;
@@ -557,6 +840,37 @@ function sameQueueTracks(
   );
 }
 
+/**
+ * Positions of autoplay songs in the snapshot. An item is one when it carries
+ * `isAutoplay`, or is in `queue.autoplayItems` by identity. Copied items fall
+ * back to the autoplay songs' positions in MusicKit's own queue list.
+ */
+function autoplayPositions(
+  instance: MusicKit.MusicKitInstance,
+  items: readonly MusicKit.MediaItem[],
+): Set<number> {
+  const positions = new Set<number>();
+  items.forEach((item, index) => {
+    if (asRecord(item)?.isAutoplay === true) positions.add(index);
+  });
+  const queue = Array.isArray(instance.queue) ? undefined : instance.queue;
+  const autoplay = mediaItems(queue?.autoplayItems);
+  if (!autoplay?.length) return positions;
+  const autoplaySet = new Set<unknown>(autoplay);
+  if (items.some((item) => autoplaySet.has(item))) {
+    items.forEach((item, index) => {
+      if (autoplaySet.has(item)) positions.add(index);
+    });
+    return positions;
+  }
+  const listed = mediaItems(queue?.items) ?? [];
+  if (listed.length !== items.length) return positions;
+  listed.forEach((item, index) => {
+    if (autoplaySet.has(item)) positions.add(index);
+  });
+  return positions;
+}
+
 /** Sync app queue from provider queue. Returns false when runtime hides queue. */
 export function syncMusicKitQueue(
   instance: MusicKit.MusicKitInstance,
@@ -564,6 +878,18 @@ export function syncMusicKitQueue(
 ): boolean {
   const snapshot = readMusicKitQueue(instance, event);
   if (!snapshot) return false;
+  const station = Array.isArray(instance.queue)
+    ? undefined
+    : instance.queue?.hasAutoplayStation;
+  if (
+    typeof station === "boolean" &&
+    getState().playback.autoplayStation !== station
+  ) {
+    // setPlaybackModes is typed for modes, but spreads its patch into state.
+    const patch: Partial<PlaybackState> = { autoplayStation: station };
+    setPlaybackModes(patch);
+  }
+  const autoplay = autoplayPositions(instance, snapshot.items);
   const previous = getState().playback.queue;
   const claimedPrevious = new Set<number>();
   const previousByTrackId = new Map<string, number[]>();
@@ -577,6 +903,7 @@ export function syncMusicKitQueue(
   });
   const tracks = snapshot.items.map((item, index) => {
     const normalized = normalizeTrack(item);
+    if (autoplay.has(index)) normalized.autoplay = true;
     const samePosition = previous[index];
     let previousIndex =
       samePosition &&

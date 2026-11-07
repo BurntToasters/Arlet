@@ -34,6 +34,7 @@ import { reportActionError } from "../components/action-errors.ts";
 import {
   SEARCH_GROUP_KINDS,
   SEARCH_OVERVIEW_LIMIT,
+  type PagedSearchGroupKind,
   type SearchGroupKind,
   type SearchItem,
 } from "../musickit/search.ts";
@@ -42,6 +43,7 @@ import {
   clearRecentSearches,
   removeRecentSearch,
 } from "../state.ts";
+import { serializeRoute } from "../routing/router.ts";
 
 export function trackContextData(track: Track): Record<string, string> {
   return {
@@ -112,7 +114,21 @@ const GROUP_TITLES: Record<SearchGroupKind, string> = {
   playlists: "Playlists",
   stations: "Stations",
   curators: "Curators",
+  "record-labels": "Record Labels",
+  activities: "Activities",
 };
+
+/** Hash link to a record label or activity page; undefined for other results. */
+function overviewHref(item: SearchItem): string | undefined {
+  switch (item.kind) {
+    case "record-labels":
+      return serializeRoute({ kind: "label", id: item.recordLabel.id });
+    case "activities":
+      return serializeRoute({ kind: "activity", id: item.activity.id });
+    default:
+      return undefined;
+  }
+}
 
 /** Waits this long after a keystroke before asking for suggestions. */
 const SUGGESTION_DELAY_MS = 150;
@@ -207,6 +223,22 @@ function displayFor(item: SearchItem): {
         artwork: item.curator.artwork,
         contextData: {},
       };
+    case "record-labels":
+      return {
+        title: item.recordLabel.name,
+        subtitle: "Record label",
+        kindLabel: "Record Label",
+        artwork: item.recordLabel.artwork,
+        contextData: {},
+      };
+    case "activities":
+      return {
+        title: item.activity.name,
+        subtitle: "Activity",
+        kindLabel: "Activity",
+        artwork: item.activity.artwork,
+        contextData: {},
+      };
   }
 }
 
@@ -285,7 +317,7 @@ export function SearchView(): JSX.Element {
   const [term, setTerm] = useState(routeQuery);
   const [popupOpen, setPopupOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
-  const [expanded, setExpanded] = useState<SearchGroupKind | undefined>();
+  const [expanded, setExpanded] = useState<PagedSearchGroupKind | undefined>();
   const debounceTimer = useRef<number | undefined>(undefined);
   const suggestTimer = useRef<number | undefined>(undefined);
   // The term the last search ran for, so picking a suggestion does not
@@ -305,7 +337,9 @@ export function SearchView(): JSX.Element {
     groups.artists.length +
     groups.playlists.length +
     groups.stations.length +
-    groups.curators.length;
+    groups.curators.length +
+    (groups.recordLabels?.length ?? 0) +
+    (groups.activities?.length ?? 0);
   const groupError = groups.status === "error";
   const trimmedTerm = term.trim();
   const suggesting = source === "catalog" && canPlay;
@@ -359,6 +393,8 @@ export function SearchView(): JSX.Element {
           : undefined;
       case "artists":
       case "curators":
+      case "record-labels":
+      case "activities":
         return undefined;
     }
   };
@@ -398,6 +434,13 @@ export function SearchView(): JSX.Element {
           curatorKind: "apple",
         });
         return;
+      case "record-labels":
+      case "activities": {
+        // Hash routes, so the router's hashchange listener opens the page.
+        const href = overviewHref(item);
+        if (href) window.location.hash = href.slice(1);
+        return;
+      }
     }
   };
 
@@ -580,7 +623,7 @@ export function SearchView(): JSX.Element {
     }
   };
 
-  const openSeeAll = (kind: SearchGroupKind): void => {
+  const openSeeAll = (kind: PagedSearchGroupKind): void => {
     setExpanded(kind);
     if (groups.paging[kind]?.status === "idle") {
       void controller.loadMoreSearch(kind);
@@ -692,10 +735,63 @@ export function SearchView(): JSX.Element {
             ))}
           </div>
         );
+      case "record-labels":
+        return (
+          <div className="home-discovery-grid">
+            {shown(groups.recordLabels ?? []).map((label) => (
+              <SearchTile
+                key={label.id}
+                title={label.name}
+                subtitle="Record label"
+                kindLabel="Record Label"
+                artwork={label.artwork}
+                href={serializeRoute({ kind: "label", id: label.id })}
+              />
+            ))}
+          </div>
+        );
+      case "activities":
+        return (
+          <div className="home-discovery-grid">
+            {shown(groups.activities ?? []).map((activity) => (
+              <SearchTile
+                key={activity.id}
+                title={activity.name}
+                subtitle="Activity"
+                kindLabel="Activity"
+                artwork={activity.artwork}
+                href={serializeRoute({ kind: "activity", id: activity.id })}
+              />
+            ))}
+          </div>
+        );
     }
   };
 
-  const groupSection = (kind: SearchGroupKind): JSX.Element | null => {
+  /** Overview-only groups: first page only, no "See all" page. */
+  const overviewSection = (
+    kind: "record-labels" | "activities",
+  ): JSX.Element | null => {
+    const count =
+      kind === "record-labels"
+        ? (groups.recordLabels?.length ?? 0)
+        : (groups.activities?.length ?? 0);
+    if (!count) return null;
+    return (
+      <section
+        className="home-feed-section"
+        aria-labelledby={`search-${kind}-heading`}
+        data-search-group={kind}
+      >
+        <div className="section-heading">
+          <h2 id={`search-${kind}-heading`}>{GROUP_TITLES[kind]}</h2>
+        </div>
+        {groupItems(kind, SEARCH_OVERVIEW_LIMIT)}
+      </section>
+    );
+  };
+
+  const groupSection = (kind: PagedSearchGroupKind): JSX.Element | null => {
     if (!groups[kind].length) return null;
     const seeAll =
       source === "catalog" ? (
@@ -737,7 +833,7 @@ export function SearchView(): JSX.Element {
     );
   };
 
-  const seeAllView = (kind: SearchGroupKind): JSX.Element => {
+  const seeAllView = (kind: PagedSearchGroupKind): JSX.Element => {
     const paging = groups.paging[kind];
     const count = groups[kind].length;
     return (
@@ -979,12 +1075,15 @@ export function SearchView(): JSX.Element {
                       contextData={topDisplay.contextData}
                       featured
                       menu={Object.keys(topDisplay.contextData).length > 0}
+                      href={overviewHref(top)}
                       onOpen={() => openItem(top)}
                       onPlay={playItem(top)}
                     />
                   </section>
                 ) : null}
                 {SEARCH_GROUP_KINDS.map((kind) => groupSection(kind))}
+                {overviewSection("record-labels")}
+                {overviewSection("activities")}
               </div>
             )}
           </div>
