@@ -1,12 +1,4 @@
-import {
-  AlertCircle,
-  ArrowLeft,
-  Disc3,
-  ListMusic,
-  LoaderCircle,
-  Search as SearchIcon,
-  UserRound,
-} from "lucide-preact";
+import { AlertCircle, LoaderCircle, Search as SearchIcon } from "lucide-preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { JSX, TargetedEvent } from "preact";
 import {
@@ -14,28 +6,13 @@ import {
   useAppRouter,
   useAppSlices,
 } from "../app/context.tsx";
-import { Artwork } from "../components/Artwork.tsx";
-import { SongRow } from "../components/SongRow.tsx";
-import { CardActions, CardShell } from "../components/CardActions.tsx";
-import { CuratorSearchTile, SearchTile } from "../components/SearchCards.tsx";
-import {
-  SearchSuggestions,
-  type SearchSuggestionOption,
-} from "../components/SearchSuggestions.tsx";
+import { SearchSuggestions } from "../components/SearchSuggestions.tsx";
+import { SearchTile } from "../components/SearchCards.tsx";
 import { EmptyState } from "./EmptyState.tsx";
-import type {
-  Album,
-  Artist,
-  Artwork as ArtworkData,
-  Playlist,
-  Track,
-} from "../domain/music.ts";
 import { reportActionError } from "../components/action-errors.ts";
 import {
   SEARCH_GROUP_KINDS,
-  SEARCH_OVERVIEW_LIMIT,
   type PagedSearchGroupKind,
-  type SearchGroupKind,
   type SearchItem,
 } from "../musickit/search.ts";
 import {
@@ -43,270 +20,23 @@ import {
   clearRecentSearches,
   removeRecentSearch,
 } from "../state.ts";
-import { serializeRoute } from "../routing/router.ts";
+import {
+  SEARCH_DELAY_MS,
+  SUGGESTION_DELAY_MS,
+  displayFor,
+  overviewHref,
+  type PopupOption,
+} from "./search-view-model.ts";
+import type { SearchGroupsContext } from "./search-view-groups.tsx";
+import {
+  groupSection,
+  overviewSection,
+  seeAllView,
+} from "./search-view-sections.tsx";
+import { SearchSourceTabs } from "./search-view-tabs.tsx";
 
-export function trackContextData(track: Track): Record<string, string> {
-  return {
-    "data-context-kind": "track",
-    "data-context-id": track.id,
-    "data-context-title": track.title,
-    "data-context-artist": track.artistName,
-    ...(track.albumTitle ? { "data-context-album": track.albumTitle } : {}),
-    ...(track.artwork?.url
-      ? { "data-context-artwork": track.artwork.url }
-      : {}),
-    ...(track.resourceType
-      ? { "data-context-resource-type": track.resourceType }
-      : {}),
-    ...(track.catalogId ? { "data-context-catalog-id": track.catalogId } : {}),
-  };
-}
-
-export function TrackRow({
-  track,
-  index,
-  onPlay,
-  onPlayNext,
-  disabled,
-}: {
-  track: Track;
-  index: number;
-  onPlay: () => void;
-  onPlayNext?: () => void;
-  disabled: boolean;
-}): JSX.Element {
-  return (
-    <SongRow
-      track={track}
-      index={index}
-      onPlay={onPlay}
-      onPlayNext={onPlayNext}
-      disabled={disabled}
-      rowClassName="search-row"
-      numberClassName="search-row-number"
-      copyClassName="search-row-copy"
-      durationClassName="search-row-duration"
-      contextData={trackContextData(track)}
-    />
-  );
-}
-
-function itemTrack(item: Album | Artist | Playlist): Track {
-  return {
-    id: item.id,
-    title: "name" in item ? item.name : item.title,
-    artistName: "artistName" in item ? item.artistName : "Apple Music",
-    artwork: item.artwork,
-    resourceType: item.resourceType,
-  };
-}
-
-/** Search tabs in display order; the panel below follows the active one. */
-const SEARCH_SOURCES = [
-  { id: "catalog", label: "Apple Music" },
-  { id: "library", label: "Your Library" },
-] as const;
-
-const GROUP_TITLES: Record<SearchGroupKind, string> = {
-  songs: "Songs",
-  albums: "Albums",
-  artists: "Artists",
-  playlists: "Playlists",
-  stations: "Stations",
-  curators: "Curators",
-  "record-labels": "Record Labels",
-  activities: "Activities",
-};
-
-/** Hash link to a record label or activity page; undefined for other results. */
-function overviewHref(item: SearchItem): string | undefined {
-  switch (item.kind) {
-    case "record-labels":
-      return serializeRoute({ kind: "label", id: item.recordLabel.id });
-    case "activities":
-      return serializeRoute({ kind: "activity", id: item.activity.id });
-    default:
-      return undefined;
-  }
-}
-
-/** Waits this long after a keystroke before asking for suggestions. */
-const SUGGESTION_DELAY_MS = 150;
-/** Waits this long after a keystroke before the results search runs. */
-const SEARCH_DELAY_MS = 250;
-
-interface PopupOption extends SearchSuggestionOption {
-  run(): void;
-}
-
-function routeContextData(
-  kind: "album" | "artist" | "playlist",
-  id: string,
-  title: string,
-): Record<string, string> {
-  return {
-    "data-context-kind": kind,
-    "data-context-id": id,
-    "data-context-title": title,
-    "data-context-route-kind": kind,
-    "data-context-source": "catalog",
-  };
-}
-
-/** Text, artwork, and context-menu data for a catalog result. */
-function displayFor(item: SearchItem): {
-  title: string;
-  subtitle: string;
-  kindLabel: string;
-  artwork?: ArtworkData;
-  catalogUrl?: string;
-  contextData: Record<string, string>;
-} {
-  switch (item.kind) {
-    case "songs":
-      return {
-        title: item.track.title,
-        subtitle: item.track.artistName,
-        kindLabel: "Song",
-        artwork: item.track.artwork,
-        catalogUrl: item.track.catalogUrl,
-        contextData: trackContextData(item.track),
-      };
-    case "albums":
-      return {
-        title: item.album.title,
-        subtitle: item.album.artistName,
-        kindLabel: "Album",
-        artwork: item.album.artwork,
-        catalogUrl: item.album.catalogUrl,
-        contextData: routeContextData("album", item.album.id, item.album.title),
-      };
-    case "artists":
-      return {
-        title: item.artist.name,
-        subtitle: "Artist",
-        kindLabel: "Artist",
-        artwork: item.artist.artwork,
-        catalogUrl: item.artist.catalogUrl,
-        contextData: routeContextData(
-          "artist",
-          item.artist.id,
-          item.artist.name,
-        ),
-      };
-    case "playlists":
-      return {
-        title: item.playlist.name,
-        subtitle: item.playlist.curatorName ?? "Playlist",
-        kindLabel: "Playlist",
-        artwork: item.playlist.artwork,
-        catalogUrl: item.playlist.catalogUrl,
-        contextData: routeContextData(
-          "playlist",
-          item.playlist.id,
-          item.playlist.name,
-        ),
-      };
-    case "stations":
-      return {
-        title: item.station.name,
-        subtitle: item.station.isLive ? "Live radio" : "Station",
-        kindLabel: "Station",
-        artwork: item.station.artwork,
-        contextData: {},
-      };
-    case "curators":
-      return {
-        title: item.curator.name,
-        subtitle: "Curator",
-        kindLabel: "Curator",
-        artwork: item.curator.artwork,
-        contextData: {},
-      };
-    case "record-labels":
-      return {
-        title: item.recordLabel.name,
-        subtitle: "Record label",
-        kindLabel: "Record Label",
-        artwork: item.recordLabel.artwork,
-        contextData: {},
-      };
-    case "activities":
-      return {
-        title: item.activity.name,
-        subtitle: "Activity",
-        kindLabel: "Activity",
-        artwork: item.activity.artwork,
-        contextData: {},
-      };
-  }
-}
-
-function ResourceCard({
-  item,
-  kind,
-  source,
-  canPlay,
-}: {
-  item: Album | Artist | Playlist;
-  kind: "album" | "artist" | "playlist";
-  source: "catalog" | "library";
-  canPlay: boolean;
-}): JSX.Element {
-  const router = useAppRouter();
-  const controller = useAppController();
-  const track = itemTrack(item);
-  const title = track.title;
-  const Icon =
-    kind === "artist" ? UserRound : kind === "album" ? Disc3 : ListMusic;
-  // Artists have no collection playback, so only albums and playlists get Play.
-  const collectionKind = kind === "artist" ? undefined : kind;
-  const playable = !("playable" in item && item.playable === false);
-  return (
-    <CardShell
-      contextData={{
-        "data-context-kind": kind,
-        "data-context-id": item.id,
-        "data-context-title": title,
-        "data-context-route-kind": kind,
-        "data-context-source": source,
-      }}
-      catalogUrl={item.catalogUrl}
-    >
-      <button
-        className="home-discovery-card"
-        type="button"
-        onClick={() => router.navigate({ kind, id: item.id, source })}
-      >
-        <Artwork
-          track={track}
-          size="lg"
-          alt={`${title} artwork`}
-          className="home-discovery-art"
-        />
-        {track.artwork ? null : <Icon aria-hidden="true" />}
-        <span className="home-discovery-copy">
-          <strong title={title}>{title}</strong>
-          <small>{track.artistName}</small>
-        </span>
-        <span className="home-discovery-source">
-          {source === "library" ? "Library" : "Apple Music"}
-        </span>
-      </button>
-      <CardActions
-        title={title}
-        onPlay={
-          collectionKind && playable && canPlay
-            ? () =>
-                void Promise.resolve(
-                  controller.playCollection(collectionKind, item.id, source, 0),
-                ).catch(reportActionError)
-            : undefined
-        }
-      />
-    </CardShell>
-  );
-}
+export { trackContextData } from "./search-view-model.ts";
+export { TrackRow } from "./search-view-rows.tsx";
 
 export function SearchView(): JSX.Element {
   const state = useAppSlices("auth", "initialization", "navigation", "search");
@@ -343,6 +73,12 @@ export function SearchView(): JSX.Element {
   const groupError = groups.status === "error";
   const trimmedTerm = term.trim();
   const suggesting = source === "catalog" && canPlay;
+  const groupsContext: SearchGroupsContext = {
+    groups,
+    source,
+    canPlay,
+    controller,
+  };
 
   const runSearch = (value: string): void => {
     const trimmed = value.trim();
@@ -566,28 +302,6 @@ export function SearchView(): JSX.Element {
     controller.setSearchSource(next);
   };
 
-  // Arrow keys, Home and End move and activate a tab, as in the tabs pattern.
-  const onSourceTabKeyDown = (event: KeyboardEvent): void => {
-    const current = SEARCH_SOURCES.findIndex((tab) => tab.id === source);
-    const count = SEARCH_SOURCES.length;
-    const next =
-      event.key === "ArrowRight"
-        ? (current + 1) % count
-        : event.key === "ArrowLeft"
-          ? (current - 1 + count) % count
-          : event.key === "Home"
-            ? 0
-            : event.key === "End"
-              ? count - 1
-              : undefined;
-    if (next === undefined) return;
-    event.preventDefault();
-    const tab = SEARCH_SOURCES[next];
-    if (!tab) return;
-    selectSource(tab.id);
-    tabRefs.current[next]?.focus();
-  };
-
   // Combobox keys: Up/Down move through the popup, Enter picks, Escape closes,
   // and Delete removes the active recent search. Other keys type as usual.
   const onSearchKeyDown = (event: KeyboardEvent): void => {
@@ -628,259 +342,6 @@ export function SearchView(): JSX.Element {
     if (groups.paging[kind]?.status === "idle") {
       void controller.loadMoreSearch(kind);
     }
-  };
-
-  /** Rows or cards for one group; the overview caps it, See all does not. */
-  const groupItems = (kind: SearchGroupKind, limit?: number): JSX.Element => {
-    const shown = <T,>(items: T[]): T[] =>
-      limit === undefined ? items : items.slice(0, limit);
-    switch (kind) {
-      case "songs":
-        return (
-          <ol className="search-results-list">
-            {shown(groups.songs).map((track, index) => (
-              <TrackRow
-                key={track.id}
-                track={track}
-                index={index}
-                disabled={!canPlay}
-                onPlay={() =>
-                  void controller.playFromSearch(index).catch(reportActionError)
-                }
-                onPlayNext={() =>
-                  void controller
-                    .playNextTracks([track])
-                    .catch(reportActionError)
-                }
-              />
-            ))}
-          </ol>
-        );
-      case "albums":
-        return (
-          <div className="home-discovery-grid">
-            {shown(groups.albums).map((item) => (
-              <ResourceCard
-                key={item.id}
-                item={item}
-                kind="album"
-                source={source}
-                canPlay={canPlay}
-              />
-            ))}
-          </div>
-        );
-      case "artists":
-        return (
-          <div className="home-discovery-grid">
-            {shown(groups.artists).map((item) => (
-              <ResourceCard
-                key={item.id}
-                item={item}
-                kind="artist"
-                source={source}
-                canPlay={canPlay}
-              />
-            ))}
-          </div>
-        );
-      case "playlists":
-        return (
-          <div className="home-discovery-grid">
-            {shown(groups.playlists).map((item) => (
-              <ResourceCard
-                key={item.id}
-                item={item}
-                kind="playlist"
-                source={source}
-                canPlay={canPlay}
-              />
-            ))}
-          </div>
-        );
-      case "stations":
-        return (
-          <div className="home-discovery-grid">
-            {shown(groups.stations).map((station) => {
-              const play =
-                canPlay && station.url
-                  ? () =>
-                      void Promise.resolve(
-                        controller.playStation(station),
-                      ).catch(reportActionError)
-                  : undefined;
-              return (
-                <SearchTile
-                  key={station.id}
-                  title={station.name}
-                  subtitle={
-                    station.isLive
-                      ? "Live radio"
-                      : (station.description ?? "Station")
-                  }
-                  kindLabel="Station"
-                  artwork={station.artwork}
-                  onOpen={play}
-                  onPlay={play}
-                />
-              );
-            })}
-          </div>
-        );
-      case "curators":
-        return (
-          <div className="home-discovery-grid">
-            {shown(groups.curators).map((curator) => (
-              <CuratorSearchTile key={curator.id} curator={curator} />
-            ))}
-          </div>
-        );
-      case "record-labels":
-        return (
-          <div className="home-discovery-grid">
-            {shown(groups.recordLabels ?? []).map((label) => (
-              <SearchTile
-                key={label.id}
-                title={label.name}
-                subtitle="Record label"
-                kindLabel="Record Label"
-                artwork={label.artwork}
-                href={serializeRoute({ kind: "label", id: label.id })}
-              />
-            ))}
-          </div>
-        );
-      case "activities":
-        return (
-          <div className="home-discovery-grid">
-            {shown(groups.activities ?? []).map((activity) => (
-              <SearchTile
-                key={activity.id}
-                title={activity.name}
-                subtitle="Activity"
-                kindLabel="Activity"
-                artwork={activity.artwork}
-                href={serializeRoute({ kind: "activity", id: activity.id })}
-              />
-            ))}
-          </div>
-        );
-    }
-  };
-
-  /** Overview-only groups: first page only, no "See all" page. */
-  const overviewSection = (
-    kind: "record-labels" | "activities",
-  ): JSX.Element | null => {
-    const count =
-      kind === "record-labels"
-        ? (groups.recordLabels?.length ?? 0)
-        : (groups.activities?.length ?? 0);
-    if (!count) return null;
-    return (
-      <section
-        className="home-feed-section"
-        aria-labelledby={`search-${kind}-heading`}
-        data-search-group={kind}
-      >
-        <div className="section-heading">
-          <h2 id={`search-${kind}-heading`}>{GROUP_TITLES[kind]}</h2>
-        </div>
-        {groupItems(kind, SEARCH_OVERVIEW_LIMIT)}
-      </section>
-    );
-  };
-
-  const groupSection = (kind: PagedSearchGroupKind): JSX.Element | null => {
-    if (!groups[kind].length) return null;
-    const seeAll =
-      source === "catalog" ? (
-        <button
-          className="search-see-all"
-          type="button"
-          aria-label={`See all ${GROUP_TITLES[kind].toLowerCase()}`}
-          onClick={() => openSeeAll(kind)}
-        >
-          See all
-        </button>
-      ) : null;
-    const heading = <h2 id={`search-${kind}-heading`}>{GROUP_TITLES[kind]}</h2>;
-    if (kind === "songs") {
-      return (
-        <section
-          className="search-results-panel"
-          aria-labelledby="search-songs-heading"
-        >
-          <div className="results-toolbar">
-            {heading}
-            {seeAll}
-          </div>
-          {groupItems(kind, SEARCH_OVERVIEW_LIMIT)}
-        </section>
-      );
-    }
-    return (
-      <section
-        className="home-feed-section"
-        aria-labelledby={`search-${kind}-heading`}
-      >
-        <div className="section-heading">
-          {heading}
-          {seeAll}
-        </div>
-        {groupItems(kind, SEARCH_OVERVIEW_LIMIT)}
-      </section>
-    );
-  };
-
-  const seeAllView = (kind: PagedSearchGroupKind): JSX.Element => {
-    const paging = groups.paging[kind];
-    const count = groups[kind].length;
-    return (
-      <section
-        className="search-see-all-view"
-        aria-labelledby="search-see-all-heading"
-      >
-        <div className="section-heading search-see-all-heading">
-          <button
-            className="secondary-button"
-            type="button"
-            onClick={() => setExpanded(undefined)}
-          >
-            <ArrowLeft aria-hidden="true" size={16} /> Back to results
-          </button>
-          <h2 id="search-see-all-heading">{GROUP_TITLES[kind]}</h2>
-        </div>
-        {count ? groupItems(kind) : null}
-        {paging?.status === "loading" ? (
-          <div className="search-feedback" role="status">
-            <LoaderCircle className="spin" size={22} /> Loading more…
-          </div>
-        ) : null}
-        {paging?.status === "error" ? (
-          <p className="library-stale-note" role="alert">
-            More {GROUP_TITLES[kind].toLowerCase()} could not be loaded:{" "}
-            {paging.error ?? "Try again in a moment."}
-          </p>
-        ) : null}
-        {paging && (paging.status === "idle" || paging.status === "error") ? (
-          <div className="search-see-all-more">
-            <button
-              className="secondary-button"
-              type="button"
-              onClick={() => void controller.loadMoreSearch(kind)}
-            >
-              Load more
-            </button>
-          </div>
-        ) : null}
-        {paging?.status === "done" ? (
-          <p className="search-see-all-end">
-            All {count} {GROUP_TITLES[kind].toLowerCase()} are shown.
-          </p>
-        ) : null}
-      </section>
-    );
   };
 
   const top = source === "catalog" ? groups.top : undefined;
@@ -979,34 +440,11 @@ export function SearchView(): JSX.Element {
         />
       ) : (
         <>
-          <div
-            className="search-source-tabs"
-            role="tablist"
-            aria-label="Search source"
-            onKeyDown={onSourceTabKeyDown}
-          >
-            {SEARCH_SOURCES.map((tab, index) => {
-              const selected = source === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  ref={(node) => {
-                    tabRefs.current[index] = node;
-                  }}
-                  id={`search-source-tab-${tab.id}`}
-                  className={selected ? "is-active" : ""}
-                  type="button"
-                  role="tab"
-                  aria-selected={selected}
-                  aria-controls="search-source-panel"
-                  tabIndex={selected ? 0 : -1}
-                  onClick={() => selectSource(tab.id)}
-                >
-                  {tab.label}
-                </button>
-              );
-            })}
-          </div>
+          <SearchSourceTabs
+            source={source}
+            tabRefs={tabRefs}
+            onSelect={selectSource}
+          />
           <div
             id="search-source-panel"
             className="search-source-panel"
@@ -1048,7 +486,7 @@ export function SearchView(): JSX.Element {
                 compact
               />
             ) : expanded && source === "catalog" ? (
-              seeAllView(expanded)
+              seeAllView(groupsContext, expanded, () => setExpanded(undefined))
             ) : (
               <div className="search-groups">
                 {groupError ? (
@@ -1081,9 +519,11 @@ export function SearchView(): JSX.Element {
                     />
                   </section>
                 ) : null}
-                {SEARCH_GROUP_KINDS.map((kind) => groupSection(kind))}
-                {overviewSection("record-labels")}
-                {overviewSection("activities")}
+                {SEARCH_GROUP_KINDS.map((kind) =>
+                  groupSection(groupsContext, kind, openSeeAll),
+                )}
+                {overviewSection(groupsContext, "record-labels")}
+                {overviewSection(groupsContext, "activities")}
               </div>
             )}
           </div>

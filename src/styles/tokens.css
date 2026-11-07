@@ -2,6 +2,7 @@
   color-scheme: light;
   --font-ui: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
   --font-mono: "Cascadia Mono", Consolas, monospace;
+  --content-max: 1180px;
   --accent: #f06b58;
   --accent-strong: #dd513e;
   --accent-soft: color-mix(in srgb, var(--accent) 15%, transparent);

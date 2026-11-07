@@ -10,6 +10,7 @@ import { useAppController, useAppSlices } from "../app/context.tsx";
 import type { Track } from "../domain/music.ts";
 import type { LibraryEntity } from "../state.ts";
 import { reportActionError, reportNotice } from "./action-errors.ts";
+import { useModalDialog } from "./use-modal-dialog.ts";
 import {
   PLAYLIST_DIALOG_REQUEST,
   type PlaylistDialogMode,
@@ -195,9 +196,6 @@ export function PlaylistDialogs(): JSX.Element | null {
   const dialogGeneration = useRef(0);
   const isOpenDialog = (generation: number): boolean =>
     dialogGeneration.current === generation;
-  // The Escape handler is registered per dialog, but must always run the
-  // current closeDialog, which reads the open dialog's focus target.
-  const closeDialogRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     const onRequest = (event: Event): void => {
@@ -297,46 +295,19 @@ export function PlaylistDialogs(): JSX.Element | null {
     };
   }, [availablePlaylists, controller, dialog, query]);
 
-  useEffect(() => {
-    if (!dialog) return undefined;
-    const focusableSelector =
-      "a[href], button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex='-1'])";
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        closeDialogRef.current();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const focusable = Array.from(
-        dialogRef.current?.querySelectorAll<HTMLElement>(focusableSelector) ??
-          [],
-      );
-      if (!focusable.length) return;
-      const currentIndex = focusable.indexOf(
-        document.activeElement as HTMLElement,
-      );
-      const nextIndex = event.shiftKey
-        ? currentIndex <= 0
-          ? focusable.length - 1
-          : currentIndex - 1
-        : currentIndex < 0 || currentIndex === focusable.length - 1
-          ? 0
-          : currentIndex + 1;
-      event.preventDefault();
-      focusable[nextIndex]?.focus();
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [dialog]);
-
   const closeDialog = (): void => {
     dialogGeneration.current += 1;
-    const focusTarget = dialog?.restoreFocus;
     setDialog(null);
-    if (focusTarget) window.setTimeout(() => focusTarget.focus(), 0);
   };
-  closeDialogRef.current = closeDialog;
+  useModalDialog(dialogRef, {
+    active: dialog !== null,
+    escapeAnywhere: true,
+    returnFocus: dialog?.restoreFocus ?? null,
+    onEscape: (event) => {
+      event.preventDefault();
+      closeDialog();
+    },
+  });
 
   const addToPlaylist = (playlist: PlaylistOption): void => {
     if (!dialog?.tracks.length) {

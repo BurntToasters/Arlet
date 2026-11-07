@@ -22,7 +22,7 @@
 .library-source-badge,
 .library-updated {
   color: var(--text-faint);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .library-source-badge {
@@ -186,7 +186,7 @@
 .library-row-number {
   color: var(--text-faint);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   text-align: center;
 }
 
@@ -221,7 +221,7 @@
 
 .library-card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 12px;
 }
 
@@ -288,7 +288,7 @@
 
 .library-card-copy small {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 .playlist-tree {
@@ -526,7 +526,9 @@
 
 /* Collapsed "More" notes under the header; they do not stretch the hero. */
 .library-detail-more {
-  margin: -12px 0 22px;
+  /* Vertical only: the horizontal auto margins from .content-scroll > * center it. */
+  margin-top: -12px;
+  margin-bottom: 22px;
   padding: 0 4px;
 }
 

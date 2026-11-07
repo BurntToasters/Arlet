@@ -1182,6 +1182,16 @@ Artist page (`views` and `extend` in one request):
   banner]
 - A library artist renders its library record without its catalog views.
   [library artist reads its catalog twin, then the catalog views]
+- A library artist whose catalog views fail lists only the albums already in
+  the library (matched by artist name), or none. On a real account, the
+  library artist albums relationship answered 404, and the page then showed
+  2 of the artist's albums. The fixture answers that relationship with 404 for
+  `library-artist-views`. [library artist lists its catalog albums when the
+  views fail]
+- A later album page fails and the page drops the albums it already loaded,
+  then falls back to the library albums. `configure({ rejectPaths:
+["/view/full-albums?offset=25"] })` fails the second page. [artist page
+  keeps the albums it loaded when a later album page fails]
 
 Album shelves (`include=tracks` with `views`, album `album-discover`):
 
@@ -1746,6 +1756,8 @@ Failure scenarios to cover before changing production code:
 - A label page shows another label's releases, because it reuses a previous
   label's response.
 - An album's record label link is missing, or opens the wrong label's page.
+- An album's More section sits outside the centered page column instead of
+  lining up with the album header.
 - A library album request asks for `record-labels`, which Apple does not
   document for library albums and may refuse.
 - An activity page loads more than 10 playlists, or pages past the first
@@ -1771,7 +1783,7 @@ Check names:
 - `Replay shows this year's top songs, albums, and artists`
 - `Replay with no data shows an empty state, not an error`
 - `a record label page shows its latest and top releases`
-- `an album's record label opens its label page`
+- `an album's More section lines up with its header, and its record label opens its label page`
 - `an activity page lists its playlists`
 - `Search shows record labels and activities`
 - `Get Info shows the song's composer, ISRC, and label as plain text`
@@ -1790,6 +1802,104 @@ reset, so that file holds the post-reset snapshot and not the scenario's
 requests. Screenshots: `screenshot-catalog-replay.png`,
 `screenshot-catalog-label.png`, `screenshot-catalog-activity.png`, and
 `screenshot-catalog-info.png`.
+
+## UI audit fixes
+
+`scripts/e2e-ui-audit.js` is the `ui-audit` scenario. It runs in the native
+suite before Session restore. It writes `ui-audit-trace.json` and these
+screenshots to the artifact folder: `screenshot-ui-audit-now-playing.png`,
+`screenshot-ui-audit-narrow-player.png`, `screenshot-ui-audit-shelf.png`, and
+`screenshot-ui-audit-queue.png`. Each check's `detail` holds the measured
+values.
+
+Failure scenarios to cover before changing production code:
+
+- Now Playing's Up Next list stretches a few rows over the full panel height,
+  leaving large gaps between rows. The list is a grid that grows to fill its
+  panel.
+- At 720 px wide or less, the absolutely positioned queue button in the player
+  bar covers the Favorite button.
+- A card shelf with only one or two cards stretches its grid columns while each
+  card stops at its 320 px maximum width, so cards sit unevenly with large gaps.
+  This applies to artist, album, label, and Home shelves.
+- After keyboard navigation, the focused page heading (`h1` with
+  `tabindex="-1"`) shows the browser's default focus ring.
+- The playing row in Playing Next shows two tints, because the row container
+  and the row button both use the active background.
+- The selected Search source tab uses accent text on an accent tint and is hard
+  to read.
+- The licenses dialog lets Tab move focus behind it, does not return focus to
+  the button that opened it, or shows "No packages found." when the license list
+  fails to load instead of an error.
+- A modal dialog (reset settings, keyboard shortcuts, Get Info, update ready,
+  playlist dialogs, Now Playing, the narrow sidebar drawer, and licenses) lets
+  Tab leave it, or loses its opener's focus on close, after the dialogs move to
+  one shared focus-trap hook.
+- Home marks its whole feed as a live region, so a screen reader reads the
+  entire feed again on every refresh.
+- Home's "Some Home sections could not be refreshed" notice has no button to
+  try again.
+- Home's date never updates after midnight.
+- A Home section's eyebrow repeats its heading, for example "Recently played"
+  above "Recently Played".
+- A long record label description fills the page header instead of collapsing
+  behind More.
+- A Windows media control command (play, pause, next, previous, seek, shuffle)
+  fails without any log line, or its listener fails to start without any log
+  line.
+- Text in the main views renders smaller than 11 px.
+- On wide windows the content column stays at 960 px and leaves large empty
+  margins. It should grow to 1180 px.
+- The curator, record label, and activity pages behave differently for sign-in,
+  loading, and error states after they move to one shared page scaffold.
+- A screenshot taken right after a theme change captures the theme cross-fade.
+  The `settings-*-narrow-dark.png` screenshots in `scripts/e2e-polish.js`
+  showed a dimmed mid-transition frame. The screenshot must wait until the
+  theme transition ends.
+
+Check names:
+
+- `Up Next rows in Now Playing stack without gaps when only a few songs are queued`
+- `at 360 px the queue button does not cover the Favorite button`
+- `a shelf with two cards keeps the same card width as a full shelf`
+- `the page heading shows no focus outline after keyboard navigation`
+- `the playing row in Playing Next has one even highlight`
+- `the selected Search source tab uses the main text color`
+- `the licenses dialog keeps Tab inside, returns focus to its opener, and shows an error when licenses fail to load`
+- `modal dialogs keep Tab inside and return focus to their opener`
+- `Home announces refreshes in one status line instead of the whole feed`
+- `Home's refresh notice offers a Try again button`
+- `a long record label description is collapsed behind More`
+- `a failed Windows media control command is written to the log`
+- `no text in the main views is smaller than 11 px`
+- `the content column grows to 1180 px on wide windows`
+
+Mechanisms the checks use to reach their failure states:
+
+- Licenses load failure: `Network.setBlockedURLs` blocks `*licenses.json*` and
+  `*licenses-cargo.json*` while the dialog opens, then the block list is
+  cleared. The dialog must show "Licenses could not be loaded." with
+  role="alert".
+- Media control failure: fixture `configure({ rejectSkip: true })` makes Next
+  reject. The check then runs the harness hook
+  `window.__ARLET_E2E_TAURI_EVENTS__.emit`, which calls the listeners the app
+  registered for `windows-media-control`. The page cannot call
+  `plugin:event|emit` itself, because the ACL refuses it. The check reads
+  `Media control next failed: Fixture skip rejected` from arlet.log, which needs
+  Debug Mode on.
+- Get Info focus return: the menu opens through the app's
+  `arlet:open-context-menu` request, anchored to the Refresh Home button the way
+  card and row action buttons anchor it. The fixture's own `selectContext`
+  anchor is a non-focusable div, so focus cannot return to it.
+- Home Try again: fixture `configure({ rejectPaths: ["/v1/me/history/heavy-rotation"] })`
+  fails one Home request after a successful load, which marks Home stale.
+- Long label description: fixture `configure({ longLabelDescription: true })`
+  gives rl-fixture-1 a description over 160 characters.
+
+Failure modes 11, 12, and 17 are checked by reading the code and by the
+existing Home, curator, label, and activity checks staying green. They have no
+new check. Failure mode 18 is guarded by the polish scenario waiting for the
+theme transition before its dark screenshots.
 
 ## Release-only evidence
 

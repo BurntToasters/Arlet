@@ -1,4 +1,4 @@
-import { AlertCircle, ListMusic, UserRound } from "lucide-preact";
+import { ListMusic } from "lucide-preact";
 import type { JSX } from "preact";
 import { useEffect } from "preact/hooks";
 import {
@@ -9,9 +9,17 @@ import {
 import { reportActionError } from "../components/action-errors.ts";
 import { Artwork } from "../components/Artwork.tsx";
 import { CardActions, CardShell } from "../components/CardActions.tsx";
-import { SkeletonCardGrid, SkeletonStatus } from "../components/Skeleton.tsx";
-import type { Playlist } from "../domain/music.ts";
+import type { Activity, Playlist } from "../domain/music.ts";
+import { CatalogPage, type CatalogLoad } from "./CatalogPage.tsx";
 import { EmptyState } from "./EmptyState.tsx";
+
+const ACTIVITY_TEXTS = {
+  heading: "Activity",
+  loadingLabel: "Loading activity",
+  signInTitle: "Sign in to open this activity",
+  signInDescription: "Connect your Apple Music account to see its playlists.",
+  errorTitle: "Activity could not be loaded",
+};
 
 function playlistContextData(playlist: Playlist): Record<string, string> {
   return {
@@ -97,63 +105,18 @@ export function ActivityView({ id }: { id: string }): JSX.Element {
     void controller.loadActivity(id).catch(() => undefined);
   };
 
-  if (!authorized) {
-    return (
-      <EmptyState
-        icon={UserRound}
-        title="Sign in to open this activity"
-        description="Connect your Apple Music account to see its playlists."
-        action={
-          <button
-            className="primary-button"
-            type="button"
-            disabled={
-              state.initialization.status !== "ready" ||
-              state.auth.pending === true
-            }
-            onClick={() => void controller.authorize().catch(reportActionError)}
-          >
-            {state.auth.pending === true ? "Signing in…" : "Sign in"}
-          </button>
-        }
-      />
-    );
-  }
-
   const current = state.activity.id === id ? state.activity : undefined;
-
-  if (current?.status === "error") {
-    return (
-      <EmptyState
-        icon={AlertCircle}
-        title="Activity could not be loaded"
-        description={
-          current.error ?? "Apple Music did not return this activity."
+  const load: CatalogLoad<Activity> | undefined =
+    current?.status === "error"
+      ? {
+          status: "error",
+          message: current.error ?? "Apple Music did not return this activity.",
         }
-        action={
-          <button className="secondary-button" type="button" onClick={retry}>
-            Try again
-          </button>
-        }
-      />
-    );
-  }
+      : current?.status === "success" && current.page
+        ? { status: "ready", page: current.page }
+        : undefined;
 
-  const page = current?.status === "success" ? current.page : undefined;
-  if (!page) {
-    return (
-      <>
-        <h1 className="sr-only" tabIndex={-1}>
-          Activity
-        </h1>
-        <SkeletonStatus label="Loading activity">
-          <SkeletonCardGrid count={6} />
-        </SkeletonStatus>
-      </>
-    );
-  }
-
-  return (
+  const renderPage = (page: Activity): JSX.Element => (
     <div className="curator-page activity-page">
       <header className="library-detail-hero curator-header">
         <div className="library-detail-art">
@@ -194,5 +157,20 @@ export function ActivityView({ id }: { id: string }): JSX.Element {
         />
       )}
     </div>
+  );
+
+  return (
+    <CatalogPage
+      texts={ACTIVITY_TEXTS}
+      authorized={authorized}
+      signInPending={state.auth.pending === true}
+      signInDisabled={
+        state.initialization.status !== "ready" || state.auth.pending === true
+      }
+      onSignIn={() => void controller.authorize().catch(reportActionError)}
+      load={load}
+      onRetry={retry}
+      renderPage={renderPage}
+    />
   );
 }

@@ -1,16 +1,39 @@
-import { useEffect } from "preact/hooks";
+import { useEffect, useMemo } from "preact/hooks";
 import type { JSX } from "preact";
-import { useAppSlices } from "./context.tsx";
+import { useAppController, useAppSlices } from "./context.tsx";
 import {
   clearWindowsMediaSession,
   updateWindowsMediaSession,
 } from "../platform/windows-media.ts";
+import { safeErrorMessage } from "./controller-support.ts";
+import type { AppController } from "./controller.ts";
+
+/** Logs only the first failure of a streak; `reset` after a success. */
+function createFailureStreak(controller: Pick<AppController, "log">): {
+  reset(): void;
+  catchWith(label: string): (error: unknown) => void;
+} {
+  let failing = false;
+  return {
+    reset: () => {
+      failing = false;
+    },
+    catchWith: (label) => (error) => {
+      if (failing) return;
+      failing = true;
+      controller.log(`${label}: ${safeErrorMessage(error)}`);
+    },
+  };
+}
 
 /**
  * Mirrors the playback state into the Windows media session. It renders
  * nothing, so its playback subscription does not re-render the app shell.
  */
 export function MediaSessionSync(): JSX.Element | null {
+  const controller = useAppController();
+  // One streak per mounted sync, so a persistent failure logs once.
+  const streak = useMemo(() => createFailureStreak(controller), [controller]);
   const { playback } = useAppSlices("playback");
   const {
     current,
@@ -28,7 +51,10 @@ export function MediaSessionSync(): JSX.Element | null {
       playbackStatus === "stopped" ||
       playbackStatus === "error"
     ) {
-      void clearWindowsMediaSession().catch(() => undefined);
+      void clearWindowsMediaSession().then(
+        streak.reset,
+        streak.catchWith("Media session clear failed"),
+      );
       return;
     }
     void updateWindowsMediaSession({
@@ -48,8 +74,9 @@ export function MediaSessionSync(): JSX.Element | null {
       previousEnabled: true,
       shuffle: shuffleMode === "songs",
       repeat: repeatMode ?? "off",
-    }).catch(() => undefined);
+    }).then(streak.reset, streak.catchWith("Media session update failed"));
   }, [
+    streak,
     current,
     playbackStatus,
     queueIndex,

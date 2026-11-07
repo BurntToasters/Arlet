@@ -3,6 +3,7 @@ import type { JSX } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import { useAppController, useAppSlices } from "../app/context.tsx";
 import type { SongInfo, Track } from "../domain/music.ts";
+import { useModalDialog } from "./use-modal-dialog.ts";
 
 export const SONG_INFO_REQUEST = "arlet:song-info";
 
@@ -22,9 +23,6 @@ export function requestSongInfo(
     }),
   );
 }
-
-const FOCUSABLE_SELECTOR =
-  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 interface InfoField {
   label: string;
@@ -79,9 +77,6 @@ export function SongInfoDialog(): JSX.Element | null {
   const [request, setRequest] = useState<SongInfoRequestDetail | null>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
-  // The effect that registers the listener runs once; this keeps it on the
-  // latest close, which reads the open request's focus target.
-  const closeRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     const onRequest = (event: Event): void => {
@@ -102,56 +97,23 @@ export function SongInfoDialog(): JSX.Element | null {
 
   const open = request !== null;
 
-  useEffect(() => {
-    if (!open) return undefined;
-    const previousFocus = document.activeElement as HTMLElement | null;
-    closeButton.current?.focus();
-    // Capture phase, so Escape closes this dialog before App.tsx's window
-    // listener can also close Now Playing underneath it.
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        closeRef.current();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const dialog = dialogRef.current;
-      if (!dialog) return;
-      const focusable = Array.from(
-        dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
-      );
-      if (focusable.length === 0) {
-        event.preventDefault();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      const active = document.activeElement;
-      const outside = !dialog.contains(active);
-      if (
-        (event.shiftKey && (active === first || outside)) ||
-        (!event.shiftKey && (active === last || outside))
-      ) {
-        event.preventDefault();
-        (event.shiftKey ? last : first)?.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown, true);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown, true);
-      previousFocus?.focus?.();
-    };
-  }, [open]);
+  const close = (): void => setRequest(null);
+  // Capture phase, so Escape closes this dialog before App.tsx's window
+  // listener can also close Now Playing underneath it.
+  useModalDialog(dialogRef, {
+    active: open,
+    capture: true,
+    escapeAnywhere: true,
+    initialFocus: () => closeButton.current,
+    returnFocus: request?.restoreFocus,
+    onEscape: (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    },
+  });
 
   if (!request) return null;
-
-  const close = (): void => {
-    const focusTarget = request.restoreFocus;
-    setRequest(null);
-    if (focusTarget) window.setTimeout(() => focusTarget.focus(), 0);
-  };
-  closeRef.current = close;
 
   const track = request.track;
   // The slice is shared, so it only counts when it belongs to this song.

@@ -72,3 +72,12 @@
     forced-color-adjust: none;
   }
 }
+
+/* Forced colors drop box-shadow, so the selected tab gets an outline. */
+@media (forced-colors: active) {
+  .search-source-tabs button.is-active,
+  .diagnostics-tabs button[aria-selected="true"] {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+}

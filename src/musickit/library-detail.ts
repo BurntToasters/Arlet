@@ -402,11 +402,23 @@ export function createDetailMethods(
         { include: "catalog" },
       );
       if (!library?.catalogId) return { item: library };
+      const catalogId = library.catalogId;
       // Without the catalog artist the library record still renders, as before.
-      const catalog = await catalogArtistDetail(library.catalogId).catch(
+      const catalog = await catalogArtistDetail(catalogId).catch(
         () => undefined,
       );
-      if (!catalog) return { item: library };
+      // Without the views, the catalog albums still come from the catalog
+      // artist: the library relationship lists only albums in the library,
+      // and Apple can answer it with 404.
+      const albums =
+        catalog?.albums ??
+        (await getPage(
+          `${await catalogArtistPath(catalogId)}/albums`,
+          undefined,
+          undefined,
+          normalizeAlbumResource,
+        ).catch(() => undefined));
+      if (!catalog) return { item: library, albums };
       return {
         item: {
           ...library,
@@ -415,7 +427,7 @@ export function createDetailMethods(
           editorialBanner: catalog.item?.editorialBanner,
           shelves: catalog.item?.shelves,
         },
-        albums: catalog.albums,
+        albums,
       };
     },
     async getArtistAlbums(

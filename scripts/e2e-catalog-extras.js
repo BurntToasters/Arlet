@@ -62,7 +62,8 @@ const CHECKS = {
   replayData: "Replay shows this year's top songs, albums, and artists",
   replayEmpty: "Replay with no data shows an empty state, not an error",
   label: "a record label page shows its latest and top releases",
-  albumLink: "an album's record label opens its label page",
+  albumLink:
+    "an album's More section lines up with its header, and its record label opens its label page",
   activity: "an activity page lists its playlists",
   search: "Search shows record labels and activities",
   info: "Get Info shows the song's composer, ISRC, and label as plain text",
@@ -411,6 +412,14 @@ async function checkAlbumLabelLinkWithTwin(page, check) {
     `document.querySelector(".library-detail-more-toggle")`,
     15_000,
   );
+  // The More section shares the header's centered column: same left edge.
+  const edges = await readPage(
+    page,
+    `const hero = document.querySelector(".library-detail-hero")?.getBoundingClientRect();
+     const more = document.querySelector(".library-detail-more")?.getBoundingClientRect();
+     return hero && more ? { hero: hero.left, more: more.left } : null;`,
+  );
+  const aligned = edges !== null && Math.abs(edges.hero - edges.more) <= 1;
   await page.evaluate(
     `document.querySelector(".library-detail-more-toggle")?.click(); return true;`,
   );
@@ -451,6 +460,7 @@ async function checkAlbumLabelLinkWithTwin(page, check) {
   check(
     CHECKS.albumLink,
     moreShown &&
+      aligned &&
       linkShown &&
       href === `#/label/${LABEL_1.id}` &&
       landed &&
@@ -458,6 +468,7 @@ async function checkAlbumLabelLinkWithTwin(page, check) {
       twinAsksLabel,
     {
       moreShown,
+      edges,
       linkShown,
       href,
       landed,
@@ -521,10 +532,38 @@ async function checkActivityPage(page, check, artifactDir) {
   );
 }
 
+/** Waits until the fixture has answered a catalog search for term since at. */
+async function waitForSearch(page, at, term) {
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const answered = (await rawSince(page, at)).some(
+      (request) =>
+        pathOf(request) === SEARCH_PATH &&
+        paramsOf(request).term === term &&
+        request.completedAt !== undefined,
+    );
+    if (answered) return true;
+    await sleep(100);
+  }
+  return false;
+}
+
 async function checkSearchGroups(page, check) {
   await closeOverlays(page);
+  // Clear the search first. A term left by an earlier scenario (the shortcuts
+  // scenario searches "?") would otherwise stay on screen, and an unchanged
+  // term runs no search at all.
+  await go(page, "#/search?q=");
+  await waitFor(
+    page,
+    `document.querySelector(".search-form input")?.value === ""`,
+    5000,
+  );
   const at = await mark(page);
   await go(page, "#/search?q=fixture");
+  const searched = await waitForSearch(page, at, "fixture");
+  // Let the answer render before the groups are read.
+  if (searched) await sleep(300);
   const shown = await waitFor(
     page,
     `document.querySelectorAll('[data-search-group="record-labels"] a.search-tile').length === 2 && document.querySelectorAll('[data-search-group="activities"] a.search-tile').length === 2`,
@@ -784,10 +823,49 @@ async function waitForLines(profileRoot, count, timeoutMs) {
 
 /** Dispatches a real contextmenu event on the element, then waits for the menu. */
 async function openMenuOn(page, selector) {
+  // A row can re-render while a page is still loading and drop the first
+  // event, so a menu that does not open gets one more right-click.
+  let menu = await openMenuOnce(page, selector);
+  if (menu.target && !menu.opened) {
+    await closeMenu(page);
+    await sleep(500);
+    menu = await openMenuOnce(page, selector);
+  }
+  return menu;
+}
+
+/** Waits until the element's rect and the content scroll hold still. */
+async function settleRect(page, selector) {
+  let last = null;
+  let stable = 0;
+  for (let attempt = 0; attempt < 50 && stable < 3; attempt += 1) {
+    await sleep(100);
+    const sample = await page.evaluate(`
+      const node = document.querySelector(${q(selector)});
+      if (!node) return null;
+      const r = node.getBoundingClientRect();
+      return [r.top, r.left, r.width, r.height, document.querySelector(".content-scroll")?.scrollTop ?? 0];`);
+    if (!sample) return;
+    stable =
+      last && sample.every((value, index) => value === last[index])
+        ? stable + 1
+        : 0;
+    last = sample;
+  }
+}
+
+async function openMenuOnce(page, selector) {
+  // A scroll that moves the row while a page still reflows would close the
+  // menu, so scroll first, let the layout settle, then take fresh coordinates.
+  const scrolled = await page.evaluate(`
+    const node = document.querySelector(${q(selector)});
+    if (!node) return false;
+    node.scrollIntoView({ block: "center", inline: "nearest" });
+    return true;`);
+  if (scrolled) await settleRect(page, selector);
   const target = await page.evaluate(`
     const node = document.querySelector(${q(selector)});
     if (!node) return null;
-    node.scrollIntoView({ block: "center", inline: "nearest" });
     const rect = node.getBoundingClientRect();
     node.dispatchEvent(new MouseEvent("contextmenu", {
       bubbles: true,
