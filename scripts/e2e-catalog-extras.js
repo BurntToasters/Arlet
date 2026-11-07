@@ -532,10 +532,38 @@ async function checkActivityPage(page, check, artifactDir) {
   );
 }
 
+/** Waits until the fixture has answered a catalog search for term since at. */
+async function waitForSearch(page, at, term) {
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const answered = (await rawSince(page, at)).some(
+      (request) =>
+        pathOf(request) === SEARCH_PATH &&
+        paramsOf(request).term === term &&
+        request.completedAt !== undefined,
+    );
+    if (answered) return true;
+    await sleep(100);
+  }
+  return false;
+}
+
 async function checkSearchGroups(page, check) {
   await closeOverlays(page);
+  // Clear the search first. A term left by an earlier scenario (the shortcuts
+  // scenario searches "?") would otherwise stay on screen, and an unchanged
+  // term runs no search at all.
+  await go(page, "#/search?q=");
+  await waitFor(
+    page,
+    `document.querySelector(".search-form input")?.value === ""`,
+    5000,
+  );
   const at = await mark(page);
   await go(page, "#/search?q=fixture");
+  const searched = await waitForSearch(page, at, "fixture");
+  // Let the answer render before the groups are read.
+  if (searched) await sleep(300);
   const shown = await waitFor(
     page,
     `document.querySelectorAll('[data-search-group="record-labels"] a.search-tile').length === 2 && document.querySelectorAll('[data-search-group="activities"] a.search-tile').length === 2`,
@@ -806,11 +834,38 @@ async function openMenuOn(page, selector) {
   return menu;
 }
 
+/** Waits until the element's rect and the content scroll hold still. */
+async function settleRect(page, selector) {
+  let last = null;
+  let stable = 0;
+  for (let attempt = 0; attempt < 50 && stable < 3; attempt += 1) {
+    await sleep(100);
+    const sample = await page.evaluate(`
+      const node = document.querySelector(${q(selector)});
+      if (!node) return null;
+      const r = node.getBoundingClientRect();
+      return [r.top, r.left, r.width, r.height, document.querySelector(".content-scroll")?.scrollTop ?? 0];`);
+    if (!sample) return;
+    stable =
+      last && sample.every((value, index) => value === last[index])
+        ? stable + 1
+        : 0;
+    last = sample;
+  }
+}
+
 async function openMenuOnce(page, selector) {
+  // A scroll that moves the row while a page still reflows would close the
+  // menu, so scroll first, let the layout settle, then take fresh coordinates.
+  const scrolled = await page.evaluate(`
+    const node = document.querySelector(${q(selector)});
+    if (!node) return false;
+    node.scrollIntoView({ block: "center", inline: "nearest" });
+    return true;`);
+  if (scrolled) await settleRect(page, selector);
   const target = await page.evaluate(`
     const node = document.querySelector(${q(selector)});
     if (!node) return null;
-    node.scrollIntoView({ block: "center", inline: "nearest" });
     const rect = node.getBoundingClientRect();
     node.dispatchEvent(new MouseEvent("contextmenu", {
       bubbles: true,

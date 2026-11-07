@@ -43,7 +43,10 @@ export function ShortcutOverlay({
       className="playlist-dialog-backdrop shortcut-backdrop"
       role="presentation"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (event.target !== event.currentTarget) return;
+        // Keep the browser's mousedown focus change from blurring the opener.
+        event.preventDefault();
+        onClose();
       }}
     >
       <section

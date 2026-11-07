@@ -59,17 +59,10 @@ function trapTab(
   }
 }
 
-function resolveOpener(
-  returnFocus: ModalDialogOptions["returnFocus"],
-): HTMLElement | null {
-  if (returnFocus === undefined) {
-    return document.activeElement instanceof HTMLElement
-      ? document.activeElement
-      : null;
-  }
-  return typeof returnFocus === "function"
-    ? (returnFocus() ?? null)
-    : returnFocus;
+function focusedElementOrNull(): HTMLElement | null {
+  return document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
 }
 
 /**
@@ -88,7 +81,14 @@ export function useModalDialog<T extends HTMLElement>(
   useLayoutEffect(() => {
     if (!active) return undefined;
     const dialog = dialogRef.current;
-    const opener = resolveOpener(latest.current.returnFocus);
+    const { returnFocus } = latest.current;
+    // A function is read at close: its ref may be filled after this effect.
+    const opener =
+      typeof returnFocus === "function"
+        ? null
+        : returnFocus === undefined
+          ? focusedElementOrNull()
+          : returnFocus;
     const focusInitial = (): void => {
       latest.current.initialFocus?.()?.focus();
     };
@@ -117,7 +117,9 @@ export function useModalDialog<T extends HTMLElement>(
         !current ||
         current === document.body ||
         Boolean(dialog?.contains(current));
-      if (opener?.isConnected && lost) opener.focus();
+      const target =
+        typeof returnFocus === "function" ? (returnFocus() ?? null) : opener;
+      if (target?.isConnected && lost) target.focus();
     };
   }, [active, capture, dialogRef]);
 }

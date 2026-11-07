@@ -578,7 +578,52 @@ async function licensesCheck(page, check, trace, artifactDir) {
 }
 
 /** Short description of an element for the trace. */
-const DESCRIBE = `(el) => el ? el.tagName + (el.getAttribute("aria-label") ? "[" + el.getAttribute("aria-label") + "]" : "") + (el.id ? "#" + el.id : "") + (typeof el.className === "string" && el.className ? "." + el.className.trim().split(/\s+/u).slice(0, 2).join(".") : "") : null`;
+const DESCRIBE = `(el) => el ? el.tagName + (el.getAttribute("aria-label") ? "[" + el.getAttribute("aria-label") + "]" : "") + (el.id ? "#" + el.id : "") + (typeof el.className === "string" && el.className ? "." + el.className.trim().split(/\\s+/u).slice(0, 2).join(".") : "") : null`;
+
+/**
+ * Waits for RouteView's navigation focus. A page navigation focuses its h1
+ * once the view renders (a lazy view later, via RouteView's loadedCount
+ * effect), which can land after a test focuses its opener. Bounded: a route
+ * that does not change never focuses the h1, so this costs at most the timeout.
+ */
+async function settleRouteFocus(page) {
+  await waitFor(page, `document.activeElement?.tagName === "H1"`, 1500);
+  await sleep(150);
+}
+
+/** Home, with the route's own focus settled. */
+async function openHomeSettled(page) {
+  const ready = await openHome(page);
+  await settleRouteFocus(page);
+  return ready;
+}
+
+/**
+ * Focuses the opener and confirms it holds focus, re-focusing while a late
+ * route focus or a disabled button gets in the way. Returns what it saw.
+ */
+async function focusOpener(page, openerExpression) {
+  let attempts = 0;
+  for (; attempts < 10; attempts += 1) {
+    const focused = await page.evaluate(
+      `const opener = ${openerExpression};
+       window.__uiAuditOpener = opener;
+       if (!opener) return false;
+       opener.focus();
+       return document.activeElement === opener;`,
+    );
+    if (focused) {
+      // Stays focused across a short settle, so a late route focus shows up here.
+      await sleep(200);
+      const held = await page.evaluate(
+        `return document.activeElement === window.__uiAuditOpener;`,
+      );
+      if (held) return { focused: true, attempts: attempts + 1 };
+    }
+    await sleep(100);
+  }
+  return { focused: false, attempts };
+}
 
 async function modalsCheck(page, check, trace) {
   await runCheck(check, trace, CHECKS.modals, async () => {
@@ -587,10 +632,12 @@ async function modalsCheck(page, check, trace) {
       {
         name: "shortcut overlay",
         dialog: ".shortcut-overlay",
-        open: async () => {
-          await openHome(page);
-          await page.evaluate(
-            `window.__uiAuditOpener = ${REFRESH_HOME}; window.__uiAuditOpener.focus(); return true;`,
+        open: async (detail) => {
+          await openHomeSettled(page);
+          detail.opener = await focusOpener(page, REFRESH_HOME);
+          detail.activeBeforeKey = await readPage(
+            page,
+            `const describe = ${DESCRIBE}; return describe(document.activeElement);`,
           );
           await pressKey(page, "?", {
             code: "Slash",
@@ -603,17 +650,16 @@ async function modalsCheck(page, check, trace) {
       {
         name: "Get Info",
         dialog: ".song-info-dialog",
-        open: async () => {
+        open: async (detail) => {
           await fixtureCall(page, "reset");
-          await openHome(page);
+          await openHomeSettled(page);
+          detail.opener = await focusOpener(page, REFRESH_HOME);
           // The menu is anchored to a button, as the app's own card and row
           // action buttons anchor it (requestContextMenu), so Get Info returns
           // focus to that button.
           await fixtureCall(page, "selectContext", ["get-info-song"]);
           await page.evaluate(`
-            const opener = ${REFRESH_HOME};
-            window.__uiAuditOpener = opener;
-            opener.focus();
+            const opener = window.__uiAuditOpener;
             const target = [...document.querySelectorAll('div[data-context-id="get-info-song"]')].pop();
             const rect = opener.getBoundingClientRect();
             window.dispatchEvent(new CustomEvent("arlet:open-context-menu", { detail: { target, x: rect.right - 4, y: rect.bottom - 4, restoreFocus: opener } }));
@@ -631,11 +677,10 @@ async function modalsCheck(page, check, trace) {
       {
         name: "playlist dialog",
         dialog: ".playlist-dialog[role='dialog']",
-        open: async () => {
-          await openHome(page);
+        open: async (detail) => {
+          await openHomeSettled(page);
+          detail.opener = await focusOpener(page, REFRESH_HOME);
           await page.evaluate(`
-            window.__uiAuditOpener = ${REFRESH_HOME};
-            window.__uiAuditOpener.focus();
             window.dispatchEvent(new CustomEvent("arlet:playlist-dialog", { detail: { mode: "create", tracks: [], restoreFocus: window.__uiAuditOpener } }));
             return true;`);
         },
@@ -643,11 +688,9 @@ async function modalsCheck(page, check, trace) {
       {
         name: "reset settings",
         dialog: "[aria-labelledby='reset-settings-title']",
-        open: async () => {
+        open: async (detail) => {
           await openSettings(page);
-          // A lazy view focuses its h1 once it loads (RouteView); wait for that
-          // so the dialog's restore is not overwritten by it.
-          await waitFor(page, `document.activeElement?.tagName === "H1"`, 3000);
+          await settleRouteFocus(page);
           await page.evaluate(`
             const advanced = document.querySelector('.settings-section[aria-labelledby="advanced-heading"] button[aria-controls="advanced-details"]');
             if (advanced?.getAttribute("aria-expanded") !== "true") advanced?.click();
@@ -657,12 +700,11 @@ async function modalsCheck(page, check, trace) {
             `document.querySelector('.settings-section[aria-labelledby="advanced-heading"] button[aria-expanded="true"]')`,
             5000,
           );
-          await page.evaluate(`
-            const opener = [...document.querySelectorAll("button")].find((node) => node.textContent.trim() === "Reset settings…");
-            window.__uiAuditOpener = opener;
-            opener?.focus();
-            opener?.click();
-            return true;`);
+          detail.opener = await focusOpener(
+            page,
+            `[...document.querySelectorAll("button")].find((node) => node.textContent.trim() === "Reset settings…")`,
+          );
+          await page.evaluate(`window.__uiAuditOpener?.click(); return true;`);
         },
       },
     ];
@@ -670,7 +712,7 @@ async function modalsCheck(page, check, trace) {
       const detail = {};
       try {
         await closeOverlays(page);
-        await entry.open();
+        await entry.open(detail);
         detail.opened = await waitFor(
           page,
           `document.querySelector(${q(entry.dialog)})`,
@@ -710,6 +752,7 @@ async function modalsCheck(page, check, trace) {
         detail.error = String(error?.message ?? error);
       }
       detail.passed =
+        Boolean(detail.opener?.focused) &&
         Boolean(detail.opened) &&
         Boolean(detail.tab) &&
         detail.tab.leaks.length === 0 &&
@@ -865,16 +908,12 @@ async function mediaLog(page, check, trace, logDir) {
       );
       await fixtureCall(page, "configure", [{ rejectSkip: true }]);
       const before = logCount(logDir, MEDIA_TEXT);
-      const emitted = await page.evaluate(
-        `const internals = window.__TAURI_INTERNALS__;
-         if (!internals || typeof internals.invoke !== "function") return "no internals";
-         try {
-           await internals.invoke("plugin:event|emit", { event: "windows-media-control", payload: "next" });
-           return "emitted";
-         } catch (error) {
-           return "rejected: " + (error?.message ?? (typeof error === "string" ? error : JSON.stringify(error)));
-         }`,
+      // The page cannot call plugin:event|emit (the ACL refuses it), so the
+      // harness hook runs the listeners the app registered for the event.
+      const listeners = await page.evaluate(
+        `return window.__ARLET_E2E_TAURI_EVENTS__.emit("windows-media-control", "next");`,
       );
+      const emitted = listeners > 0 ? "emitted" : "no listeners";
       const deadline = Date.now() + 8000;
       while (Date.now() < deadline && logCount(logDir, MEDIA_TEXT) <= before) {
         await sleep(100);

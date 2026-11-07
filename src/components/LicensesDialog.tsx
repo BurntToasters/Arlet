@@ -20,18 +20,22 @@ async function defaultFetchJson(url: string): Promise<unknown> {
 }
 
 /**
- * npm and cargo notices generated at build time into the bundle. A missing
- * or malformed inventory contributes nothing instead of failing the screen.
+ * Loads the npm and cargo notices generated at build time into the bundle.
+ * A missing or malformed inventory contributes nothing. If no inventory
+ * yields a usable object (every fetch rejected, or none was an object), the
+ * promise rejects so the dialog can show its load error.
  */
 export async function loadLicenseInventory(
   fetchJson: FetchJson = defaultFetchJson,
 ): Promise<LicenseEntry[]> {
   const results = await Promise.allSettled(INVENTORIES.map(fetchJson));
   const entries: LicenseEntry[] = [];
+  let usableInventories = 0;
   for (const result of results) {
     if (result.status !== "fulfilled") continue;
     const inventory = result.value;
     if (!inventory || typeof inventory !== "object") continue;
+    usableInventories += 1;
     for (const [name, raw] of Object.entries(inventory)) {
       const record = raw as Record<string, unknown> | null;
       if (!record || typeof record !== "object") continue;
@@ -45,6 +49,7 @@ export async function loadLicenseInventory(
       });
     }
   }
+  if (usableInventories === 0) throw new Error("Licenses could not be loaded.");
   return entries.sort((left, right) => left.name.localeCompare(right.name));
 }
 

@@ -1874,6 +1874,28 @@ Check names:
 - `no text in the main views is smaller than 11 px`
 - `the content column grows to 1180 px on wide windows`
 
+Mechanisms the checks use to reach their failure states:
+
+- Licenses load failure: `Network.setBlockedURLs` blocks `*licenses.json*` and
+  `*licenses-cargo.json*` while the dialog opens, then the block list is
+  cleared. The dialog must show "Licenses could not be loaded." with
+  role="alert".
+- Media control failure: fixture `configure({ rejectSkip: true })` makes Next
+  reject. The check then runs the harness hook
+  `window.__ARLET_E2E_TAURI_EVENTS__.emit`, which calls the listeners the app
+  registered for `windows-media-control`. The page cannot call
+  `plugin:event|emit` itself, because the ACL refuses it. The check reads
+  `Media control next failed: Fixture skip rejected` from arlet.log, which needs
+  Debug Mode on.
+- Get Info focus return: the menu opens through the app's
+  `arlet:open-context-menu` request, anchored to the Refresh Home button the way
+  card and row action buttons anchor it. The fixture's own `selectContext`
+  anchor is a non-focusable div, so focus cannot return to it.
+- Home Try again: fixture `configure({ rejectPaths: ["/v1/me/history/heavy-rotation"] })`
+  fails one Home request after a successful load, which marks Home stale.
+- Long label description: fixture `configure({ longLabelDescription: true })`
+  gives rl-fixture-1 a description over 160 characters.
+
 Failure modes 11, 12, and 17 are checked by reading the code and by the
 existing Home, curator, label, and activity checks staying green. They have no
 new check. Failure mode 18 is guarded by the polish scenario waiting for the
