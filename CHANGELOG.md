@@ -25,7 +25,24 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 
 ## Changes in `v0.4.0-beta.7:`
 
-- **Fix:** (add release notes)
+- **Ver:** Updated version to `v0.4.0-beta.7`.
+- **Fix:** Artist pages in your Library show all of the artist's albums again. Albums that already loaded stay when a later page fails, and Arlet falls back to the artist's catalog albums when Apple can't load the library albums.
+- **Fix:** The More button on album and playlist pages lines up with the other header buttons.
+- **Fix:** Up Next in Now Playing no longer spreads a few queued songs down the whole panel.
+- **Fix:** In narrow windows, the queue button in the player bar no longer covers the Favorite button.
+- **Fix:** A shelf or grid with only a few cards keeps the same card size as a full one.
+- **Fix:** The Open Source Licenses dialog shows an error when the licenses can't be loaded, instead of "No packages found."
+- **UI:** Every dialog keeps Tab inside it, closes with Escape, and returns focus to whatever opened it. This covers Now Playing, the keyboard shortcuts overlay, Get Info, the playlist dialogs, the reset and update dialogs, the licenses dialog, and the sidebar in narrow windows.
+- **UI:** Wide windows use more of the screen: the page column grows to 1180 px instead of 960 px.
+- **UI:** No text in the main views is smaller than 11 px, and page headings no longer show a focus outline after keyboard navigation.
+- **UI:** The selected tab in Search and Diagnostics is easier to read, and the playing song in Playing Next has one even highlight.
+- **UI:** When Home can't refresh, its notice has a `Try again` button. Screen readers hear one short status update instead of the whole Home feed.
+- **UI:** Long record label descriptions are folded behind `More`.
+- **Codebase:** With Debug Mode on, failed Windows media control commands (play, pause, next, and so on) and media session updates are written to the log.
+- **Codebase:** All dialogs share one focus-handling hook. The controller, library loader, Library, Search, and album and playlist page code are split into smaller files. Curator, record label, and activity pages share one page layout.
+- **Docs:** `SECURITY.md` explains why MusicKit JS is loaded from Apple's servers without a pinned version, and how Arlet limits that risk.
+- **Testing:** Added a native end-to-end `ui-audit` scenario covering every fix above. Fixed timing flakes in the polish, ui-audit, and catalog-extras scenarios. Runs save reports, traces, and screenshots for repeatable verification.
+- **Carry-forward:** Everything in `v0.4.0-beta.6` is still included below.
 
 ## Changes in `v0.4.0-beta.6:`
 
