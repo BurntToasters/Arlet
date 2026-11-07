@@ -2355,6 +2355,7 @@ async function run() {
             appPid: runningArletPid(),
             dataDir: dataDirs().data,
             logDir: dataDirs().logs,
+            profileRoot: dataDirs().root,
             artifactDir,
           });
         } catch (error) {

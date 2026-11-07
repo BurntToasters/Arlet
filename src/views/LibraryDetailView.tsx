@@ -34,6 +34,10 @@ import {
 import { getState } from "../state.ts";
 import { Artwork } from "../components/Artwork.tsx";
 import { requestContextMenu } from "../components/context-menu-events.ts";
+import {
+  canEditOf,
+  editInAppleMusicAttribute,
+} from "../components/context-target.ts";
 import { EmptyState } from "./EmptyState.tsx";
 import {
   LibraryTrackRow,
@@ -836,6 +840,12 @@ export function LibraryDetailView({
           detailBackdrop ? " has-hero-backdrop" : ""
         }`}
         {...(resource ? detailContext(resource, kind) : {})}
+        {...(resource && kind === "playlist"
+          ? editInAppleMusicAttribute(
+              resourceSource(resource),
+              canEditOf(resource.raw),
+            )
+          : {})}
       >
         {/* Images, not CSS url(): the artwork URL never enters CSS. */}
         {artistBanner ? (

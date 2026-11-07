@@ -16,7 +16,12 @@ command and two validated links: `open_support_page` (no arguments,
 Rust, so web content cannot choose a URL, and `open_subscribe_link`. All three
 go through `open_in_default_browser`. `open_subscribe_link` takes one URL, the
 MusicKit subscription deeplink, and is the only command that opens a page
-chosen by the webview; its rules are below. There is no `shell`, `dialog`,
+chosen by the webview; its rules are below. It is also used for "Edit in Apple
+Music", which opens `https://music.apple.com/library/playlist/<id>` for a
+library playlist, where the ID is limited to letters, digits, `.`, `_`, and
+`-`. In builds with the `e2e` feature, `open_in_default_browser`
+appends each link to `opened-links.jsonl` in the isolated profile root instead
+of opening the browser. There is no `shell`, `dialog`,
 `notification`, `process`, or `global-shortcut` plugin, no arbitrary command
 execution, and remote Apple origins get no filesystem/shell/updater access.
 
@@ -169,7 +174,8 @@ any disk or OS call:
   hosts, and backslash tricks are refused. A punycode (`xn--`) label is plain
   ASCII, so it passes only when the host is `apple.com` or a subdomain of it. It opens the normalized URL that was
   checked, through `open_url_off_ui_thread`. A refusal returns an error string
-  and opens nothing.
+  and opens nothing. The "Edit in Apple Music" link passes the same checks; its
+  playlist ID is validated in the controller before the URL is built.
 - No argument from the page: `open_support_page`, `open_music_diagnostic`,
   `get_app_info`, `get_developer_token`, `get_beta_updater_target`,
   `get_log_dir`, `clear_logs`, `supports_window_fx`, `reset_settings`,

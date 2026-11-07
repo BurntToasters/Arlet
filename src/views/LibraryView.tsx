@@ -33,7 +33,12 @@ import { SongRow } from "../components/SongRow.tsx";
 import { SelectionBar } from "../components/SelectionBar.tsx";
 import { useTrackSelection } from "../components/track-selection.ts";
 import { CardActions, CardShell } from "../components/CardActions.tsx";
+import {
+  canEditOf,
+  editInAppleMusicAttribute,
+} from "../components/context-target.ts";
 import { EmptyState } from "./EmptyState.tsx";
+import { resourceSource } from "./detail-context.ts";
 import {
   isActive,
   libraryViewCapabilities,
@@ -562,10 +567,13 @@ function ResourceCard({
   resource,
   kind,
   onOpen,
+  editInAppleMusic = false,
 }: {
   resource: ResourceLike;
   kind: "album" | "artist" | "playlist";
   onOpen: () => void;
+  /** Opt-in for the playlist area; adds "Edit in Apple Music" to editable library playlists. */
+  editInAppleMusic?: boolean;
 }): JSX.Element {
   const appController = useAppController();
   const Icon =
@@ -575,7 +583,15 @@ function ResourceCard({
   const collectionKind = kind === "artist" ? undefined : kind;
   return (
     <CardShell
-      contextData={contextData(resource, kind)}
+      contextData={{
+        ...contextData(resource, kind),
+        ...(kind === "playlist" && editInAppleMusic
+          ? editInAppleMusicAttribute(
+              resourceSource(resource),
+              canEditOf(resource.raw),
+            )
+          : {}),
+      }}
       catalogUrl={resource.catalogUrl}
     >
       <button className="library-card" type="button" onClick={onOpen}>
@@ -655,6 +671,7 @@ function PlaylistTree({
       key={playlist.id}
       resource={playlist}
       kind="playlist"
+      editInAppleMusic
       onOpen={() => router.navigate({ kind: "playlist", id: playlist.id })}
     />
   );

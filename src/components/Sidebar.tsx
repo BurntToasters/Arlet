@@ -35,6 +35,7 @@ import {
 import { openSupportPage } from "../platform/support.ts";
 import { reportActionError, reportNotice } from "./action-errors.ts";
 import { draggedTracks, isTrackDrag } from "./track-selection.ts";
+import { canEditOf, editInAppleMusicAttribute } from "./context-target.ts";
 import type { PinnedPlaylist } from "../domain/music.ts";
 import { artworkLinkExpired } from "../musickit/normalize.ts";
 import type { LibrarySection, Route } from "../routing/router.ts";
@@ -163,23 +164,45 @@ function playlistIndex(
   return index;
 }
 
+/** Loaded items that may describe the pin: the open detail first, then lists. */
+function pinCandidates(
+  state: Pick<RuntimeAppState, "library">,
+  index: Map<string, unknown[]>,
+  pin: PinnedPlaylist,
+): unknown[] {
+  // A pinned playlist that is open but not in the loaded list still has a name.
+  const opened = (
+    state.library?.details?.playlist as Record<string, unknown> | undefined
+  )?.[libraryDetailKey(pin.id, pin.source)] as { item?: unknown } | undefined;
+  return [
+    ...(opened?.item ? [opened.item] : []),
+    ...(index.get(pin.id) ?? []),
+  ].filter((item) => {
+    // An item that names its source must match the pin's source.
+    const source = (item as { source?: unknown }).source;
+    return source === undefined || source === pin.source;
+  });
+}
+
+/** Apple's canEdit for a pin, from the first loaded item that states it. */
+function pinCanEdit(
+  state: Pick<RuntimeAppState, "library">,
+  index: Map<string, unknown[]>,
+  pin: PinnedPlaylist,
+): boolean | undefined {
+  for (const item of pinCandidates(state, index, pin)) {
+    const canEdit = canEditOf(item as Record<string, unknown>);
+    if (canEdit !== undefined) return canEdit;
+  }
+  return undefined;
+}
+
 function resolvePinDisplay(
   state: Pick<RuntimeAppState, "library">,
   index: Map<string, unknown[]>,
   pin: PinnedPlaylist,
 ): { name?: string; artworkUrl?: string } {
-  // A pinned playlist that is open but not in the loaded list still has a name.
-  const opened = (
-    state.library?.details?.playlist as Record<string, unknown> | undefined
-  )?.[libraryDetailKey(pin.id, pin.source)] as { item?: unknown } | undefined;
-  const candidates = [
-    ...(opened?.item ? [opened.item] : []),
-    ...(index.get(pin.id) ?? []),
-  ];
-  for (const item of candidates) {
-    // An item that names its source must match the pin's source.
-    const source = (item as { source?: unknown }).source;
-    if (source !== undefined && source !== pin.source) continue;
+  for (const item of pinCandidates(state, index, pin)) {
     const name = displayNameOf(item);
     if (name) {
       return {
@@ -462,6 +485,10 @@ export function Sidebar(): JSX.Element {
           data-context-id={pin.id}
           data-context-route-kind="playlist"
           data-context-source={pin.source}
+          {...editInAppleMusicAttribute(
+            pin.source,
+            pinCanEdit(state, pinIndex, pin),
+          )}
           onClick={() => navigate(route)}
           {...dropHandlers(pin, name)}
         >
@@ -483,6 +510,10 @@ export function Sidebar(): JSX.Element {
           data-context-id={pin.id}
           data-context-route-kind="playlist"
           data-context-source={pin.source}
+          {...editInAppleMusicAttribute(
+            pin.source,
+            pinCanEdit(state, pinIndex, pin),
+          )}
           onClick={() => navigate(route)}
           {...dropHandlers(pin, undefined)}
         >

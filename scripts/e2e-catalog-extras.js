@@ -4,11 +4,15 @@
  * extras"): Replay shelves on Home with data and with none, a record label
  * page and the album link to it, an activity page capped at 10 playlists, the
  * record label and activity Search groups, the song Get Info dialog as plain
- * text, and a playlist created inside a fixture folder. Each check reads the
- * fixture's recorded requests as well as the rendered page. The run ends with
- * a fixture reset; the runner's isolation guard then checks the app is ready. */
+ * text, a playlist created inside a fixture folder, and the Edit in Apple Music
+ * context-menu item: shown on an editable library playlist in the sidebar, the
+ * playlist list, and the playlist page, and absent from every other area. Its
+ * clicks land in the profile root's opened-links.jsonl, not in a browser.
+ * Each check reads the fixture's recorded requests as well as the rendered
+ * page. The run ends with a fixture reset; the runner's isolation guard then
+ * checks the app is ready. */
 
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fixtureCall, sleep, waitFor } from "./e2e-helpers.js";
 
@@ -41,6 +45,19 @@ const SEARCH_RESULT_TITLES = {
   stations: "Stations",
   "apple-curators": "Curators",
 };
+// Edit in Apple Music: a library playlist's menu item calls open_subscribe_link
+// with its music.apple.com link. The checks record that call and never forward
+// it to Rust, so no browser page opens.
+const EDIT_PLAYLIST = "playlist-1";
+const EDIT_PLAYLIST_NAME = "Fixture Playlist";
+const EDIT_URL = `https://music.apple.com/library/playlist/${encodeURIComponent(EDIT_PLAYLIST)}`;
+const EDIT_ITEM = "edit-in-apple-music";
+// The E2E build appends each link it would open to this file in the profile
+// root (src-tauri/src/commands.rs, E2E_OPENED_LINKS_FILE), one JSON line each.
+const OPENED_LINKS_FILE = "opened-links.jsonl";
+const SIDEBAR_PIN = `.sidebar-group[aria-label="Pinned playlists"] .sidebar-link[data-context-id="${EDIT_PLAYLIST}"]`;
+const PLAYLIST_HERO = "section.library-detail-hero";
+const PLAYLIST_CARD = `.content-scroll [data-context-kind="playlist"][data-context-id="${EDIT_PLAYLIST}"] .library-card`;
 const CHECKS = {
   replayData: "Replay shows this year's top songs, albums, and artists",
   replayEmpty: "Replay with no data shows an empty state, not an error",
@@ -50,6 +67,10 @@ const CHECKS = {
   search: "Search shows record labels and activities",
   info: "Get Info shows the song's composer, ISRC, and label as plain text",
   folder: "New playlist can be created inside a folder",
+  editShown:
+    "Edit in Apple Music shows for an editable library playlist in the sidebar, the playlist list, and the playlist page, and opens its music.apple.com library link once",
+  editAbsent:
+    "Edit in Apple Music is absent from search results, albums, songs, catalog playlists, read-only playlists, and folders",
 };
 
 const q = (value) => JSON.stringify(value);
@@ -736,8 +757,355 @@ async function checkFolderPlaylist(page, check) {
   );
 }
 
+/** Lines the E2E build appended to opened-links.jsonl in the profile root. */
+async function openedLinks(profileRoot) {
+  let text;
+  try {
+    text = await readFile(join(profileRoot, OPENED_LINKS_FILE), "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+  return text
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .map((line) => JSON.parse(line));
+}
+
+/** Waits until the file holds at least count lines, or the timeout passes. */
+async function waitForLines(profileRoot, count, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if ((await openedLinks(profileRoot)).length >= count) return true;
+    await sleep(100);
+  }
+  return false;
+}
+
+/** Dispatches a real contextmenu event on the element, then waits for the menu. */
+async function openMenuOn(page, selector) {
+  const target = await page.evaluate(`
+    const node = document.querySelector(${q(selector)});
+    if (!node) return null;
+    node.scrollIntoView({ block: "center", inline: "nearest" });
+    const rect = node.getBoundingClientRect();
+    node.dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      clientX: rect.left + Math.min(20, rect.width / 2),
+      clientY: rect.top + Math.min(10, rect.height / 2),
+    }));
+    // The app resolves the menu target from the closest [data-context-kind].
+    const context = node.closest("[data-context-kind]") ?? node;
+    return {
+      tag: context.tagName.toLowerCase(),
+      kind: context.getAttribute("data-context-kind"),
+      id: context.getAttribute("data-context-id"),
+    };`);
+  if (!target) return { target: null, opened: false, items: [] };
+  const opened = await waitFor(
+    page,
+    `document.querySelector('.context-menu [data-menu-item]')`,
+    5000,
+  );
+  // Ratings and lookups rebuild the items when they land; read them after that.
+  if (opened) await sleep(300);
+  const items = opened
+    ? await readPage(
+        page,
+        `return [...document.querySelectorAll('.context-menu [data-menu-item]')].map((node) => node.getAttribute("data-menu-item"));`,
+      )
+    : [];
+  return { target, opened, items };
+}
+
+/** Closes any open menu and waits until it is gone. */
+async function closeMenu(page) {
+  await closeOverlays(page);
+  return waitFor(page, `!document.querySelector(".context-menu")`, 3000);
+}
+
+/** Clicks an enabled menu item; false when it is missing or disabled. */
+async function clickMenuEntry(page, itemId) {
+  const ready = await waitFor(
+    page,
+    `document.querySelector('.context-menu [data-menu-item="${itemId}"]:not(:disabled)')`,
+    5000,
+  );
+  if (!ready) return false;
+  await page.evaluate(
+    `document.querySelector('.context-menu [data-menu-item="${itemId}"]').click(); return true;`,
+  );
+  return true;
+}
+
+/**
+ * Clicks Edit in Apple Music once. The E2E build appends each opened link to
+ * the profile root's file, so the lines added by this click are the calls.
+ */
+async function clickEditItem(page, profileRoot) {
+  const before = (await openedLinks(profileRoot)).length;
+  const clicked = await clickMenuEntry(page, EDIT_ITEM);
+  if (clicked) await waitForLines(profileRoot, before + 1, 3000);
+  // A second call from a double fire would land inside this window.
+  await sleep(400);
+  const calls = (await openedLinks(profileRoot)).slice(before);
+  return { clicked, calls };
+}
+
+/** Opens the menu on an editable playlist area and clicks Edit in Apple Music. */
+async function probeEditArea(page, selector, profileRoot) {
+  const menu = await openMenuOn(page, selector);
+  const present = menu.items.includes(EDIT_ITEM);
+  const click = present
+    ? await clickEditItem(page, profileRoot)
+    : { clicked: false, calls: [] };
+  const closed = await closeMenu(page);
+  const onPlaylist = menu.target?.id === EDIT_PLAYLIST;
+  return {
+    selector,
+    target: menu.target,
+    items: menu.items,
+    present,
+    ...click,
+    closed,
+    ok:
+      menu.opened &&
+      onPlaylist &&
+      present &&
+      click.calls.length === 1 &&
+      click.calls[0].url === EDIT_URL,
+  };
+}
+
+/** Opens the menu on an area that must not offer Edit in Apple Music. */
+async function probeAbsentArea(page, name, selector) {
+  const menu = await openMenuOn(page, selector);
+  const closed = await closeMenu(page);
+  const edit = menu.items.includes(EDIT_ITEM);
+  return {
+    name,
+    selector,
+    target: menu.target,
+    items: menu.items,
+    edit,
+    closed,
+    ok: menu.opened && menu.items.length > 0 && !edit,
+  };
+}
+
+/** Pins the playlist from its page header when it is not pinned yet. */
+async function pinForCheck(page, state) {
+  const menu = await openMenuOn(page, PLAYLIST_HERO);
+  state.pin = {
+    wasPinned: menu.items.includes("unpin-playlist"),
+    pinnedByCheck: false,
+  };
+  if (menu.items.includes("pin-playlist")) {
+    state.pin.pinnedByCheck = await clickMenuEntry(page, "pin-playlist");
+  }
+  await closeMenu(page);
+}
+
+/** Unpins the playlist again, only when this check pinned it. */
+async function unpinForCheck(page, pin) {
+  if (!pin?.pinnedByCheck) return null;
+  await go(page, `#/playlist/${EDIT_PLAYLIST}`);
+  await waitFor(
+    page,
+    `document.querySelector(".library-detail-hero h1")?.textContent.trim() === ${q(EDIT_PLAYLIST_NAME)}`,
+    15_000,
+  );
+  const menu = await openMenuOn(page, PLAYLIST_HERO);
+  const clicked = menu.items.includes("unpin-playlist")
+    ? await clickMenuEntry(page, "unpin-playlist")
+    : false;
+  await closeMenu(page);
+  const gone = await waitFor(
+    page,
+    `!document.querySelector(${q(SIDEBAR_PIN)})`,
+    8000,
+  );
+  return { clicked, gone };
+}
+
+/**
+ * Reloads the app, then sets the fixture's library configuration. The library
+ * list loads once per session, so a mode switch needs a fresh load to show.
+ */
+async function reloadLibrary(page, options) {
+  await page.evaluate("location.hash = '#/home'; return true;");
+  await page.send("Page.reload", { ignoreCache: true });
+  await sleep(1000);
+  const ready = await waitFor(
+    page,
+    "window.__ARLET_E2E_MUSIC__ && document.querySelector('.app-shell .player-bar')",
+    30_000,
+  );
+  await fixtureCall(page, "configure", [options]);
+  return ready;
+}
+
+async function checkEditShown(page, check, profileRoot) {
+  await closeOverlays(page);
+  const linesBefore = (await openedLinks(profileRoot)).length;
+  const state = {
+    pin: null,
+    sidebarShown: false,
+    areas: {},
+    calls: [],
+    unpin: null,
+    error: null,
+  };
+  try {
+    await go(page, `#/playlist/${EDIT_PLAYLIST}`);
+    await waitFor(
+      page,
+      `document.querySelector(".library-detail-hero h1")?.textContent.trim() === ${q(EDIT_PLAYLIST_NAME)}`,
+      15_000,
+    );
+    await pinForCheck(page, state);
+    state.sidebarShown = await waitFor(
+      page,
+      `document.querySelector(${q(SIDEBAR_PIN)})?.getAttribute("aria-label") === ${q(EDIT_PLAYLIST_NAME)}`,
+      15_000,
+    );
+    state.areas.sidebar = await probeEditArea(page, SIDEBAR_PIN, profileRoot);
+    state.areas.playlistPage = await probeEditArea(
+      page,
+      PLAYLIST_HERO,
+      profileRoot,
+    );
+    await reloadLibrary(page, { libraryView: false });
+    await go(page, "#/library/playlists");
+    const cardShown = await waitFor(
+      page,
+      `document.querySelector(${q(PLAYLIST_CARD)})`,
+      15_000,
+    );
+    state.areas.playlistList = {
+      cardShown,
+      ...(await probeEditArea(page, PLAYLIST_CARD, profileRoot)),
+    };
+  } catch (error) {
+    state.error = String(error?.message ?? error);
+  } finally {
+    state.unpin = await unpinForCheck(page, state.pin).catch((error) => ({
+      clicked: false,
+      gone: false,
+      error: String(error?.message ?? error),
+    }));
+    state.calls = (await openedLinks(profileRoot)).slice(linesBefore);
+  }
+  const areas = Object.values(state.areas);
+  check(
+    CHECKS.editShown,
+    !state.error &&
+      state.sidebarShown &&
+      areas.length === 3 &&
+      areas.every((area) => area.ok) &&
+      state.calls.length === 3 &&
+      (state.unpin === null || state.unpin.gone === true),
+    state,
+  );
+}
+
+async function checkEditAbsent(page, check, profileRoot) {
+  await closeOverlays(page);
+  await fixtureCall(page, "configure", [
+    { libraryView: false, artworkGrid: false },
+  ]);
+  const linesBefore = (await openedLinks(profileRoot)).length;
+  const probes = [];
+  const state = { probes, calls: [], error: null };
+  try {
+    // Search: a catalog playlist tile. The fixture answers a catalog playlist
+    // only for a term containing "polish"; "fixture" returns none.
+    const catalogTile = `.content-scroll [data-context-kind="playlist"][data-context-source="catalog"]`;
+    await go(page, "#/search?q=polish");
+    await waitFor(page, `document.querySelector(${q(catalogTile)})`, 15_000);
+    probes.push(
+      await probeAbsentArea(page, "search: catalog playlist", catalogTile),
+    );
+
+    // Album: its hero and a song row.
+    const albumHero = `section.library-detail-hero[data-context-kind="album"]`;
+    const songRow = `.content-scroll [data-context-kind="track"]`;
+    await go(page, `#/album/${ALBUM_ID}`);
+    await waitFor(page, `document.querySelector(${q(albumHero)})`, 15_000);
+    await waitFor(page, `document.querySelector(${q(songRow)})`, 15_000);
+    probes.push(await probeAbsentArea(page, "album: hero", albumHero));
+    probes.push(await probeAbsentArea(page, "album: song row", songRow));
+
+    // Playlist page: a song row of the editable playlist itself.
+    await go(page, `#/playlist/${EDIT_PLAYLIST}`);
+    await waitFor(
+      page,
+      `document.querySelector(".library-detail-hero h1")?.textContent.trim() === ${q(EDIT_PLAYLIST_NAME)}`,
+      15_000,
+    );
+    await waitFor(page, `document.querySelector(${q(songRow)})`, 15_000);
+    probes.push(
+      await probeAbsentArea(page, "playlist page: song row", songRow),
+    );
+
+    // Read-only library playlist (canEdit false) from the artwork grid.
+    await reloadLibrary(page, { libraryView: false, artworkGrid: true });
+    const readOnlyCard = `.content-scroll [data-context-kind="playlist"][data-context-id="lib-pl-art-1"] .library-card`;
+    await go(page, "#/library/playlists");
+    await waitFor(page, `document.querySelector(${q(readOnlyCard)})`, 15_000);
+    probes.push(
+      await probeAbsentArea(
+        page,
+        "library playlists: read-only card",
+        readOnlyCard,
+      ),
+    );
+    // Folder heading, in the library view that holds it.
+    await reloadLibrary(page, { libraryView: true, artworkGrid: false });
+    const folder = `.content-scroll .playlist-folder-heading[data-context-id="${FOLDER.id}"]`;
+    await go(page, "#/library/playlists");
+    await waitFor(page, `document.querySelector(${q(folder)})`, 15_000);
+    probes.push(
+      await probeAbsentArea(page, "library playlists: folder", folder),
+    );
+    await fixtureCall(page, "configure", [{ libraryView: false }]);
+
+    // Home: a playlist card when Home has one, otherwise any card.
+    const anyCard = `.content-scroll .card-shell[data-context-kind]`;
+    const playlistCard = `.content-scroll .card-shell[data-context-kind="playlist"]`;
+    await go(page, "#/home");
+    await waitFor(page, `document.querySelector(${q(anyCard)})`, 15_000);
+    const homeCard = await readPage(
+      page,
+      `return document.querySelector(${q(playlistCard)}) ? ${q(playlistCard)} : ${q(anyCard)};`,
+    );
+    probes.push(await probeAbsentArea(page, "home: card", homeCard));
+  } catch (error) {
+    state.error = String(error?.message ?? error);
+  } finally {
+    state.calls = (await openedLinks(profileRoot)).slice(linesBefore);
+    await fixtureCall(page, "configure", [
+      { libraryView: false, artworkGrid: false },
+    ]);
+  }
+  check(
+    CHECKS.editAbsent,
+    !state.error &&
+      probes.length === 7 &&
+      probes.every((probe) => probe.ok) &&
+      state.calls.length === 0,
+    state,
+  );
+}
+
 /** Groups trace, the fixture requests and transitions each check caused. */
-export async function runCatalogExtras({ page, check, artifactDir }) {
+export async function runCatalogExtras({
+  page,
+  check,
+  artifactDir,
+  profileRoot,
+}) {
   const traces = {};
   try {
     await fixtureCall(page, "reset");
@@ -764,6 +1132,12 @@ export async function runCatalogExtras({ page, check, artifactDir }) {
     );
     await tracked(page, check, traces, "folder", CHECKS.folder, () =>
       checkFolderPlaylist(page, check),
+    );
+    await tracked(page, check, traces, "editShown", CHECKS.editShown, () =>
+      checkEditShown(page, check, profileRoot),
+    );
+    await tracked(page, check, traces, "editAbsent", CHECKS.editAbsent, () =>
+      checkEditAbsent(page, check, profileRoot),
     );
   } finally {
     await writeFile(

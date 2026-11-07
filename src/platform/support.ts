@@ -30,3 +30,15 @@ export async function openSubscribeLink(
 ): Promise<void> {
   await invokeFn("open_subscribe_link", { url });
 }
+
+/**
+ * Opens an Apple Music web link in the default browser. This reuses the
+ * `open_subscribe_link` command, so Rust applies the same checks: https on
+ * apple.com only (no credentials or port, at most 2048 bytes).
+ */
+export async function openAppleMusicLink(
+  url: string,
+  invokeFn: InvokeFunction = invoke as InvokeFunction,
+): Promise<void> {
+  await invokeFn("open_subscribe_link", { url });
+}

@@ -80,7 +80,7 @@ import type { DiagnosticsStore } from "../diagnostics/store.ts";
 import { createSupportReport } from "../diagnostics/support-report.ts";
 import type { GateEnvironment } from "../phase0/gate-session.ts";
 import { redactSensitive, registerSensitiveValue } from "../platform/redact.ts";
-import { openSubscribeLink } from "../platform/support.ts";
+import { openAppleMusicLink, openSubscribeLink } from "../platform/support.ts";
 import { createUpdaterService, type UpdaterService } from "../updater.ts";
 import {
   createAppleMusicLibraryClient,
@@ -345,6 +345,11 @@ export interface AppController {
   setAudioQuality(quality: AudioQuality): Promise<void>;
   /** Opens Apple's subscribe page; throws when MusicKit has no link. */
   openSubscribe(): Promise<void>;
+  /**
+   * Opens a library playlist on music.apple.com, where Apple's web editor can
+   * edit it. Rejects an id that is not a plain Apple library ID.
+   */
+  openPlaylistInAppleMusic(id: string): Promise<void>;
   setTrayIcon(enabled: boolean): Promise<void>;
   /** Writes or removes the Windows sign-in entry; the Rust side owns the registry write. */
   setLaunchAtStartup(enabled: boolean): Promise<void>;
@@ -1254,6 +1259,15 @@ export function createAppController(
       const url = requireMusic().subscribeURL;
       if (!url) throw new Error("Subscribe link is not available.");
       await openSubscribeLink(url);
+    },
+
+    async openPlaylistInAppleMusic(id: string): Promise<void> {
+      if (!/^[A-Za-z0-9._-]{1,256}$/.test(id)) {
+        throw new Error("This playlist can't be opened in Apple Music.");
+      }
+      await openAppleMusicLink(
+        `https://music.apple.com/library/playlist/${encodeURIComponent(id)}`,
+      );
     },
 
     setTrayIcon: preferences.setTrayIcon,
