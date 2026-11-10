@@ -365,6 +365,7 @@ export function BrowseView(): JSX.Element {
             <button
               className="secondary-button"
               type="button"
+              disabled={loading}
               onClick={() =>
                 void Promise.resolve(
                   controller.loadMoreBrowseShelf(kind),

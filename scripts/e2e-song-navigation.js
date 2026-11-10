@@ -219,93 +219,109 @@ export async function runSongNavigation({ page, check }) {
     { missingTrackRendered, missingTrackDestinations },
   );
 
-  await fixtureCall("configure", {
-    delayPaths: ["/v1/me/library/songs/nav-delayed"],
-  });
-  await fixtureCall("setCurrentTrack", "nav-delayed");
-  await waitFor(
-    page,
-    `document.querySelector('.player-track [data-player-navigation="album"][data-player-navigation-id="nav-delayed-album"]')`,
-    10_000,
-  );
-  await openPlayerContextMenu(page);
-  await waitFor(
-    page,
-    `document.querySelector('.context-menu [data-menu-item="go-to-album"]')`,
-  );
-  const delayedSnapshot = await fixtureCall("snapshot");
-  const delayedRequests = (delayedSnapshot?.requests ?? []).filter((request) =>
-    String(request?.path ?? request?.url ?? request).includes(
-      "/v1/me/library/songs/nav-delayed",
-    ),
-  );
-  check(
-    "player and context menu share the cached song relationship lookup",
-    delayedRequests.length === 1,
-    { delayedRequestCount: delayedRequests.length, requests: delayedRequests },
-  );
+  try {
+    await fixtureCall("configure", {
+      delayPaths: ["/v1/me/library/songs/nav-delayed"],
+    });
+    await fixtureCall("setCurrentTrack", "nav-delayed");
+    await waitFor(
+      page,
+      `document.querySelector('.player-track [data-player-navigation="album"][data-player-navigation-id="nav-delayed-album"]')`,
+      10_000,
+    );
+    await openPlayerContextMenu(page);
+    await waitFor(
+      page,
+      `document.querySelector('.context-menu [data-menu-item="go-to-album"]')`,
+    );
+    const delayedSnapshot = await fixtureCall("snapshot");
+    const delayedRequests = (delayedSnapshot?.requests ?? []).filter(
+      (request) =>
+        String(request?.path ?? request?.url ?? request).includes(
+          "/v1/me/library/songs/nav-delayed",
+        ),
+    );
+    check(
+      "player and context menu share the cached song relationship lookup",
+      delayedRequests.length === 1,
+      {
+        delayedRequestCount: delayedRequests.length,
+        requests: delayedRequests,
+      },
+    );
+  } finally {
+    await fixtureCall("configure", { delayPaths: [] });
+  }
 
-  await fixtureCall("configure", {
-    delayPaths: ["/v1/me/library/songs/nav-race"],
-    delayMs: 1000,
-  });
-  await fixtureCall("setCurrentTrack", "nav-race");
-  const raceLookupStarted = await waitFor(
-    page,
-    `window.__ARLET_E2E_MUSIC__.snapshot().requests.some((request) => String(request?.path ?? request?.url ?? request).includes('/v1/me/library/songs/nav-race'))`,
-    5000,
-  );
-  await openPlayerContextMenu(page);
-  await waitFor(page, `document.querySelector('.context-menu')`);
-  await page.send("Input.dispatchKeyEvent", {
-    type: "keyDown",
-    key: "Escape",
-    code: "Escape",
-    windowsVirtualKeyCode: 27,
-  });
-  await page.send("Input.dispatchKeyEvent", {
-    type: "keyUp",
-    key: "Escape",
-    code: "Escape",
-    windowsVirtualKeyCode: 27,
-  });
-  await fixtureCall("setCurrentTrack", "nav-multi");
-  await openPlayerContextMenu(page);
-  await waitFor(
-    page,
-    `document.querySelector('.player-track[data-context-id="nav-multi"]') && document.querySelector('.context-menu [data-menu-item="go-to-album"]')`,
-  );
-  await new Promise((resolve) => setTimeout(resolve, 1200));
-  const staleNavigation = await page.evaluate(`
-    const playerHasStaleAlbum = [...document.querySelectorAll('.player-track [data-player-navigation]')]
-      .some((node) => node.dataset.playerNavigationId === 'nav-race-album');
-    const menuHasStaleAlbum = [...document.querySelectorAll('.context-menu [data-menu-item]')]
-      .some((node) => node.dataset.menuTargetId === 'nav-race-album');
-    return { playerHasStaleAlbum, menuHasStaleAlbum };
-  `);
-  check(
-    "slow previous-song lookup cannot change player links or a replaced menu",
-    raceLookupStarted &&
-      !staleNavigation.playerHasStaleAlbum &&
-      !staleNavigation.menuHasStaleAlbum,
-    { raceLookupStarted, ...staleNavigation },
-  );
+  try {
+    await fixtureCall("configure", {
+      delayPaths: ["/v1/me/library/songs/nav-race"],
+      delayMs: 1000,
+    });
+    await fixtureCall("setCurrentTrack", "nav-race");
+    const raceLookupStarted = await waitFor(
+      page,
+      `window.__ARLET_E2E_MUSIC__.snapshot().requests.some((request) => String(request?.path ?? request?.url ?? request).includes('/v1/me/library/songs/nav-race'))`,
+      5000,
+    );
+    await openPlayerContextMenu(page);
+    await waitFor(page, `document.querySelector('.context-menu')`);
+    await page.send("Input.dispatchKeyEvent", {
+      type: "keyDown",
+      key: "Escape",
+      code: "Escape",
+      windowsVirtualKeyCode: 27,
+    });
+    await page.send("Input.dispatchKeyEvent", {
+      type: "keyUp",
+      key: "Escape",
+      code: "Escape",
+      windowsVirtualKeyCode: 27,
+    });
+    await fixtureCall("setCurrentTrack", "nav-multi");
+    await openPlayerContextMenu(page);
+    await waitFor(
+      page,
+      `document.querySelector('.player-track[data-context-id="nav-multi"]') && document.querySelector('.context-menu [data-menu-item="go-to-album"]')`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const staleNavigation = await page.evaluate(`
+      const playerHasStaleAlbum = [...document.querySelectorAll('.player-track [data-player-navigation]')]
+        .some((node) => node.dataset.playerNavigationId === 'nav-race-album');
+      const menuHasStaleAlbum = [...document.querySelectorAll('.context-menu [data-menu-item]')]
+        .some((node) => node.dataset.menuTargetId === 'nav-race-album');
+      return { playerHasStaleAlbum, menuHasStaleAlbum };
+    `);
+    check(
+      "slow previous-song lookup cannot change player links or a replaced menu",
+      raceLookupStarted &&
+        !staleNavigation.playerHasStaleAlbum &&
+        !staleNavigation.menuHasStaleAlbum,
+      { raceLookupStarted, ...staleNavigation },
+    );
+  } finally {
+    await fixtureCall("configure", { delayPaths: [], delayMs: 800 });
+  }
 
-  await fixtureCall("configure", {
-    rejectPaths: ["/v1/me/library/songs/nav-error"],
-  });
-  await fixtureCall("setCurrentTrack", "nav-error");
-  const errorFeedback = await waitFor(
-    page,
-    `document.querySelector('.action-toasts .action-toast-message')`,
-    10_000,
-  );
-  const toastText = await page.evaluate(
-    `return document.querySelector('.action-toasts .action-toast-message')?.textContent ?? '';`,
-  );
-  check(
-    "relationship lookup failures use existing action feedback",
-    errorFeedback && toastText.length > 0,
-    { errorFeedback, toastText },
-  );
+  try {
+    await fixtureCall("configure", {
+      rejectPaths: ["/v1/me/library/songs/nav-error"],
+    });
+    await fixtureCall("setCurrentTrack", "nav-error");
+    const errorFeedback = await waitFor(
+      page,
+      `document.querySelector('.action-toasts .action-toast-message')`,
+      10_000,
+    );
+    const toastText = await page.evaluate(
+      `return document.querySelector('.action-toasts .action-toast-message')?.textContent ?? '';`,
+    );
+    check(
+      "relationship lookup failures use existing action feedback",
+      errorFeedback && toastText.length > 0,
+      { errorFeedback, toastText },
+    );
+  } finally {
+    await fixtureCall("configure", { rejectPaths: [] });
+  }
 }

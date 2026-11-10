@@ -8,16 +8,24 @@ export interface PlaylistDialogRequestDetail {
   mode: PlaylistDialogMode;
   tracks?: readonly Track[];
   restoreFocus?: HTMLElement;
+  /** Preselects this folder in the dialog's Folder choice. */
+  parentFolderId?: string;
 }
 
 export function requestPlaylistDialog(
   mode: PlaylistDialogMode,
   tracks: readonly Track[] = [],
   restoreFocus?: HTMLElement,
+  parentFolderId?: string,
 ): void {
   window.dispatchEvent(
     new CustomEvent<PlaylistDialogRequestDetail>(PLAYLIST_DIALOG_REQUEST, {
-      detail: { mode, tracks, restoreFocus },
+      detail: {
+        mode,
+        tracks,
+        restoreFocus,
+        ...(parentFolderId ? { parentFolderId } : {}),
+      },
     }),
   );
 }

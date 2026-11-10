@@ -1,0 +1,57 @@
+/* Previews-only notice; positioned by .notice-stack (30-session-expired.css). */
+.preview-notice {
+  display: flex;
+  max-width: min(460px, calc(100vw - 32px));
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 10px 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-popover);
+  box-shadow: var(--shadow-popover);
+  backdrop-filter: var(--backdrop-popover);
+  color: var(--text);
+  font-size: 13px;
+}
+.preview-notice > svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--accent);
+}
+.preview-notice-copy {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+}
+.preview-notice-copy span {
+  color: var(--text-muted);
+}
+.preview-notice-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+.preview-notice-dismiss {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+  place-items: center;
+}
+/* Player-bar label that re-opens the notice; resets the button to match the text. */
+.player-error-action {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}

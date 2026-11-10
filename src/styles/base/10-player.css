@@ -136,7 +136,7 @@
 .player-progress {
   gap: 8px;
   color: var(--text-faint);
-  font-size: 10px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 .player-progress input {
@@ -155,7 +155,7 @@
   overflow: hidden;
   color: var(--danger);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 11px;
 }
 .player-error span {
   overflow: hidden;

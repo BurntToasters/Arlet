@@ -24,6 +24,8 @@ export interface ContextTarget {
   parentSource?: MusicSource;
   parentIndex?: number;
   queueIndex?: number;
+  /** Set on an editable library playlist; the menu offers "Edit in Apple Music". */
+  editInAppleMusic?: true;
 }
 
 const APPLE_MUSIC_HOST = "music.apple.com";
@@ -58,6 +60,34 @@ export function catalogLinkOf(value: unknown): string | undefined {
     return undefined;
   }
   return url.href;
+}
+
+/**
+ * Apple's canEdit flag from a raw playlist object, top level or under
+ * `attributes`. Undefined when Apple did not say.
+ */
+export function canEditOf(raw: Record<string, unknown>): boolean | undefined {
+  if (typeof raw.canEdit === "boolean") return raw.canEdit;
+  const attributes = raw.attributes;
+  if (attributes && typeof attributes === "object") {
+    const flag = (attributes as Record<string, unknown>).canEdit;
+    if (typeof flag === "boolean") return flag;
+  }
+  return undefined;
+}
+
+/**
+ * Opt-in data attribute for "Edit in Apple Music". Only a library playlist
+ * that Apple does not mark read-only gets it; an unknown canEdit counts as
+ * editable.
+ */
+export function editInAppleMusicAttribute(
+  source: MusicSource | undefined,
+  canEdit: boolean | undefined,
+): Record<string, string> {
+  return source === "library" && canEdit !== false
+    ? { "data-context-edit-in-apple-music": "true" }
+    : {};
 }
 
 function parseEntityRef(value: unknown): MusicEntityRef | undefined {
@@ -164,6 +194,9 @@ export function parseTarget(node: HTMLElement | null): ContextTarget {
         : undefined,
     queueIndex:
       Number.isInteger(queueIndex) && queueIndex >= 0 ? queueIndex : undefined,
+    ...(node.dataset.contextEditInAppleMusic === "true"
+      ? { editInAppleMusic: true as const }
+      : {}),
   };
 }
 

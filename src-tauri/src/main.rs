@@ -5,9 +5,11 @@
 // Windows clippy, where they are used, still reports real dead code.
 #![cfg_attr(not(windows), allow(dead_code))]
 
+mod app_paths;
 mod auth_popup;
 mod autostart;
 mod background_launch;
+mod clipboard_paste;
 mod commands;
 mod library_cache;
 mod logging;
@@ -58,6 +60,18 @@ fn create_main_window_or_exit(app: &tauri::App) -> tauri::WebviewWindow {
 
 fn main() {
     logging::install_panic_hook();
+    #[cfg(feature = "e2e")]
+    if let Err(error) = app_paths::e2e_profile_root() {
+        logging::write_native_log(&format!("E2E profile validation failed: {error}"));
+        eprintln!("E2E profile validation failed: {error}");
+        std::process::exit(1);
+    }
+    #[cfg(feature = "e2e")]
+    if let Err(error) = app_paths::record_e2e_process_id() {
+        logging::write_native_log(&format!("E2E process recording failed: {error}"));
+        eprintln!("E2E process recording failed: {error}");
+        std::process::exit(1);
+    }
     if let Err(error) = commands::ensure_supported_windows() {
         commands::show_error_dialog(&error);
         return;
@@ -163,7 +177,12 @@ fn main() {
                     .ok()
                     .as_deref(),
             ) {
-                let _ = music_diagnostic::open_music_diagnostic(app.handle().clone());
+                // Webview creation deadlocks on the setup thread; the command
+                // itself is async, and this direct call runs on a worker.
+                let diagnostic_app = app.handle().clone();
+                std::thread::spawn(move || {
+                    let _ = music_diagnostic::open_music_diagnostic_window(&diagnostic_app);
+                });
             }
             Ok(())
         })
@@ -214,6 +233,8 @@ fn main() {
             commands::get_beta_updater_target,
             commands::open_support_page,
             commands::open_about_link,
+            commands::open_subscribe_link,
+            clipboard_paste::paste_clipboard_text,
             tray::quit_ready,
             music_diagnostic::open_music_diagnostic,
             settings::load_settings,

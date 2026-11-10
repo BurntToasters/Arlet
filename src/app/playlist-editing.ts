@@ -15,6 +15,34 @@ export interface CreatePlaylistRequest {
   name: string;
   description?: string;
   tracks?: readonly Track[] | readonly string[];
+  /** Library folder to create the playlist in; omitted means the root. */
+  parentFolderId?: string;
+}
+
+/**
+ * Apple's library API caps batched IDs and paged reads at 100. The playlist
+ * mutation endpoints publish no larger bound, so one request carries at most
+ * this many tracks; a longer save creates with the first batch and appends the
+ * rest one batch at a time.
+ */
+export const PLAYLIST_TRACK_CHUNK_SIZE = 100;
+
+/** A save that created its playlist but stopped partway through its tracks. */
+export class PlaylistPartialSaveError extends Error {
+  readonly savedCount: number;
+  readonly totalCount: number;
+  readonly playlistId: string | undefined;
+
+  constructor(savedCount: number, totalCount: number, playlistId?: string) {
+    const missing = totalCount - savedCount;
+    super(
+      `Saved ${savedCount} of ${totalCount} songs. ${missing} could not be added.`,
+    );
+    this.name = "PlaylistPartialSaveError";
+    this.savedCount = savedCount;
+    this.totalCount = totalCount;
+    this.playlistId = playlistId;
+  }
 }
 
 /**
@@ -57,6 +85,14 @@ export function createPlaylistEditing(
           : requestOrName;
       const trimmed = request.name.trim();
       if (!trimmed) throw new Error("Playlist name is required.");
+      const refs =
+        request.tracks && request.tracks.length > 0
+          ? trackRefs(request.tracks)
+          : [];
+      // Small saves stay one request, exactly as before. Larger saves put the
+      // first batch in the create and append the rest sequentially, so a
+      // failed batch never leaves a half-written request in flight.
+      const firstChunk = refs.slice(0, PLAYLIST_TRACK_CHUNK_SIZE);
       const raw = await libraryMethod(
         requireLibrary(),
         "createPlaylist",
@@ -66,26 +102,55 @@ export function createPlaylistEditing(
           request.description && request.description.trim().length > 0
             ? request.description.trim()
             : undefined,
-        ...(request.tracks && request.tracks.length > 0
-          ? { tracks: trackRefs(request.tracks) }
-          : {}),
+        parentFolderId: request.parentFolderId,
+        ...(firstChunk.length > 0 ? { tracks: firstChunk } : {}),
       });
       const items = asLibraryEntities(raw);
+      const playlist = items[0];
+      if (!playlist || refs.length <= PLAYLIST_TRACK_CHUNK_SIZE) {
+        await library.refreshPlaylistsAfterMutation(
+          "Playlist list refresh failed after create",
+        );
+        return playlist;
+      }
+      let saved = firstChunk.length;
+      try {
+        for (
+          let start = PLAYLIST_TRACK_CHUNK_SIZE;
+          start < refs.length;
+          start += PLAYLIST_TRACK_CHUNK_SIZE
+        ) {
+          const chunk = refs.slice(start, start + PLAYLIST_TRACK_CHUNK_SIZE);
+          await libraryMethod(requireLibrary(), "addTracksToPlaylist")(
+            playlist.id,
+            chunk,
+          );
+          saved += chunk.length;
+        }
+      } catch {
+        // The playlist stays with the batches that did arrive. No retry:
+        // retrying the save would create a second playlist.
+        await library.refreshPlaylistsAfterMutation(
+          "Playlist list refresh failed after partial create",
+        );
+        throw new PlaylistPartialSaveError(saved, refs.length, playlist.id);
+      }
       await library.refreshPlaylistsAfterMutation(
         "Playlist list refresh failed after create",
       );
-      return items[0];
+      return playlist;
     },
 
     async createPlaylistFolder(
       name: string,
+      parentFolderId?: string,
     ): Promise<LibraryEntity | undefined> {
       const trimmed = name.trim();
       if (!trimmed) throw new Error("Folder name is required.");
       const raw = await libraryMethod(
         requireLibrary(),
         "createPlaylistFolder",
-      )({ name: trimmed });
+      )({ name: trimmed, parentFolderId });
       const items = asLibraryEntities(raw);
       await library.refreshPlaylistsAfterMutation(
         "Playlist list refresh failed after folder create",

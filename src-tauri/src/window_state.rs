@@ -96,8 +96,7 @@ pub fn parse_state(text: &str) -> Option<WindowState> {
 }
 
 fn state_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
-    app.path()
-        .app_data_dir()
+    crate::app_paths::data_dir(app)
         .ok()
         .map(|dir| dir.join(FILE_NAME))
 }
@@ -115,7 +114,8 @@ pub fn remove_saved_state(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn monitor_rects(window: &WebviewWindow) -> (Vec<Rect>, Vec<f64>) {
+/// Each connected monitor's work area and scale factor.
+pub fn monitor_rects(window: &WebviewWindow) -> (Vec<Rect>, Vec<f64>) {
     window
         .available_monitors()
         .unwrap_or_default()

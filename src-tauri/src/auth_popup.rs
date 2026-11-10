@@ -14,6 +14,10 @@ const ALLOWED_AUTH_HOSTS: &[&str] = &[
     "account.apple.com",
 ];
 
+/// The bundled app's origin on Windows. Scheme, host, and port are all part of
+/// an origin, so a different port is a different site.
+const APP_ORIGIN: &str = "http://tauri.localhost";
+
 /// Host-only check. Do not inspect query strings; they carry the developer JWT.
 pub fn is_allowed_auth_popup_url(url: &Url) -> bool {
     if url.scheme() == "about" {
@@ -40,7 +44,9 @@ pub fn is_allowed_main_navigation(url: &Url, dev_url: Option<&Url>) -> bool {
         "about" => url.as_str() == "about:blank",
         "tauri" => true,
         "http" | "https" => {
-            url.host_str() == Some("tauri.localhost")
+            // Compare the whole origin; `tauri.localhost` on another port (or
+            // over another scheme) must not replace the privileged window.
+            url.origin().ascii_serialization() == APP_ORIGIN
                 || dev_url.is_some_and(|dev| dev.origin() == url.origin())
         }
         _ => false,
@@ -61,7 +67,18 @@ pub fn create_main_window(app: &App) -> Result<WebviewWindow, Box<dyn std::error
     } else {
         None
     };
-    Ok(WebviewWindowBuilder::from_config(app.handle(), &config)?
+    let builder = WebviewWindowBuilder::from_config(app.handle(), &config)?;
+    #[cfg(feature = "e2e")]
+    let builder = if let Some(directory) =
+        crate::app_paths::webview_data_dir().map_err(std::io::Error::other)?
+    {
+        std::fs::create_dir_all(&directory)?;
+        builder.data_directory(directory)
+    } else {
+        builder
+    };
+
+    Ok(builder
         // Keep the window hidden through webview creation. Startup applies the
         // saved native material and custom chrome before the first show.
         .visible(false)

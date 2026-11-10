@@ -44,7 +44,33 @@ error.
 `{type}` is `library-songs`, `library-albums`, or `library-playlists` for
 library IDs (`i.`, `l.`, `p.` prefixes), and `songs`, `albums`, or `playlists`
 for catalog IDs. Apple's public API has no endpoint to rename, delete, reorder,
-or remove tracks from playlists, so Arlet does not offer those actions.
+or remove tracks from playlists, so Arlet does not offer those actions. The
+playlist right-click menu's "Edit in Apple Music" instead opens the playlist on
+music.apple.com in the default browser, through `open_subscribe_link`.
+
+### Beta.5 Catalog and Library Endpoints
+
+| Method | Path                                                                                | Purpose                                                                                                                                    |
+| ------ | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| GET    | `/v1/me/music-summaries?filter[year]=latest&views=top-artists,top-albums,top-songs` | Replay shelves on Home. A 404, an empty `data` list, or three empty shelves shows nothing and no error.                                    |
+| GET    | `/v1/catalog/{sf}/record-labels/{id}?views=latest-releases,top-releases`            | Record label page                                                                                                                          |
+| GET    | `/v1/catalog/{sf}/albums/{id}?include=record-labels`                                | Catalog album: the record label link and copyright, with its views. A library album reads its label from this request on its catalog twin. |
+| GET    | `/v1/catalog/{sf}/songs/{id}?include=albums`                                        | Get Info: the song, then its album                                                                                                         |
+| GET    | `/v1/catalog/{sf}/activities/{id}?include=playlists`                                | Activity page. At most 10 playlists are read.                                                                                              |
+| GET    | `/v1/catalog/{sf}/playlists?ids=…`                                                  | Activity playlists that Apple sends as bare references, in one batch                                                                       |
+| GET    | `/v1/catalog/{sf}/search?with=topResults&limit=10&types=…`                          | Overview search. Its `types` list includes `record-labels` and `activities`, which have no See all page.                                   |
+| POST   | `/v1/me/library/playlists`                                                          | Create a playlist. A chosen folder is sent as a `parent` relationship.                                                                     |
+| POST   | `/v1/me/library/playlist-folders`                                                   | Create a folder. A chosen parent folder is sent as a `parent` relationship.                                                                |
+
+### MusicKit-Initiated Requests
+
+MusicKit JS sends these itself, and Arlet's code does not call them. They are
+undocumented by Apple.
+
+| Method | Path                               | Purpose                                                                             |
+| ------ | ---------------------------------- | ----------------------------------------------------------------------------------- |
+| POST   | `/v1/me/stations/continuous`       | Autoplay station. A refusal is logged once per Play, and no Autoplay heading shows. |
+| POST   | `/v1/me/stations/next-tracks/{id}` | Autoplay top-up for the station                                                     |
 
 ## Authorization
 
@@ -75,3 +101,6 @@ or remove tracks from playlists, so Arlet does not offer those actions.
   requests then stop until the user signs in again.
 - The 1-minute stream handoff sends the DRM lease `stop` through MusicKit's
   own `stop()`. Arlet makes no separate lease request.
+- Subscribe: MusicKit's `subscribeURL` opens in the default browser through
+  `open_subscribe_link`, not in the webview, so it needs no CSP entry. The Rust
+  command accepts only https links on `apple.com` or its subdomains.

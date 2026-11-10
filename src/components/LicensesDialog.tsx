@@ -1,6 +1,7 @@
 import { LoaderCircle, Search, X } from "lucide-preact";
 import type { JSX } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useModalDialog } from "./use-modal-dialog.ts";
 
 export interface LicenseEntry {
   name: string;
@@ -19,18 +20,22 @@ async function defaultFetchJson(url: string): Promise<unknown> {
 }
 
 /**
- * npm and cargo notices generated at build time into the bundle. A missing
- * or malformed inventory contributes nothing instead of failing the screen.
+ * Loads the npm and cargo notices generated at build time into the bundle.
+ * A missing or malformed inventory contributes nothing. If no inventory
+ * yields a usable object (every fetch rejected, or none was an object), the
+ * promise rejects so the dialog can show its load error.
  */
 export async function loadLicenseInventory(
   fetchJson: FetchJson = defaultFetchJson,
 ): Promise<LicenseEntry[]> {
   const results = await Promise.allSettled(INVENTORIES.map(fetchJson));
   const entries: LicenseEntry[] = [];
+  let usableInventories = 0;
   for (const result of results) {
     if (result.status !== "fulfilled") continue;
     const inventory = result.value;
     if (!inventory || typeof inventory !== "object") continue;
+    usableInventories += 1;
     for (const [name, raw] of Object.entries(inventory)) {
       const record = raw as Record<string, unknown> | null;
       if (!record || typeof record !== "object") continue;
@@ -44,6 +49,7 @@ export async function loadLicenseInventory(
       });
     }
   }
+  if (usableInventories === 0) throw new Error("Licenses could not be loaded.");
   return entries.sort((left, right) => left.name.localeCompare(right.name));
 }
 
@@ -58,34 +64,38 @@ export function LicensesDialog({
   load = loadLicenseInventory,
 }: LicensesDialogProps): JSX.Element {
   const [entries, setEntries] = useState<LicenseEntry[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [query, setQuery] = useState("");
+  const dialogRef = useRef<HTMLElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
-  // The effect runs once; these keep it on the latest props without
-  // reloading the inventory or refocusing when a parent re-renders.
+  // The effect runs once; this keeps it on the latest props without
+  // reloading the inventory when a parent re-renders.
   const loadRef = useRef(load);
   loadRef.current = load;
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+
+  useModalDialog(dialogRef, {
+    escapeAnywhere: true,
+    initialFocus: () => searchRef.current,
+    onEscape: (event) => {
+      event.preventDefault();
+      onClose();
+    },
+  });
 
   useEffect(() => {
     let active = true;
-    void loadRef
-      .current()
-      .catch(() => [])
-      .then((loaded) => {
+    void loadRef.current().then(
+      (loaded) => {
         if (active) setEntries(loaded);
-      });
-    searchRef.current?.focus();
-    const onKeyDown = (event: KeyboardEvent): void => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onCloseRef.current();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
+      },
+      () => {
+        if (!active) return;
+        setLoadFailed(true);
+        setEntries([]);
+      },
+    );
     return () => {
       active = false;
-      document.removeEventListener("keydown", onKeyDown);
     };
   }, []);
 
@@ -108,6 +118,7 @@ export function LicensesDialog({
       }}
     >
       <section
+        ref={dialogRef}
         className="playlist-dialog licenses-dialog"
         role="dialog"
         aria-modal="true"
@@ -147,6 +158,10 @@ export function LicensesDialog({
             <p className="playlist-dialog-feedback" role="status">
               <LoaderCircle className="spin" aria-hidden="true" size={16} />
               Loading licenses…
+            </p>
+          ) : loadFailed ? (
+            <p className="playlist-dialog-feedback" role="alert">
+              Licenses could not be loaded.
             </p>
           ) : visible.length === 0 ? (
             <p className="playlist-dialog-feedback">No packages found.</p>

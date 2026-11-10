@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import {
   ArrowLeft,
   ArrowRight,
@@ -6,10 +7,12 @@ import {
   Disc3,
   FolderPlus,
   Forward,
+  Info,
   LibraryBig,
   Link,
   ListPlus,
   Music2,
+  Pencil,
   Pin,
   PinOff,
   Play,
@@ -28,8 +31,8 @@ import {
   X,
 } from "lucide-preact";
 import type { LucideIcon } from "lucide-preact";
-import { readText } from "@tauri-apps/plugin-clipboard-manager";
 import { useAppRouter } from "../app/context.tsx";
+import { isEditableTarget } from "../app/shortcuts.ts";
 import type { AppController } from "../app/controller.ts";
 import {
   isLibraryTarget,
@@ -37,10 +40,12 @@ import {
   trackRatingTarget,
 } from "../app/ratings.ts";
 import type { Track } from "../domain/music.ts";
+import { catalogSongIdOf } from "../musickit/song-info.ts";
 import type { TrackNavigation } from "../musickit/song-navigation.ts";
 import type { Route } from "../routing/router.ts";
 import { getState, ratingKey } from "../state.ts";
 import { requestPlaylistDialog } from "./playlist-events.ts";
+import { requestSongInfo } from "./SongInfoDialog.tsx";
 import {
   reportActionError,
   reportNotice,
@@ -60,7 +65,8 @@ export interface MenuItem {
   icon: LucideIcon;
   disabled?: boolean;
   targetId?: string;
-  action: () => void;
+  /** Paste receives the click so it can require a trusted user gesture. */
+  action: (event?: Event) => void;
 }
 
 /** A visual divider between groups. Arrow keys skip it. */
@@ -221,18 +227,27 @@ export function buildItems({
         shortcut: "Ctrl+V",
         icon: Clipboard,
         disabled: !editable,
-        action: run(() => {
-          void readText()
+        action: (event?: Event) => {
+          // A synthetic click must not read the clipboard. The editable target
+          // is rechecked after focus returns and again before insertion.
+          if (event?.isTrusted !== true || !editable) {
+            close();
+            return;
+          }
+          restoreFocus();
+          if (!isEditableTarget(document.activeElement)) {
+            close();
+            return;
+          }
+          close();
+          void invoke<string>("paste_clipboard_text")
             .then((text: string) => {
-              // execCommand lets WebView2 insert into the focused native input;
-              // the read is intentionally permissioned through the Tauri plugin.
-              if (editable) {
-                restoreFocus();
+              if (isEditableTarget(document.activeElement)) {
                 insertClipboardText(text);
               }
             })
             .catch(() => undefined);
-        }),
+        },
       },
       {
         id: "select-all",
@@ -320,8 +335,18 @@ export function buildItems({
   const libraryItems: MenuItem[] = [];
   const goToItems: MenuItem[] = [];
   const createItems: MenuItem[] = [];
+  const infoItems: MenuItem[] = [];
 
   if (track) {
+    // Library-only songs have no catalog entry to read, so Get Info is hidden.
+    if (catalogSongIdOf(track)) {
+      infoItems.push({
+        id: "get-info",
+        label: "Get Info",
+        icon: Info,
+        action: run(() => requestSongInfo(track, restoreTarget)),
+      });
+    }
     const playNow = (): void => {
       const parentAction =
         target.parentKind === "playlist"
@@ -543,6 +568,25 @@ export function buildItems({
     });
   }
 
+  if (
+    target.kind === "playlist" &&
+    target.editInAppleMusic === true &&
+    target.id &&
+    target.source !== "catalog"
+  ) {
+    const playlistId = target.id;
+    goToItems.push({
+      id: "edit-in-apple-music",
+      label: "Edit in Apple Music",
+      icon: Pencil,
+      action: run(() => {
+        void controller
+          .openPlaylistInAppleMusic(playlistId)
+          .catch(() => reportActionError("Could not open Apple Music."));
+      }),
+    });
+  }
+
   if ((target.kind === "playlist" || target.kind === "album") && target.id) {
     const kind = target.kind;
     const collectionId = target.id;
@@ -616,20 +660,24 @@ export function buildItems({
   }
 
   if (target.kind === "playlist" || target.kind === "folder" || !target.kind) {
+    // Right-clicking a folder creates inside it; elsewhere the root is used.
+    const parentFolderId = target.kind === "folder" ? target.id : undefined;
     createItems.push(
       {
         id: "new-playlist",
         label: "New playlist",
         icon: Plus,
         action: run(() => {
-          requestPlaylistDialog("create", [], restoreTarget);
+          requestPlaylistDialog("create", [], restoreTarget, parentFolderId);
         }),
       },
       {
         id: "new-folder",
         label: "New playlist folder",
         icon: FolderPlus,
-        action: run(() => requestPlaylistDialog("folder")),
+        action: run(() =>
+          requestPlaylistDialog("folder", [], undefined, parentFolderId),
+        ),
       },
     );
   }
@@ -640,6 +688,7 @@ export function buildItems({
     playbackItems,
     libraryItems,
     goToItems,
+    infoItems,
     createItems,
     appItems,
   ]);

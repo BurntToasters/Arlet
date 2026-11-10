@@ -16,6 +16,8 @@ export interface SearchTileProps {
   catalogUrl?: string;
   /** Opens the result. Omit for a result that cannot be opened (curators). */
   onOpen?: () => void;
+  /** Makes the tile a link, such as `#/label/{id}`. Takes precedence over onOpen. */
+  href?: string;
   /** Starts playback. Omit for results that cannot play. */
   onPlay?: () => void;
   /** Shows the "..." button; needs contextData to have anything to show. */
@@ -36,10 +38,12 @@ export function SearchTile({
   contextData,
   catalogUrl,
   onOpen,
+  href,
   onPlay,
   menu = false,
   featured = false,
 }: SearchTileProps): JSX.Element {
+  const tileClass = `search-tile${featured ? " search-tile-featured" : ""}`;
   const body = (
     <>
       <ArtworkImage
@@ -57,20 +61,16 @@ export function SearchTile({
   );
   return (
     <CardShell contextData={contextData} catalogUrl={catalogUrl}>
-      {onOpen ? (
-        <button
-          className={`search-tile${featured ? " search-tile-featured" : ""}`}
-          type="button"
-          onClick={onOpen}
-        >
+      {href ? (
+        <a className={tileClass} href={href}>
+          {body}
+        </a>
+      ) : onOpen ? (
+        <button className={tileClass} type="button" onClick={onOpen}>
           {body}
         </button>
       ) : (
-        <div
-          className={`search-tile is-static${featured ? " search-tile-featured" : ""}`}
-        >
-          {body}
-        </div>
+        <div className={`${tileClass} is-static`}>{body}</div>
       )}
       {onPlay || menu ? (
         <CardActions title={title} onPlay={onPlay} menu={menu} />

@@ -7,10 +7,12 @@
 // Runs: version drift check, typecheck, lint, format:check, the release
 // tooling script tests, cargo fmt --check, cargo clippy -D warnings, cargo
 // test, and the deterministic built frontend smoke gate. App behaviour is
-// tested end to end only (AGENTS.md); there is no frontend unit suite. With --require-clean-proof on
-// Windows it also runs the native app E2E (test:e2e:app) against a release
-// build, so a release proof always includes the real app. Records a
-// quality-gate proof for the release pipeline on success.
+// tested end to end only (AGENTS.md); there is no frontend unit suite. With
+// --require-clean-proof on a Windows desktop it also runs native app E2E
+// (test:e2e:app) against a release build. Over SSH (the release VM) native
+// E2E cannot run, so the proof records it as deferred instead of verified;
+// run test:e2e:app at a desktop before publishing. Only a gate whose other
+// stages all pass records proof.
 //
 // Flags: --require-clean-proof --skip-e2e
 
@@ -20,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import {
   clearQualityGateProof,
+  missingQualityGateStages,
   recordSuccessfulQualityGate,
 } from "./release-session.js";
 
@@ -144,6 +147,7 @@ function main({
   requireCleanProof = false,
   skipE2e = false,
   sshSession = isSshSession(),
+  platform = process.platform,
   clearProof = clearQualityGateProof,
   recordProof = recordSuccessfulQualityGate,
   runner = runCommand,
@@ -152,6 +156,12 @@ function main({
   if (requireCleanProof && skipE2e) {
     console.error(
       "Cannot record release quality-gate proof while E2E is skipped; run test:all without --skip-e2e.",
+    );
+    return 1;
+  }
+  if (requireCleanProof && platform !== "win32") {
+    console.error(
+      "Cannot record release quality-gate proof: the native app E2E requires Windows. Run test:all --require-clean-proof on a Windows desktop.",
     );
     return 1;
   }
@@ -228,14 +238,16 @@ function main({
   } else {
     runner("e2e", npm, ["run", "test:e2e"], null, results);
   }
-  // The native suite drives a release build of the real app and needs
-  // Windows; it gates every release proof but not everyday runs.
-  if (requireCleanProof && process.platform === "win32" && sshSession) {
+  // The native suite drives a release build of the real app and needs a
+  // Windows desktop; it gates every release proof but not everyday runs.
+  const deferredStages = requireCleanProof && sshSession ? ["e2eApp"] : [];
+  if (deferredStages.length > 0) {
     results.e2eApp.status = "skipped";
     console.log(
-      `${colors.yellow}Skipping the native app E2E: this is an SSH session, where WebView2 cannot open a window. Run npm run test:e2e:app at the machine's desktop before publishing.${colors.reset}\n`,
+      `${colors.yellow}Deferring native app E2E: SSH sessions have no desktop for WebView2.${colors.reset}
+`,
     );
-  } else if (requireCleanProof && process.platform === "win32") {
+  } else if (requireCleanProof && platform === "win32") {
     runner("e2eApp", npm, ["run", "test:e2e:app"], null, results, {
       timeout: E2E_APP_TIMEOUT_MS,
     });
@@ -245,12 +257,30 @@ function main({
 
   const exitCode = printSummary(results);
   if (exitCode === 0) {
-    const gate = recordProof(root);
+    const missingStages = missingQualityGateStages(results, deferredStages);
+    if (missingStages.length > 0) {
+      if (requireCleanProof) {
+        console.error(
+          `${colors.red}Release quality-gate proof NOT recorded: required stages did not pass (${missingStages.join(", ")}). Run test:all --require-clean-proof on a Windows desktop.${colors.reset}`,
+        );
+        return 1;
+      }
+      return exitCode;
+    }
+    const gate = recordProof(root, results, { deferredStages });
     if (gate.recorded) {
       console.log("Release quality-gate proof recorded for this clean commit.");
+      if (deferredStages.length > 0) {
+        console.log(
+          `${colors.yellow}${colors.bold}Native app E2E deferred: run npm run test:e2e:app at a Windows desktop on this commit before release:publish.${colors.reset}`,
+        );
+      }
     } else {
+      const reason = gate.missingStages?.length
+        ? `required stages did not pass (${gate.missingStages.join(", ")}). Run test:all --require-clean-proof on a Windows desktop.`
+        : "working tree is dirty. Commit generated files and re-run test:all before any release step.";
       console.error(
-        `${colors.red}Quality-gate proof NOT recorded: working tree is dirty. Commit generated files and re-run test:all before any release step.${colors.reset}`,
+        `${colors.red}Quality-gate proof NOT recorded: ${reason}${colors.reset}`,
       );
       if (gate.dirtyFiles) console.log(gate.dirtyFiles);
       if (requireCleanProof) return 1;

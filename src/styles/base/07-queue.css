@@ -12,9 +12,9 @@
   overflow: hidden;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--surface-solid) 91%, transparent);
+  background: var(--surface-popover);
   box-shadow: var(--shadow-popover);
-  backdrop-filter: blur(24px) saturate(1.15);
+  backdrop-filter: var(--backdrop-popover);
 }
 
 /* Slides in from the right edge; reduced motion skips the slide. */
@@ -158,13 +158,15 @@
 .queue-row:hover {
   background: var(--surface-hover);
 }
-.queue-row.is-active {
-  background: var(--surface-active);
+/* The active shell carries the single highlight, so the row stays clear. */
+.queue-row.is-active,
+.queue-row-shell.is-active .queue-row:hover {
+  background: transparent;
 }
 .queue-index {
   color: var(--text-faint);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   text-align: center;
 }
 .queue-index svg {
@@ -184,11 +186,11 @@
 }
 .queue-copy small {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .now-playing-label {
   color: var(--accent-strong);
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -209,4 +211,54 @@
   padding: 10px 16px 14px;
   color: var(--text-faint);
   font-size: 12px;
+}
+
+/* Autoplay songs: heading row with the toggle at the right, then their rows. */
+.queue-autoplay {
+  padding: 6px 7px 10px;
+  border-top: 1px solid var(--border);
+}
+.queue-autoplay-head {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 0 0 9px;
+}
+.queue-autoplay-head h3 {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 620;
+}
+.queue-autoplay-toggle {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+}
+.queue-autoplay-toggle:hover:not(:disabled),
+.queue-autoplay-toggle:focus-visible:not(:disabled) {
+  background: var(--surface-active);
+  color: var(--accent-strong);
+}
+.queue-autoplay-toggle.is-active {
+  border-color: var(--accent-strong);
+  background: var(--surface-active);
+  color: var(--accent-strong);
+}
+.queue-autoplay-toggle:disabled {
+  color: var(--text-faint);
+  opacity: 0.55;
+}
+.queue-autoplay-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }

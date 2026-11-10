@@ -1,4 +1,13 @@
-import { LIBRARY_CACHE_SCOPE, type LibraryCache } from "../library/cache.ts";
+import {
+  LIBRARY_CACHE_SCOPE,
+  type CachedPage,
+  type LibraryCache,
+} from "../library/cache.ts";
+import {
+  accountDataReadVersion,
+  assertAccountDataAvailable,
+  isAccountDataReadCurrent,
+} from "../platform/account-data.ts";
 import { getState, setAccountSummary, setLibraryHydrated } from "../state.ts";
 import {
   safeErrorMessage,
@@ -28,20 +37,55 @@ export function createLibraryCacheCoordinator(
   let cacheTrusted = true;
   const libraryCache: LibraryCache = {
     initialize: () => storedCache.initialize(),
-    readPage: (scope, section, cursor) =>
-      cacheTrusted
-        ? storedCache.readPage(scope, section, cursor)
-        : Promise.resolve(undefined),
-    readSection: (scope, section) =>
-      cacheTrusted
-        ? storedCache.readSection(scope, section)
-        : Promise.resolve(undefined),
-    writePage: (scope, section, page) =>
-      storedCache.writePage(scope, section, page),
-    clearSection: (scope, section) => storedCache.clearSection(scope, section),
-    setMeta: (meta) => storedCache.setMeta(meta),
-    getMeta: (scope) =>
-      cacheTrusted ? storedCache.getMeta(scope) : Promise.resolve(undefined),
+    readPage: async <T>(
+      scope: string,
+      section: string,
+      cursor?: string,
+    ): Promise<CachedPage<T> | undefined> => {
+      if (!cacheTrusted) return undefined;
+      const version = accountDataReadVersion("library");
+      if (version === undefined) return undefined;
+      const page = await storedCache.readPage<T>(scope, section, cursor);
+      return cacheTrusted && isAccountDataReadCurrent("library", version)
+        ? page
+        : undefined;
+    },
+    readSection: async <T>(
+      scope: string,
+      section: string,
+    ): Promise<CachedPage<T> | undefined> => {
+      if (!cacheTrusted) return undefined;
+      const version = accountDataReadVersion("library");
+      if (version === undefined) return undefined;
+      const page = await storedCache.readSection<T>(scope, section);
+      return cacheTrusted && isAccountDataReadCurrent("library", version)
+        ? page
+        : undefined;
+    },
+    writePage: async (scope, section, page) => {
+      assertAccountDataAvailable("library");
+      await storedCache.writePage(scope, section, page);
+      assertAccountDataAvailable("library");
+    },
+    clearSection: async (scope, section) => {
+      assertAccountDataAvailable("library");
+      await storedCache.clearSection(scope, section);
+      assertAccountDataAvailable("library");
+    },
+    setMeta: async (meta) => {
+      assertAccountDataAvailable("library");
+      await storedCache.setMeta(meta);
+      assertAccountDataAvailable("library");
+    },
+    getMeta: async (scope) => {
+      if (!cacheTrusted) return undefined;
+      const version = accountDataReadVersion("library");
+      if (version === undefined) return undefined;
+      const meta = await storedCache.getMeta(scope);
+      return cacheTrusted && isAccountDataReadCurrent("library", version)
+        ? meta
+        : undefined;
+    },
     clear: async (scope) => {
       try {
         await storedCache.clear(scope);
@@ -143,9 +187,12 @@ export function createLibraryCacheCoordinator(
       () => undefined,
     );
     try {
-      await clear;
+      if (!(await clear)) {
+        throw new Error("Library cache clear was superseded.");
+      }
     } catch (error) {
       log(`Library cache clear failed: ${safeErrorMessage(error)}`);
+      throw error;
     }
   };
 

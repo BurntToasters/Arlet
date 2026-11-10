@@ -62,11 +62,50 @@ fn apply_mini(window: &WebviewWindow) -> Result<(), String> {
     window.set_always_on_top(true).map_err(stringify)
 }
 
+/// The saved geometry, or the same size centred on the mini window's monitor
+/// when no connected monitor shows enough of it (a monitor disconnected in
+/// mini mode). `window_state::restore` makes the same check at launch.
+fn reachable(window: &WebviewWindow, geometry: WindowState) -> WindowState {
+    let (monitors, scales) = window_state::monitor_rects(window);
+    if window_state::usable_state_scaled(geometry, &monitors, &scales).is_some() {
+        return geometry;
+    }
+    let monitor = window
+        .current_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| window.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        return geometry;
+    };
+    let area = monitor.work_area();
+    let width = geometry.width.min(area.size.width);
+    let height = geometry.height.min(area.size.height);
+    WindowState {
+        x: area.position.x + ((area.size.width - width) / 2) as i32,
+        y: area.position.y + ((area.size.height - height) / 2) as i32,
+        width,
+        height,
+        ..geometry
+    }
+}
+
 fn apply_normal(window: &WebviewWindow, geometry: WindowState) -> Result<(), String> {
     window.set_always_on_top(false).map_err(stringify)?;
     if window.is_maximized().unwrap_or(false) {
         window.unmaximize().map_err(stringify)?;
     }
+    apply_normal_geometry(window, reachable(window, geometry))
+}
+
+/// Restores geometry after a renderer failure. Mini entry always unmaximizes
+/// first, so this path avoids a synchronous window-state query on the UI thread.
+fn apply_normal_after_mini(window: &WebviewWindow, geometry: WindowState) -> Result<(), String> {
+    window.set_always_on_top(false).map_err(stringify)?;
+    apply_normal_geometry(window, geometry)
+}
+
+fn apply_normal_geometry(window: &WebviewWindow, geometry: WindowState) -> Result<(), String> {
     window
         .set_min_size(Some(LogicalSize::new(NORMAL_MIN_WIDTH, NORMAL_MIN_HEIGHT)))
         .map_err(stringify)?;
@@ -142,6 +181,31 @@ pub fn set_mini_player(window: WebviewWindow, enabled: bool) -> Result<(), Strin
     } else {
         exit(&window)
     }
+}
+
+/// Restores native mini-player state before a renderer recovery reloads the
+/// frontend, which initializes its mini-player flag to false.
+pub fn restore_after_renderer_failure(window: &WebviewWindow) -> Result<(), String> {
+    let mut saved = SAVED
+        .lock()
+        .map_err(|_| "Mini player lock poisoned".to_string())?;
+    if !is_active() {
+        return Ok(());
+    }
+    let geometry = saved.take();
+    let result = match geometry {
+        Some(geometry) => apply_normal_after_mini(window, geometry),
+        None => window
+            .set_min_size(Some(LogicalSize::new(NORMAL_MIN_WIDTH, NORMAL_MIN_HEIGHT)))
+            .and_then(|_| window.set_always_on_top(false))
+            .map_err(stringify),
+    };
+    if result.is_ok() {
+        ACTIVE.store(false, Ordering::SeqCst);
+    } else {
+        *saved = geometry;
+    }
+    result
 }
 
 /// Keeps the mini window above others. Ignored outside mini mode, so a stale

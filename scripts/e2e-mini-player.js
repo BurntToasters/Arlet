@@ -7,10 +7,12 @@
  * mode not restoring the start size (40 px); Escape or Ctrl+Shift+M not
  * toggling both ways; full screen not left on entering or not restored on
  * leaving; a layout switch pausing playback; the scenario ending in
- * mini mode. Mini geometry is never persisted (window_state.rs owns that).
- * Keys go through CDP Input events so the real window keydown listener runs.
+ * mini mode; leaving it after its monitor is gone restoring off-screen
+ * (docs/TESTING.md). Mini geometry is never persisted (window_state.rs owns
+ * that). Keys go through CDP Input events so the real keydown listener runs.
  */
 
+import { spawnSync } from "node:child_process";
 import { fixtureCall, sleep, waitFor as pollFor } from "./e2e-helpers.js";
 
 const ALBUM_ID = "album-1";
@@ -19,6 +21,7 @@ const SHIFT = 8;
 const CTRL_SHIFT = CTRL | SHIFT;
 const SIZE_TOLERANCE_PX = 40;
 const RESIZE_TIMEOUT_MS = 3000;
+const RECOVERY_TIMEOUT_MS = 30000;
 
 const KEY = {
   m: { key: "M", code: "KeyM", keyCode: 77 },
@@ -92,6 +95,26 @@ function waitForSizeNear(page, start, timeoutMs = RESIZE_TIMEOUT_MS) {
   );
 }
 
+/** Allows Runtime.evaluate to fail briefly while WebView2 replaces a renderer. */
+async function waitForRecoveredShell(page, timeoutMs = RECOVERY_TIMEOUT_MS) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      if (
+        await page.evaluate(
+          `return Boolean(${SHELL}) && !${MINI} && Boolean(window.__ARLET_E2E_MUSIC__);`,
+        )
+      ) {
+        return true;
+      }
+    } catch {
+      // Runtime.evaluate has no execution context while WebView2 reloads.
+    }
+    await sleep(100);
+  }
+  return false;
+}
+
 /**
  * Counts IPC commands the desktop recorder saw. Tauri's invoke is not
  * writable, so wrapping it records nothing; the recorder counts every call.
@@ -110,7 +133,100 @@ async function leaveMiniIfActive(page) {
   }
 }
 
-export async function runMiniPlayer({ page, check }) {
+/**
+ * The E2E app's window frame and every monitor's work area, in physical
+ * pixels, after moving the frame to `move` when given. Only the visible
+ * "Arlet" window owned by `pid` is read or moved.
+ */
+function nativeWindow(pid, move) {
+  if (!Number.isInteger(pid) || pid <= 0) return { found: false };
+  if (move && !(Number.isInteger(move.x) && Number.isInteger(move.y))) {
+    return { found: false };
+  }
+  const moveLine = move
+    ? `[void][ArletE2eMiniWindow]::SetWindowPos($handle, [IntPtr]::Zero, ${move.x}, ${move.y}, 0, 0, 0x15)`
+    : "";
+  const script = `
+Add-Type @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class ArletE2eMiniWindow {
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+  [StructLayout(LayoutKind.Sequential)] public struct MONITORINFO { public int cbSize; public RECT rcMonitor; public RECT rcWork; public uint dwFlags; }
+  public delegate bool EnumProc(IntPtr hwnd, IntPtr lParam);
+  public delegate bool MonitorProc(IntPtr monitor, IntPtr hdc, ref RECT clip, IntPtr data);
+  [DllImport("user32.dll")] public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr context);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc callback, IntPtr lParam);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int maxCount);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  [DllImport("user32.dll")] public static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, MonitorProc callback, IntPtr data);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern bool GetMonitorInfo(IntPtr monitor, ref MONITORINFO info);
+  public static IntPtr Find(uint processId) {
+    IntPtr found = IntPtr.Zero;
+    EnumWindows((hwnd, lParam) => {
+      uint owner;
+      GetWindowThreadProcessId(hwnd, out owner);
+      if (owner != processId || !IsWindowVisible(hwnd)) return true;
+      var title = new StringBuilder(64);
+      GetWindowText(hwnd, title, title.Capacity);
+      if (title.ToString() != "Arlet") return true;
+      found = hwnd;
+      return false;
+    }, IntPtr.Zero);
+    return found;
+  }
+  public static string Monitors() {
+    var parts = new List<string>();
+    EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (IntPtr monitor, IntPtr hdc, ref RECT clip, IntPtr data) => {
+      var info = new MONITORINFO();
+      info.cbSize = Marshal.SizeOf(typeof(MONITORINFO));
+      if (GetMonitorInfo(monitor, ref info)) {
+        var work = info.rcWork;
+        parts.Add(String.Format("{{\\"x\\":{0},\\"y\\":{1},\\"width\\":{2},\\"height\\":{3},\\"primary\\":{4}}}", work.Left, work.Top, work.Right - work.Left, work.Bottom - work.Top, (info.dwFlags & 1) == 1 ? "true" : "false"));
+      }
+      return true;
+    }, IntPtr.Zero);
+    return "[" + String.Join(",", parts) + "]";
+  }
+}
+"@
+# Per-monitor aware, so coordinates are the physical pixels Arlet saves.
+[void][ArletE2eMiniWindow]::SetThreadDpiAwarenessContext([IntPtr]-4)
+$handle = [ArletE2eMiniWindow]::Find(${pid})
+if ($handle -eq [IntPtr]::Zero) { '{"found":false}'; exit }
+${moveLine}
+Start-Sleep -Milliseconds 300
+$frame = New-Object ArletE2eMiniWindow+RECT
+[void][ArletE2eMiniWindow]::GetWindowRect($handle, [ref]$frame)
+'{{"found":true,"rect":{{"x":{0},"y":{1},"width":{2},"height":{3}}},"monitors":{4}}}' -f $frame.Left, $frame.Top, ($frame.Right - $frame.Left), ($frame.Bottom - $frame.Top), [ArletE2eMiniWindow]::Monitors()`;
+  const result = spawnSync(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    { encoding: "utf8", windowsHide: true, timeout: 20_000 },
+  );
+  try {
+    return JSON.parse(result.stdout.trim());
+  } catch {
+    return {
+      found: false,
+      error: result.error?.message ?? result.stderr?.trim() ?? result.stdout,
+    };
+  }
+}
+
+/** True when `rect` lies inside `area`, allowing for the invisible frame. */
+const insideArea = (rect, area, slack = 16) =>
+  rect.x >= area.x - slack &&
+  rect.y >= area.y - slack &&
+  rect.x + rect.width <= area.x + area.width + slack &&
+  rect.y + rect.height <= area.y + area.height + slack;
+
+export async function runMiniPlayer({ page, check, appPid }) {
   await fixtureCall(page, "reset");
   await page.evaluate(`
     location.hash = "#/album/${ALBUM_ID}";
@@ -123,6 +239,8 @@ export async function runMiniPlayer({ page, check }) {
   check("mini player scenario renders the album detail", albumReady);
   if (!albumReady) return;
 
+  // Set inside the try once playback has started; the final check reads it.
+  let start = null;
   try {
     await clickButtonByText(page, "Play all");
     const started = await waitFor(
@@ -133,7 +251,7 @@ export async function runMiniPlayer({ page, check }) {
     check("Play all starts the album before the mini player opens", started);
     if (!started) return;
 
-    const start = await windowSize(page);
+    start = await windowSize(page);
     // Transitions recorded only while a layout switch runs. Transport steps
     // inside the mini player pause on purpose, so they are not in this list.
     const switchTransitions = [];
@@ -173,6 +291,71 @@ export async function runMiniPlayer({ page, check }) {
     check("the mini player shows the playing song", titleShown, {
       title: await page.evaluate(`return ${MINI_TITLE};`),
     });
+
+    // The bloom radiates from the cover and must not add scrollbars, including
+    // at the 300x120 minimum size.
+    const miniBloomProbe = `
+      const mini = document.querySelector(".mini-player");
+      const image = mini?.querySelector("img.mini-player-backdrop");
+      const style = mini ? getComputedStyle(mini) : null;
+      const measure = () => ({
+        x: document.documentElement.scrollWidth - window.innerWidth,
+        y: document.documentElement.scrollHeight - window.innerHeight,
+      });
+      const withBloom = measure();
+      if (image) image.style.display = "none";
+      const withoutBloom = measure();
+      if (image) image.style.removeProperty("display");
+      return {
+        classed: mini?.classList.contains("has-artwork-bloom") ?? null,
+        present: Boolean(image),
+        alt: image?.getAttribute("alt") ?? null,
+        hidden: image?.getAttribute("aria-hidden") ?? null,
+        src: image?.getAttribute("src") ?? null,
+        overflow: style?.overflow ?? null,
+        background: style?.backgroundColor ?? null,
+        windowEffect:
+          document.documentElement.getAttribute("data-window-effect") ?? null,
+        withBloom,
+        withoutBloom,
+      };
+    `;
+    const miniBloom = await page.evaluate(miniBloomProbe);
+    check(
+      "the mini player radiates its artwork over the native window effect",
+      miniBloom.classed === true &&
+        miniBloom.present &&
+        miniBloom.alt === "" &&
+        miniBloom.hidden === "true" &&
+        miniBloom.src?.startsWith("https://") === true &&
+        !/\/\{[wh]\}/u.test(miniBloom.src ?? "") &&
+        miniBloom.overflow === "hidden" &&
+        (miniBloom.windowEffect !== "acrylic" &&
+        miniBloom.windowEffect !== "mica"
+          ? true
+          : miniBloom.background === "rgba(0, 0, 0, 0)") &&
+        miniBloom.withBloom.x <= 0 &&
+        miniBloom.withBloom.y <= 0,
+      miniBloom,
+    );
+    await page.send("Emulation.setDeviceMetricsOverride", {
+      width: 300,
+      height: 120,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+    try {
+      const smallest = await page.evaluate(miniBloomProbe);
+      check(
+        "the mini player bloom adds no scrollbars at the 300x120 minimum",
+        smallest.present &&
+          smallest.withBloom.x === smallest.withoutBloom.x &&
+          smallest.withBloom.y === smallest.withoutBloom.y,
+        smallest,
+      );
+    } finally {
+      await page.send("Emulation.clearDeviceMetricsOverride", {});
+    }
 
     // Transport through the compact controls.
     const beforePause = await snapshot(page);
@@ -338,6 +521,117 @@ export async function runMiniPlayer({ page, check }) {
         (await page.evaluate(`return ${PLAYING};`)),
       { transitions: switchTransitions },
     );
+
+    // A monitor disconnected in mini mode: the normal window was on it, and
+    // Windows moved the mini window onto a monitor still connected. Moving
+    // the normal window past every monitor stands in for the missing one.
+    const home = nativeWindow(appPid);
+    const primary = home.monitors?.find((monitor) => monitor.primary);
+    if (home.found && primary) {
+      try {
+        const right = Math.max(
+          ...home.monitors.map((monitor) => monitor.x + monitor.width),
+        );
+        const gone = nativeWindow(appPid, { x: right + 4000, y: home.rect.y });
+        await clickSelector(page, "[data-mini-player-toggle]");
+        const goneMini = await waitFor(
+          page,
+          `Boolean(${MINI}) && !${SHELL} && window.innerWidth <= 400`,
+          RESIZE_TIMEOUT_MS,
+        );
+        nativeWindow(appPid, { x: primary.x + 100, y: primary.y + 100 });
+        await clickSelector(page, "[data-mini-expand]");
+        const goneExpanded = await waitFor(
+          page,
+          `Boolean(${SHELL}) && !${MINI} && window.innerWidth > 400`,
+          RESIZE_TIMEOUT_MS,
+        );
+        await sleep(300);
+        const rescued = nativeWindow(appPid);
+        const expected = {
+          width: Math.min(gone.rect?.width ?? 0, primary.width),
+          height: Math.min(gone.rect?.height ?? 0, primary.height),
+        };
+        check(
+          "leaving the mini player after its monitor is gone opens on a monitor in use",
+          goneMini &&
+            goneExpanded &&
+            rescued.found &&
+            insideArea(rescued.rect, primary) &&
+            Math.abs(rescued.rect.width - expected.width) <=
+              SIZE_TOLERANCE_PX &&
+            Math.abs(rescued.rect.height - expected.height) <=
+              SIZE_TOLERANCE_PX,
+          { home, gone, rescued, expected, goneMini, goneExpanded },
+        );
+      } finally {
+        await leaveMiniIfActive(page);
+        nativeWindow(appPid, { x: home.rect.x, y: home.rect.y });
+      }
+    } else {
+      check(
+        "leaving the mini player after its monitor is gone opens on a monitor in use",
+        false,
+        { appPid, home },
+      );
+    }
+
+    // Runs last: a renderer recovery reload resets the frontend mini flag,
+    // playback, and the IPC recorder. Enter mini here so the crash happens in
+    // native mini mode, and measure the size to restore against at this point.
+    const recoveryStart = await windowSize(page);
+    await clickSelector(page, "[data-mini-player-toggle]");
+    const recoveryMini = await waitFor(
+      page,
+      `Boolean(${MINI}) && !${SHELL} && window.innerWidth <= 400 && window.innerHeight <= 200`,
+      RESIZE_TIMEOUT_MS,
+    );
+    void page.send("Page.crash").catch(() => undefined);
+    const recoveredShell = await waitForRecoveredShell(page);
+    const recoveredNearStart =
+      recoveredShell && (await waitForSizeNear(page, recoveryStart));
+    const recoveredSize = recoveredShell ? await windowSize(page) : null;
+    check(
+      "a renderer crash restores the normal shell and window geometry",
+      recoveryMini &&
+        recoveredShell &&
+        recoveredNearStart &&
+        recoveredSize.width >= 500 &&
+        recoveredSize.height >= 480,
+      {
+        recoveryMini,
+        recoveredShell,
+        recoveredNearStart,
+        start: recoveryStart,
+        recoveredSize,
+      },
+    );
+    if (!recoveredShell) return;
+
+    await clickSelector(page, "[data-mini-player-toggle]");
+    const miniWorksAfterRecovery = await waitFor(
+      page,
+      `Boolean(${MINI}) && !${SHELL} && window.innerWidth <= 400`,
+      RESIZE_TIMEOUT_MS,
+    );
+    await clickSelector(page, "[data-mini-expand]");
+    const expandedAfterRecovery = await waitFor(
+      page,
+      `Boolean(${SHELL}) && !${MINI}`,
+      RESIZE_TIMEOUT_MS,
+    );
+    const restoredAfterRecovery =
+      expandedAfterRecovery && (await waitForSizeNear(page, recoveryStart));
+    check(
+      "the mini player can be toggled again after renderer recovery",
+      miniWorksAfterRecovery && restoredAfterRecovery,
+      {
+        miniWorksAfterRecovery,
+        expandedAfterRecovery,
+        restoredAfterRecovery,
+        final: await windowSize(page),
+      },
+    );
   } finally {
     await leaveMiniIfActive(page);
     if (await page.evaluate(`return ${FULLSCREEN};`)) {
@@ -356,5 +650,12 @@ export async function runMiniPlayer({ page, check }) {
   const endedNormal = await page.evaluate(
     `return Boolean(${SHELL}) && !${MINI} && ${PAUSED};`,
   );
-  check("mini player scenario ends in the normal shell, paused", endedNormal);
+  // A null start means the scenario never reached its starting size, so the
+  // geometry half fails visibly instead of throwing.
+  const endedAtStart = start ? await waitForSizeNear(page, start) : false;
+  check(
+    "mini player scenario ends in the normal shell, paused",
+    endedNormal && endedAtStart,
+    { endedNormal, start, final: await windowSize(page) },
+  );
 }

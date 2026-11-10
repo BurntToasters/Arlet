@@ -11,7 +11,7 @@ const MAX_LOG_ENTRY_BYTES: usize = 8 * 1024;
 const LOG_FILE_NAME: &str = "arlet.log";
 
 fn log_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    app.path().app_log_dir().map_err(|e| e.to_string())
+    crate::app_paths::log_dir(app)
 }
 
 fn log_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
@@ -95,21 +95,14 @@ fn redact_sensitive(text: &str) -> String {
     result
 }
 
-/// Must match `identifier` in tauri.conf.json; Tauri's app log dir is
-/// `%LOCALAPPDATA%\<identifier>\logs` on Windows.
-const APP_IDENTIFIER: &str = "run.rosie.arlet";
-
 /// Appends a `[native]` line to `arlet.log` without an `AppHandle`, for
 /// failures before or outside Tauri (startup, panics). Written even with
 /// Debug Mode off: these are the only record of a crash. Best effort: it
 /// never fails or panics, because its callers are already failing.
 pub fn write_native_log(message: &str) {
-    let Some(local) = std::env::var_os("LOCALAPPDATA") else {
+    let Some(dir) = crate::app_paths::native_log_dir() else {
         return;
     };
-    let dir = std::path::PathBuf::from(local)
-        .join(APP_IDENTIFIER)
-        .join("logs");
     let entry = format!("[{}] [native] {}", iso_timestamp_now(), message);
     let safe_entry = redact_sensitive(&truncate_entry(&entry))
         .replace('\r', "\\r")

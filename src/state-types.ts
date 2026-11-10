@@ -1,4 +1,5 @@
 import type {
+  Activity,
   Album,
   Artist,
   DiscoveryResource,
@@ -6,7 +7,12 @@ import type {
   PlaybackState,
   Playlist,
   RatingValue,
+  RecordLabel,
   RecommendationSection,
+  ReplaySummary,
+  SearchActivity,
+  SearchRecordLabel,
+  SongInfo,
   Station,
   Track,
 } from "./domain/music.ts";
@@ -22,6 +28,10 @@ import type { Route } from "./routing/router.ts";
 export type ThemePreference = "system" | "light" | "dark";
 export type WindowEffectPreference = "acrylic" | "mica" | "solid";
 export type UpdateChannel = "auto" | "stable" | "beta";
+/** MusicKit `PlaybackBitrate` choice; "automatic" is fixed by MusicKit at construction. */
+export type AudioQuality = "high" | "standard" | "automatic";
+/** Apple Music subscription as far as MusicKit has reported it. */
+export type SubscriptionStatus = "unknown" | "active" | "none";
 
 export type UpdateStatus =
   | "idle"
@@ -39,6 +49,8 @@ export interface AppSettings {
   autoCheckUpdates: boolean;
   updateChannel: UpdateChannel;
   volume: number;
+  /** Streaming quality requested from MusicKit; applies when the next song is prepared. */
+  audioQuality: AudioQuality;
   /** Ask MusicKit to keep playing similar music after the queue ends. */
   autoplay: boolean;
   /** Restore the last queue and position, paused, after restart. */
@@ -111,6 +123,9 @@ export interface SearchResourceGroups {
   /** Catalog-only; the library source leaves these empty. */
   stations: Station[];
   curators: SearchCurator[];
+  /** Catalog-only overview groups; absent until a loader fills them. */
+  recordLabels?: SearchRecordLabel[];
+  activities?: SearchActivity[];
   /** Catalog top result (`with=topResults`); absent for the library. */
   top?: SearchItem;
   paging: Partial<Record<SearchGroupKind, SearchPagingState>>;
@@ -230,6 +245,32 @@ export interface HomeState {
   lastUpdatedAt?: number;
   /** True when a prior session snapshot remains after refresh failure. */
   stale: boolean;
+  /** Undefined until Home has loaded Replay; null when Apple has no Replay data. */
+  replay?: ReplaySummary | null;
+}
+
+/** The record label page: `id` says which label `page` belongs to. */
+export interface RecordLabelState {
+  status: "idle" | "loading" | "success" | "error";
+  id?: string;
+  page?: RecordLabel;
+  error?: string;
+}
+
+/** The activity page: `id` says which activity `page` belongs to. */
+export interface ActivityState {
+  status: "idle" | "loading" | "success" | "error";
+  id?: string;
+  page?: Activity;
+  error?: string;
+}
+
+/** Get Info: `id` is the track the `info` belongs to. */
+export interface SongInfoState {
+  status: "idle" | "loading" | "success" | "error";
+  id?: string;
+  info?: SongInfo;
+  error?: string;
 }
 
 export interface AccountSummary {
@@ -239,6 +280,8 @@ export interface AccountSummary {
   storefront?: string;
   connectedAt?: number;
   lastRefreshAt?: number;
+  /** Not persisted; resets to "unknown" on sign-out and on every account change. */
+  subscription: SubscriptionStatus;
 }
 
 export interface LibraryDetailsState {
@@ -313,6 +356,9 @@ export interface AppState {
   home?: HomeState;
   browse?: BrowseState;
   radio?: RadioState;
+  recordLabel?: RecordLabelState;
+  activity?: ActivityState;
+  songInfo?: SongInfoState;
   /** Milestone 0-compatible snapshots may omit the shell fields. */
   initialization?: InitializationState;
   navigation?: Route;
@@ -343,6 +389,9 @@ export interface RuntimeAppState extends AppState {
   home: HomeState;
   browse: BrowseState;
   radio: RadioState;
+  recordLabel: RecordLabelState;
+  activity: ActivityState;
+  songInfo: SongInfoState;
   account: AccountSummary;
   ratings: Record<string, RatingValue>;
 }

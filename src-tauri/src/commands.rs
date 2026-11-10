@@ -229,7 +229,91 @@ pub async fn open_about_link(link: AboutLink) -> Result<(), String> {
     open_url_off_ui_thread(about_link_url(link, APP_VERSION)?).await
 }
 
-#[cfg(windows)]
+/// Longest Subscribe link `open_subscribe_link` accepts, in bytes.
+pub const MAX_SUBSCRIBE_URL_BYTES: usize = 2048;
+
+const HTTPS_PREFIX: &str = "https://";
+
+/// Checks a MusicKit `subscribeURL` before it reaches the browser. Accepts
+/// only an ASCII `https` link on `apple.com` or one of its subdomains, with no
+/// credentials, no port (`:443` included), and no spaces or control
+/// characters. Returns the normalized form that was checked, so a host written
+/// in uppercase is opened in lowercase. Trailing-dot hosts (`apple.com.`) and
+/// punycode or other non-ASCII hosts are refused rather than normalized.
+pub fn subscribe_link_url(url: &str) -> Result<String, String> {
+    if url.len() > MAX_SUBSCRIBE_URL_BYTES {
+        return Err(format!(
+            "Subscribe link is longer than {MAX_SUBSCRIBE_URL_BYTES} bytes."
+        ));
+    }
+    if url.bytes().any(|b| b == b' ' || b.is_ascii_control()) {
+        return Err("Subscribe link contains a space or control character.".to_string());
+    }
+    let has_https_prefix = url
+        .get(..HTTPS_PREFIX.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(HTTPS_PREFIX));
+    if !has_https_prefix {
+        return Err("Subscribe link must be an https URL.".to_string());
+    }
+    // Checked on the raw text, before parsing: the URL parser would silently
+    // drop a `:443` port and rewrite a `\` as `/`.
+    let rest = &url[HTTPS_PREFIX.len()..];
+    let authority = rest.split(['/', '?', '#', '\\']).next().unwrap_or("");
+    if authority.contains('@') {
+        return Err("Subscribe link must not include credentials.".to_string());
+    }
+    if authority.contains(':') {
+        return Err("Subscribe link must not name a port.".to_string());
+    }
+    if !authority
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.')
+    {
+        return Err("Subscribe link host must be plain ASCII.".to_string());
+    }
+    let parsed =
+        url::Url::parse(url).map_err(|_| "Subscribe link is not a valid URL.".to_string())?;
+    let host = parsed.host_str().unwrap_or("");
+    let on_apple = host == "apple.com" || host.ends_with(".apple.com");
+    if parsed.scheme() != "https"
+        || !on_apple
+        || parsed.port().is_some()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err("Subscribe link must be an https link on apple.com.".to_string());
+    }
+    Ok(parsed.to_string())
+}
+
+/// Opens the MusicKit Subscribe link. The page supplies the URL, so it is
+/// checked by `subscribe_link_url` and the normalized form is what gets opened.
+#[tauri::command]
+pub async fn open_subscribe_link(url: String) -> Result<(), String> {
+    open_url_off_ui_thread(subscribe_link_url(&url)?).await
+}
+
+/// Name of the file, in the isolated E2E profile root, that E2E builds append
+/// each would-be opened link to.
+#[cfg(feature = "e2e")]
+const E2E_OPENED_LINKS_FILE: &str = "opened-links.jsonl";
+
+/// E2E builds record the link instead of opening it: one JSON line per call,
+/// appended to the isolated profile root. No browser page opens.
+#[cfg(feature = "e2e")]
+fn open_in_default_browser(url: &str) -> Result<(), String> {
+    use std::io::Write;
+    let root = crate::app_paths::e2e_profile_root()?;
+    let line = serde_json::json!({ "url": url }).to_string();
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(root.join(E2E_OPENED_LINKS_FILE))
+        .map_err(|error| format!("Could not record the opened link: {error}"))?;
+    writeln!(file, "{line}").map_err(|error| format!("Could not record the opened link: {error}"))
+}
+
+#[cfg(all(windows, not(feature = "e2e")))]
 fn open_in_default_browser(url: &str) -> Result<(), String> {
     use windows::core::{w, HSTRING, PCWSTR};
     use windows::Win32::UI::Shell::ShellExecuteW;
@@ -255,7 +339,7 @@ fn open_in_default_browser(url: &str) -> Result<(), String> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(all(not(windows), not(feature = "e2e")))]
 fn open_in_default_browser(_url: &str) -> Result<(), String> {
     Err("Opening the browser is supported on Windows only.".to_string())
 }
@@ -508,6 +592,94 @@ mod tests {
         );
         assert!(serde_json::from_str::<AboutLink>("\"https://evil.example\"").is_err());
         assert!(serde_json::from_str::<AboutLink>("\"settings\"").is_err());
+    }
+
+    // Failure modes: the Subscribe link is opened over plain http, on a
+    // lookalike host, with credentials, on an explicit port, past the length
+    // cap, or from text that is not a URL at all.
+    #[test]
+    fn subscribe_link_refuses_http_scheme() {
+        assert!(super::subscribe_link_url(
+            "http://finance-app.itunes.apple.com/deeplink?p=subscribe"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn subscribe_link_refuses_lookalike_hosts() {
+        for url in [
+            "https://apple.com.evil.test/",
+            "https://evilapple.com/",
+            "https://apple.com@evil.test/",
+            "https://\u{0430}pple.com/",
+            "https://apple.com./",
+            "https://apple%2Ecom/",
+            "https://apple.com.evil.test\\@apple.com/",
+        ] {
+            assert!(super::subscribe_link_url(url).is_err(), "accepted {url:?}");
+        }
+    }
+
+    #[test]
+    fn subscribe_link_refuses_userinfo_and_explicit_port() {
+        for url in [
+            "https://user:pass@finance-app.itunes.apple.com/",
+            "https://finance-app.itunes.apple.com:8443/",
+            "https://finance-app.itunes.apple.com:443/",
+        ] {
+            assert!(super::subscribe_link_url(url).is_err(), "accepted {url:?}");
+        }
+    }
+
+    #[test]
+    fn subscribe_link_refuses_urls_over_2048_bytes() {
+        let base = "https://apple.com/?q=";
+        let at_limit = format!("{base}{}", "a".repeat(2048 - base.len()));
+        assert_eq!(at_limit.len(), 2048);
+        assert!(super::subscribe_link_url(&at_limit).is_ok());
+        let over = format!("{at_limit}a");
+        assert!(super::subscribe_link_url(&over).is_err());
+    }
+
+    #[test]
+    fn subscribe_link_refuses_non_url_text() {
+        for text in [
+            "",
+            "finance-app.itunes.apple.com",
+            "not a url",
+            "javascript:alert(1)",
+            " https://apple.com/",
+            "https://apple.com/\n",
+            "https://apple.com/ and more",
+        ] {
+            assert!(
+                super::subscribe_link_url(text).is_err(),
+                "accepted {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn subscribe_link_accepts_apple_https_links() {
+        assert_eq!(
+            super::subscribe_link_url("https://finance-app.itunes.apple.com/deeplink?p=subscribe")
+                .unwrap(),
+            "https://finance-app.itunes.apple.com/deeplink?p=subscribe"
+        );
+        assert_eq!(
+            super::subscribe_link_url("https://apple.com/").unwrap(),
+            "https://apple.com/"
+        );
+    }
+
+    // Decision: host case is not a refusal. The host is lowercased in the
+    // returned URL, so the opened link is the normalized form that was checked.
+    #[test]
+    fn subscribe_link_normalizes_uppercase_host() {
+        assert_eq!(
+            super::subscribe_link_url("https://FINANCE-APP.ITUNES.APPLE.COM/").unwrap(),
+            "https://finance-app.itunes.apple.com/"
+        );
     }
 
     #[test]

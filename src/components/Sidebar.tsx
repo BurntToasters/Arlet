@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
 } from "preact/hooks";
+import { useModalDialog } from "./use-modal-dialog.ts";
 import {
   Album,
   Clock3,
@@ -35,7 +36,9 @@ import {
 import { openSupportPage } from "../platform/support.ts";
 import { reportActionError, reportNotice } from "./action-errors.ts";
 import { draggedTracks, isTrackDrag } from "./track-selection.ts";
+import { canEditOf, editInAppleMusicAttribute } from "./context-target.ts";
 import type { PinnedPlaylist } from "../domain/music.ts";
+import { artworkLinkExpired } from "../musickit/normalize.ts";
 import type { LibrarySection, Route } from "../routing/router.ts";
 
 interface NavItem {
@@ -162,32 +165,72 @@ function playlistIndex(
   return index;
 }
 
+/** Loaded items that may describe the pin: the open detail first, then lists. */
+function pinCandidates(
+  state: Pick<RuntimeAppState, "library">,
+  index: Map<string, unknown[]>,
+  pin: PinnedPlaylist,
+): unknown[] {
+  // A pinned playlist that is open but not in the loaded list still has a name.
+  const opened = (
+    state.library?.details?.playlist as Record<string, unknown> | undefined
+  )?.[libraryDetailKey(pin.id, pin.source)] as { item?: unknown } | undefined;
+  return [
+    ...(opened?.item ? [opened.item] : []),
+    ...(index.get(pin.id) ?? []),
+  ].filter((item) => {
+    // An item that names its source must match the pin's source.
+    const source = (item as { source?: unknown }).source;
+    return source === undefined || source === pin.source;
+  });
+}
+
+/** Apple's canEdit for a pin, from the first loaded item that states it. */
+function pinCanEdit(
+  state: Pick<RuntimeAppState, "library">,
+  index: Map<string, unknown[]>,
+  pin: PinnedPlaylist,
+): boolean | undefined {
+  for (const item of pinCandidates(state, index, pin)) {
+    const canEdit = canEditOf(item as Record<string, unknown>);
+    if (canEdit !== undefined) return canEdit;
+  }
+  return undefined;
+}
+
 function resolvePinDisplay(
   state: Pick<RuntimeAppState, "library">,
   index: Map<string, unknown[]>,
   pin: PinnedPlaylist,
 ): { name?: string; artworkUrl?: string } {
-  // A pinned playlist that is open but not in the loaded list still has a name.
-  const opened = (
-    state.library?.details?.playlist as Record<string, unknown> | undefined
-  )?.[libraryDetailKey(pin.id, pin.source)] as { item?: unknown } | undefined;
-  const candidates = [
-    ...(opened?.item ? [opened.item] : []),
-    ...(index.get(pin.id) ?? []),
-  ];
-  for (const item of candidates) {
-    // An item that names its source must match the pin's source.
-    const source = (item as { source?: unknown }).source;
-    if (source !== undefined && source !== pin.source) continue;
+  for (const item of pinCandidates(state, index, pin)) {
     const name = displayNameOf(item);
-    if (name) return { name, artworkUrl: artworkUrlOf(item) ?? pin.artworkUrl };
+    if (name) {
+      return {
+        name,
+        artworkUrl: liveLink(artworkUrlOf(item)) ?? liveLink(pin.artworkUrl),
+      };
+    }
   }
   // Saved with the pin, so a playlist outside the loaded list keeps its name.
-  return pin.name ? { name: pin.name, artworkUrl: pin.artworkUrl } : {};
+  return pin.name
+    ? { name: pin.name, artworkUrl: liveLink(pin.artworkUrl) }
+    : {};
 }
 
-function renderPinIcon(artworkUrl?: string): JSX.Element {
-  if (artworkUrl) {
+// A cover link that expires while Arlet runs has already loaded, so only
+// links that were dead at startup are dropped.
+const STARTED_AT = Date.now();
+
+/** Drops a signed cover link that had expired by startup; the pin lookup renews it. */
+function liveLink(url: string | undefined): string | undefined {
+  return url && !artworkLinkExpired(url, STARTED_AT) ? url : undefined;
+}
+
+/** A cover that fails to load falls back to the playlist icon. */
+function PinIcon({ artworkUrl }: { artworkUrl?: string }): JSX.Element {
+  const [failedUrl, setFailedUrl] = useState<string>();
+  if (artworkUrl && artworkUrl !== failedUrl) {
     return (
       <img
         className="sidebar-pin-art"
@@ -196,6 +239,7 @@ function renderPinIcon(artworkUrl?: string): JSX.Element {
         aria-hidden="true"
         loading="lazy"
         draggable={false}
+        onError={() => setFailedUrl(artworkUrl)}
       />
     );
   }
@@ -225,13 +269,6 @@ function useCompactShell(): boolean {
   return compact;
 }
 
-/** Enabled buttons and inputs in the drawer, in tab order. */
-function drawerControls(drawer: HTMLElement | null): HTMLElement[] {
-  return Array.from(
-    drawer?.querySelectorAll<HTMLElement>("button, input") ?? [],
-  ).filter((node) => !node.matches(":disabled, [aria-disabled='true']"));
-}
-
 export function Sidebar(): JSX.Element {
   const state = useAppSlices(
     "account",
@@ -253,7 +290,6 @@ export function Sidebar(): JSX.Element {
   // Only a re-render trigger; the checks below read the live breakpoint.
   const compactShell = useCompactShell();
   const drawerOpen = useAppSelector((store) => store.ui.sidebarOpen);
-  const drawerWasOpen = useRef(drawerOpen);
 
   useEffect(() => {
     if (state.navigation.kind === "search") setQuery(state.navigation.query);
@@ -268,59 +304,25 @@ export function Sidebar(): JSX.Element {
     }
   }, [compactShell, drawerOpen]);
 
-  // Opening the drawer moves focus into it. Closing it returns focus to the
-  // menu button, unless focus already went somewhere else (such as the page
-  // heading after a route change).
-  useLayoutEffect(() => {
-    const wasOpen = drawerWasOpen.current;
-    drawerWasOpen.current = drawerOpen;
-    if (!isCompactShell() || wasOpen === drawerOpen) return;
-    if (drawerOpen) {
-      drawerRef.current?.querySelector<HTMLElement>(".sidebar-link")?.focus();
-      return;
-    }
-    const active = document.activeElement;
-    if (
-      !active ||
-      active === document.body ||
-      drawerRef.current?.contains(active)
-    ) {
+  // Compact drawer only: opening moves focus in, closing returns it to the
+  // menu button unless focus already went elsewhere. Escape closes it.
+  useModalDialog(drawerRef, {
+    // Read live: compactShell is only a re-render trigger and can lag.
+    active: drawerOpen && isCompactShell(),
+    escapeAnywhere: true,
+    // Same control set as the drawer checks: enabled buttons and inputs.
+    selector: "button, input",
+    initialFocus: () =>
+      drawerRef.current?.querySelector<HTMLElement>(".sidebar-link"),
+    returnFocus: () =>
+      document.querySelector<HTMLElement>(".mobile-menu-button"),
+    onEscape: (event) => {
+      if (event.defaultPrevented) return;
+      event.preventDefault();
+      setUiState({ sidebarOpen: false });
       document.querySelector<HTMLElement>(".mobile-menu-button")?.focus();
-    }
-  }, [compactShell, drawerOpen]);
-
-  // While the drawer is open it is modal: Esc closes it and Tab cycles inside.
-  useLayoutEffect(() => {
-    if (!drawerOpen) return undefined;
-    const onKeyDown = (event: KeyboardEvent): void => {
-      const drawer = drawerRef.current;
-      if (event.defaultPrevented || !drawer || !isCompactShell()) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setUiState({ sidebarOpen: false });
-        document.querySelector<HTMLElement>(".mobile-menu-button")?.focus();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const controls = drawerControls(drawer);
-      const first = controls[0];
-      const last = controls.at(-1);
-      if (!first || !last) return;
-      const active = document.activeElement;
-      const inside = active instanceof Node && drawer.contains(active);
-      if (event.shiftKey) {
-        if (!inside || active === first) {
-          event.preventDefault();
-          last.focus();
-        }
-      } else if (!inside || active === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [compactShell, drawerOpen]);
+    },
+  });
 
   const navigate = (route: Route): void => {
     router.navigate(route);
@@ -442,10 +444,14 @@ export function Sidebar(): JSX.Element {
           data-context-id={pin.id}
           data-context-route-kind="playlist"
           data-context-source={pin.source}
+          {...editInAppleMusicAttribute(
+            pin.source,
+            pinCanEdit(state, pinIndex, pin),
+          )}
           onClick={() => navigate(route)}
           {...dropHandlers(pin, name)}
         >
-          {renderPinIcon(display.artworkUrl)}
+          <PinIcon artworkUrl={display.artworkUrl} />
           <span>{name}</span>
         </button>
       );
@@ -463,6 +469,10 @@ export function Sidebar(): JSX.Element {
           data-context-id={pin.id}
           data-context-route-kind="playlist"
           data-context-source={pin.source}
+          {...editInAppleMusicAttribute(
+            pin.source,
+            pinCanEdit(state, pinIndex, pin),
+          )}
           onClick={() => navigate(route)}
           {...dropHandlers(pin, undefined)}
         >

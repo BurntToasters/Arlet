@@ -139,6 +139,7 @@ export async function runRadioArtist({ page, check }) {
   // A library song without a catalog ID reports and queues nothing.
   await fixtureCall(page, "reset");
   await fixtureCall(page, "setCurrentTrack", ["song-a"]);
+  const sinceMenuClick = (await snapshot(page)).requests.length;
   await openMenuAndClick(page, "i.library-only", "start-station");
   const toasted = await waitFor(
     page,
@@ -146,12 +147,32 @@ export async function runRadioArtist({ page, check }) {
   );
   transitions = await transitionsOf(page);
   requests = (await snapshot(page)).requests;
+  // Opening the menu on a library song legitimately reads its rating
+  // (/v1/me/ratings/library-songs?ids=i.library-only, the ID is in the query)
+  // and its album and artist navigation (/v1/me/library/songs/i.library-only
+  // with include=albums,artists, from song-navigation.ts). Neither is a
+  // station lookup, and the navigation read can be served from an earlier
+  // scenario's cache, so the check forbids only a station or catalog lookup
+  // for this ID.
+  const stationOrCatalogLookup = (item) =>
+    item.path.includes("i.library-only") &&
+    (item.path.includes("/v1/catalog/") ||
+      String(item.query?.include ?? "").includes("station"));
   check(
     "library song without a catalog ID reports no station and never queues",
     toasted &&
       queuesOf(transitions).length === 0 &&
-      !requests.some((item) => item.path.includes("i.library-only")),
-    { toasted, transitions },
+      !requests.some(stationOrCatalogLookup),
+    {
+      toasted,
+      transitions,
+      requestsSinceMenuClick: requests.slice(sinceMenuClick).map((item) => ({
+        path: item.path,
+        method: item.method,
+        query: item.query ?? null,
+        error: item.error ?? null,
+      })),
+    },
   );
 
   // A lookup that finishes after other playback started is dropped.

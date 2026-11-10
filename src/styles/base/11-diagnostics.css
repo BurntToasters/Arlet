@@ -18,9 +18,9 @@
   border: 1px solid var(--border-strong);
   border-bottom: 0;
   border-radius: var(--radius-md) var(--radius-md) 0 0;
-  background: color-mix(in srgb, var(--surface-solid) 94%, transparent);
+  background: var(--surface-popover);
   box-shadow: var(--shadow-popover);
-  backdrop-filter: blur(24px) saturate(1.15);
+  backdrop-filter: var(--backdrop-popover);
 }
 .diagnostics-header {
   display: flex;
@@ -65,9 +65,10 @@
   font-size: 11px;
 }
 .diagnostics-tabs button[aria-selected="true"] {
-  background: var(--surface-active);
-  color: var(--accent-strong);
+  background: var(--surface-raised);
+  color: var(--text);
   font-weight: 650;
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 .diagnostics-body {
   min-height: 0;
@@ -89,7 +90,7 @@
   justify-content: space-between;
   margin-bottom: 10px;
   color: var(--text-faint);
-  font-size: 10px;
+  font-size: 11px;
 }
 .diagnostics-panel-toolbar > div {
   display: flex;
@@ -104,7 +105,7 @@
   border-radius: 6px;
   background: var(--surface-subtle);
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .diagnostics-panel-toolbar button:hover:not(:disabled),
 .diagnostics-actions button:hover:not(:disabled) {
@@ -120,7 +121,7 @@
   border-radius: var(--radius-sm);
   background: var(--surface-subtle);
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
 }
 .diagnostics-console-list {
   display: grid;
@@ -169,7 +170,7 @@
   display: flex;
   justify-content: space-between;
   gap: 9px;
-  font-size: 10px;
+  font-size: 11px;
 }
 .diagnostics-environment dt {
   color: var(--text-faint);
@@ -188,19 +189,19 @@
   gap: 3px;
   margin: 9px 0 0;
   color: var(--text-faint);
-  font-size: 10px;
+  font-size: 11px;
 }
 .diagnostics-log-directory code,
 .diagnostics-observed-hosts code {
   overflow-wrap: anywhere;
   color: var(--text-muted);
   font-family: var(--font-mono);
-  font-size: 9px;
+  font-size: 11px;
 }
 .diagnostics-session-summary {
   margin-bottom: 9px;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 .diagnostics-session-summary span + span::before {
   margin: 0 7px;
@@ -236,7 +237,7 @@
 .diagnostics-checklist legend {
   padding: 0 4px;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
 }
 .diagnostics-check-item {
@@ -245,7 +246,7 @@
   gap: 7px;
   margin-top: 6px;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1.35;
 }
 .diagnostics-check-item input {
@@ -261,7 +262,7 @@
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--danger) 9%, transparent);
   color: var(--danger);
-  font-size: 10px;
+  font-size: 11px;
 }
 .diagnostics-failures ul {
   margin: 0;
@@ -273,5 +274,5 @@
   padding: 6px 15px;
   border-top: 1px solid var(--border);
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
 }

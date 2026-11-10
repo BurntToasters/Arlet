@@ -9,8 +9,8 @@ import { fixtureCall, sleep, waitFor } from "./e2e-helpers.js";
 const STEADY_EVENTS = 50; // alternating playback-state and queue events
 const STEADY_TICKS = 100; // playbackTime ticks
 const VOLUME_STEPS = 40; // input events in one volume drag
-// The app's VOLUME_SAVE_DELAY_MS in src/app/controller.ts: a save waits this
-// long after the last volume event.
+// The app's VOLUME_SAVE_DELAY_MS in src/app/controller-settings.ts: a save
+// waits this long after the last volume event.
 const VOLUME_DEBOUNCE_MS = 300;
 const SAVE_FLUSH_MS = 1500; // wait past the debounce before reading the file
 const VOLUME_TOLERANCE = 0.001; // persisted volume against the slider's value

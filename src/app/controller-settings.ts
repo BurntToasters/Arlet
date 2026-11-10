@@ -1,10 +1,16 @@
 import { setNativeLogDebugMode } from "../diagnostics/native.ts";
-import { setAutoplayEnabled } from "../musickit/player.ts";
+import { reportActionError } from "../components/action-errors.ts";
+import {
+  readMusicKitBitrate,
+  setAutoplayEnabled,
+  writeMusicKitBitrate,
+} from "../musickit/player.ts";
 import {
   getState,
   setSettings,
   setWindowEffectState,
   type AppSettings,
+  type AudioQuality,
   type ThemePreference,
   type UpdateChannel,
   type WindowEffectPreference,
@@ -65,12 +71,20 @@ export function createControllerSettings(
    * runs, so an older snapshot can never land after a newer one.
    */
   const queueSettingsSave = (): Promise<void> => {
-    volumeSaveQueue = volumeSaveQueue
-      .then(() => savePersistedSettings(getState().settings, invokeFn))
-      .catch((error: unknown) => {
-        log(`Settings save failed: ${errorMessage(error)}`);
-      });
-    return volumeSaveQueue;
+    const save = volumeSaveQueue.then(() =>
+      savePersistedSettings(getState().settings, invokeFn),
+    );
+    volumeSaveQueue = save.then(
+      () => undefined,
+      (error: unknown) => {
+        try {
+          log(`Settings save failed: ${errorMessage(error)}`);
+        } catch {
+          return;
+        }
+      },
+    );
+    return save;
   };
 
   const persistSettings = async (settings: AppSettings): Promise<void> => {
@@ -89,6 +103,44 @@ export function createControllerSettings(
   };
 
   /**
+   * The bitrate MusicKit chose at construction from network speed. "automatic"
+   * writes this value back. It is read once per instance, before Arlet writes.
+   */
+  let startupInstance: MusicKit.MusicKitInstance | undefined;
+  let startupBitrate: number | undefined;
+
+  const captureStartupBitrate = (instance: MusicKit.MusicKitInstance): void => {
+    if (startupInstance === instance) return;
+    startupInstance = instance;
+    startupBitrate = readMusicKitBitrate(instance);
+  };
+
+  /** The kbps value a quality asks MusicKit for; undefined when there is nothing to write. */
+  const bitrateForQuality = (quality: AudioQuality): number | undefined => {
+    if (quality === "high") return MusicKit.PlaybackBitrate?.HIGH ?? 256;
+    if (quality === "standard") return MusicKit.PlaybackBitrate?.STANDARD ?? 64;
+    return startupBitrate;
+  };
+
+  /**
+   * Pushes an audio quality to MusicKit. MusicKit applies it when the next song
+   * is prepared. Returns false when the runtime rejects the write.
+   */
+  const applyAudioQuality = (
+    instance: MusicKit.MusicKitInstance,
+    quality: AudioQuality = getState().settings.audioQuality,
+  ): boolean => {
+    captureStartupBitrate(instance);
+    const target = bitrateForQuality(quality);
+    if (target === undefined || readMusicKitBitrate(instance) === target) {
+      return true;
+    }
+    if (writeMusicKitBitrate(instance, target)) return true;
+    log("Audio quality could not be applied in this MusicKit runtime.");
+    return false;
+  };
+
+  /**
    * Saves the latest settings once a volume drag settles. During a drag the
    * live level is only in `playback.volume`, so it is copied into settings here.
    */
@@ -100,9 +152,22 @@ export function createControllerSettings(
     if (getState().settings.volume !== volume) {
       setSettings({ ...getState().settings, volume });
     }
-    void queueSettingsSave().then(() => {
-      for (const resolve of waiters) resolve();
-    });
+    void queueSettingsSave().then(
+      () => {
+        for (const resolve of waiters) resolve();
+      },
+      (error: unknown) => {
+        try {
+          reportActionError(error);
+        } catch (reportError) {
+          log(
+            `Could not report volume save failure: ${errorMessage(reportError)}`,
+          );
+        } finally {
+          for (const resolve of waiters) resolve();
+        }
+      },
+    );
   };
 
   /** Restarts the debounce, so the save waits until the input settles. */
@@ -126,7 +191,10 @@ export function createControllerSettings(
     playbackSession.markSettingsLoaded();
     playback.applyPlaybackVolume(settings.volume);
     const music = context.getMusic();
-    if (music) applyAutoplaySetting(music);
+    if (music) {
+      applyAutoplaySetting(music);
+      applyAudioQuality(music);
+    }
     configureUpdater(settings);
     const effectPromise = applyCurrentEffect();
     const pinsPromise = deps.loadPins();
@@ -187,6 +255,16 @@ export function createControllerSettings(
     await persistSettings({ ...getState().settings, autoplay: enabled });
   };
 
+  const setAudioQuality = async (quality: AudioQuality): Promise<void> => {
+    const instance = context.requireMusic();
+    if (!applyAudioQuality(instance, quality)) {
+      throw new Error(
+        "Audio quality is not available in this MusicKit runtime.",
+      );
+    }
+    await persistSettings({ ...getState().settings, audioQuality: quality });
+  };
+
   const setTrayIcon = async (enabled: boolean): Promise<void> => {
     await persistSettings({ ...getState().settings, trayIcon: enabled });
   };
@@ -243,6 +321,7 @@ export function createControllerSettings(
     setWindowEffect,
     setAutoCheckUpdates,
     setAutoplay,
+    setAudioQuality,
     setTrayIcon,
     setLaunchAtStartup,
     setDebugMode,
@@ -250,6 +329,8 @@ export function createControllerSettings(
     setUpdateChannel,
     resetSettingsAndRestart,
     applyAutoplaySetting,
+    applyAudioQuality,
+    captureStartupBitrate,
     scheduleVolumeSave,
     flushPendingVolume,
     /** Settles when every queued settings write has finished. */

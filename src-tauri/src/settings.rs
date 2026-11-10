@@ -2,7 +2,7 @@
 
 use crate::window_fx::WindowEffectPreference;
 use serde_json::Value;
-use tauri::{Manager, Theme, WebviewWindow};
+use tauri::{Theme, WebviewWindow};
 
 static SETTINGS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Set once settings are reset; the old in-memory settings must not be
@@ -175,7 +175,7 @@ fn lock_settings() -> Result<std::sync::MutexGuard<'static, ()>, String> {
 }
 
 fn settings_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = crate::app_paths::data_dir(app)?;
     Ok(dir.join("settings.json"))
 }
 
@@ -184,29 +184,35 @@ fn backup_path(path: &std::path::Path) -> std::path::PathBuf {
 }
 
 pub fn atomic_write_text(path: &std::path::Path, content: &str) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
     let tmp = path.with_extension("json.tmp");
-    {
-        use std::io::Write;
-        let mut file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
-        file.write_all(content.as_bytes())
-            .map_err(|e| e.to_string())?;
-        // Flush data before the swap, or a power loss can leave the renamed
-        // file empty.
-        file.sync_all().map_err(|e| e.to_string())?;
-    }
+    let result = (|| -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&tmp).map_err(|e| e.to_string())?;
+            file.write_all(content.as_bytes())
+                .map_err(|e| e.to_string())?;
+            // Flush data before the swap, or a power loss can leave the renamed
+            // file empty.
+            file.sync_all().map_err(|e| e.to_string())?;
+        }
 
-    // `std::fs::rename` maps to MoveFileExW on Windows, but its default
-    // semantics refuse to replace an existing destination. ReplaceFileW
-    // keeps the swap atomic for the normal save path while MoveFileExW is
-    // used for the first save, when no destination exists yet.
-    #[cfg(target_os = "windows")]
-    replace_existing_windows(&tmp, path)?;
-    #[cfg(not(target_os = "windows"))]
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
-    Ok(())
+        // On Windows, ReplaceFileW swaps an existing file in one step and keeps
+        // its attributes and ACLs. MoveFileExW covers the first save, when no
+        // destination exists yet.
+        #[cfg(target_os = "windows")]
+        replace_existing_windows(&tmp, path)?;
+        #[cfg(not(target_os = "windows"))]
+        std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+    if result.is_err() {
+        // A failed write or swap must not leave the temporary file behind.
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(target_os = "windows")]
@@ -276,7 +282,9 @@ fn read_valid_settings(path: &std::path::Path) -> Option<String> {
 fn read_settings_text(path: &std::path::Path) -> Result<String, String> {
     match std::fs::read_to_string(path) {
         Ok(content) if is_settings_object(&content) => Ok(content),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok("{}".to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(read_valid_settings(&backup_path(path)).unwrap_or_else(|| "{}".to_string()))
+        }
         Ok(_) => Ok(read_valid_settings(&backup_path(path)).unwrap_or_else(|| "{}".to_string())),
         Err(e) => read_valid_settings(&backup_path(path))
             .ok_or_else(|| format!("Settings and backup unreadable: {e}")),
@@ -331,7 +339,7 @@ pub fn reset_pending() -> bool {
     RESET_PENDING.load(std::sync::atomic::Ordering::SeqCst)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 /// Restores default settings and restarts Arlet. Sign-in (WebView2 storage),
 /// pins, and the library cache are kept; Settings has a separate sign-out.
 pub fn reset_settings(app: tauri::AppHandle) -> Result<(), String> {

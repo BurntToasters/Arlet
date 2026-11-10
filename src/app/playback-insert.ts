@@ -1,4 +1,4 @@
-import { MAX_QUEUE_LENGTH } from "./queue-window.ts";
+import { MAX_QUEUE_LENGTH, appendTargetIndex } from "./queue-window.ts";
 import {
   queueDescriptorsForTracks,
   queueOptionsForTracks,
@@ -10,6 +10,7 @@ import {
   unresolvedIds,
   withResolvableTracks,
 } from "../musickit/unresolved.ts";
+import { musicKitReasonOf } from "../musickit/errors.ts";
 import { reportActionError } from "../components/action-errors.ts";
 import { getState, setQueue, setQueueSnapshot } from "../state.ts";
 import {
@@ -21,6 +22,10 @@ import {
 import type { PlaybackContext } from "./playback.ts";
 
 type QueueInsertMethod = "playNext" | "playLater";
+
+/** Shown when a station is playing; MusicKit has no queue to insert into. */
+export const STATION_INSERT_MESSAGE =
+  "Play Next and Play Later aren't available while a station is playing.";
 
 /**
  * Play Next and Play Later. Built on the shared playback context; an empty
@@ -45,8 +50,20 @@ export function createQueueInsert(
     tracks: readonly Track[] | readonly string[],
     options: { quiet?: boolean; isCurrent?: () => boolean } = {},
   ): Promise<Track[]> => {
+    const playIntent = context.session.playIntent;
+    // Refills belong to the queue generation they extend. Manual insertions
+    // belong to the play intent that was current when the user started them.
+    const isCurrent =
+      options.isCurrent ?? (() => context.session.playIntent === playIntent);
     const ids = trackIds(tracks);
     if (ids.length === 0) throw new Error("At least one track is required.");
+    if (!isCurrent()) return [];
+    // A station's MusicKit queue refuses inserts, so none is sent. Background
+    // refills stop quietly; a user's request gets the toast.
+    if (context.session.station !== undefined) {
+      if (!options.quiet) reportActionError(new Error(STATION_INSERT_MESSAGE));
+      return [];
+    }
     const allTracks = materializeTracks(tracks);
     // Same request limit as playTracks; the first songs are kept in order.
     const requestedTracks = allTracks.slice(0, MAX_QUEUE_LENGTH);
@@ -55,6 +72,17 @@ export function createQueueInsert(
         `Added the first ${requestedTracks.length} of ${allTracks.length} songs to stay within Apple's request limits.`,
       );
     }
+    // A Play may still be replacing the provider queue. Wait for that setup so
+    // the snapshot below is the queue the user will actually hear. The settled
+    // generation then gates every write: a newer setup aborts this insert.
+    while (context.session.queueSetup) {
+      await context.session.queueSetup;
+      if (!isCurrent()) return [];
+    }
+    const setupGeneration = context.session.queueSetupGeneration;
+    const setupCurrent = (): boolean =>
+      context.session.queueSetupGeneration === setupGeneration;
+    const current = (): boolean => isCurrent() && setupCurrent();
     const currentQueue = getState().playback.queue;
     const currentIndex = getState().playback.queueIndex;
     if (currentQueue.length === 0) {
@@ -82,43 +110,67 @@ export function createQueueInsert(
     }
     const byId = typeof tracks[0] === "string";
     // One unavailable song would otherwise reject the whole insertion.
-    const { entries, skipped } = await withResolvableTracks(
-      requestedTracks,
-      async (attempt) => {
-        if (!instance || typeof insert !== "function") return;
-        // A refill for a queue that was replaced must not reach the provider.
-        if (options.isCurrent?.() === false) return;
-        const run = (queueOptions: MusicKit.QueueOptions): Promise<void> =>
-          (insert as (options: MusicKit.QueueOptions) => Promise<void>).call(
-            instance,
-            queueOptions,
-          );
-        const attemptTracks = attempt.map((entry) => entry.track);
-        // Song details skip MusicKit's lookup (one request per 16 songs).
-        const detailed = byId
-          ? undefined
-          : queueDescriptorsForTracks(attemptTracks);
-        if (detailed) {
-          try {
-            await run(detailed);
-            return;
-          } catch (error) {
-            if (unresolvedIds(error) || options.isCurrent?.() === false) {
-              throw error;
-            }
-            log(
-              `Adding songs by details failed; using IDs: ${errorMessage(error)}`,
-            );
+    let resolved: Awaited<ReturnType<typeof withResolvableTracks>>;
+    try {
+      resolved = await withResolvableTracks(
+        requestedTracks,
+        async (attempt) => {
+          if (!instance || typeof insert !== "function") return;
+          // The owner may have changed while this insertion was waiting.
+          if (!current()) {
+            throw new Error("Queue request is no longer current.");
           }
-        }
-        await run(
-          byId
-            ? { songs: attemptTracks.map((track) => track.id) }
-            : queueOptionsForTracks(attemptTracks),
-        );
-      },
-    );
-    if (options.isCurrent?.() === false) return [];
+          const run = (queueOptions: MusicKit.QueueOptions): Promise<void> =>
+            (insert as (options: MusicKit.QueueOptions) => Promise<void>).call(
+              instance,
+              queueOptions,
+            );
+          const attemptTracks = attempt.map((entry) => entry.track);
+          // Song details skip MusicKit's lookup (one request per 16 songs).
+          const detailed = byId
+            ? undefined
+            : queueDescriptorsForTracks(attemptTracks);
+          if (detailed) {
+            try {
+              await run(detailed);
+              return;
+            } catch (error) {
+              if (
+                unresolvedIds(error) ||
+                !current() ||
+                musicKitReasonOf(error) === "UNSUPPORTED_ERROR"
+              ) {
+                throw error;
+              }
+              log(
+                `Adding songs by details failed; using IDs: ${errorMessage(error)}`,
+              );
+            }
+          }
+          if (!current()) {
+            throw new Error("Queue request is no longer current.");
+          }
+          await run(
+            byId
+              ? { songs: attemptTracks.map((track) => track.id) }
+              : queueOptionsForTracks(attemptTracks),
+          );
+        },
+        current,
+      );
+    } catch (error) {
+      if (!current()) return [];
+      // The station state can be stale: MusicKit may be on a station this
+      // module has not recorded. Its refusal gets the same message.
+      if (musicKitReasonOf(error) === "UNSUPPORTED_ERROR") {
+        log(`${method} refused by MusicKit: ${errorMessage(error)}`);
+        reportActionError(new Error(STATION_INSERT_MESSAGE));
+        return [];
+      }
+      throw error;
+    }
+    if (!current()) return [];
+    const { entries, skipped } = resolved;
     const normalizedTracks = entries.map((entry) => entry.track);
     if (skipped.length) {
       log(`Skipped ${skipped.length} unavailable songs.`);
@@ -126,20 +178,27 @@ export function createQueueInsert(
       if (message && !options.quiet) reportActionError(new Error(message));
     }
     const expectedQueue = [...beforeQueue];
+    let expectedIndex = snapshotIndex;
     if (method === "playNext") {
       expectedQueue.splice(snapshotIndex + 1, 0, ...normalizedTracks);
     } else {
-      expectedQueue.push(...normalizedTracks);
+      // MusicKit's playLater lands before the autoplay songs, not at the end.
+      const at = appendTargetIndex(beforeQueue);
+      expectedQueue.splice(at, 0, ...normalizedTracks);
+      // Songs inserted at or before the playing song move it along.
+      if (at <= snapshotIndex) expectedIndex += normalizedTracks.length;
     }
     if (!instance) {
-      setQueue(expectedQueue, snapshotIndex);
+      setQueue(expectedQueue, expectedIndex);
       return normalizedTracks;
     }
     // A replaced queue or a moved selection happened during the await. It is
     // newer than this insertion, so the captured snapshot must not overwrite
-    // it. Checked before the provider sync, which may read a stale queue.
+    // it. A queue setup that started meanwhile owns the provider now, so its
+    // new queue must not be replaced by this insert's snapshot either.
     const latest = getState().playback;
     if (
+      !current() ||
       !sameTrackIds(latest.queue, beforeQueue) ||
       latest.queueIndex !== currentIndex
     ) {
@@ -155,7 +214,7 @@ export function createQueueInsert(
     if (synced && sameTrackIds(getState().playback.queue, expectedQueue)) {
       return normalizedTracks;
     }
-    setQueueSnapshot(expectedQueue, snapshotIndex);
+    setQueueSnapshot(expectedQueue, expectedIndex);
     return normalizedTracks;
   };
 

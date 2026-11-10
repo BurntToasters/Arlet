@@ -18,6 +18,7 @@ export {
 const themeSchema = z.enum(["system", "light", "dark"]);
 const windowEffectSchema = z.enum(["acrylic", "mica", "solid"]);
 const updateChannelSchema = z.enum(["auto", "stable", "beta"]);
+const audioQualitySchema = z.enum(["high", "standard", "automatic"]);
 const volumeSchema = z.number().check(z.gte(0), z.lte(1));
 
 function systemMediaQuery(): Pick<MediaQueryList, "matches"> {
@@ -61,6 +62,7 @@ export function migrateSettings(raw: unknown): AppSettings {
     autoCheckUpdates: z.boolean().safeParse(parsed.autoCheckUpdates),
     updateChannel: updateChannelSchema.safeParse(parsed.updateChannel),
     volume: volumeSchema.safeParse(parsed.volume),
+    audioQuality: audioQualitySchema.safeParse(parsed.audioQuality),
     autoplay: z.boolean().safeParse(parsed.autoplay),
     restoreSession: z.boolean().safeParse(parsed.restoreSession),
     trayIcon: z.boolean().safeParse(parsed.trayIcon),
@@ -88,6 +90,9 @@ export function migrateSettings(raw: unknown): AppSettings {
     volume: candidate.volume.success
       ? candidate.volume.data
       : DEFAULT_SETTINGS.volume,
+    audioQuality: candidate.audioQuality.success
+      ? candidate.audioQuality.data
+      : DEFAULT_SETTINGS.audioQuality,
     autoplay: candidate.autoplay.success
       ? candidate.autoplay.data
       : DEFAULT_SETTINGS.autoplay,
@@ -118,6 +123,7 @@ export function serializeSettings(settings: AppSettings): string {
     autoCheckUpdates: settings.autoCheckUpdates,
     updateChannel: settings.updateChannel,
     volume: settings.volume,
+    audioQuality: settings.audioQuality,
     autoplay: settings.autoplay,
     restoreSession: settings.restoreSession,
     trayIcon: settings.trayIcon,

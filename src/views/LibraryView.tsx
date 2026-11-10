@@ -1,17 +1,4 @@
-import {
-  AlertCircle,
-  Album as AlbumIcon,
-  ChevronDown,
-  ChevronRight,
-  Disc3,
-  Folder,
-  History as HistoryIcon,
-  ListMusic,
-  Music2,
-  RefreshCw,
-  SearchX,
-  UserRound,
-} from "lucide-preact";
+import { Music2, RefreshCw, SearchX } from "lucide-preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { JSX } from "preact";
 import {
@@ -21,442 +8,52 @@ import {
   useAppSlices,
 } from "../app/context.tsx";
 import { nearestTrackIndex } from "../app/queue-window.ts";
-import {
-  ratingKeyOf,
-  requestRatings,
-  type RatingTarget,
-} from "../app/ratings.ts";
-import type { RuntimeAppState } from "../state.ts";
-import { Artwork } from "../components/Artwork.tsx";
+import { ratingKeyOf, requestRatings } from "../app/ratings.ts";
 import { LibraryToolbar } from "../components/LibraryToolbar.tsx";
-import { SongRow } from "../components/SongRow.tsx";
+import { OfflineBanner } from "../components/OfflineBanner.tsx";
 import { SelectionBar } from "../components/SelectionBar.tsx";
 import { useTrackSelection } from "../components/track-selection.ts";
-import { CardActions, CardShell } from "../components/CardActions.tsx";
-import { EmptyState } from "./EmptyState.tsx";
+import { VirtualGrid } from "../components/VirtualGrid.tsx";
+import { VirtualList } from "../components/VirtualList.tsx";
+import type { Track } from "../domain/music.ts";
 import {
   isActive,
   libraryViewCapabilities,
   loadViewOptions,
-  matchesContent,
-  matchesText,
   saveViewOptions,
-  sortItems,
-  type LibrarySort,
   type LibraryViewOptions,
 } from "../library/view-options.ts";
-import type { Track } from "../domain/music.ts";
-import { normalizeTrackNavigation } from "../musickit/normalize.ts";
 import type { LibrarySection } from "../routing/router.ts";
-import { reportActionError } from "../components/action-errors.ts";
-import { OfflineBanner } from "../components/OfflineBanner.tsx";
-import { VirtualGrid } from "../components/VirtualGrid.tsx";
-import { VirtualList } from "../components/VirtualList.tsx";
 import {
-  SkeletonCardGrid,
-  SkeletonRows,
-  SkeletonStatus,
-} from "../components/Skeleton.tsx";
+  arrangeResources,
+  ratingKeyFor,
+  ratingTargetOf,
+} from "./library-view-arrange.ts";
+import { LibraryTrackRow, ResourceCard } from "./library-view-cards.tsx";
+import {
+  toResource,
+  toTrack,
+  type ResourceLike,
+} from "./library-view-convert.ts";
+import { CollectionFeedback } from "./library-view-feedback.tsx";
+import {
+  NO_ITEMS,
+  readCollection,
+  readPlaylistFolderItems,
+} from "./library-view-read.ts";
+import { PlaylistTree } from "./library-view-playlists.tsx";
+import {
+  act,
+  formatUpdated,
+  run,
+  SECTION_COPY,
+} from "./library-view-shared.ts";
+import { EmptyState } from "./EmptyState.tsx";
 
-export interface ResourceLike {
-  id: string;
-  type?: string;
-  kind?: string;
-  title: string;
-  artistName?: string;
-  artistId?: string;
-  albumTitle?: string;
-  albumId?: string;
-  albumRef?: Track["albumRef"];
-  artistRefs?: Track["artistRefs"];
-  artwork?: Track["artwork"];
-  durationMs?: number;
-  explicit?: boolean;
-  catalogUrl?: string;
-  /** Track's position on its disc, from Apple. */
-  trackNumber?: number;
-  catalogId?: string;
-  /** Albums: `YYYY-MM-DD` (or `YYYY`) from Apple. */
-  releaseDate?: string;
-  /** When the item joined the library, as an ISO time. */
-  dateAdded?: string;
-  playable?: boolean;
-  addable?: boolean;
-  parentId?: string;
-  isFolder?: boolean;
-  tracks?: unknown[];
-  albums?: unknown[];
-  children?: unknown[];
-  raw: Record<string, unknown>;
-}
-
-export interface CollectionLike {
-  items: unknown[];
-  status: string;
-  next?: string | null;
-  error?: string;
-  source?: string;
-  lastUpdatedAt?: number | string;
-  stale?: boolean;
-  isStale?: boolean;
-}
-
-interface DetailLike extends CollectionLike {
-  item?: unknown;
-  resource?: unknown;
-  tracks?: unknown[];
-  albums?: unknown[];
-}
-
-interface LibraryModelLike {
-  collections?: Record<string, unknown>;
-  details?: object;
-  [key: string]: unknown;
-}
-
-const SECTION_COPY: Record<
-  LibrarySection,
-  { title: string; eyebrow: string; description: string }
-> = {
-  recent: {
-    title: "Recently Added",
-    eyebrow: "Library",
-    description: "Albums and songs recently added to your Apple Music library.",
-  },
-  history: {
-    title: "Recently Played",
-    eyebrow: "Listening history",
-    description:
-      "The recent listening history Apple Music makes available to Arlet.",
-  },
-  artists: {
-    title: "Artists",
-    eyebrow: "Library",
-    description: "Artists represented in your Apple Music library.",
-  },
-  albums: {
-    title: "Albums",
-    eyebrow: "Library",
-    description: "Albums saved to your Apple Music library.",
-  },
-  songs: {
-    title: "Songs",
-    eyebrow: "Library",
-    description: "Songs saved to your Apple Music library.",
-  },
-  playlists: {
-    title: "Playlists",
-    eyebrow: "Library",
-    description: "Your Apple Music playlists and folders.",
-  },
-};
-
-function objectValue(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object"
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function stringValue(...values: unknown[]): string | undefined {
-  return values.find(
-    (value): value is string =>
-      typeof value === "string" && value.trim().length > 0,
-  );
-}
-
-function numberValue(...values: unknown[]): number | undefined {
-  return values.find(
-    (value): value is number =>
-      typeof value === "number" && Number.isFinite(value),
-  );
-}
-
-/** A 1-based track position from Apple; anything else is unknown. */
-function positionValue(...values: unknown[]): number | undefined {
-  return values.find(
-    (value): value is number =>
-      typeof value === "number" && Number.isInteger(value) && value > 0,
-  );
-}
-
-function artworkValue(value: unknown): Track["artwork"] | undefined {
-  const artwork = objectValue(value);
-  if (!artwork) return undefined;
-  const url = stringValue(artwork.url, artwork.href);
-  if (!url) return undefined;
-  const widths = Array.isArray(artwork.widths) ? artwork.widths[0] : undefined;
-  const heights = Array.isArray(artwork.heights)
-    ? artwork.heights[0]
-    : undefined;
-  return {
-    url,
-    width: numberValue(artwork.width, widths) ?? 300,
-    height: numberValue(artwork.height, heights) ?? 300,
-  };
-}
-
-/**
- * Converted items, keyed on the stored object. The store keeps earlier items
- * by identity, so a page append converts only its own items. `null` marks an
- * item that does not convert.
- */
-const resourceCache = new WeakMap<object, ResourceLike | null>();
-const trackCache = new WeakMap<object, Track | null>();
-
-export function toResource(value: unknown): ResourceLike | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const cached = resourceCache.get(value);
-  if (cached !== undefined) return cached ?? undefined;
-  const resource = convertResource(value);
-  resourceCache.set(value, resource ?? null);
-  return resource;
-}
-
-function convertResource(value: unknown): ResourceLike | undefined {
-  const raw = objectValue(value);
-  if (!raw) return undefined;
-  const attributes = objectValue(raw.attributes) ?? raw;
-  const id = stringValue(raw.id, attributes.id);
-  if (!id) return undefined;
-  const type = stringValue(
-    raw.type,
-    raw.resourceType,
-    attributes.type,
-    attributes.resourceType,
-  );
-  const kind = stringValue(raw.kind, attributes.kind, type);
-  const title = stringValue(
-    raw.title,
-    raw.name,
-    attributes.title,
-    attributes.name,
-    "Untitled",
-  ) as string;
-  const artist = objectValue(raw.artist) ?? objectValue(attributes.artist);
-  const album = objectValue(raw.album) ?? objectValue(attributes.album);
-  const artwork =
-    artworkValue(raw.artwork) ??
-    artworkValue(attributes.artwork) ??
-    artworkValue(raw.artworkUrl) ??
-    artworkValue(attributes.artworkUrl);
-  const trackCollection =
-    raw.tracks ?? attributes.tracks ?? objectValue(raw.relationships)?.tracks;
-  const albumCollection = raw.albums ?? attributes.albums;
-  const children = raw.children ?? attributes.children;
-  const folder =
-    raw.isFolder === true ||
-    attributes.isFolder === true ||
-    type?.toLowerCase().includes("folder") === true ||
-    kind?.toLowerCase().includes("folder") === true;
-  return {
-    id,
-    type,
-    kind,
-    title,
-    ...normalizeTrackNavigation(raw),
-    artistName: stringValue(
-      raw.artistName,
-      attributes.artistName,
-      artist?.name,
-      artist?.title,
-    ),
-    artistId: stringValue(raw.artistId, attributes.artistId, artist?.id),
-    albumTitle: stringValue(
-      raw.albumTitle,
-      attributes.albumTitle,
-      album?.name,
-      album?.title,
-    ),
-    albumId: stringValue(raw.albumId, attributes.albumId, album?.id),
-    artwork,
-    durationMs: numberValue(
-      raw.durationMs,
-      attributes.durationInMillis,
-      attributes.durationMs,
-    ),
-    explicit:
-      typeof raw.explicit === "boolean"
-        ? raw.explicit
-        : typeof attributes.contentRating === "string"
-          ? attributes.contentRating.toLowerCase() === "explicit"
-          : undefined,
-    // `href` is an API path (/v1/...), not a page link.
-    catalogUrl: stringValue(raw.catalogUrl, attributes.url),
-    trackNumber: positionValue(raw.trackNumber, attributes.trackNumber),
-    catalogId: stringValue(raw.catalogId, attributes.catalogId),
-    releaseDate: stringValue(raw.releaseDate, attributes.releaseDate),
-    dateAdded: stringValue(raw.dateAdded, attributes.dateAdded),
-    playable: typeof raw.playable === "boolean" ? raw.playable : undefined,
-    addable: typeof raw.addable === "boolean" ? raw.addable : undefined,
-    parentId: stringValue(
-      raw.parentId,
-      attributes.parentId,
-      raw.folderId,
-      attributes.folderId,
-    ),
-    isFolder: folder,
-    tracks: Array.isArray(trackCollection) ? trackCollection : undefined,
-    albums: Array.isArray(albumCollection) ? albumCollection : undefined,
-    children: Array.isArray(children) ? children : undefined,
-    raw,
-  };
-}
-
-/** One Track per item, so rows that memoize on it keep their identity. */
-export function toTrack(value: unknown): Track | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const cached = trackCache.get(value);
-  if (cached !== undefined) return cached ?? undefined;
-  const track = trackFromResource(toResource(value));
-  trackCache.set(value, track ?? null);
-  return track;
-}
-
-function trackFromResource(
-  resource: ResourceLike | undefined,
-): Track | undefined {
-  if (!resource) return undefined;
-  return {
-    id: resource.id,
-    title: resource.title,
-    artistName: resource.artistName ?? "Unknown artist",
-    albumTitle: resource.albumTitle,
-    albumRef: resource.albumRef,
-    artistRefs: resource.artistRefs,
-    artwork: resource.artwork,
-    durationMs: resource.durationMs,
-    explicit: resource.explicit,
-    catalogUrl: resource.catalogUrl,
-    trackNumber: resource.trackNumber,
-    resourceType: resource.type,
-    catalogId: resource.catalogId,
-    playable: resource.playable,
-    addable: resource.addable,
-  };
-}
-
-function readLibrary(
-  state: Pick<RuntimeAppState, "library">,
-): LibraryModelLike {
-  return { ...state.library };
-}
-
-export function readCollection(
-  state: Pick<RuntimeAppState, "library">,
-  section: LibrarySection,
-): CollectionLike {
-  const library = readLibrary(state);
-  const collections = objectValue(library.collections) ?? library;
-  const value = objectValue(collections[section]);
-  if (!value) return { items: [], status: "idle" };
-  const items = Array.isArray(value.items)
-    ? value.items
-    : Array.isArray(value.results)
-      ? value.results
-      : [];
-  return {
-    items,
-    status: stringValue(value.status) ?? (items.length ? "success" : "idle"),
-    next: typeof value.next === "string" ? value.next : null,
-    error: stringValue(value.error, objectValue(value.error)?.message),
-    source: stringValue(value.source),
-    lastUpdatedAt: value.lastUpdatedAt as number | string | undefined,
-    stale: value.stale === true,
-    isStale: value.isStale === true,
-  };
-}
-
-export function readDetail(
-  state: Pick<RuntimeAppState, "library">,
-  kind: "album" | "artist" | "playlist",
-  id: string,
-): DetailLike {
-  const library = readLibrary(state);
-  const details = objectValue(library.details);
-  const byKind = objectValue(details?.[kind]);
-  const value = objectValue(byKind?.[id]) ?? objectValue(details?.[id]);
-  if (!value) return { items: [], status: "idle" };
-  const items = Array.isArray(value.items)
-    ? value.items
-    : Array.isArray(value.tracks)
-      ? value.tracks
-      : [];
-  return {
-    items,
-    status: stringValue(value.status) ?? (items.length ? "success" : "idle"),
-    next: typeof value.next === "string" ? value.next : null,
-    error: stringValue(value.error, objectValue(value.error)?.message),
-    source: stringValue(value.source),
-    lastUpdatedAt: value.lastUpdatedAt as number | string | undefined,
-    stale: value.stale === true,
-    isStale: value.isStale === true,
-    resource: value.resource,
-    item: value.item,
-    tracks: Array.isArray(value.tracks) ? value.tracks : undefined,
-    albums: Array.isArray(value.albums) ? value.albums : undefined,
-  };
-}
-
-/** Shared empty list, so memos keyed on it do not rerun every render. */
-const NO_ITEMS: readonly unknown[] = [];
-
-function readPlaylistFolderItems(
-  state: Pick<RuntimeAppState, "library">,
-): readonly unknown[] {
-  const library = readLibrary(state);
-  const details = objectValue(library.details);
-  const folder = objectValue(details?.playlistFolder);
-  return Array.isArray(folder?.items) ? folder.items : NO_ITEMS;
-}
-
-const updatedFormatter = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
-
-function formatUpdated(value: number | string | undefined): string {
-  if (value === undefined) return "";
-  const parsed = typeof value === "number" ? value : Date.parse(value);
-  if (!Number.isFinite(parsed)) return "";
-  return `Updated ${updatedFormatter.format(new Date(parsed))}`;
-}
-
-function contextData(
-  resource: ResourceLike,
-  kind: "track" | "album" | "artist" | "playlist" | "folder",
-): Record<string, string> {
-  return {
-    "data-context-kind": kind,
-    "data-context-id": resource.id,
-    "data-context-title": resource.title,
-    ...(resource.artistName
-      ? { "data-context-artist": resource.artistName }
-      : {}),
-    ...(resource.albumTitle
-      ? { "data-context-album": resource.albumTitle }
-      : {}),
-    ...(resource.artwork?.url
-      ? { "data-context-artwork": resource.artwork.url }
-      : {}),
-    ...(resource.type ? { "data-context-resource-type": resource.type } : {}),
-    ...(resource.catalogId
-      ? { "data-context-catalog-id": resource.catalogId }
-      : {}),
-    ...(kind === "album" || kind === "artist" || kind === "playlist"
-      ? { "data-context-route-kind": kind }
-      : {}),
-  };
-}
-
-/** Background loads; their views render the error state. */
-function run(action: () => Promise<unknown> | undefined): void {
-  void Promise.resolve(action()).catch(() => undefined);
-}
-
-/** User actions; failures surface as a toast. */
-function act(action: () => Promise<unknown> | undefined): void {
-  void Promise.resolve(action()).catch(reportActionError);
-}
+export type { CollectionLike, ResourceLike } from "./library-view-convert.ts";
+export { toResource, toTrack } from "./library-view-convert.ts";
+export { readCollection, readDetail } from "./library-view-read.ts";
+export { LibraryTrackRow } from "./library-view-cards.tsx";
 
 interface LibraryViewState {
   options: LibraryViewOptions;
@@ -465,338 +62,6 @@ interface LibraryViewState {
 
 function initialViewState(section: LibrarySection): LibraryViewState {
   return { options: loadViewOptions(section), text: "" };
-}
-
-function ratingTargetOf(
-  resource: ResourceLike,
-  section: LibrarySection,
-): RatingTarget {
-  return { type: resource.type ?? `library-${section}`, id: resource.id };
-}
-
-function ratingKeyFor(
-  resource: ResourceLike,
-  section: LibrarySection,
-): string | undefined {
-  return ratingKeyOf(ratingTargetOf(resource, section));
-}
-
-/**
- * Items that pass the text, content and favorites controls, in sort order.
- * Folders pass through; PlaylistTree hides the ones with nothing to show.
- */
-function arrangeResources(
-  resources: readonly ResourceLike[],
-  section: LibrarySection,
-  options: LibraryViewOptions,
-  text: string,
-  ratings: RuntimeAppState["ratings"],
-): ResourceLike[] {
-  // Unknown ratings count as not favorite; the view waits for them first.
-  const isFavorite = (resource: ResourceLike): boolean => {
-    const key = ratingKeyFor(resource, section);
-    return key !== undefined && ratings[key] === 1;
-  };
-  const folders = resources.filter((resource) => resource.isFolder);
-  const items = resources.filter(
-    (resource) =>
-      !resource.isFolder &&
-      matchesText(resource, text) &&
-      matchesContent(resource, options.content) &&
-      (!options.favorites || isFavorite(resource)),
-  );
-  return [...folders, ...sortItems(items, options.sort)];
-}
-
-export function LibraryTrackRow({
-  resource,
-  index,
-  onPlay,
-  onPlayNext,
-  disabled,
-  contextData: collectionContext,
-  discTrackNumbers,
-  selected,
-  onSelect,
-}: {
-  resource: ResourceLike;
-  index: number;
-  onPlay: (track: Track, index: number) => void;
-  onPlayNext?: (track: Track) => void;
-  disabled: boolean;
-  contextData?: Record<string, string>;
-  /** Shows the track's position on its disc; see SongRow. */
-  discTrackNumbers?: boolean;
-  /** Multi-select; see SongRow. */
-  selected?: boolean;
-  onSelect?: (event: MouseEvent, track: Track) => boolean;
-}): JSX.Element {
-  const appController = useAppController();
-  const track = toTrack(resource);
-  if (!track) return <li />;
-  const playNext =
-    onPlayNext ??
-    ((value: Track) => {
-      act(() => appController.playNextTracks([value]));
-    });
-  return (
-    <SongRow
-      track={track}
-      index={index}
-      onPlay={() => onPlay(track, index)}
-      onPlayNext={() => playNext(track)}
-      disabled={disabled}
-      rowClassName="library-track-row"
-      numberClassName="library-row-number"
-      copyClassName="library-row-copy"
-      durationClassName="library-row-duration"
-      contextData={{ ...contextData(resource, "track"), ...collectionContext }}
-      discTrackNumbers={discTrackNumbers}
-      selected={selected}
-      onSelect={onSelect ? (event) => onSelect(event, track) : undefined}
-    />
-  );
-}
-
-function ResourceCard({
-  resource,
-  kind,
-  onOpen,
-}: {
-  resource: ResourceLike;
-  kind: "album" | "artist" | "playlist";
-  onOpen: () => void;
-}): JSX.Element {
-  const appController = useAppController();
-  const Icon =
-    kind === "album" ? AlbumIcon : kind === "artist" ? UserRound : ListMusic;
-  const trackLike = toTrack(resource);
-  // Artists have no collection playback, so only albums and playlists get Play.
-  const collectionKind = kind === "artist" ? undefined : kind;
-  return (
-    <CardShell
-      contextData={contextData(resource, kind)}
-      catalogUrl={resource.catalogUrl}
-    >
-      <button className="library-card" type="button" onClick={onOpen}>
-        {kind === "artist" && !resource.artwork ? (
-          <span
-            className="library-card-art library-card-art-icon"
-            aria-hidden="true"
-          >
-            <Icon size={27} strokeWidth={1.5} />
-          </span>
-        ) : (
-          <Artwork
-            track={trackLike}
-            size="lg"
-            alt={`${resource.title} artwork`}
-            className="library-card-art"
-          />
-        )}
-        <span className="library-card-copy">
-          <strong title={resource.title}>{resource.title}</strong>
-          <small title={resource.artistName}>
-            {resource.artistName ?? kind}
-          </small>
-        </span>
-      </button>
-      <CardActions
-        title={resource.title}
-        onPlay={
-          collectionKind && resource.playable !== false
-            ? () =>
-                act(() =>
-                  appController.playCollection(
-                    collectionKind,
-                    resource.id,
-                    "library",
-                    0,
-                  ),
-                )
-            : undefined
-        }
-      />
-    </CardShell>
-  );
-}
-
-function PlaylistTree({
-  resources,
-  router,
-  sort,
-  filtered,
-}: {
-  resources: ResourceLike[];
-  router: ReturnType<typeof useAppRouter>;
-  sort: LibrarySort;
-  /** A text or favorites filter is on, so folders with no match are hidden. */
-  filtered: boolean;
-}): JSX.Element {
-  const [open, setOpen] = useState<Record<string, boolean>>({});
-  const folders = resources.filter((resource) => resource.isFolder);
-  const playlists = resources.filter((resource) => !resource.isFolder);
-  const childrenOf = (parentId?: string): ResourceLike[] =>
-    resources.filter((resource) => resource.parentId === parentId);
-  // Folders sort by title only for title sorts; otherwise they keep their order.
-  const orderFolders = (list: ResourceLike[]): ResourceLike[] =>
-    sort === "title-asc" || sort === "title-desc"
-      ? sortItems(list, sort)
-      : list;
-  // Only matching playlists are in `resources`, so a folder shows when one sits below it.
-  const hasShownContent = (folder: ResourceLike): boolean =>
-    childrenOf(folder.id).some(
-      (child) => !child.isFolder || hasShownContent(child),
-    );
-  const shownFolders = (list: ResourceLike[]): ResourceLike[] =>
-    orderFolders(filtered ? list.filter(hasShownContent) : list);
-  const renderPlaylist = (playlist: ResourceLike): JSX.Element => (
-    <ResourceCard
-      key={playlist.id}
-      resource={playlist}
-      kind="playlist"
-      onOpen={() => router.navigate({ kind: "playlist", id: playlist.id })}
-    />
-  );
-  const renderFolder = (folder: ResourceLike, depth = 0): JSX.Element => {
-    const isOpen = open[folder.id] ?? true;
-    const nestedPlaylists = childrenOf(folder.id).filter(
-      (child) => !child.isFolder,
-    );
-    const nestedFolders = shownFolders(
-      childrenOf(folder.id).filter((child) => child.isFolder),
-    );
-    return (
-      <div
-        className="playlist-folder"
-        key={folder.id}
-        style={{ "--folder-depth": depth }}
-      >
-        <button
-          className="playlist-folder-heading"
-          type="button"
-          aria-expanded={isOpen}
-          {...contextData(folder, "folder")}
-          onClick={() =>
-            setOpen((current) => ({ ...current, [folder.id]: !isOpen }))
-          }
-        >
-          {isOpen ? (
-            <ChevronDown size={16} aria-hidden="true" />
-          ) : (
-            <ChevronRight size={16} aria-hidden="true" />
-          )}
-          <Folder size={16} aria-hidden="true" />
-          <span>{folder.title}</span>
-        </button>
-        {isOpen ? (
-          <div className="library-card-grid playlist-folder-content">
-            {nestedFolders.map((child) => renderFolder(child, depth + 1))}
-            {nestedPlaylists.map(renderPlaylist)}
-          </div>
-        ) : null}
-      </div>
-    );
-  };
-  const rootFolders = shownFolders(
-    folders.filter(
-      (folder) =>
-        !folder.parentId ||
-        !folders.some((candidate) => candidate.id === folder.parentId),
-    ),
-  );
-  const rootPlaylists = playlists.filter(
-    (playlist) =>
-      !playlist.parentId ||
-      !folders.some((folder) => folder.id === playlist.parentId),
-  );
-  return (
-    <div className="playlist-tree">
-      {rootFolders.map((folder) => renderFolder(folder))}
-      {rootPlaylists.length ? (
-        <div className="library-card-grid">
-          {rootPlaylists.map(renderPlaylist)}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function CollectionFeedback({
-  collection,
-  section,
-  onRetry,
-}: {
-  collection: CollectionLike;
-  section: LibrarySection;
-  onRetry: () => void;
-}): JSX.Element | null {
-  if (collection.status === "loading" && collection.items.length === 0) {
-    const label = `Loading ${SECTION_COPY[section].title}…`;
-    if (section === "recent") {
-      return (
-        <SkeletonStatus label={label}>
-          <SkeletonRows count={5} />
-          <SkeletonCardGrid count={4} />
-        </SkeletonStatus>
-      );
-    }
-    if (
-      section === "artists" ||
-      section === "albums" ||
-      section === "playlists"
-    ) {
-      return (
-        <SkeletonStatus label={label}>
-          <SkeletonCardGrid count={8} />
-        </SkeletonStatus>
-      );
-    }
-    return (
-      <SkeletonStatus label={label}>
-        <SkeletonRows count={8} />
-      </SkeletonStatus>
-    );
-  }
-  if (collection.error && collection.items.length === 0) {
-    return (
-      <EmptyState
-        icon={AlertCircle}
-        title="Library could not be loaded"
-        description={collection.error}
-        action={
-          <button className="secondary-button" type="button" onClick={onRetry}>
-            Try again
-          </button>
-        }
-      />
-    );
-  }
-  if (collection.status !== "loading" && collection.items.length === 0) {
-    const Icon =
-      section === "history"
-        ? HistoryIcon
-        : section === "artists"
-          ? UserRound
-          : section === "albums"
-            ? Disc3
-            : section === "playlists"
-              ? ListMusic
-              : Music2;
-    return (
-      <EmptyState
-        icon={Icon}
-        title={
-          section === "history"
-            ? "No recent listening yet"
-            : "Your library is empty"
-        }
-        description={SECTION_COPY[section].description}
-        compact
-      />
-    );
-  }
-  return null;
 }
 
 export function LibraryView({
@@ -812,6 +77,10 @@ export function LibraryView({
   // toolbar read the defaults.
   const [viewStates, setViewStates] = useState<
     Partial<Record<LibrarySection, LibraryViewState>>
+  >({});
+  // Keys whose last favorites lookup failed; they stop the filter waiting.
+  const [ratingFailures, setRatingFailures] = useState<
+    Partial<Record<LibrarySection, ReadonlySet<string>>>
   >({});
   const ratings = useAppSelector((store) => store.ratings);
   const copy = SECTION_COPY[section];
@@ -858,6 +127,7 @@ export function LibraryView({
     (resource) => !resource.isFolder,
   ).length;
   const totalCount = resources.filter((resource) => !resource.isFolder).length;
+  const failedRatings = ratingFailures[section];
   const favoritesPending =
     favoritesOn &&
     canAutoLoad &&
@@ -865,8 +135,14 @@ export function LibraryView({
       const key = resource.isFolder
         ? undefined
         : ratingKeyFor(resource, section);
-      return key !== undefined && ratings[key] === undefined;
+      return (
+        key !== undefined &&
+        ratings[key] === undefined &&
+        !failedRatings?.has(key)
+      );
     });
+  const favoritesFailed =
+    favoritesOn && canAutoLoad && Boolean(failedRatings?.size);
   const loadingAll =
     controlsActive &&
     canAutoLoad &&
@@ -882,7 +158,9 @@ export function LibraryView({
     ? `Loading full library… ${collection.items.length} loaded`
     : favoritesPending
       ? "Checking favorites…"
-      : undefined;
+      : favoritesFailed
+        ? "Could not check favorites"
+        : undefined;
 
   const { recentCards, trackResources } = useMemo(() => {
     if (section !== "recent") {
@@ -945,11 +223,38 @@ export function LibraryView({
   ]);
 
   useEffect(() => {
-    if (!favoritesOn || !canAutoLoad) return;
+    if (!favoritesOn || !canAutoLoad) return undefined;
     const targets = resources
       .filter((resource) => !resource.isFolder)
       .map((resource) => ratingTargetOf(resource, section));
-    if (targets.length) run(() => requestRatings(targets));
+    if (!targets.length) return undefined;
+    const keys = targets
+      .map((target) => ratingKeyOf(target))
+      .filter((key): key is string => key !== undefined);
+    let current = true;
+    // A retry shows the pending state again until it resolves or fails.
+    setRatingFailures((failures) =>
+      failures[section] === undefined
+        ? failures
+        : { ...failures, [section]: undefined },
+    );
+    run(async () => {
+      let failedKeys: readonly string[];
+      try {
+        failedKeys = await requestRatings(targets);
+      } catch {
+        failedKeys = keys;
+      }
+      if (!current) return;
+      const next = new Set(failedKeys);
+      setRatingFailures((failures) => ({
+        ...failures,
+        [section]: next.size ? next : undefined,
+      }));
+    });
+    return () => {
+      current = false;
+    };
   }, [favoritesOn, canAutoLoad, resources, section]);
 
   const patchView = (patch: Partial<LibraryViewState>): void => {

@@ -370,13 +370,21 @@ mod platform {
         let artwork_url = payload
             .artwork_url
             .filter(|value| super::is_trusted_artwork_url(value));
-        // Unit separators keep field boundaries unambiguous.
+        // Length-prefix each field: even a title, artist, album, or artwork
+        // URL containing digits and colons cannot collide with another
+        // track's key. Only equality matters, so the encoding stays private.
+        let album = payload.album.as_deref().unwrap_or("");
+        let artwork = artwork_url.as_deref().unwrap_or("");
         let key = format!(
-            "{}\u{1f}{}\u{1f}{}\u{1f}{}",
+            "{}:{}{}:{}{}:{}{}:{}",
+            payload.title.len(),
             payload.title,
+            payload.artist.len(),
             payload.artist,
-            payload.album.as_deref().unwrap_or(""),
-            artwork_url.as_deref().unwrap_or("")
+            album.len(),
+            album,
+            artwork.len(),
+            artwork
         );
         if !display_changed(&key)? {
             return Ok(());

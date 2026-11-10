@@ -2,7 +2,7 @@
  * scripts/e2e-music-fixture.js. Each check names its failure mode in
  * docs/TESTING.md ("Apple Music discovery features"). Browser code runs as
  * strings inside the page, as in the other native scenarios. External sign-out
- * runs last and is undone in `finally`, so Session restore starts signed in. */
+ * runs last and is restored through the app's sign-in flow in `finally`. */
 
 import fs from "node:fs";
 import path from "node:path";
@@ -32,6 +32,8 @@ const LIVE_TEXT = ".player-track-links .live-metadata-text";
 const POP_STATION_URL =
   "https://music.apple.com/us/station/pop-station-one/ra.genre-pop-1";
 const BROWSE_SONGS = 'section[aria-labelledby="browse-songs-heading"]';
+// A curator header blooms behind its cover; its copy must stay inside the box.
+const CURATOR_HERO = `const hero = document.querySelector("header.library-detail-hero.curator-header"); const image = hero?.querySelector("img.detail-hero-backdrop"); const box = hero?.getBoundingClientRect(); const copy = hero?.querySelector(".library-detail-copy")?.getBoundingClientRect(); return { present: Boolean(image), classed: hero?.classList.contains("has-hero-backdrop") ?? null, alt: image?.getAttribute("alt") ?? null, hidden: image?.getAttribute("aria-hidden") ?? null, src: image?.getAttribute("src") ?? null, artistImages: document.querySelectorAll("img.artist-hero-backdrop, img.artist-hero-banner").length, copyInside: Boolean(box && copy) ? copy.right <= box.right + 1 : null, pageOverflowX: document.documentElement.scrollWidth - window.innerWidth };`;
 
 const q = (value) => JSON.stringify(value);
 const at = (hash) => `location.hash === ${q(hash)}`;
@@ -236,6 +238,14 @@ async function artistPage(page, check) {
     String(banner.src ?? "").includes("artist-views"),
     banner,
   );
+  const detailBloom = await page.evaluate(
+    `return document.querySelectorAll("img.detail-hero-backdrop").length;`,
+  );
+  check(
+    "an artist header keeps its own banner selectors and no detail bloom",
+    detailBloom === 0,
+    { detailBloom },
+  );
 }
 
 async function artistFallback(page, check) {
@@ -378,6 +388,101 @@ async function libraryArtist(page, check) {
       String(catalog[0].query?.views ?? "").includes("full-albums"),
     { ready, library: pathsOf(library), catalog: pathsOf(catalog) },
   );
+  await libraryArtistViewsFail(page, check);
+  await artistAlbumPageFails(page, check);
+}
+
+const ALBUM_CARDS = ".artist-albums .library-card";
+const albumTitles = (page) =>
+  page.evaluate(
+    `return [...document.querySelectorAll(${q(`${ALBUM_CARDS} .library-card-copy strong`)})].map((node) => node.textContent.trim());`,
+  );
+
+// Views rejected: the albums come from the catalog artist, never from the
+// library relationship (404 here, as on a real account) or the name fallback.
+async function libraryArtistViewsFail(page, check) {
+  await fixtureCall(page, "reset");
+  await home(page);
+  await fixtureCall(page, "configure", [{ rejectQueryKeys: ["views"] }]);
+  try {
+    const ready = await openHash(
+      page,
+      "#/artist/library-artist-views",
+      `${heroIs("Discovery Artist")} && document.querySelectorAll(${q(ALBUM_CARDS)}).length >= 30`,
+      20_000,
+    );
+    // An earlier visit may have cached 30 albums: wait for this load's own
+    // catalog albums read, then for the page to settle on its result.
+    const settled = await waitFor(
+      page,
+      `window.__ARLET_E2E_MUSIC__.snapshot().requests.some((item) => item.path.split("?")[0] === ${q(`${ARTIST_PATH}/albums`)} && item.completedAt)`,
+      20_000,
+    );
+    const thirty = await waitFor(
+      page,
+      `document.querySelectorAll(${q(ALBUM_CARDS)}).length === 30`,
+      5_000,
+    );
+    const count = await page.evaluate(
+      `return document.querySelectorAll(${q(ALBUM_CARDS)}).length;`,
+    );
+    const snap = await snapshot(page);
+    const catalogAlbums = snap.requests.filter(
+      (item) => pathOnly(item) === `${ARTIST_PATH}/albums`,
+    );
+    check(
+      "library artist lists its catalog albums when the views fail",
+      ready && settled && thirty && count === 30 && catalogAlbums.length >= 1,
+      {
+        ready,
+        settled,
+        count,
+        catalogAlbums: pathsOf(catalogAlbums),
+        titles: (await albumTitles(page)).slice(0, 5),
+      },
+    );
+  } finally {
+    await fixtureCall(page, "reset");
+  }
+}
+
+// The second full-albums page fails: the first 25 stay on the page.
+async function artistAlbumPageFails(page, check) {
+  await fixtureCall(page, "reset");
+  await home(page);
+  await fixtureCall(page, "configure", [
+    { rejectPaths: ["/view/full-albums?offset=25"] },
+  ]);
+  try {
+    const ready = await openHash(
+      page,
+      "#/artist/library-artist-views",
+      `${heroIs("Discovery Artist")} && document.querySelectorAll(${q(ALBUM_CARDS)}).length >= 25`,
+      20_000,
+    );
+    // The failed page must have settled before the count is final.
+    const settled = await waitFor(
+      page,
+      `window.__ARLET_E2E_MUSIC__.snapshot().requests.some((item) => item.path.includes("/view/full-albums?offset=25") && item.error)`,
+      20_000,
+    );
+    // An earlier visit may have cached 30 albums; this load settles on 25.
+    const kept = await waitFor(
+      page,
+      `document.querySelectorAll(${q(ALBUM_CARDS)}).length === 25`,
+      5_000,
+    );
+    const count = await page.evaluate(
+      `return document.querySelectorAll(${q(ALBUM_CARDS)}).length;`,
+    );
+    check(
+      "artist page keeps the albums it loaded when a later album page fails",
+      ready && settled && kept && count === 25,
+      { ready, settled, count, titles: (await albumTitles(page)).slice(0, 5) },
+    );
+  } finally {
+    await fixtureCall(page, "reset");
+  }
 }
 
 async function albumShelves(page, check) {
@@ -459,6 +564,34 @@ async function searchSuggestions(page, check) {
     6000,
   );
   const labels = await textOf(page, SUGGESTION_OPTIONS);
+  const suggestionArt = await page.evaluate(`
+    return [...document.querySelectorAll(${q(SUGGESTION_OPTIONS)})].map((node) => {
+      const art = node.querySelector(".search-suggestion-art");
+      return {
+        label: node.querySelector(".search-suggestion-copy > span")?.textContent ?? null,
+        detail: node.querySelector(".search-suggestion-copy > small")?.textContent ?? null,
+        art: Boolean(art),
+        alt: art?.querySelector("img")?.getAttribute("alt") ?? null,
+        src: art?.querySelector("img")?.getAttribute("src") ?? null,
+      };
+    });
+  `);
+  const mediaRow = suggestionArt.find(
+    (row) => row.label === "Polish Fixture Album",
+  );
+  const termRows = suggestionArt.filter((row) =>
+    ["Polish Fixture", "Polka"].includes(row.label),
+  );
+  check(
+    "media suggestions carry a decorative thumbnail; term suggestions stay text-only",
+    mediaRow?.art === true &&
+      mediaRow.alt === "" &&
+      mediaRow.src?.includes("/image/thumb/Music/e2e/album-polish/") === true &&
+      mediaRow.detail === "Album · Fixture Artist" &&
+      termRows.length === 2 &&
+      termRows.every((row) => row.art === false),
+    suggestionArt,
+  );
   const openBefore = await page.evaluate(
     `return !document.querySelector(${q(SUGGESTION_POPUP)})?.hidden;`,
   );
@@ -594,7 +727,7 @@ async function searchResults(page, check) {
     "overview search asks every group with topResults and a limit of 10",
     overviewReady &&
       String(overview?.query?.types) ===
-        "songs,albums,artists,playlists,stations,apple-curators" &&
+        "songs,albums,artists,playlists,stations,apple-curators,record-labels,activities" &&
       String(overview?.query?.limit) === "10",
     { ready: overviewReady, query: overview?.query ?? null },
   );
@@ -679,6 +812,122 @@ async function searchResults(page, check) {
       hash: await page.evaluate("return location.hash"),
     },
   );
+  // Hold the See all songs page after catalog results are ready. Switching to
+  // Your Library must keep both its visible row and its playback source when
+  // that catalog response lands.
+  await fixtureCall(page, "reset");
+  await home(page);
+  try {
+    // Rows left from the earlier search make the readiness check pass at once,
+    // while this mount's own debounced search is still pending. Wait for that
+    // overview request to finish, then let the debounce window pass, before
+    // the delay is configured.
+    const mountMark = await requestCount(page);
+    const sourceSearchReady = await openHash(
+      page,
+      "#/search?q=discovery",
+      `Boolean(document.querySelector('#search-source-tab-catalog')) && Boolean(document.querySelector('.search-results-panel .search-row'))`,
+      15_000,
+    );
+    const mountSearchDone = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().requests.some((item, index) => index >= ${mountMark} && item.path.split("?")[0] === "/v1/catalog/us/search" && item.query?.term === "discovery" && item.query?.with === "topResults" && item.completedAt !== undefined)`,
+      5000,
+    );
+    await sleep(300);
+    await fixtureCall(page, "configure", [
+      { delayPaths: ["/v1/catalog/us/search"], delayMs: 1200 },
+    ]);
+    const seeAllSongs = await page.evaluate(`
+      const button = document.querySelector('button[aria-label="See all songs"]');
+      if (!button) return false;
+      button.click();
+      return true;
+    `);
+    const catalogPageStarted = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().requests.some((item) => item.path.split("?")[0] === "/v1/catalog/us/search" && item.query?.types === "songs" && Number(item.query?.offset) === 10)`,
+      5000,
+    );
+    const libraryTabClicked = await page.evaluate(`
+      const button = document.querySelector("#search-source-tab-library");
+      if (!button) return false;
+      button.click();
+      return true;
+    `);
+    const libraryRowReady = await waitFor(
+      page,
+      `document.querySelector('#search-source-tab-library')?.getAttribute('aria-selected') === 'true' && [...document.querySelectorAll('.search-results-panel .search-row')].some((button) => button.getAttribute('aria-label')?.includes('Discovery Library Song'))`,
+      10_000,
+    );
+    const catalogPageCompletedWhileLibrary = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().requests.some((item) => item.path.split("?")[0] === "/v1/catalog/us/search" && item.query?.types === "songs" && Number(item.query?.offset) === 10 && item.completedAt !== undefined) && document.querySelector('#search-source-tab-library')?.getAttribute('aria-selected') === 'true'`,
+      10_000,
+    );
+    const libraryRowClicked = await page.evaluate(`
+      const button = [...document.querySelectorAll('.search-results-panel .search-row')]
+        .find((item) => item.getAttribute('aria-label')?.includes('Discovery Library Song'));
+      if (!button || button.disabled) return false;
+      button.click();
+      return true;
+    `);
+    const librarySongPlayed = await waitFor(
+      page,
+      `document.querySelector('.player-bar .player-track-copy strong')?.textContent === 'Discovery Library Song' && ${FIXTURE}.snapshot().queue.items[0]?.id === 'library-discovery-song'`,
+      10_000,
+    );
+    const catalogTabClicked = await page.evaluate(`
+      const button = document.querySelector("#search-source-tab-catalog");
+      if (!button) return false;
+      button.click();
+      return true;
+    `);
+    const catalogPageMerged = await waitFor(
+      page,
+      `document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true' && document.querySelectorAll('.search-see-all-view .search-row').length === 12`,
+      10_000,
+    );
+    const switchResult = await page.evaluate(`
+      return {
+        librarySelected: document.querySelector('#search-source-tab-library')?.getAttribute('aria-selected') === 'true',
+        visibleRows: [...document.querySelectorAll('.search-see-all-view .search-row')].map((button) => button.getAttribute('aria-label')),
+        catalogSongs: document.querySelectorAll('.search-see-all-view .search-row').length,
+        playerTitle: document.querySelector('.player-bar .player-track-copy strong')?.textContent ?? null,
+        queueIds: ${FIXTURE}.snapshot().queue.items.map((item) => item.id),
+      };
+    `);
+    check(
+      "a delayed catalog songs page leaves Library playback authoritative and remains cached",
+      sourceSearchReady &&
+        mountSearchDone &&
+        seeAllSongs &&
+        catalogPageStarted &&
+        libraryTabClicked &&
+        libraryRowReady &&
+        catalogPageCompletedWhileLibrary &&
+        libraryRowClicked &&
+        librarySongPlayed &&
+        catalogTabClicked &&
+        catalogPageMerged,
+      {
+        sourceSearchReady,
+        mountSearchDone,
+        seeAllSongs,
+        catalogPageStarted,
+        libraryTabClicked,
+        libraryRowReady,
+        catalogPageCompletedWhileLibrary,
+        libraryRowClicked,
+        librarySongPlayed,
+        catalogTabClicked,
+        catalogPageMerged,
+        switchResult,
+      },
+    );
+  } finally {
+    await fixtureCall(page, "configure", [{ delayPaths: [], delayMs: 800 }]);
+  }
 }
 
 async function browseCharts(page, check) {
@@ -766,6 +1015,221 @@ async function browseCharts(page, check) {
   await page.evaluate(
     `document.querySelector(".browse-see-all-view .secondary-button")?.click(); return true;`,
   );
+}
+
+const REFRESH_BUTTON = 'button[aria-label="Refresh Browse"]';
+const REFRESH_IDLE = `(() => { const button = document.querySelector(${q(REFRESH_BUTTON)}); return Boolean(button) && !button.disabled && !button.querySelector(".spin"); })()`;
+const REFRESH_SPINNING = `Boolean(document.querySelector(${q(`${REFRESH_BUTTON} .spin`)}))`;
+const TOP_SONGS_SEE_ALL =
+  'section[aria-labelledby="browse-songs-heading"] button[aria-label="See all top songs"]';
+const SEE_ALL_LOAD_MORE = ".browse-see-all-view .browse-see-all-more button";
+const SEE_ALL_ROWS = ".browse-see-all-view .library-track-row";
+
+/** Clicks the first node a selector matches, and reports whether it found one. */
+const clickSelector = (page, selector) =>
+  page.evaluate(
+    `const node = document.querySelector(${q(selector)}); if (!node) return false; node.click(); return true;`,
+  );
+
+/**
+ * Opens Browse and refreshes it, so Top Songs has its first-page cursor, then
+ * opens its See all view. Returns what each step saw.
+ */
+async function openTopSongsSeeAll(page) {
+  await home(page);
+  const ready = await openHash(
+    page,
+    "#/browse",
+    `Boolean(document.querySelector(${q(REFRESH_BUTTON)})) && document.querySelectorAll(${q(`${BROWSE_SONGS} .library-track-row`)}).length > 0`,
+    15_000,
+  );
+  // The chart check leaves Top Songs with no next page, so a refresh is what
+  // gives the shelf its first-page cursor again.
+  const sinceRefresh = await requestCount(page);
+  const refreshed = await clickSelector(page, REFRESH_BUTTON);
+  const reloaded = await waitFor(
+    page,
+    `${FIXTURE}.snapshot().requests.length > ${sinceRefresh} && ${REFRESH_IDLE}`,
+    8000,
+  );
+  const seeAll = await clickSelector(page, TOP_SONGS_SEE_ALL);
+  const open = await waitFor(
+    page,
+    `Boolean(document.querySelector(".browse-see-all-view"))`,
+    8000,
+  );
+  const firstPage = await waitFor(
+    page,
+    `Boolean(document.querySelector(${q(SEE_ALL_LOAD_MORE)}))`,
+    8000,
+  );
+  return { ready, refreshed, reloaded, seeAll, open, firstPage };
+}
+
+/** Closes See all, after the fixture's delays and rejections are cleared. */
+async function leaveSeeAll(page) {
+  await fixtureCall(page, "reset");
+  await page.evaluate(
+    `document.querySelector(".browse-see-all-view .secondary-button")?.click(); return true;`,
+  );
+}
+
+/**
+ * A Browse refresh that fails while a See all page is loading. The page's
+ * response is dropped with the refresh, so the shelf must go back to idle
+ * with its cursor, and Load more appends the rest once.
+ */
+async function browseRefreshFailure(page, check) {
+  await fixtureCall(page, "reset");
+  try {
+    const opened = await openTopSongsSeeAll(page);
+    // The page is held past the refresh below, so its response lands after the
+    // refresh has started and is dropped.
+    await fixtureCall(page, "configure", [
+      { delayPaths: ["offset=20"], delayMs: 4000 },
+    ]);
+    const held = await clickSelector(page, SEE_ALL_LOAD_MORE);
+    const pending = await waitFor(
+      page,
+      `Boolean(document.querySelector(".browse-see-all-view .browse-feedback"))`,
+      4000,
+    );
+    await fixtureCall(page, "configure", [
+      { rejectPaths: ["/v1/catalog/us/charts"] },
+    ]);
+    const failedRefresh = await clickSelector(page, REFRESH_BUTTON);
+    const failed = await waitFor(
+      page,
+      `[...document.querySelectorAll(".library-stale-note")].some((node) => node.textContent.includes("Some charts could not be refreshed"))`,
+      8000,
+    );
+    await fixtureCall(page, "configure", [{ rejectPaths: [], delayPaths: [] }]);
+    const usable = await waitFor(
+      page,
+      `Boolean(document.querySelector(${q(SEE_ALL_LOAD_MORE)})) && !document.querySelector(".browse-see-all-view .browse-feedback")`,
+      8000,
+    );
+    const rowsBeforeMore = (await textOf(page, SEE_ALL_ROWS)).length;
+    const more = await clickSelector(page, SEE_ALL_LOAD_MORE);
+    const appended = await waitFor(
+      page,
+      `document.querySelectorAll(${q(SEE_ALL_ROWS)}).length > ${rowsBeforeMore}`,
+      8000,
+    );
+    const shown = await textOf(page, SEE_ALL_ROWS);
+    check(
+      "a failed Browse refresh during a See all page does not strand Load more; the next page appends once",
+      Object.values(opened).every(Boolean) &&
+        held &&
+        pending &&
+        failedRefresh &&
+        failed &&
+        usable &&
+        rowsBeforeMore === 20 &&
+        more &&
+        appended &&
+        shown.length === 30 &&
+        new Set(shown).size === 30,
+      {
+        opened,
+        held,
+        pending,
+        failedRefresh,
+        failed,
+        usable,
+        rowsBeforeMore,
+        rows: shown.length,
+        unique: new Set(shown).size,
+      },
+    );
+  } finally {
+    await leaveSeeAll(page);
+  }
+}
+
+/**
+ * Load More pressed while a Browse refresh is still running. The shelf must not
+ * follow its old cursor then, so no chart page is requested until the refresh
+ * ends, and the next page appends to the refreshed list once.
+ */
+async function browseRefreshRace(page, check) {
+  await fixtureCall(page, "reset");
+  try {
+    const opened = await openTopSongsSeeAll(page);
+    const shownBefore = (await textOf(page, SEE_ALL_ROWS)).length;
+    // Chart requests are held, so the refresh stays pending while Load more is
+    // pressed.
+    await fixtureCall(page, "configure", [
+      { delayPaths: ["/v1/catalog/us/charts"], delayMs: 4000 },
+    ]);
+    const sinceRefresh = await requestCount(page);
+    const refreshed = await clickSelector(page, REFRESH_BUTTON);
+    const pending = await waitFor(page, REFRESH_SPINNING, 4000);
+    const clicked = await clickSelector(page, SEE_ALL_LOAD_MORE);
+    await sleep(1000);
+    const stillPending = await page.evaluate(`return ${REFRESH_SPINNING};`);
+    const disabledWhilePending = await page.evaluate(
+      `const button = document.querySelector(${q(SEE_ALL_LOAD_MORE)}); return Boolean(button) && button.disabled === true;`,
+    );
+    const pagesWhilePending = sinceOf(await snapshot(page), sinceRefresh)
+      .filter(
+        (item) =>
+          pathOnly(item) === "/v1/catalog/us/charts" &&
+          String(item.path).includes("offset="),
+      )
+      .map((item) => item.path);
+    await fixtureCall(page, "configure", [{ delayPaths: [] }]);
+    const settled = await waitFor(page, REFRESH_IDLE, 8000);
+    const rowsAfterRefresh = (await textOf(page, SEE_ALL_ROWS)).length;
+    const more = await waitFor(
+      page,
+      `(() => { const button = document.querySelector(${q(SEE_ALL_LOAD_MORE)}); return Boolean(button) && !button.disabled; })()`,
+      8000,
+    );
+    const clickedAgain = await clickSelector(page, SEE_ALL_LOAD_MORE);
+    const appended = await waitFor(
+      page,
+      `document.querySelectorAll(${q(SEE_ALL_ROWS)}).length > ${rowsAfterRefresh}`,
+      8000,
+    );
+    const shown = await textOf(page, SEE_ALL_ROWS);
+    check(
+      "Load more during a Browse refresh is disabled until it ends, requests no chart page, and the next page appends once after it",
+      Object.values(opened).every(Boolean) &&
+        shownBefore === 20 &&
+        refreshed &&
+        pending &&
+        clicked &&
+        stillPending &&
+        disabledWhilePending &&
+        pagesWhilePending.length === 0 &&
+        settled &&
+        rowsAfterRefresh === 20 &&
+        more &&
+        clickedAgain &&
+        appended &&
+        shown.length === 30 &&
+        new Set(shown).size === 30,
+      {
+        opened,
+        shownBefore,
+        refreshed,
+        pending,
+        clicked,
+        stillPending,
+        disabledWhilePending,
+        pagesWhilePending,
+        settled,
+        rowsAfterRefresh,
+        more,
+        clickedAgain,
+        rows: shown.length,
+        unique: new Set(shown).size,
+      },
+    );
+  } finally {
+    await leaveSeeAll(page);
+  }
 }
 
 async function radioStations(page, check) {
@@ -879,6 +1343,19 @@ async function curatorPages(page, check) {
   const apple = await page.evaluate(`
     return { groups: ${groupsOf}, kind: document.querySelector(".curator-page")?.getAttribute("data-curator-kind") ?? null };
   `);
+  const appleHero = await page.evaluate(CURATOR_HERO);
+  check(
+    "an Apple curator header blooms its artwork without leaking artist selectors",
+    appleHero.present &&
+      appleHero.classed === true &&
+      appleHero.alt === "" &&
+      appleHero.hidden === "true" &&
+      appleHero.src?.includes("/64x64bb.jpg") === true &&
+      appleHero.artistImages === 0 &&
+      appleHero.copyInside === true &&
+      appleHero.pageOverflowX <= 0,
+    appleHero,
+  );
   const appleBatch = (await snapshot(page)).requests.filter(
     (item) => pathOnly(item) === "/v1/catalog/us/playlists",
   );
@@ -911,6 +1388,19 @@ async function curatorPages(page, check) {
   const flat = await textOf(
     page,
     '[data-curator-shelf="playlists"] .library-card-copy strong',
+  );
+  const flatHero = await page.evaluate(CURATOR_HERO);
+  check(
+    "a curator header blooms its artwork without leaking artist selectors",
+    flatHero.present &&
+      flatHero.classed === true &&
+      flatHero.alt === "" &&
+      flatHero.hidden === "true" &&
+      flatHero.src?.includes("/64x64bb.jpg") === true &&
+      flatHero.artistImages === 0 &&
+      flatHero.copyInside === true &&
+      flatHero.pageOverflowX <= 0,
+    flatHero,
   );
   const batches = (await snapshot(page)).requests.filter(
     (item) => pathOnly(item) === "/v1/catalog/us/playlists",
@@ -1143,25 +1633,207 @@ async function playbackEvents(page, check, dataDir) {
   );
 }
 
+const SIGNED_IN_BUTTON = `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign out")`;
+const SIGN_IN_BUTTON_READY = `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign in" && !node.disabled)`;
+
+/**
+ * Restores the fixture's authorization, then signs the app back in through
+ * Settings as a user would. Skips the click when already signed in. Never
+ * throws: a failure is returned in `error` for the check in `finally`.
+ */
+async function restoreSignedIn(page) {
+  const detail = {
+    alreadySignedIn: false,
+    signInClicked: false,
+    signedIn: false,
+    authorized: null,
+    error: null,
+  };
+  try {
+    await fixtureCall(page, "emitAuthorizationStatus", [true]);
+    await fixtureCall(page, "reset");
+    await openHash(
+      page,
+      "#/settings",
+      `${SIGN_IN_BUTTON_READY} || ${SIGNED_IN_BUTTON}`,
+      10_000,
+    );
+    detail.alreadySignedIn = await page.evaluate(`return ${SIGNED_IN_BUTTON};`);
+    if (!detail.alreadySignedIn) {
+      detail.signInClicked = await page.evaluate(`
+        const button = [...document.querySelectorAll("button")]
+          .find((node) => node.textContent.trim() === "Sign in" && !node.disabled);
+        if (!button) return false;
+        button.click();
+        return true;`);
+      detail.signedIn =
+        detail.signInClicked && (await waitFor(page, SIGNED_IN_BUTTON, 15_000));
+    } else {
+      detail.signedIn = true;
+    }
+    detail.authorized = (await snapshot(page)).authorized === true;
+  } catch (error) {
+    detail.error = String(error?.message ?? error);
+  }
+  return detail;
+}
+
 async function externalSignOut(page, check) {
   try {
     await fixtureCall(page, "reset");
-    // Recent searches are saved on submit, so the term is typed and submitted.
+    // Recent-search suggestions require authorization and the catalog source.
+    // Establish both explicitly because earlier scenarios change auth state.
+    await fixtureCall(page, "emitAuthorizationStatus", [true]);
     await home(page);
-    await openHash(
+    const searchReady = await openHash(
       page,
       "#/search",
-      `Boolean(document.querySelector(${q(SEARCH_INPUT)}))`,
+      "Boolean(document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ")) && Boolean(document.querySelector('#search-source-tab-catalog'))",
+    );
+    let catalogSelected = await page.evaluate(
+      "return document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true';",
+    );
+    if (searchReady && !catalogSelected) {
+      await page.evaluate(
+        "document.querySelector('#search-source-tab-catalog')?.click(); return true;",
+      );
+      catalogSelected = await waitFor(
+        page,
+        "document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true'",
+        5000,
+      );
+    }
+    const authorizationReady = await waitFor(
+      page,
+      FIXTURE +
+        ".snapshot().authorized === true && Boolean(document.querySelector('#search-source-tab-catalog'))",
+      5000,
     );
     await typeInto(page, SEARCH_INPUT, "discovery");
-    await pressKey(page, "Enter", "Enter", 13, "\r");
-    await waitFor(
+    await page.evaluate(
+      "window.__ARLET_E2E_DISCOVERY_SUBMITTED__ = false;" +
+        "const form = document.querySelector('.search-form');" +
+        "form?.addEventListener('submit', () => { window.__ARLET_E2E_DISCOVERY_SUBMITTED__ = true; }, { once: true });" +
+        "form?.requestSubmit(); return true;",
+    );
+    const searchSettled = await waitFor(
       page,
-      `Boolean(document.querySelector(".search-top-section .search-tile-featured"))`,
+      "window.__ARLET_E2E_DISCOVERY_SUBMITTED__ === true && " +
+        "location.hash.includes('q=discovery') && " +
+        "document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ")?.value === 'discovery' && " +
+        "(() => { try { return JSON.parse(localStorage.getItem(" +
+        q(RECENT_KEY) +
+        ") ?? '[]').includes('discovery'); } catch { return false; } })() && " +
+        "document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true' && " +
+        "Boolean(document.querySelector('.search-top-section .search-tile-featured'))",
       15_000,
     );
+    const settledSearch = await page.evaluate(
+      "let recents = []; try { recents = JSON.parse(localStorage.getItem(" +
+        q(RECENT_KEY) +
+        ") ?? '[]'); } catch {} return {" +
+        " submitted: window.__ARLET_E2E_DISCOVERY_SUBMITTED__ === true," +
+        " route: location.hash," +
+        " input: document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ")?.value ?? null," +
+        " storedTerm: recents.includes('discovery')," +
+        " authorization: " +
+        FIXTURE +
+        ".snapshot().authorized === true," +
+        " catalogSelected: document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true'," +
+        " resultReady: Boolean(document.querySelector('.search-top-section .search-tile-featured')) };",
+    );
     const recentBefore = await page.evaluate(
-      `return localStorage.getItem(${q(RECENT_KEY)});`,
+      "return localStorage.getItem(" + q(RECENT_KEY) + ");",
+    );
+    // Clear through SearchView and verify its route and input are both empty
+    // before reopening recent searches through the focus path.
+    const clearClicked = await page.evaluate(
+      "const button = document.querySelector('.search-form .clear-search[aria-label=\"Clear search\"]'); " +
+        "if (!button || button.disabled) return false; button.click(); return true;",
+    );
+    const clearSettled = await waitFor(
+      page,
+      "location.hash === '#/search' && " +
+        "document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ")?.value === '' && " +
+        FIXTURE +
+        ".snapshot().authorized === true && " +
+        "document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true' && " +
+        "(() => { try { return JSON.parse(localStorage.getItem(" +
+        q(RECENT_KEY) +
+        ") ?? '[]').includes('discovery'); } catch { return false; } })()",
+      10_000,
+    );
+    const clearState = await page.evaluate(
+      "let recents = []; try { recents = JSON.parse(localStorage.getItem(" +
+        q(RECENT_KEY) +
+        ") ?? '[]'); } catch {} const input = document.querySelector(" +
+        q(SEARCH_INPUT) +
+        "); return { route: location.hash, input: input?.value ?? null, " +
+        "authorized: " +
+        FIXTURE +
+        ".snapshot().authorized === true, catalogSelected: document.querySelector('#search-source-tab-catalog')?.getAttribute('aria-selected') === 'true', storedTerm: recents.includes('discovery') };",
+    );
+    const focusReopened = await page.evaluate(
+      "const input = document.querySelector(" +
+        q(SEARCH_INPUT) +
+        "); if (!input || input.value !== '') return false; " +
+        "input.blur(); input.focus(); return document.activeElement === input;",
+    );
+    const recentShown = await waitFor(
+      page,
+      "document.activeElement === document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ") && document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ")?.value === '' && document.querySelector(" +
+        q(SEARCH_INPUT) +
+        ")?.getAttribute('aria-expanded') === 'true' && " +
+        "[...document.querySelectorAll(" +
+        q(SUGGESTION_OPTIONS) +
+        ")].some((node) => node.querySelector('.search-suggestion-copy > span')?.textContent === 'discovery' && node.querySelector('.search-suggestion-remove'))",
+      6000,
+    );
+    const recentRows = await page.evaluate(
+      "return [...document.querySelectorAll(" +
+        q(SUGGESTION_OPTIONS) +
+        ")].map((node) => ({ " +
+        "label: node.querySelector('.search-suggestion-copy > span')?.textContent ?? null, " +
+        "art: Boolean(node.querySelector('.search-suggestion-art')), " +
+        "removable: Boolean(node.querySelector('.search-suggestion-remove')) }));",
+    );
+    check(
+      "recent searches stay text-only with no thumbnail",
+      searchReady &&
+        authorizationReady &&
+        catalogSelected &&
+        searchSettled &&
+        clearClicked &&
+        clearSettled &&
+        focusReopened &&
+        recentShown &&
+        recentRows.some((row) => row.label === "discovery") &&
+        recentRows.every((row) => row.art === false && row.removable),
+      {
+        searchReady,
+        authorizationReady,
+        catalogSelected,
+        searchSettled,
+        settledSearch,
+        clearClicked,
+        clearSettled,
+        clearState,
+        focusReopened,
+        recentShown,
+        recentRows,
+      },
     );
     await home(page);
     await fixtureCall(page, "emitAuthorizationStatus", [false]);
@@ -1214,8 +1886,13 @@ async function externalSignOut(page, check) {
       },
     );
   } finally {
-    await fixtureCall(page, "emitAuthorizationStatus", [true]);
-    await fixtureCall(page, "reset");
+    // Fixture first, then the app's own sign-in, so the next scenario starts signed in.
+    const restored = await restoreSignedIn(page);
+    check(
+      "discovery ends signed in for the next scenario",
+      restored.signedIn && restored.authorized && restored.error === null,
+      restored,
+    );
   }
 }
 
@@ -1237,6 +1914,12 @@ export async function runDiscovery({ page, check, dataDir }) {
   );
   await group(check, "search results", () => searchResults(page, check));
   await group(check, "browse charts", () => browseCharts(page, check));
+  await group(check, "browse refresh failure", () =>
+    browseRefreshFailure(page, check),
+  );
+  await group(check, "browse refresh race", () =>
+    browseRefreshRace(page, check),
+  );
   await group(check, "radio stations", () => radioStations(page, check));
   await group(check, "live radio text", () => liveText(page, check));
   await group(check, "curator pages", () => curatorPages(page, check));

@@ -10,6 +10,7 @@ import { fixtureCall, sleep, waitFor } from "./e2e-helpers.js";
 
 const FIXTURE = "window.__ARLET_E2E_MUSIC__";
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+const SUPPORT_REPORT_PREFIX = "# Arlet diagnostics report";
 const VERSION = JSON.parse(
   fs.readFileSync(path.join(root, "package.json"), "utf8"),
 ).version;
@@ -203,63 +204,420 @@ async function createPlaylist({ page, check }) {
   );
 }
 
-/**
- * Reads the system clipboard text. A failed read (no text, or an image)
- * returns null, so the caller can tell it apart from empty text.
- */
-function readClipboardText(page) {
-  return page.evaluate(`
-    try {
-      return await window.__TAURI_INTERNALS__.invoke("plugin:clipboard-manager|read_text");
-    } catch (error) {
-      return null;
-    }`);
+/** Reads an actual clipboard provider through the bounded DevTools transport. */
+async function readClipboardProvider(page, provider, timeoutMs = 1000) {
+  const expression =
+    provider === "tauri"
+      ? "try { const text = await window.__TAURI_INTERNALS__.invoke('plugin:clipboard-manager|read_text'); return { ok: true, text: typeof text === 'string' ? text : null }; } catch (error) { return { ok: false, error: String(error?.message ?? error) }; }"
+      : "try { if (!navigator.clipboard?.readText) return { ok: false, error: 'browser clipboard read unavailable' }; const text = await navigator.clipboard.readText(); return { ok: true, text: typeof text === 'string' ? text : null }; } catch (error) { return { ok: false, error: String(error?.message ?? error) }; }";
+  try {
+    return {
+      provider,
+      ...(await page.evaluate(expression, { timeoutMs })),
+    };
+  } catch (error) {
+    return {
+      provider,
+      ok: false,
+      error: String(error?.message ?? error),
+    };
+  }
+}
+
+function clipboardErrorKind(error) {
+  const message = String(error ?? "").toLowerCase();
+  if (message.includes("busy") || message.includes("locked")) return "busy";
+  if (message.includes("timeout") || message.includes("timed out"))
+    return "timeout";
+  if (
+    message.includes("denied") ||
+    message.includes("permission") ||
+    message.includes("access")
+  ) {
+    return "access-denied";
+  }
+  if (message.includes("unavailable") || message.includes("not a function"))
+    return "unavailable";
+  return error ? "read-error" : null;
+}
+
+async function grantBrowserClipboardPermission(page, permissionState) {
+  if (permissionState.granted) return true;
+  try {
+    const origin = await page.evaluate("return location.origin;");
+    if (origin !== "http://tauri.localhost") {
+      permissionState.errorKind = "unexpected-origin";
+      return false;
+    }
+    await page.send(
+      "Browser.grantPermissions",
+      {
+        origin,
+        permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"],
+      },
+      { timeoutMs: 2000 },
+    );
+    permissionState.granted = true;
+    permissionState.everGranted = true;
+    return true;
+  } catch (error) {
+    permissionState.errorKind = clipboardErrorKind(error?.message ?? error);
+    return false;
+  }
+}
+
+/** Native clipboard read first; browser fallback stays in this isolated E2E context. */
+async function readClipboardText(page, permissionState, timeoutMs = 1000) {
+  const native = await readClipboardProvider(page, "tauri", timeoutMs);
+  const outcomes = [
+    {
+      provider: "tauri",
+      status:
+        native.ok && typeof native.text === "string" ? "read" : "read-error",
+      errorKind: clipboardErrorKind(native.error),
+    },
+  ];
+  if (native.ok && typeof native.text === "string") {
+    return { ok: true, text: native.text, provider: "tauri", outcomes };
+  }
+
+  if (await grantBrowserClipboardPermission(page, permissionState)) {
+    const browser = await readClipboardProvider(page, "browser", timeoutMs);
+    outcomes.push({
+      provider: "browser",
+      status:
+        browser.ok && typeof browser.text === "string" ? "read" : "read-error",
+      errorKind: clipboardErrorKind(browser.error),
+    });
+    if (browser.ok && typeof browser.text === "string") {
+      return { ok: true, text: browser.text, provider: "browser", outcomes };
+    }
+    return {
+      ok: false,
+      error: browser.error ?? native.error,
+      provider: null,
+      outcomes,
+    };
+  }
+
+  outcomes.push({
+    provider: "browser-permission",
+    status: "permission-error",
+    errorKind: permissionState.errorKind,
+  });
+  return {
+    ok: false,
+    error: native.error,
+    provider: null,
+    outcomes,
+  };
+}
+
+/** Reads both real providers until the copied report is observed or the deadline expires. */
+async function readClipboardReport(page, permissionState, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  const outcomes = [];
+  let attempts = 0;
+  let last = { ok: false, error: "no read attempted" };
+  do {
+    attempts += 1;
+    const remaining = Math.max(1, deadline - Date.now());
+    const native = await readClipboardProvider(
+      page,
+      "tauri",
+      Math.min(1000, remaining),
+    );
+    last = native;
+    outcomes.push({
+      provider: "tauri",
+      status:
+        native.ok && typeof native.text === "string" ? "read" : "read-error",
+      errorKind: clipboardErrorKind(native.error),
+      matched:
+        native.ok && native.text?.startsWith(SUPPORT_REPORT_PREFIX) === true,
+    });
+    if (
+      native.ok &&
+      typeof native.text === "string" &&
+      native.text.startsWith(SUPPORT_REPORT_PREFIX)
+    ) {
+      return {
+        ...native,
+        attempts,
+        status: "report",
+        outcomes,
+      };
+    }
+
+    const browserPermission = await grantBrowserClipboardPermission(
+      page,
+      permissionState,
+    );
+    if (browserPermission && Date.now() < deadline) {
+      const browser = await readClipboardProvider(
+        page,
+        "browser",
+        Math.max(1, Math.min(1000, deadline - Date.now())),
+      );
+      last = browser;
+      outcomes.push({
+        provider: "browser",
+        status:
+          browser.ok && typeof browser.text === "string"
+            ? "read"
+            : "read-error",
+        errorKind: clipboardErrorKind(browser.error),
+        matched:
+          browser.ok &&
+          browser.text?.startsWith(SUPPORT_REPORT_PREFIX) === true,
+      });
+      if (
+        browser.ok &&
+        typeof browser.text === "string" &&
+        browser.text.startsWith(SUPPORT_REPORT_PREFIX)
+      ) {
+        return {
+          ...browser,
+          attempts,
+          status: "report",
+          outcomes,
+        };
+      }
+    } else if (!browserPermission) {
+      outcomes.push({
+        provider: "browser-permission",
+        status: "permission-error",
+        errorKind: permissionState.errorKind,
+        matched: false,
+      });
+    }
+
+    const remainingAfterRead = deadline - Date.now();
+    if (remainingAfterRead > 0) {
+      await sleep(Math.min(150, remainingAfterRead));
+    }
+  } while (Date.now() < deadline);
+
+  return {
+    ...last,
+    attempts,
+    status: !last.ok
+      ? "read-error"
+      : last.text === null || last.text === ""
+        ? "empty"
+        : "different-text",
+    errorKind: clipboardErrorKind(last.error),
+    outcomes,
+  };
+}
+
+async function clickDiagnosticsCopyButton(page) {
+  let attempted = false;
+  try {
+    const box = await page.evaluate(
+      "const button = [...document.querySelectorAll('button')].find((node) => node.textContent.includes('Copy diagnostics report')); " +
+        "if (!button) return null; button.scrollIntoView({ block: 'center' }); " +
+        "const rect = button.getBoundingClientRect(); " +
+        "return rect.width > 0 && rect.height > 0 ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null;",
+    );
+    if (!box || !Number.isFinite(box.x) || !Number.isFinite(box.y)) {
+      return { attempted, dispatched: false, errorKind: null };
+    }
+    attempted = true;
+    await page.send(
+      "Input.dispatchMouseEvent",
+      { type: "mouseMoved", x: box.x, y: box.y },
+      { timeoutMs: 2000 },
+    );
+    await page.send(
+      "Input.dispatchMouseEvent",
+      {
+        type: "mousePressed",
+        x: box.x,
+        y: box.y,
+        button: "left",
+        clickCount: 1,
+      },
+      { timeoutMs: 2000 },
+    );
+    await page.send(
+      "Input.dispatchMouseEvent",
+      {
+        type: "mouseReleased",
+        x: box.x,
+        y: box.y,
+        button: "left",
+        clickCount: 1,
+      },
+      { timeoutMs: 2000 },
+    );
+    return { attempted, dispatched: true, errorKind: null };
+  } catch (error) {
+    return {
+      attempted,
+      dispatched: false,
+      errorKind: clipboardErrorKind(error?.message ?? error),
+    };
+  }
+}
+
+async function resetBrowserClipboardPermission(page, permissionState) {
+  if (!permissionState.granted) return "not-granted";
+  try {
+    await page.send("Browser.resetPermissions", {}, { timeoutMs: 2000 });
+    permissionState.granted = false;
+    return "reset";
+  } catch (error) {
+    return (
+      "reset-error:" +
+      (clipboardErrorKind(error?.message ?? error) ?? "unknown")
+    );
+  }
 }
 
 async function supportReport({ page, check }) {
-  // The check borrows the clipboard; restoreClipboard puts the user's text
-  // back, kept out of clipboard history. Non-text content (an image) cannot
-  // be restored; the clipboard is then left empty rather than holding the report.
-  const previousClipboard = await readClipboardText(page);
-  await page.evaluate(`location.hash = "#/settings"; return true;`);
-  const shown = await waitFor(
+  const permissionState = {
+    granted: false,
+    everGranted: false,
+    errorKind: null,
+  };
+  const previousClipboard = await readClipboardText(
     page,
-    `[...document.querySelectorAll("button")].some((node) => node.textContent.includes("Copy diagnostics report"))`,
+    permissionState,
+    1000,
   );
-  await page.evaluate(`
-    [...document.querySelectorAll("button")]
-      .find((node) => node.textContent.includes("Copy diagnostics report"))
-      ?.click();
-    return true;`);
-  const copied = await waitFor(
-    page,
-    `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Copied")`,
-  );
-  // Reads back what the app put on the system clipboard.
-  const report = await readClipboardText(page);
-  const text = String(report ?? "");
-  // Best effort; it never fails the support report check.
-  const clipboardRestore = restoreClipboard(previousClipboard);
+  let shown = false;
+  let copyInputAttempted = false;
+  let copyInputDispatched = false;
+  let copied = false;
+  let report = {
+    ok: false,
+    status: "preservation-read-failed",
+    attempts: 0,
+    outcomes: previousClipboard.outcomes,
+  };
+  let clipboardRestore = "not-written";
+  let interactionErrorKind = null;
+  let browserPermissionReset = true;
+  let text = "";
+  let toastTexts = [];
+
+  try {
+    await page.evaluate("location.hash = '#/settings'; return true;");
+    shown = await waitFor(
+      page,
+      "[...document.querySelectorAll('button')].some((node) => node.textContent.includes('Copy diagnostics report'))",
+    );
+
+    // Refuse to overwrite user clipboard data if its text cannot be captured.
+    if (
+      shown &&
+      previousClipboard.ok &&
+      typeof previousClipboard.text === "string"
+    ) {
+      const input = await clickDiagnosticsCopyButton(page);
+      copyInputAttempted = input.attempted;
+      copyInputDispatched = input.dispatched;
+      interactionErrorKind = input.errorKind;
+      copied = await waitFor(
+        page,
+        "[...document.querySelectorAll('button')].some((node) => node.textContent.trim() === 'Copied')",
+        6000,
+      );
+      report = await readClipboardReport(page, permissionState, 5000);
+      text = report.ok && typeof report.text === "string" ? report.text : "";
+    }
+  } catch (error) {
+    interactionErrorKind = clipboardErrorKind(error?.message ?? error);
+    report = {
+      ...report,
+      status: "interaction-error",
+    };
+  } finally {
+    if (copyInputAttempted) {
+      const expectedReport =
+        report.ok &&
+        typeof report.text === "string" &&
+        report.text.startsWith(SUPPORT_REPORT_PREFIX) &&
+        report.text.includes("Arlet " + VERSION)
+          ? report.text
+          : undefined;
+      clipboardRestore = restoreClipboard(
+        previousClipboard.text,
+        expectedReport,
+      );
+    }
+    const permissionReset = await resetBrowserClipboardPermission(
+      page,
+      permissionState,
+    );
+    browserPermissionReset =
+      permissionReset === "reset" || permissionReset === "not-granted";
+    if (permissionReset !== "reset" && permissionReset !== "not-granted") {
+      permissionState.errorKind = permissionReset;
+    }
+    try {
+      toastTexts = await page.evaluate(
+        "return [...document.querySelectorAll('.action-toast-message')].map((node) => node.textContent);",
+      );
+    } catch {
+      toastTexts = [];
+    }
+  }
+
+  const reportStartsWithPrefix = text.startsWith(SUPPORT_REPORT_PREFIX);
+  const reportIncludesVersion =
+    reportStartsWithPrefix && text.includes("Arlet " + VERSION);
+  const reportContainsToken = reportStartsWithPrefix
+    ? /eyJ[\w-]{8,}\.[\w-]+/u.test(text)
+    : null;
+  const clipboardRestored = ["restored", "cleared"].includes(clipboardRestore);
+  const clipboardChangedSafely = clipboardRestore === "changed";
+  const clipboardDispositionSafe = clipboardRestored || clipboardChangedSafely;
   check(
     "the support report names the version and carries no tokens",
     shown &&
+      previousClipboard.ok &&
+      copyInputDispatched &&
       copied &&
-      text.startsWith("# Arlet diagnostics report") &&
-      text.includes(`Arlet ${VERSION}`) &&
-      !/eyJ[\w-]{8,}\.[\w-]+/u.test(text),
+      reportStartsWithPrefix &&
+      reportIncludesVersion &&
+      !reportContainsToken &&
+      clipboardDispositionSafe &&
+      browserPermissionReset,
     {
       shown,
+      copyInputAttempted,
+      copyInputDispatched,
       copied,
-      length: text.length,
-      head: text.slice(0, 200),
+      clipboardBefore: {
+        provider: previousClipboard.provider,
+        outcomes: previousClipboard.outcomes,
+      },
+      clipboardRead: {
+        status: report.status,
+        attempts: report.attempts,
+        outcomes: report.outcomes,
+        errorKind: report.errorKind ?? clipboardErrorKind(report.error),
+      },
+      browserPermission: {
+        granted: permissionState.everGranted,
+        errorKind: permissionState.errorKind,
+        reset: browserPermissionReset,
+      },
+      reportStartsWithPrefix,
+      reportIncludesVersion,
+      reportContainsToken,
+      length: reportStartsWithPrefix ? text.length : null,
       clipboardRestore,
-      toasts: await page.evaluate(
-        `return [...document.querySelectorAll(".action-toast-message")].map((node) => node.textContent);`,
-      ),
+      clipboardRestored,
+      clipboardChangedSafely,
+      clipboardDispositionSafe,
+      interactionErrorKind,
+      toasts: toastTexts,
     },
   );
 }
-
 /** Reads the app's own log file through the native log-dir command. */
 async function readAppLog(page) {
   const dir = await page.evaluate(`

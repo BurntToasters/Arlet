@@ -3,6 +3,8 @@
  * NOT_FOUND, and an unplayable ID is dropped without an error. */
 
 import { fixtureCall, sleep, waitFor } from "./e2e-helpers.js";
+import fs from "node:fs";
+import path from "node:path";
 
 const FIXTURE = "window.__ARLET_E2E_MUSIC__";
 const PLAYLIST_ID = "playlist-1";
@@ -15,11 +17,81 @@ const PLAYLIST_IDS = [
   "song-f",
 ];
 const TITLE = `document.querySelector(".player-bar .player-track-copy strong")?.textContent`;
+const SESSION_FILE = "playback-session.json";
+const RESTORED_QUEUE_SIZE = 20;
+const RESTORED_POSITION = 42.5;
+// Library IDs make queueDescriptorsForTracks send song details first, so one
+// failed Play covers both the details attempt and the ID fallback.
+const RESTORED_IDS = Array.from(
+  { length: RESTORED_QUEUE_SIZE },
+  (_, index) => `i.restore-${String(index + 1).padStart(2, "0")}`,
+);
 const snapshot = (page) => fixtureCall(page, "snapshot");
 const toastText = (page) =>
   page.evaluate(
     `return [...document.querySelectorAll('.action-toast-message')].map((node) => node.textContent).join(" | ");`,
   );
+
+function restoredItems() {
+  return RESTORED_IDS.map((id, index) => ({
+    id,
+    title: `Restore Track ${index + 1}`,
+    artistName: "Fixture Artist",
+    albumTitle: "Restore Album",
+    resourceType: "library-songs",
+    durationMs: 180_000,
+  }));
+}
+
+function readSession(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+async function reloadApp(page) {
+  await page.send("Page.reload", { ignoreCache: true });
+  await sleep(1000);
+  return waitFor(
+    page,
+    `${FIXTURE} && document.querySelector(".app-shell .player-bar")`,
+    30_000,
+  );
+}
+
+/** Shortens the stream handoff's 60 s timer until restored. */
+function installFastRelease(page, ms) {
+  return page.evaluate(`
+    window.__ARLET_E2E_NATIVE_SET_TIMEOUT__ ??= window.setTimeout;
+    window.__ARLET_E2E_RELEASE_MS__ = ${ms};
+    const native = window.__ARLET_E2E_NATIVE_SET_TIMEOUT__;
+    window.setTimeout = (callback, delay, ...rest) =>
+      native(callback, delay === 60000 ? window.__ARLET_E2E_RELEASE_MS__ : delay, ...rest);
+    return true;`);
+}
+
+function restoreTimeouts(page) {
+  return page.evaluate(`
+    if (window.__ARLET_E2E_NATIVE_SET_TIMEOUT__) {
+      window.setTimeout = window.__ARLET_E2E_NATIVE_SET_TIMEOUT__;
+    }
+    return true;`);
+}
+
+async function startStationFromMenu(page) {
+  await fixtureCall(page, "selectContext", ["nav-multi"]);
+  const ready = await waitFor(
+    page,
+    `document.querySelector('.context-menu [data-menu-item="start-station"]:not(:disabled)')`,
+  );
+  if (!ready) return false;
+  await page.evaluate(
+    `document.querySelector('.context-menu [data-menu-item="start-station"]')?.click(); return true;`,
+  );
+  return true;
+}
 
 async function dismissToasts(page) {
   await page.evaluate(`
@@ -48,7 +120,7 @@ async function playRow(page, row, unavailable) {
   return true;
 }
 
-export async function runUnavailable({ page, check }) {
+export async function runUnavailable({ page, check, dataDir }) {
   try {
     // One removed song after the chosen one: the chosen duplicate still
     // plays, and MusicKit's queue starts at it.
@@ -544,6 +616,365 @@ export async function runUnavailable({ page, check }) {
         !snap.transitions.slice(mark).some((item) => item.type === "playLater"),
       { restBefore, restDropped },
     );
+
+    // Playback integrity: a Play whose queue setup fails must leave the
+    // restored queue, position, and saved session untouched; a failed station
+    // Play must not label the next handoff's parked queue as a station.
+    await fixtureCall(page, "reset");
+    await sleep(2500);
+    const sessionFile = path.join(dataDir, SESSION_FILE);
+    fs.rmSync(`${sessionFile}.bak`, { force: true });
+    fs.writeFileSync(
+      sessionFile,
+      JSON.stringify({
+        schemaVersion: 1,
+        items: restoredItems(),
+        index: 0,
+        positionSeconds: RESTORED_POSITION,
+        savedAt: Date.now() - 60_000,
+      }),
+    );
+    const reloaded = await reloadApp(page);
+    const restoredTitle = await waitFor(
+      page,
+      `${TITLE} === "Restore Track 1"`,
+      15_000,
+    );
+    await page.evaluate(`
+      if (!document.querySelector(".queue-drawer")) {
+        document.querySelector('button[aria-label="Toggle Playing Next"]')?.click();
+      }
+      return true;
+    `);
+    const parkedRows = await waitFor(
+      page,
+      `document.querySelectorAll(".queue-list > li").length === ${RESTORED_QUEUE_SIZE}`,
+    );
+    const parkedUi = await page.evaluate(`
+      return {
+        position: document.querySelector(".player-progress span")?.textContent ?? null,
+        button: document.querySelector(".play-button")?.getAttribute("aria-label") ?? null,
+        active: document.querySelector(".queue-row-shell.is-active .queue-copy strong")?.textContent ?? null,
+      };`);
+    check(
+      "a restored queue is parked with every saved song and its position",
+      reloaded &&
+        restoredTitle &&
+        parkedRows &&
+        parkedUi.position === "0:42" &&
+        parkedUi.button === "Play" &&
+        parkedUi.active === "Restore Track 1",
+      { reloaded, restoredTitle, parkedRows, parkedUi },
+    );
+
+    // Hold queue setup so the debounced save would fire while only the first
+    // batch is provisional; it must not replace the saved session.
+    await fixtureCall(page, "configure", [{ holdSetQueue: true }]);
+    const failedMark = (await snapshot(page)).transitions.length;
+    await page.evaluate(
+      `document.querySelector(".play-button")?.click(); return true;`,
+    );
+    const queueHeld = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().queueEdit.setQueueHeld >= 1`,
+    );
+    await sleep(2800);
+    const savedWhileHeld = readSession(sessionFile);
+    await fixtureCall(page, "configure", [{ rejectSetQueue: true }]);
+    await fixtureCall(page, "releaseSetQueue");
+    const fallbackHeld = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().queueEdit.setQueueHeld >= 1`,
+      5_000,
+    );
+    await fixtureCall(page, "releaseSetQueue");
+    const failedToast = await waitFor(
+      page,
+      `[...document.querySelectorAll(".action-toast-message")].some((node) => node.textContent.includes("Fixture queue setup failed"))`,
+      10_000,
+    );
+    await fixtureCall(page, "configure", [
+      { holdSetQueue: false, rejectSetQueue: false },
+    ]);
+    await sleep(2600);
+    const failedRows = await page.evaluate(
+      `return document.querySelectorAll(".queue-list > li").length;`,
+    );
+    const failedUi = await page.evaluate(`
+      return {
+        position: document.querySelector(".player-progress span")?.textContent ?? null,
+        button: document.querySelector(".play-button")?.getAttribute("aria-label") ?? null,
+        active: document.querySelector(".queue-row-shell.is-active .queue-copy strong")?.textContent ?? null,
+      };`);
+    const failedSnap = await snapshot(page);
+    const failedTransitions = failedSnap.transitions.slice(failedMark);
+    const savedAfterFailure = readSession(sessionFile);
+    check(
+      "a failed Play leaves the full parked queue, position, and saved session intact",
+      queueHeld &&
+        fallbackHeld &&
+        failedToast &&
+        failedTransitions.filter((item) => item.type === "setQueueRejected")
+          .length === 2 &&
+        !failedTransitions.some((item) => item.type === "play") &&
+        failedRows === RESTORED_QUEUE_SIZE &&
+        failedUi.position === "0:42" &&
+        failedUi.button === "Play" &&
+        failedUi.active === "Restore Track 1" &&
+        savedWhileHeld?.items?.length === RESTORED_QUEUE_SIZE &&
+        savedAfterFailure?.items?.length === RESTORED_QUEUE_SIZE &&
+        savedAfterFailure?.index === 0 &&
+        Math.abs(
+          (savedAfterFailure?.positionSeconds ?? -1) - RESTORED_POSITION,
+        ) < 0.5 &&
+        (await toastText(page)).includes("Fixture queue setup failed"),
+      {
+        queueHeld,
+        fallbackHeld,
+        failedToast,
+        failedRows,
+        failedUi,
+        savedWhileHeld: savedWhileHeld
+          ? {
+              count: savedWhileHeld.items?.length,
+              index: savedWhileHeld.index,
+            }
+          : null,
+        savedAfterFailure: savedAfterFailure
+          ? {
+              count: savedAfterFailure.items?.length,
+              index: savedAfterFailure.index,
+              position: savedAfterFailure.positionSeconds,
+            }
+          : null,
+        transitions: failedTransitions.map((item) => item.type),
+      },
+    );
+
+    // With queue setup working again, the same press starts the parked queue.
+    const retryMark = (await snapshot(page)).transitions.length;
+    await page.evaluate(
+      `document.querySelector(".play-button")?.click(); return true;`,
+    );
+    const retried = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().transitions.slice(${retryMark}).some((item) => item.type === "play")`,
+      15_000,
+    );
+    const retriedSeek = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().transitions.slice(${retryMark}).some((item) => item.type === "seekToTime")`,
+      15_000,
+    );
+    const rowsAfterRetry = await waitFor(
+      page,
+      `document.querySelectorAll(".queue-list > li").length === ${RESTORED_QUEUE_SIZE}`,
+      15_000,
+    );
+    const retryTransitions = (await snapshot(page)).transitions.slice(
+      retryMark,
+    );
+    const retryQueue = retryTransitions.find(
+      (item) => item.type === "setQueue",
+    );
+    const retrySeek = retryTransitions.find(
+      (item) => item.type === "seekToTime",
+    );
+    const retryUi = await page.evaluate(`
+      return {
+        title: ${TITLE},
+        button: document.querySelector(".play-button")?.getAttribute("aria-label") ?? null,
+      };`);
+    check(
+      "Play after a failed resume starts the same full queue and saved position",
+      retried &&
+        retriedSeek &&
+        rowsAfterRetry &&
+        JSON.stringify(retryQueue?.ids) ===
+          JSON.stringify(RESTORED_IDS.slice(0, 16)) &&
+        Math.abs((retrySeek?.seconds ?? -1) - RESTORED_POSITION) < 0.001 &&
+        // The fixture names an unknown queued ID after itself once MusicKit
+        // publishes it; the saved queue's own titles were checked while parked.
+        retryUi.title === RESTORED_IDS[0] &&
+        retryUi.button === "Pause",
+      {
+        retried,
+        retriedSeek,
+        rowsAfterRetry,
+        ids: retryQueue?.ids,
+        seek: retrySeek,
+        retryUi,
+      },
+    );
+
+    // A failed station Play must not leave its label on the queue a later
+    // stream handoff parks; Play after the handoff resumes songs, not a URL.
+    await fixtureCall(page, "configure", [{ rejectSetQueue: true }]);
+    await installFastRelease(page, 400);
+    const stationMark = (await snapshot(page)).transitions.length;
+    const stationClicked = await startStationFromMenu(page);
+    const stationToast = await waitFor(
+      page,
+      `[...document.querySelectorAll(".action-toast-message")].some((node) => node.textContent.includes("Fixture queue setup failed"))`,
+      10_000,
+    );
+    const stopped = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().transitions.slice(${stationMark}).some((item) => item.type === "stop")`,
+      10_000,
+    );
+    await restoreTimeouts(page);
+    await fixtureCall(page, "configure", [{ rejectSetQueue: false }]);
+    await sleep(500);
+    const stationSnap = await snapshot(page);
+    const stationTransitions = stationSnap.transitions.slice(stationMark);
+    const stationUi = await page.evaluate(`
+      return {
+        title: ${TITLE},
+        button: document.querySelector(".play-button")?.getAttribute("aria-label") ?? null,
+      };`);
+    check(
+      "a failed station Play leaves the queue parked as songs, not a station",
+      stationClicked &&
+        stationToast &&
+        stopped &&
+        stationTransitions.some((item) => item.type === "setQueueRejected") &&
+        stationUi.title === RESTORED_IDS[0] &&
+        stationUi.button === "Play",
+      { stationClicked, stationToast, stopped, stationUi },
+    );
+
+    const stationResumeMark = (await snapshot(page)).transitions.length;
+    await page.evaluate(
+      `document.querySelector(".play-button")?.click(); return true;`,
+    );
+    const stationResumed = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().transitions.slice(${stationResumeMark}).some((item) => item.type === "play")`,
+      15_000,
+    );
+    const stationResumeSeek = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().transitions.slice(${stationResumeMark}).some((item) => item.type === "seekToTime")`,
+      15_000,
+    );
+    const stationResumeTransitions = (await snapshot(page)).transitions.slice(
+      stationResumeMark,
+    );
+    const stationResumeQueues = stationResumeTransitions.filter(
+      (item) => item.type === "setQueue",
+    );
+    const stationUrlQueue = stationResumeQueues.find(
+      (item) => item.options?.url,
+    );
+    const resumeQueue = stationResumeQueues.find((item) => !item.options?.url);
+    const stationResumeSeekTransition = stationResumeTransitions.find(
+      (item) => item.type === "seekToTime",
+    );
+    check(
+      "Play after the failed station handoff resumes the saved songs at their position",
+      stationResumed &&
+        stationResumeSeek &&
+        !stationUrlQueue &&
+        JSON.stringify(resumeQueue?.ids) ===
+          JSON.stringify(RESTORED_IDS.slice(0, 16)) &&
+        Math.abs(
+          (stationResumeSeekTransition?.seconds ?? -1) - RESTORED_POSITION,
+        ) < 0.001,
+      {
+        stationResumed,
+        stationResumeSeek,
+        stationUrlQueue,
+        resumeQueue,
+        seek: stationResumeSeekTransition,
+        transitions: stationResumeTransitions.map((item) => item.type),
+      },
+    );
+
+    // A Play Next pressed while a Play is still replacing the provider queue
+    // must queue into the new queue, in order, not the queue being replaced.
+    await fixtureCall(page, "reset");
+    await dismissToasts(page);
+    await page.evaluate(
+      `location.hash = "#/playlist/${PLAYLIST_ID}"; return true;`,
+    );
+    const raceRows = await waitFor(
+      page,
+      `document.querySelectorAll(".library-track-row").length >= 4`,
+    );
+    await page.evaluate(
+      `document.querySelectorAll(".library-track-row")[0]?.click(); return true;`,
+    );
+    await waitFor(page, `${TITLE} === "Track A"`, 15_000);
+    await fixtureCall(page, "configure", [{ holdSetQueue: true }]);
+    const raceMark = (await snapshot(page)).transitions.length;
+    // Row 1 starts a new Play; its provider queue setup is held.
+    await page.evaluate(
+      `document.querySelectorAll(".library-track-row")[1]?.click(); return true;`,
+    );
+    const raceHeld = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().queueEdit.setQueueHeld >= 1`,
+      10_000,
+    );
+    // While that setup is still in flight, ask for the album to play next.
+    await fixtureCall(page, "selectContext", [
+      { id: "album-1", kind: "album", source: "library" },
+    ]);
+    const raceMenu = await waitFor(
+      page,
+      `document.querySelector('.context-menu [data-menu-item="play-next-collection"]:not(:disabled)')`,
+      10_000,
+    );
+    await page.evaluate(
+      `document.querySelector('.context-menu [data-menu-item="play-next-collection"]')?.click(); return true;`,
+    );
+    await fixtureCall(page, "releaseSetQueue");
+    const raceSettled = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().transitions.slice(${raceMark}).some((item) => item.type === "play")`,
+      15_000,
+    );
+    const raceInserted = await waitFor(
+      page,
+      `${FIXTURE}.snapshot().transitions.slice(${raceMark}).some((item) => item.type === "playNext")`,
+      15_000,
+    );
+    const raceSnap = await snapshot(page);
+    const raceIds = raceSnap.queue.items.map((item) => item.id);
+    const raceActive = raceIds.indexOf(raceSnap.queue.activeId);
+    const racePlayNext = raceSnap.transitions
+      .slice(raceMark)
+      .find((item) => item.type === "playNext");
+    const raceExpected = ["album-a", "album-b", "album-c", "album-d"];
+    check(
+      "Play Next during a slow Play queues into the new queue in order",
+      raceRows &&
+        raceHeld &&
+        raceMenu &&
+        raceSettled &&
+        raceInserted &&
+        raceActive >= 0 &&
+        JSON.stringify(racePlayNext?.ids) === JSON.stringify(raceExpected) &&
+        JSON.stringify(raceIds.slice(raceActive + 1, raceActive + 5)) ===
+          JSON.stringify(raceExpected),
+      {
+        raceHeld,
+        raceMenu,
+        raceSettled,
+        raceInserted,
+        active: raceSnap.queue.activeId,
+        playNextIds: racePlayNext?.ids,
+        ids: raceIds,
+      },
+    );
+    await fixtureCall(page, "configure", [{ holdSetQueue: false }]);
+
+    // Leave no seeded restore for the harness's later relaunch checks.
+    await fixtureCall(page, "reset");
+    await dismissToasts(page);
+    fs.rmSync(sessionFile, { force: true });
+    fs.rmSync(`${sessionFile}.bak`, { force: true });
   } finally {
     await fixtureCall(page, "reset");
     await fixtureCall(page, "configure", [

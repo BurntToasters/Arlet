@@ -8,7 +8,7 @@ import {
   RefreshCw,
   Search,
 } from "lucide-preact";
-import { useEffect, useMemo } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { JSX } from "preact";
 import {
   useAppController,
@@ -20,9 +20,12 @@ import { CardActions, CardShell } from "../components/CardActions.tsx";
 import { SkeletonCardGrid, SkeletonStatus } from "../components/Skeleton.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import { toResource, toTrack, type ResourceLike } from "./LibraryView.tsx";
+import { AlbumCardGrid, shelfResources } from "./AlbumShelves.tsx";
+import { detailContext } from "./detail-context.ts";
 import { reportActionError } from "../components/action-errors.ts";
 import { OfflineBanner } from "../components/OfflineBanner.tsx";
-import type { Station, Track } from "../domain/music.ts";
+import { SongRow } from "../components/SongRow.tsx";
+import type { Artist, ReplaySummary, Station, Track } from "../domain/music.ts";
 import type { RuntimeAppState } from "../state.ts";
 
 type DiscoverySource = "library" | "catalog";
@@ -469,6 +472,191 @@ function RecommendationSection({
   );
 }
 
+/** "Replay 2026: Top Songs" when Apple names the year, else "Replay: Top Songs". */
+function replayTitle(replay: ReplaySummary, name: string): string {
+  return replay.year ? `Replay ${replay.year}: ${name}` : `Replay: ${name}`;
+}
+
+/** Replay's top songs; a song plays from its place in the list, as on an artist page. */
+function ReplaySongs({
+  title,
+  tracks,
+}: {
+  title: string;
+  tracks: Track[];
+}): JSX.Element {
+  const controller = useAppController();
+  return (
+    <section
+      className="home-feed-section"
+      aria-labelledby="replay-songs-heading"
+      data-shelf="replay-songs"
+    >
+      <div className="section-heading">
+        <div>
+          <span className="eyebrow">Apple Music Replay</span>
+          <h2 id="replay-songs-heading">{title}</h2>
+        </div>
+      </div>
+      <div className="library-list-panel">
+        <ol className="library-track-list">
+          {tracks.map((track, index) => (
+            <SongRow
+              key={`${track.id}:${index}`}
+              track={track}
+              index={index}
+              onPlay={() =>
+                void Promise.resolve(
+                  controller.playTracks(tracks, index),
+                ).catch(reportActionError)
+              }
+              onPlayNext={() =>
+                void Promise.resolve(controller.playNextTracks([track])).catch(
+                  reportActionError,
+                )
+              }
+              disabled={false}
+              rowClassName="library-track-row"
+              numberClassName="library-row-number"
+              copyClassName="library-row-copy"
+              durationClassName="library-row-duration"
+              contextData={{
+                "data-context-kind": "track",
+                "data-context-id": track.id,
+                "data-context-title": track.title,
+                "data-context-artist": track.artistName,
+                ...(track.albumTitle
+                  ? { "data-context-album": track.albumTitle }
+                  : {}),
+                ...(track.artwork?.url
+                  ? { "data-context-artwork": track.artwork.url }
+                  : {}),
+                ...(track.resourceType
+                  ? { "data-context-resource-type": track.resourceType }
+                  : {}),
+                ...(track.catalogId
+                  ? { "data-context-catalog-id": track.catalogId }
+                  : {}),
+              }}
+            />
+          ))}
+        </ol>
+      </div>
+    </section>
+  );
+}
+
+/** Replay's top albums, as the same album cards the artist and album pages use. */
+function ReplayAlbums({
+  title,
+  albums,
+}: {
+  title: string;
+  albums: ReplaySummary["topAlbums"];
+}): JSX.Element | null {
+  const cards = shelfResources(albums);
+  if (cards.length === 0) return null;
+  return (
+    <section
+      className="home-feed-section"
+      aria-labelledby="replay-albums-heading"
+      data-shelf="replay-albums"
+    >
+      <div className="section-heading">
+        <div>
+          <span className="eyebrow">Apple Music Replay</span>
+          <h2 id="replay-albums-heading">{title}</h2>
+        </div>
+      </div>
+      <AlbumCardGrid albums={cards} label={title} fallbackSource="catalog" />
+    </section>
+  );
+}
+
+/** A round card for one of Replay's artists; opens that artist's page. */
+function ReplayArtistCard({ artist }: { artist: ResourceLike }): JSX.Element {
+  const router = useAppRouter();
+  return (
+    <CardShell
+      contextData={detailContext(artist, "artist")}
+      catalogUrl={artist.catalogUrl}
+    >
+      <button
+        className="library-card"
+        type="button"
+        onClick={() =>
+          router.navigate({ kind: "artist", id: artist.id, source: "catalog" })
+        }
+      >
+        <Artwork
+          track={toTrack(artist)}
+          size="lg"
+          alt={`${artist.title} artwork`}
+          className="library-card-art artist-card-art"
+        />
+        <span className="library-card-copy">
+          <strong>{artist.title}</strong>
+          <small>Artist</small>
+        </span>
+      </button>
+      <CardActions title={artist.title} />
+    </CardShell>
+  );
+}
+
+/** Replay's top artists; each card opens its artist page. */
+function ReplayArtists({
+  title,
+  artists,
+}: {
+  title: string;
+  artists: Artist[];
+}): JSX.Element | null {
+  const cards = shelfResources(artists);
+  if (cards.length === 0) return null;
+  return (
+    <section
+      className="home-feed-section"
+      aria-labelledby="replay-artists-heading"
+      data-shelf="replay-artists"
+    >
+      <div className="section-heading">
+        <div>
+          <span className="eyebrow">Apple Music Replay</span>
+          <h2 id="replay-artists-heading">{title}</h2>
+        </div>
+      </div>
+      <div className="library-card-grid" aria-label={title}>
+        {cards.map((artist) => (
+          <ReplayArtistCard key={artist.id} artist={artist} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** The three Replay shelves; each one is left out when Apple sent none of its items. */
+function ReplayShelves({ replay }: { replay: ReplaySummary }): JSX.Element {
+  return (
+    <>
+      {replay.topSongs.length ? (
+        <ReplaySongs
+          title={replayTitle(replay, "Top Songs")}
+          tracks={replay.topSongs}
+        />
+      ) : null}
+      <ReplayAlbums
+        title={replayTitle(replay, "Top Albums")}
+        albums={replay.topAlbums}
+      />
+      <ReplayArtists
+        title={replayTitle(replay, "Top Artists")}
+        artists={replay.topArtists}
+      />
+    </>
+  );
+}
+
 export function HomeView(): JSX.Element {
   const state = useAppSlices("auth", "home", "initialization", "library");
   const controller = useAppController();
@@ -489,6 +677,41 @@ export function HomeView(): JSX.Element {
     [heavyItems],
   );
   const loading = home.status === "loading" || home.status === "refreshing";
+  const [today, setToday] = useState(() => new Date());
+  const [announcement, setAnnouncement] = useState("");
+  // Set by the user's refresh action; only that refresh gets "Home updated.".
+  const refreshAsked = useRef(false);
+  const refreshStarted = useRef(false);
+
+  useEffect(() => {
+    let timer = 0;
+    const armMidnight = (): void => {
+      const now = new Date();
+      const midnight = new Date(now);
+      midnight.setHours(24, 0, 0, 0);
+      timer = window.setTimeout(() => {
+        setToday(new Date());
+        armMidnight();
+      }, midnight.getTime() - now.getTime());
+    };
+    armMidnight();
+    return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (loading) {
+      refreshStarted.current = refreshAsked.current;
+      setAnnouncement("Loading Home…");
+      return;
+    }
+    if (refreshAsked.current && refreshStarted.current) {
+      refreshAsked.current = false;
+      refreshStarted.current = false;
+      setAnnouncement(home.status === "success" ? "Home updated." : "");
+      return;
+    }
+    setAnnouncement("");
+  }, [loading, home.status]);
 
   useEffect(() => {
     if (!authorized) return;
@@ -496,6 +719,7 @@ export function HomeView(): JSX.Element {
   }, [authorized, controller]);
 
   const refresh = (): void => {
+    refreshAsked.current = true;
     run(() => controller.loadHome({ refresh: true }));
   };
 
@@ -521,7 +745,7 @@ export function HomeView(): JSX.Element {
               weekday: "long",
               month: "long",
               day: "numeric",
-            }).format(new Date())}
+            }).format(today)}
           </span>
           {authorized ? (
             <button
@@ -540,6 +764,9 @@ export function HomeView(): JSX.Element {
           ) : null}
         </div>
       </div>
+      <p className="sr-only" role="status">
+        {announcement}
+      </p>
 
       {!authorized ? (
         <>
@@ -604,10 +831,10 @@ export function HomeView(): JSX.Element {
           </section>
         </>
       ) : (
-        <div className="home-feed" aria-live="polite">
+        <div className="home-feed">
           <DiscoverySection
             id="recently-played"
-            eyebrow="Recently played"
+            eyebrow="Jump back in"
             title="Recently Played"
             description="Pick up where you left off."
             section={home.recentPlaylists}
@@ -673,9 +900,15 @@ export function HomeView(): JSX.Element {
             emptyTitle="Heavy Rotation is empty"
             emptyDescription="Your most-played albums, playlists and stations will appear here."
           />
+          {state.home.replay ? (
+            <ReplayShelves replay={state.home.replay} />
+          ) : null}
           {home.stale ? (
             <p className="home-section-stale" role="status">
-              Some Home sections could not be refreshed. Try again.
+              Some Home sections could not be refreshed.{" "}
+              <button className="quiet-button" type="button" onClick={refresh}>
+                Try again
+              </button>
             </p>
           ) : null}
           <div className="home-feed-search">

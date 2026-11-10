@@ -5,8 +5,10 @@
 // not block expiry), the notice stack, the clipboard fallback, and a parked
 // station that cannot be scrubbed, a manual Sign in again that is cancelled or
 // rejected, a token MusicKit drops silently, and a parked queue that resumes
-// in saved order with shuffle on. Timers are remapped only while a check
-// needs them and restored after; the suite ends signed in and healthy.
+// in saved order with shuffle on, and a parked queue that keeps every song
+// before its Play for Previous, Repeat All and Playing Next. Timers are
+// remapped only while a check needs them and restored after; the suite ends
+// signed in and healthy.
 // Offline auto-reload, the ratings caps and the updater are code-reviewed
 // (TESTING.md).
 
@@ -185,8 +187,23 @@ const emitNative = (page, event, payload) =>
  * second clear of each.
  */
 async function idleCap(page, check, artifactDir) {
+  // A queue left playing by an earlier scenario has its idle timer armed at the
+  // real 4-hour limit. Pause it first, so the next Play arms the shortened one.
+  const playingBefore = await page.evaluate(
+    `return document.querySelector(${q(PLAY_BUTTON)})?.getAttribute("aria-label") === "Pause";`,
+  );
+  if (playingBefore) {
+    await pauseWithFastRelease(page);
+    await buttonIs(page, "Play", 5000);
+  }
   await installTimers(page, { idleMs: IDLE_TEST_MS });
   const started = await playSongs(page);
+  // A playback that began before the shortened timer was mapped can keep its
+  // real-limit timer, because the guard only re-arms on a status change. An
+  // activity event re-arms it at the mapped delay, as a user input does.
+  await page.evaluate(
+    `window.dispatchEvent(new Event("pointerdown")); return true;`,
+  );
   const at = await mark(page);
   const paused = await buttonIs(page, "Play", IDLE_TEST_MS + 6000);
   const notice = await waitFor(
@@ -282,7 +299,7 @@ async function onlineWithoutOutage(page, check) {
  * The diagnostics copy must answer within 6 s: "Copied", or the busy error
  * when the plugin and the browser clipboard both fail. The log names the path.
  */
-async function clipboardCopy(page, check, dataDir) {
+async function clipboardCopy(page, check, logDir) {
   const shown = await openHash(
     page,
     "#/settings",
@@ -315,12 +332,7 @@ async function clipboardCopy(page, check, dataDir) {
   // Best effort, and kept out of clipboard history (e2e-clipboard.js).
   restoreClipboard(previous);
   // Observed, not asserted: the log names the path that ran, when readable.
-  const logFile = path.join(
-    process.env.LOCALAPPDATA ?? "",
-    path.basename(dataDir),
-    "logs",
-    "arlet.log",
-  );
+  const logFile = path.join(logDir, "arlet.log");
   let paths = [];
   for (let attempt = 0; attempt < 10 && paths.length === 0; attempt += 1) {
     await sleep(300);
@@ -605,14 +617,18 @@ const PARKED_ALBUM = "album-1";
 const PARKED_QUEUE = ["album-a", "album-b", "album-c", "album-d"];
 const PARKED_START = 1;
 
-/** Lines of arlet.log containing text (the local-app-data copy, as the clipboard check reads it). */
-function logCount(dataDir, text) {
-  const logFile = path.join(
-    process.env.LOCALAPPDATA ?? "",
-    path.basename(dataDir),
-    "logs",
-    "arlet.log",
-  );
+/** The provider queue's song IDs, playing index and active song, as MusicKit holds them. */
+const providerQueue = (page) =>
+  page.evaluate(`
+    const queue = window.__ARLET_E2E_MUSIC__.snapshot().queue;
+    return { ids: queue.items.map((item) => item.id), index: queue.index, activeId: queue.activeId };`);
+/** The same songs in any order. */
+const sameSetIds = (actual, expected) =>
+  JSON.stringify([...actual].sort()) === JSON.stringify([...expected].sort());
+
+/** Lines of arlet.log containing text in this E2E run's explicit log directory. */
+function logCount(logDir, text) {
+  const logFile = path.join(logDir, "arlet.log");
   try {
     return fs.readFileSync(logFile, "utf8").split(text).length - 1;
   } catch {
@@ -621,9 +637,9 @@ function logCount(dataDir, text) {
 }
 
 /** Waits until arlet.log holds more copies of text than before. */
-async function logGrew(dataDir, text, before) {
+async function logGrew(logDir, text, before) {
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (logCount(dataDir, text) > before) return true;
+    if (logCount(logDir, text) > before) return true;
     await sleep(250);
   }
   return false;
@@ -672,7 +688,7 @@ async function queuedSince(page, at) {
  * it unless MusicKit still holds a token; a failed attempt expires it and the
  * notice signs in again. An abandoned attempt that completes clears it.
  */
-async function reauthFailures(page, check, dataDir) {
+async function reauthFailures(page, check, logDir) {
   await ensureSignedIn(page);
   await openHash(
     page,
@@ -682,7 +698,7 @@ async function reauthFailures(page, check, dataDir) {
   );
 
   // A cancel while MusicKit is unauthorized expires the session.
-  const cancelBefore = logCount(dataDir, CANCEL_LINE);
+  const cancelBefore = logCount(logDir, CANCEL_LINE);
   await fixtureCall(page, "configure", [{ hangAuthorize: true }]);
   await clickSettingsSignIn(page);
   const pending = await waitFor(
@@ -693,7 +709,7 @@ async function reauthFailures(page, check, dataDir) {
   const held = (await snapshot(page)).authorizeHeld;
   await clickSettingsCancel(page);
   const expired = await noticeShown(page, 8000);
-  const logged = await logGrew(dataDir, CANCEL_LINE, cancelBefore);
+  const logged = await logGrew(logDir, CANCEL_LINE, cancelBefore);
   const unauthorized = (await snapshot(page)).authorized === false;
   check(
     "a cancelled Sign in again on a healthy session shows the expired notice",
@@ -737,11 +753,11 @@ async function reauthFailures(page, check, dataDir) {
   );
 
   // A rejected or closed sign-in expires the session; the notice signs in again.
-  const rejectBefore = logCount(dataDir, REAUTH_LINE);
+  const rejectBefore = logCount(logDir, REAUTH_LINE);
   await fixtureCall(page, "configure", [{ rejectAuthorize: true }]);
   await clickSettingsSignIn(page);
   const rejected = await noticeShown(page, 10_000);
-  const rejectLogged = await logGrew(dataDir, REAUTH_LINE, rejectBefore);
+  const rejectLogged = await logGrew(logDir, REAUTH_LINE, rejectBefore);
   check(
     "a rejected Sign in again shows the expired notice and logs the reason",
     rejected && rejectLogged,
@@ -761,7 +777,7 @@ async function reauthFailures(page, check, dataDir) {
  * MusicKit drops its token without an event. The next suspect error must
  * expire the session from MusicKit's state, with no /v1/me/storefront probe.
  */
-async function lostToken(page, check, dataDir) {
+async function lostToken(page, check, logDir) {
   await openHash(page, "#/home");
   // The sign-in that ended the previous check may still run its follow-up
   // probe; let it finish so it is not counted against this check.
@@ -772,7 +788,7 @@ async function lostToken(page, check, dataDir) {
     10_000,
   );
   const at = await mark(page);
-  const logBefore = logCount(dataDir, TOKEN_LINE);
+  const logBefore = logCount(logDir, TOKEN_LINE);
   await fixtureCall(page, "configure", [{ rejectMeStatus: 403 }]);
   await page.evaluate(
     `window.MusicKit.getInstance().isAuthorized = false; return true;`,
@@ -786,7 +802,7 @@ async function lostToken(page, check, dataDir) {
       .find((node) => node.textContent.trim() === "Refresh current view")?.click();
     return true;`);
   const expired = await noticeShown(page, 10_000);
-  const logged = await logGrew(dataDir, TOKEN_LINE, logBefore);
+  const logged = await logGrew(logDir, TOKEN_LINE, logBefore);
   const probes = (await snapshot(page)).requests
     .slice(at.requests)
     .filter(
@@ -810,12 +826,15 @@ const EXPIRED_TEXT =
   "Your Apple Music sign-in expired. Sign in again to load your library.";
 
 /** Clicks a Settings button by its exact text. */
-function clickSettingsButton(page, text) {
+async function clickSettingsButton(page, text) {
   return page.evaluate(`
     const button = [...document.querySelectorAll("button")]
       .find((node) => node.textContent.trim() === ${q(text)});
-    button?.click();
-    return Boolean(button);`);
+    if (!button) return { found: false, disabled: null, clicked: false };
+    const disabled = button.disabled || button.getAttribute("aria-disabled") === "true";
+    if (disabled) return { found: true, disabled: true, clicked: false };
+    button.click();
+    return { found: true, disabled: false, clicked: true };`);
 }
 
 /** True when some element's own text is exactly the bare status code. */
@@ -831,6 +850,8 @@ function bareStatusShown(page, status) {
  * fix they kept the old object and its dead token, and every /v1/me request
  * failed with a bare "403" while the titlebar said Connected. Then a refused
  * library request must show readable text, never the bare status.
+ * Failure modes also include clicking a visible-but-disabled Sign in button
+ * while sign-out's async persisted-data clears are still finishing.
  */
 async function signOutThenIn(page, check) {
   await openHash(
@@ -840,18 +861,70 @@ async function signOutThenIn(page, check) {
     15_000,
   );
   const generationBefore = (await snapshot(page)).apiGeneration;
-  await clickSettingsButton(page, "Sign out");
-  const signedOut = await waitFor(
+  const signOutClick = await clickSettingsButton(page, "Sign out");
+  const signInVisible = await waitFor(
     page,
     `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign in")`,
     15_000,
   );
-  await clickSettingsButton(page, "Sign in");
-  const signedIn = await waitFor(
-    page,
-    `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign out")`,
-    15_000,
+  const signInInitialState = await page.evaluate(`
+    const button = [...document.querySelectorAll("button")]
+      .find((node) => node.textContent.trim() === "Sign in");
+    return {
+      found: Boolean(button),
+      disabled: button ? button.disabled : null,
+      ariaDisabled: button?.getAttribute("aria-disabled") ?? null,
+      status: document.querySelector(${q(STATUS)})?.textContent.trim() ?? null,
+    };`);
+  const signInReady =
+    signInVisible &&
+    (await waitFor(
+      page,
+      `[...document.querySelectorAll("button")].some((node) =>
+      node.textContent.trim() === "Sign in" &&
+      !node.disabled && node.getAttribute("aria-disabled") !== "true")`,
+      15_000,
+    ));
+  const signInButtonState = await page.evaluate(`
+    const button = [...document.querySelectorAll("button")]
+      .find((node) => node.textContent.trim() === "Sign in");
+    return {
+      found: Boolean(button),
+      disabled: button ? button.disabled : null,
+      ariaDisabled: button?.getAttribute("aria-disabled") ?? null,
+      status: document.querySelector(${q(STATUS)})?.textContent.trim() ?? null,
+    };`);
+  check(
+    "sign-out cleanup enables Settings Sign in before the test clicks it",
+    signOutClick.clicked &&
+      signInVisible &&
+      signInReady &&
+      signInButtonState.found &&
+      !signInButtonState.disabled &&
+      signInButtonState.ariaDisabled !== "true",
+    {
+      signOutClick,
+      signInVisible,
+      signInInitialState,
+      signInReady,
+      signInButtonState,
+    },
   );
+  const signInClick = signInReady
+    ? await clickSettingsButton(page, "Sign in")
+    : {
+        found: signInButtonState.found,
+        disabled: signInButtonState.disabled,
+        clicked: false,
+      };
+  const signedOut = signOutClick.clicked && signInVisible;
+  const signedIn =
+    signInClick.clicked &&
+    (await waitFor(
+      page,
+      `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign out")`,
+      15_000,
+    ));
   await openHash(page, "#/home");
   const at = await mark(page);
   await page.evaluate(
@@ -881,6 +954,8 @@ async function signOutThenIn(page, check) {
   check(
     "after Sign out and Sign in without a restart, library requests use the new sign-in",
     signedOut &&
+      signInReady &&
+      signInClick.clicked &&
       signedIn &&
       loaded &&
       trace.apiGeneration > generationBefore &&
@@ -890,6 +965,12 @@ async function signOutThenIn(page, check) {
       !banner,
     {
       signedOut,
+      signOutClick,
+      signInVisible,
+      signInInitialState,
+      signInReady,
+      signInButtonState,
+      signInClick,
       signedIn,
       loaded,
       generationBefore,
@@ -970,7 +1051,8 @@ async function parkedQueueOrder(page, check) {
     { shuffled, shuffleOn, playing, first },
   );
 
-  // Park on Album Track B, then Next: songs after it only, in saved order.
+  // Park on Album Track B (the Play's start). MusicKit played the queue in its
+  // shuffled order, so that order is the saved order every resume must keep.
   let pauseAt = await mark(page);
   await fixtureCall(page, "emitPlaybackTime", [SAVED_SECONDS]);
   await waitFor(
@@ -980,6 +1062,10 @@ async function parkedQueueOrder(page, check) {
   await pauseWithFastRelease(page);
   await waitForTransition(page, pauseAt, "stop");
   await sleep(300);
+  const saved = await providerQueue(page);
+  const startIndex = saved.ids.indexOf("album-b");
+
+  // Next queues the songs after the start song, in the saved order.
   const nextAt = await mark(page);
   await clickTransport(page, "Next track");
   await waitFor(
@@ -990,17 +1076,35 @@ async function parkedQueueOrder(page, check) {
   await buttonIs(page, "Pause", 5000);
   check(
     "Next on a parked queue queues only the songs after the current one, in order",
-    nextQueue.length === 1 &&
-      sameIds(nextQueue[0].ids, ["album-c", "album-d"]) &&
+    sameSetIds(saved.ids, PARKED_QUEUE) &&
+      saved.activeId === "album-b" &&
+      nextQueue.length === 1 &&
+      sameIds(nextQueue[0].ids, saved.ids.slice(startIndex + 1)) &&
       nextQueue[0].index === 0,
-    { nextQueue },
+    { saved, nextQueue },
   );
 
-  // Park on Album Track C (index 2); Previous steps back to Track B (index 1).
+  // Park on the song Next reached, then press Next again. Previous below then
+  // steps back from a song that has an earlier one (the start song), which must
+  // not be queued again.
   pauseAt = await mark(page);
   await pauseWithFastRelease(page);
   await waitForTransition(page, pauseAt, "stop");
   await sleep(300);
+  const stepAt = await mark(page);
+  await clickTransport(page, "Next track");
+  await waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().transitions.slice(${stepAt.transitions}).some((item) => item.type === "setQueue")`,
+  );
+  await buttonIs(page, "Pause", 5000);
+  pauseAt = await mark(page);
+  await pauseWithFastRelease(page);
+  await waitForTransition(page, pauseAt, "stop");
+  await sleep(300);
+  const parkedSecond = await providerQueue(page);
+
+  // Previous steps back to the song before the parked one, and queues from it.
   const previousAt = await mark(page);
   await clickTransport(page, "Previous track");
   await waitFor(
@@ -1011,11 +1115,25 @@ async function parkedQueueOrder(page, check) {
   await buttonIs(page, "Pause", 5000);
   check(
     "Previous on a parked queue queues from the song it steps back to, never earlier songs",
-    previousQueue.length === 1 &&
-      sameIds(previousQueue[0].ids, ["album-b", "album-c", "album-d"]) &&
+    parkedSecond.activeId === saved.ids[startIndex + 2] &&
+      previousQueue.length === 1 &&
+      sameIds(previousQueue[0].ids, saved.ids.slice(startIndex + 1)) &&
       previousQueue[0].index === 0,
-    { previousQueue },
+    { saved, parkedSecond, previousQueue },
   );
+
+  // Step back to the start song, so the next Play resumes Album Track B.
+  pauseAt = await mark(page);
+  await pauseWithFastRelease(page);
+  await waitForTransition(page, pauseAt, "stop");
+  await sleep(300);
+  const backToStartAt = await mark(page);
+  await clickTransport(page, "Previous track");
+  await waitFor(
+    page,
+    `window.__ARLET_E2E_MUSIC__.snapshot().transitions.slice(${backToStartAt.transitions}).some((item) => item.type === "setQueue")`,
+  );
+  await buttonIs(page, "Pause", 5000);
 
   // Park on Album Track B with a saved position; Play resumes there in saved order.
   await fixtureCall(page, "emitPlaybackTime", [SAVED_SECONDS]);
@@ -1027,6 +1145,7 @@ async function parkedQueueOrder(page, check) {
   await pauseWithFastRelease(page);
   await waitForTransition(page, pauseAt, "stop");
   await sleep(300);
+  const parkedAtStart = await providerQueue(page);
   const playAt = await mark(page);
   await clickPlayButton(page);
   await waitForTransition(page, playAt, "play");
@@ -1040,19 +1159,520 @@ async function parkedQueueOrder(page, check) {
   );
   check(
     "Play after a handoff queues Album Track B onward in saved order, then seeks to the saved position",
-    resumeQueues.length === 1 &&
-      sameIds(resumeQueues[0].ids, ["album-b", "album-c", "album-d"]) &&
+    parkedAtStart.activeId === "album-b" &&
+      resumeQueues.length === 1 &&
+      sameIds(resumeQueues[0].ids, saved.ids.slice(startIndex)) &&
       resumeQueues[0].index === 0 &&
       seeks.some((item) => item.seconds === SAVED_SECONDS),
     {
+      saved: saved.ids,
       queues: resumeQueues.map((item) => item.ids),
       seeks: seeks.map((item) => item.seconds),
     },
+  );
+
+  // Past the first seconds Previous restarts the song. Parked on Track B at
+  // 0:42, it queues from Track B in saved order (nothing before it) and starts
+  // it from 0:00.
+  await waitFor(
+    page,
+    `document.querySelector(${q(POSITION)})?.textContent === "0:42"`,
+  );
+  pauseAt = await mark(page);
+  await pauseWithFastRelease(page);
+  await waitForTransition(page, pauseAt, "stop");
+  await sleep(300);
+  const parkedRestartAt = await mark(page);
+  await clickTransport(page, "Previous track");
+  await waitForTransition(page, parkedRestartAt, "setQueue");
+  await buttonIs(page, "Pause", 5000);
+  await sleep(300);
+  const parkedRestartQueues = await queuedSince(page, parkedRestartAt);
+  const parkedRestartSeeks = typesOf(
+    (await since(page, parkedRestartAt)).transitions,
+    "seekToTime",
+  );
+  check(
+    "Previous past the first seconds of a parked song restarts it",
+    parkedRestartQueues.length === 1 &&
+      sameIds(parkedRestartQueues[0].ids, saved.ids.slice(startIndex)) &&
+      parkedRestartQueues[0].index === 0 &&
+      !parkedRestartSeeks.some((item) => item.seconds > 0),
+    {
+      queues: parkedRestartQueues.map((item) => item.ids),
+      seeks: parkedRestartSeeks.map((item) => item.seconds),
+    },
+  );
+
+  // Playing, the same press seeks to 0:00 and leaves the queue alone.
+  await fixtureCall(page, "emitPlaybackTime", [SAVED_SECONDS]);
+  await waitFor(
+    page,
+    `document.querySelector(${q(POSITION)})?.textContent === "0:42"`,
+  );
+  const liveRestartAt = await mark(page);
+  await clickTransport(page, "Previous track");
+  const restartShown = await waitFor(
+    page,
+    `document.querySelector(${q(POSITION)})?.textContent === "0:00"`,
+    5000,
+  );
+  await sleep(300);
+  const liveRestart = (await since(page, liveRestartAt)).transitions;
+  const restartTitle = await page.evaluate(
+    `return document.querySelector(${q(NOW_PLAYING)})?.textContent ?? null;`,
+  );
+  check(
+    "Previous past the first seconds of a playing song restarts it in place",
+    restartShown &&
+      restartTitle === "Album Track B" &&
+      typesOf(liveRestart, "seekToTime").some((item) => item.seconds === 0) &&
+      !liveRestart.some((item) =>
+        ["setQueue", "selectIndex", "previous"].includes(item.type),
+      ),
+    { restartTitle, transitions: liveRestart },
   );
 }
 
 const sameIds = (actual, expected) =>
   JSON.stringify(actual ?? []) === JSON.stringify(expected);
+
+// The fixture's 30-song catalog playlist, paged 25 at a time.
+const LONG_PLAYLIST_HASH = "#/playlist/pl.catalog-fixture?source=catalog";
+const LONG_PLAYLIST_IDS = Array.from(
+  { length: 30 },
+  (_, index) => `pl-catalog-${String(index + 1).padStart(2, "0")}`,
+);
+const SHUFFLE_BUTTON = 'button[aria-label="Toggle shuffle"]';
+const REPEAT_BUTTON = 'button[aria-label^="Repeat "]';
+
+/** Turns shuffle on or off through the player bar. */
+async function setShuffle(page, on) {
+  await page.evaluate(`
+    const button = document.querySelector(${q(SHUFFLE_BUTTON)});
+    if (button && (button.getAttribute("aria-pressed") === "true") !== ${on}) button.click();
+    return true;`);
+  return waitFor(
+    page,
+    `document.querySelector(${q(SHUFFLE_BUTTON)})?.getAttribute("aria-pressed") === ${q(String(on))}`,
+  );
+}
+
+/** Cycles the repeat button (off, all, one) until it shows `mode`. */
+async function setRepeat(page, mode) {
+  const label = `Repeat ${mode}`;
+  for (let press = 0; press < 3; press += 1) {
+    const shown = await page.evaluate(
+      `return document.querySelector(${q(REPEAT_BUTTON)})?.getAttribute("aria-label") ?? null;`,
+    );
+    if (shown === label) return true;
+    if (shown === null) return false;
+    await page.evaluate(
+      `document.querySelector(${q(REPEAT_BUTTON)})?.click(); return true;`,
+    );
+    await waitFor(
+      page,
+      `document.querySelector(${q(REPEAT_BUTTON)})?.getAttribute("aria-label") !== ${q(shown)}`,
+      3000,
+    );
+  }
+  return (
+    (await page.evaluate(
+      `return document.querySelector(${q(REPEAT_BUTTON)})?.getAttribute("aria-label") ?? null;`,
+    )) === label
+  );
+}
+
+/** Parks the playing queue through a pause with the handoff delay shortened. */
+async function park(page) {
+  const at = await mark(page);
+  await pauseWithFastRelease(page);
+  const stopped = await waitForTransition(page, at, "stop");
+  await sleep(300);
+  return stopped;
+}
+
+/** The fixture's provider queue as song IDs. */
+const providerIds = async (page) =>
+  (await snapshot(page)).queue.items.map((item) => item.id);
+
+const waitForProviderIds = (page, ids, timeoutMs = 5000) =>
+  waitFor(
+    page,
+    `JSON.stringify(${FIXTURE}.snapshot().queue.items.map((item) => item.id)) === ${q(JSON.stringify(ids))}`,
+    timeoutMs,
+  );
+
+const nowPlayingIs = (page, title, timeoutMs = 8000) =>
+  waitFor(
+    page,
+    `document.querySelector(${q(NOW_PLAYING)})?.textContent === ${q(title)}`,
+    timeoutMs,
+  );
+
+/** Plays the album from its last song through the app's row click. */
+async function playLastAlbumSong(page) {
+  await page.evaluate(`
+    document.querySelectorAll(".library-track-row")[3]?.click();
+    return true;`);
+  return (
+    (await buttonIs(page, "Pause", 8000)) &&
+    (await nowPlayingIs(page, "Album Track D"))
+  );
+}
+
+const PLAYING_NEXT_OPEN = 'aside.queue-drawer[data-state="open"]';
+
+/** Opens Playing Next from its player-bar toggle unless it is already open. */
+async function openPlayingNext(page) {
+  await page.evaluate(`
+    if (!document.querySelector(${q(PLAYING_NEXT_OPEN)})) {
+      document.querySelector('button[aria-label="Toggle Playing Next"]')?.click();
+    }
+    return true;`);
+  return waitFor(page, `document.querySelector(${q(PLAYING_NEXT_OPEN)})`, 4000);
+}
+
+async function closePlayingNext(page) {
+  await page.evaluate(`
+    document.querySelector('aside.queue-drawer button[aria-label="Close Playing Next"]')?.click();
+    return true;`);
+  return waitFor(
+    page,
+    `!document.querySelector(${q(PLAYING_NEXT_OPEN)})`,
+    4000,
+  );
+}
+
+/** The active drawer row, measured against the drawer's scroll container. */
+const ACTIVE_ROW_PLACEMENT = `(() => {
+  const scroller = document.querySelector('aside.queue-drawer .queue-scroll');
+  const row = scroller?.querySelector('.queue-row-shell.is-active');
+  if (!scroller || !row) return null;
+  const box = scroller.getBoundingClientRect();
+  const rect = row.getBoundingClientRect();
+  return {
+    top: rect.top - box.top,
+    bottom: rect.bottom - box.top,
+    height: box.height,
+    scrollTop: scroller.scrollTop,
+    title: row.querySelector(".queue-copy strong")?.textContent ?? null,
+  };
+})()`;
+
+/** True when the active row is inside the list and in its top half. */
+const ACTIVE_ROW_NEAR_TOP = `(() => {
+  const placement = ${ACTIVE_ROW_PLACEMENT};
+  return Boolean(
+    placement &&
+      placement.top >= 0 &&
+      placement.bottom <= placement.height &&
+      placement.top < placement.height / 2,
+  );
+})()`;
+
+/**
+ * Repeat All loops through the whole album, as in Apple Music. A Play from
+ * the last song gets the next pass from the album's first song; turning
+ * Repeat All off removes it but keeps a song added after it. The Windows
+ * media flyout keeps Next on the last song, and a parked queue wraps too.
+ */
+async function repeatAllWrap(page, check) {
+  await openHash(
+    page,
+    `#/album/${PARKED_ALBUM}`,
+    `document.querySelectorAll(".library-track-row").length >= 4`,
+    15_000,
+  );
+  const shuffleWasOn = await page.evaluate(
+    `return document.querySelector(${q(SHUFFLE_BUTTON)})?.getAttribute("aria-pressed") === "true";`,
+  );
+  // MusicKit's queue for that Play, then the next pass.
+  const withPass = ["album-d", ...PARKED_QUEUE];
+  try {
+    // Real MusicKit edits its queue in place; so does the fixture here.
+    await fixtureCall(page, "configure", [{ nativeQueueEdit: true }]);
+    // Shuffle off, so the album plays in order.
+    const shuffleOff = await setShuffle(page, false);
+    const repeatAll = await setRepeat(page, "all");
+    const playAt = await mark(page);
+    const onLast = await playLastAlbumSong(page);
+    const passAdded = await waitForProviderIds(page, withPass);
+    const added = typesOf((await since(page, playAt)).transitions, "playLater");
+    check(
+      "with Repeat All, the last song of a Play from mid-album gets the next pass from the album's first song",
+      shuffleOff &&
+        repeatAll &&
+        onLast &&
+        passAdded &&
+        added.length === 1 &&
+        sameIds(added[0].ids, PARKED_QUEUE),
+      {
+        shuffleOff,
+        repeatAll,
+        onLast,
+        added: added.map((item) => item.ids),
+        queue: await providerIds(page),
+      },
+    );
+
+    // A song added after the pass is the user's and stays.
+    await page.evaluate(`
+      await window.MusicKit.getInstance().playLater({ songs: ["song-a"] });
+      return true;`);
+    const extraAdded = await waitForProviderIds(page, [...withPass, "song-a"]);
+    const repeatOff = await setRepeat(page, "off");
+    const passRemoved = await waitForProviderIds(page, ["album-d", "song-a"]);
+    check(
+      "turning Repeat All off on the last song removes the next pass and keeps a song added after it",
+      extraAdded && repeatOff && passRemoved,
+      { extraAdded, repeatOff, queue: await providerIds(page) },
+    );
+
+    const repeatAgain = await setRepeat(page, "all");
+    const replayAt = await mark(page);
+    const onLastAgain = await playLastAlbumSong(page);
+    const passAgain =
+      (await waitForTransition(page, replayAt, "playLater")) &&
+      (await waitForProviderIds(page, withPass));
+    await clickTransport(page, "Next track");
+    const wrapped = await nowPlayingIs(page, "Album Track A", 5000);
+    check(
+      "with Repeat All, Next on the last song of a Play from mid-album plays the album's first song",
+      repeatAgain && onLastAgain && passAgain && wrapped,
+      {
+        repeatAgain,
+        onLastAgain,
+        passAgain,
+        nowPlaying: await page.evaluate(
+          `return document.querySelector(${q(NOW_PLAYING)})?.textContent ?? null;`,
+        ),
+        queue: await providerIds(page),
+      },
+    );
+
+    // A queue set outside the app has no songs before it, so MusicKit
+    // wraps it alone; the flyout must still offer Next on its last song.
+    await page.evaluate(`
+      const music = window.MusicKit.getInstance();
+      await music.setQueue({ songs: ["song-c"] });
+      await music.play();
+      return true;`);
+    const single = await nowPlayingIs(page, "Track C");
+    const flyoutNext = await waitFor(
+      page,
+      "window.__ARLET_E2E_TAURI_EVENTS__?.mediaSession()?.nextEnabled === true",
+      3000,
+    );
+    const flyout = await page.evaluate(
+      "return window.__ARLET_E2E_TAURI_EVENTS__?.mediaSession() ?? null;",
+    );
+    check(
+      "with Repeat All, the media flyout keeps Next enabled on the last song",
+      single && flyoutNext,
+      {
+        single,
+        nextEnabled: flyout?.nextEnabled ?? null,
+        repeat: flyout?.repeat ?? null,
+        queue: await providerIds(page),
+      },
+    );
+
+    // Parked on the last song with Repeat All off, so no pass was added.
+    const offBeforePark = await setRepeat(page, "off");
+    const parkedOnLast = await playLastAlbumSong(page);
+    const parkedLast = await park(page);
+    const repeatParked = await setRepeat(page, "all");
+    const nextAt = await mark(page);
+    await clickTransport(page, "Next track");
+    await waitForTransition(page, nextAt, "setQueue", 5000);
+    const nextQueues = await queuedSince(page, nextAt);
+    check(
+      "with Repeat All, Next on the last song of a parked queue plays the first",
+      offBeforePark &&
+        parkedOnLast &&
+        parkedLast &&
+        repeatParked &&
+        nextQueues.length === 1 &&
+        sameIds(nextQueues[0].ids, PARKED_QUEUE) &&
+        nextQueues[0].index === 0,
+      {
+        offBeforePark,
+        parkedOnLast,
+        parkedLast,
+        repeatParked,
+        queues: nextQueues,
+      },
+    );
+
+    await buttonIs(page, "Pause", 5000);
+    const parkedFirst = await park(page);
+    const previousAt = await mark(page);
+    await clickTransport(page, "Previous track");
+    await waitForTransition(page, previousAt, "setQueue", 5000);
+    const previousQueues = await queuedSince(page, previousAt);
+    check(
+      "with Repeat All, Previous on the first song of a parked queue plays the last",
+      parkedFirst &&
+        previousQueues.length === 1 &&
+        sameIds(previousQueues[0].ids, ["album-d"]) &&
+        previousQueues[0].index === 0,
+      { parkedFirst, queues: previousQueues },
+    );
+    await buttonIs(page, "Pause", 5000);
+
+    // Song 25 of a 30-song playlist: every song before it counts, including
+    // when the queue is parked.
+    const offForPrevious = await setRepeat(page, "off");
+    const longRows = await openHash(
+      page,
+      LONG_PLAYLIST_HASH,
+      `document.querySelectorAll(".library-track-row").length >= ${LONG_PLAYLIST_IDS.length}`,
+      15_000,
+    );
+    const playSong25 = () =>
+      page.evaluate(`
+        document.querySelectorAll(".library-track-row")[24]?.click();
+        return true;`);
+    await playSong25();
+    const onSong25 = await nowPlayingIs(page, "Catalog Playlist Track 25");
+    let steppedTo = null;
+    for (let song = 24; song >= 1; song -= 1) {
+      await clickTransport(page, "Previous track");
+      const title = `Catalog Playlist Track ${song}`;
+      if (!(await nowPlayingIs(page, title, 3000))) break;
+      steppedTo = title;
+    }
+    check(
+      "Previous on the first queued song steps back to the playlist's first song, not 20 songs back",
+      offForPrevious &&
+        longRows &&
+        onSong25 &&
+        steppedTo === "Catalog Playlist Track 1",
+      { offForPrevious, longRows, onSong25, steppedTo },
+    );
+
+    const repeatLong = await setRepeat(page, "all");
+    const longAt = await mark(page);
+    await playSong25();
+    let onLastLong = await nowPlayingIs(page, "Catalog Playlist Track 25");
+    for (let song = 26; song <= 30 && onLastLong; song += 1) {
+      await clickTransport(page, "Next track");
+      onLastLong = await nowPlayingIs(page, `Catalog Playlist Track ${song}`);
+    }
+    await waitForTransition(page, longAt, "playLater");
+    const longAdded = typesOf(
+      (await since(page, longAt)).transitions,
+      "playLater",
+    );
+    check(
+      "with Repeat All, a Play from song 25 of 30 repeats all 30 songs",
+      repeatLong &&
+        onLastLong &&
+        longAdded.length === 1 &&
+        sameIds(longAdded[0].ids, LONG_PLAYLIST_IDS),
+      {
+        repeatLong,
+        onLastLong,
+        added: longAdded.map((item) => item.ids),
+      },
+    );
+
+    // Parked on song 25: the first Previous steps back from the parked queue,
+    // and each later one from the queue it resumes into. Every press is
+    // inside the first 3 seconds of its song (the fixture does not tick).
+    const offForParked = await setRepeat(page, "off");
+    const parkedSongs = await playSong25();
+    const playedSong25 = await nowPlayingIs(page, "Catalog Playlist Track 25");
+    const parkedAt25 = await park(page);
+    const stepped = [];
+    for (let song = 24; song >= 1; song -= 1) {
+      await clickTransport(page, "Previous track");
+      const title = `Catalog Playlist Track ${song}`;
+      if (!(await nowPlayingIs(page, title, 3000))) break;
+      stepped.push(title);
+    }
+    check(
+      "a parked queue from song 25 steps Previous back to the playlist's first song, not 20 songs back",
+      offForParked &&
+        longRows &&
+        parkedSongs &&
+        playedSong25 &&
+        parkedAt25 &&
+        stepped.length === 24 &&
+        stepped[0] === "Catalog Playlist Track 24" &&
+        stepped.at(-1) === "Catalog Playlist Track 1",
+      {
+        offForParked,
+        playedSong25,
+        parkedAt25,
+        steps: stepped.length,
+        first: stepped[0] ?? null,
+        last: stepped.at(-1) ?? null,
+      },
+    );
+
+    // Parked on song 25 again: Playing Next opens with that row near its top,
+    // the songs before it above, so the drawer shows the current song.
+    await playSong25();
+    const song25Again = await nowPlayingIs(page, "Catalog Playlist Track 25");
+    const parkedAgain = await park(page);
+    const drawerOpen = await openPlayingNext(page);
+    const drawerInView = await waitFor(page, ACTIVE_ROW_NEAR_TOP, 4000);
+    const placement = await page.evaluate(`return ${ACTIVE_ROW_PLACEMENT};`);
+    await closePlayingNext(page);
+    check(
+      "Playing Next opens on a parked queue at song 25 with that song's row near the top",
+      song25Again &&
+        parkedAgain &&
+        drawerOpen &&
+        drawerInView &&
+        placement?.title === "Catalog Playlist Track 25",
+      { song25Again, parkedAgain, drawerOpen, drawerInView, placement },
+    );
+
+    // Resumed from that parked song 25 with Repeat All on, the pass starts at
+    // the playlist's first song and repeats all 30 songs.
+    const repeatResumed = await setRepeat(page, "all");
+    const resumeAt = await mark(page);
+    await clickPlayButton(page);
+    const resumed = await waitForTransition(page, resumeAt, "play");
+    let onLastResumed = await nowPlayingIs(page, "Catalog Playlist Track 25");
+    const onSong25Resumed = onLastResumed;
+    for (let song = 26; song <= 30 && onLastResumed; song += 1) {
+      await clickTransport(page, "Next track");
+      onLastResumed = await nowPlayingIs(
+        page,
+        `Catalog Playlist Track ${song}`,
+      );
+    }
+    await waitForTransition(page, resumeAt, "playLater");
+    const resumedAdded = typesOf(
+      (await since(page, resumeAt)).transitions,
+      "playLater",
+    );
+    check(
+      "after a parked queue from song 25 resumes, Repeat All repeats all 30 songs",
+      repeatResumed &&
+        resumed &&
+        onSong25Resumed &&
+        onLastResumed &&
+        resumedAdded.length === 1 &&
+        sameIds(resumedAdded[0].ids, LONG_PLAYLIST_IDS),
+      {
+        repeatResumed,
+        resumed,
+        onSong25Resumed,
+        onLastResumed,
+        added: resumedAdded.map((item) => item.ids),
+      },
+    );
+  } finally {
+    await setRepeat(page, "off");
+    await setShuffle(page, shuffleWasOn);
+    await fixtureCall(page, "configure", [{ nativeQueueEdit: false }]);
+  }
+}
 
 /** Leaves the app signed in and healthy for the next suite. */
 async function restoreHealthy(page, check) {
@@ -1077,7 +1697,7 @@ async function restoreHealthy(page, check) {
 }
 
 /** Audit-fix checks (see the header and docs/TESTING.md "Audit fixes"). */
-export async function runAuditFixes({ page, check, dataDir, artifactDir }) {
+export async function runAuditFixes({ page, check, logDir, artifactDir }) {
   try {
     await group(check, "audit fixes setup", async () => {
       await fixtureCall(page, "reset");
@@ -1091,19 +1711,20 @@ export async function runAuditFixes({ page, check, dataDir, artifactDir }) {
       onlineWithoutOutage(page, check),
     );
     await group(check, "clipboard copy", () =>
-      clipboardCopy(page, check, dataDir),
+      clipboardCopy(page, check, logDir),
     );
     await group(check, "cancel sign-in", () =>
       cancelSignIn(page, check, artifactDir),
     );
     await group(check, "re-auth failures", () =>
-      reauthFailures(page, check, dataDir),
+      reauthFailures(page, check, logDir),
     );
-    await group(check, "lost token", () => lostToken(page, check, dataDir));
+    await group(check, "lost token", () => lostToken(page, check, logDir));
     await group(check, "sign out then in", () => signOutThenIn(page, check));
     await group(check, "parked queue order", () =>
       parkedQueueOrder(page, check),
     );
+    await group(check, "repeat all wrap", () => repeatAllWrap(page, check));
     await group(check, "parked station", () => parkedStation(page, check));
   } finally {
     await restoreTimers(page);

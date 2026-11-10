@@ -3,6 +3,7 @@ import {
   Minimize,
   Radio,
   Repeat,
+  Repeat1,
   Shuffle,
   Star,
   ThumbsDown,
@@ -19,12 +20,17 @@ import {
 import { ratingKeyOf, trackRatingTarget } from "../app/ratings.ts";
 import type { MusicEntityRef, Track } from "../domain/music.ts";
 import { useLiveMetadata } from "../musickit/live-metadata.ts";
+import {
+  ARTWORK_BACKDROP_BUCKET,
+  normalizeArtworkUrl,
+} from "../musickit/normalize.ts";
 import { setUiState } from "../state.ts";
 import { Artwork } from "./Artwork.tsx";
 import { IconButton } from "./IconButton.tsx";
 import { liveSubtitle } from "./PlayerBar.tsx";
 import { VirtualList } from "./VirtualList.tsx";
 import { reportActionError } from "./action-errors.ts";
+import { useModalDialog } from "./use-modal-dialog.ts";
 import { PlaybackProgress, TransportControls } from "./TransportControls.tsx";
 import { VolumeControl } from "./VolumeControl.tsx";
 import { displayArtistLinks } from "./artist-links.ts";
@@ -34,8 +40,6 @@ import {
   toggleWindowFullscreen,
 } from "./window-fullscreen.ts";
 
-const FOCUSABLE =
-  "button:not(:disabled), input:not(:disabled), [href], [tabindex]:not([tabindex='-1'])";
 /** Matches the `.now-playing` exit transition in 24-now-playing.css. */
 const CLOSE_TRANSITION_MS = 200;
 
@@ -108,6 +112,8 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
   const disliked = rating === -1;
   const shuffling = playback.shuffleMode === "songs";
   const repeating = playback.repeatMode !== "off";
+  // Apple Music locks Shuffle and Repeat while an autoplay song plays.
+  const autoplaying = playback.queue[playback.queueIndex]?.autoplay === true;
   const live = useLiveMetadata();
   const liveText = current?.isLive
     ? liveSubtitle(live, current.title)
@@ -120,19 +126,19 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
-    const opener = openerRef.current;
-    return () => {
-      // Closing already returned focus; only reclaim it if it is still lost
-      // inside this dialog (or on the body) when the dialog unmounts.
-      const active = document.activeElement;
-      if (
-        opener?.isConnected &&
-        (!active || active === document.body || active.closest(".now-playing"))
-      ) {
-        opener.focus();
-      }
-    };
   }, []);
+
+  // Trapping pauses during the exit fade, so Tab reaches the page behind.
+  // Focus returns to the opener on close or unmount, if it was lost here.
+  useModalDialog(dialogRef, {
+    active: !closing,
+    returnFocus: () => openerRef.current,
+    onEscape: (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void closeNowPlayingLeavingFullscreen();
+    },
+  });
 
   useEffect(() => {
     // The exit transition hands focus back at once, so keys and clicks reach
@@ -172,30 +178,6 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
       .catch(reportActionError);
   };
 
-  const onKeyDown = (event: KeyboardEvent): void => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      void closeNowPlayingLeavingFullscreen();
-      return;
-    }
-    const dialog = dialogRef.current;
-    if (event.key !== "Tab" || !dialog) return;
-    const focusable = [...dialog.querySelectorAll<HTMLElement>(FOCUSABLE)];
-    const first = focusable[0];
-    const last = focusable[focusable.length - 1];
-    if (!first || !last) return;
-    const active = document.activeElement;
-    const outside = !dialog.contains(active);
-    if (event.shiftKey && (active === first || outside)) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && (active === last || outside)) {
-      event.preventDefault();
-      first.focus();
-    }
-  };
-
   const navigateTo = (kind: "album" | "artist", ref: MusicEntityRef): void => {
     closeNowPlaying();
     router.navigate({
@@ -212,12 +194,18 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
   );
   // Without Apple's bgColor the class and property are absent: the plain surface.
   const tint = current?.artwork?.bgColor;
+  // A tiny blurred source is enough for the full-canvas and cover blooms.
+  const backdropUrl = current?.artwork?.url
+    ? normalizeArtworkUrl(current.artwork.url, ARTWORK_BACKDROP_BUCKET)
+    : undefined;
 
   return (
     <div
       className={[
         "now-playing",
         tint ? "has-artwork-tint" : "",
+        backdropUrl ? "has-artwork-bloom" : "",
+        playing ? "is-playing" : "",
         closing ? "is-closing" : "",
       ]
         .filter(Boolean)
@@ -228,8 +216,16 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
       aria-label="Now Playing"
       tabIndex={-1}
       ref={dialogRef}
-      onKeyDown={onKeyDown}
     >
+      {backdropUrl ? (
+        <img
+          className="now-playing-backdrop"
+          src={backdropUrl}
+          alt=""
+          aria-hidden="true"
+          decoding="async"
+        />
+      ) : null}
       <header className="now-playing-header">
         <span className="eyebrow">Now playing</span>
         <div className="now-playing-header-actions">
@@ -268,12 +264,23 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
       </header>
       <div className="now-playing-body">
         <section className="now-playing-hero">
-          <Artwork
-            track={current}
-            size="xl"
-            alt={current ? `${current.title} artwork` : "No song playing"}
-            priority
-          />
+          <div className="now-playing-artwork-stage">
+            {backdropUrl ? (
+              <img
+                className="now-playing-artwork-bloom"
+                src={backdropUrl}
+                alt=""
+                aria-hidden="true"
+                decoding="async"
+              />
+            ) : null}
+            <Artwork
+              track={current}
+              size="xl"
+              alt={current ? `${current.title} artwork` : "No song playing"}
+              priority
+            />
+          </div>
           <div className="now-playing-meta">
             <h2 title={current?.title}>
               {current?.title ?? "Nothing playing"}
@@ -361,6 +368,7 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
                   <IconButton
                     icon={Shuffle}
                     label="Toggle shuffle"
+                    disabled={autoplaying}
                     pressed={shuffling}
                     className={shuffling ? "is-active" : ""}
                     onClick={() =>
@@ -372,8 +380,9 @@ function NowPlayingDialog({ closing }: { closing: boolean }): JSX.Element {
                 ) : null}
                 {playback.modeCapabilities?.repeat ? (
                   <IconButton
-                    icon={Repeat}
+                    icon={playback.repeatMode === "one" ? Repeat1 : Repeat}
                     label={`Repeat ${playback.repeatMode ?? "off"}`}
+                    disabled={autoplaying}
                     pressed={repeating}
                     className={repeating ? "is-active" : ""}
                     onClick={() => run(() => controller.cycleRepeatMode())}

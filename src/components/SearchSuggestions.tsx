@@ -1,11 +1,17 @@
 import { X } from "lucide-preact";
 import { Fragment, type JSX } from "preact";
+import type { Artwork as ArtworkData } from "../domain/music.ts";
+import type { SearchGroupKind } from "../musickit/search.ts";
+import { Artwork } from "./Artwork.tsx";
 
 export interface SearchSuggestionOption {
   /** DOM id; the search input points aria-activedescendant at it. */
   id: string;
   label: string;
   detail?: string;
+  /** Media rows show a thumbnail; text completions and recents do not. */
+  artwork?: ArtworkData;
+  mediaKind?: SearchGroupKind;
   /** Curator rows are shown but cannot be opened yet. */
   disabled?: boolean;
   /** Set on recent-search rows, which Delete and the x button remove. */
@@ -69,6 +75,23 @@ export function SearchSuggestions({
               aria-disabled={option.disabled ? "true" : undefined}
               onClick={() => onSelect(index)}
             >
+              {option.mediaKind ? (
+                // Decorative: the option's text already names the item.
+                <Artwork
+                  track={{
+                    title: option.label,
+                    artistName: option.detail ?? "",
+                    artwork: option.artwork,
+                  }}
+                  size="sm"
+                  alt=""
+                  className={
+                    option.mediaKind === "artists"
+                      ? "search-suggestion-art is-artist"
+                      : "search-suggestion-art"
+                  }
+                />
+              ) : null}
               <span className="search-suggestion-copy">
                 <span>{option.label}</span>
                 {option.detail ? <small>{option.detail}</small> : null}

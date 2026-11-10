@@ -207,7 +207,11 @@ mod platform {
             "windows-media-control",
             "pause",
         ) {
-            Ok(()) => crate::logging::write_native_log(&format!("Paused playback: {reason}")),
+            // Routine, so only Debug Mode records it; a lost pause is a failure.
+            Ok(()) if crate::settings::debug_mode() => {
+                crate::logging::write_native_log(&format!("Paused playback: {reason}"))
+            }
+            Ok(()) => {}
             Err(error) => crate::logging::write_native_log(&format!(
                 "Pause for {reason} was not delivered: {error}"
             )),

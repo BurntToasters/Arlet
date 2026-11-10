@@ -1,28 +1,19 @@
 import { invoke } from "@tauri-apps/api/core";
-import { writeText } from "@tauri-apps/plugin-clipboard-manager";
-import { installAuthPopupProbe, isAuthorized } from "../musickit/auth.ts";
 import { initializeMusicKit } from "../musickit/bootstrap.ts";
-import { developerTokenExpiry } from "../musickit/token.ts";
 import {
-  setUserTokenGuard,
   type loadRadioStations,
   searchMusicResources,
   searchCatalogSongs,
 } from "../musickit/catalog.ts";
 import type { BrowseShelfKind, loadBrowseCharts } from "../musickit/browse.ts";
 import { safeNextPath } from "../musickit/response.ts";
-import { registerMusicKitEvents } from "../musickit/events.ts";
 import type { SearchGroupKind } from "../musickit/search.ts";
-import {
-  loadCuratorPage,
-  loadCuratorPlaylistsPage,
-  loadPlaylistCurator,
-  type CuratorPage,
-  type CuratorPlaylistsPage,
-  type PlaylistCuratorRef,
+import type {
+  CuratorPage,
+  CuratorPlaylistsPage,
+  PlaylistCuratorRef,
 } from "../musickit/curators.ts";
 import type { CuratorKind } from "../routing/router.ts";
-import { syncMusicKitQueue } from "../musickit/player.ts";
 import {
   createStationResolver,
   type StationTarget,
@@ -34,23 +25,15 @@ import {
   reportNotice,
 } from "../components/action-errors.ts";
 import { createIdleGuard } from "./idle-guard.ts";
-import { normalizeTrack } from "../musickit/normalize.ts";
-import { classifyPlaybackKind } from "../musickit/preview.ts";
 import {
-  appendDiagnosticLog,
-  clearRecentSearches,
   DEFAULT_SETTINGS,
   getState,
-  setAccountSummary,
-  setAuthState,
-  setCurrentTrack,
-  setDeveloperTokenExpiry,
-  setInitializationState,
   setSettings,
   setSleepTimer,
-  setUpdateState,
   setUiState,
+  setUpdateState,
   subscribePlaybackPosition,
+  type AudioQuality,
   type LibraryEntity,
   type LibrarySection,
   type ThemePreference,
@@ -59,16 +42,17 @@ import {
 } from "../state.ts";
 import type { InvokeFunction } from "./settings.ts";
 import type {
+  Activity,
   MusicSource,
   RatingValue,
+  RecordLabel,
+  SongInfo,
   Station,
   Track,
 } from "../domain/music.ts";
-import { isSameTrack } from "../domain/music.ts";
 import type { DiagnosticsStore } from "../diagnostics/store.ts";
-import { createSupportReport } from "../diagnostics/support-report.ts";
 import type { GateEnvironment } from "../phase0/gate-session.ts";
-import { redactSensitive, registerSensitiveValue } from "../platform/redact.ts";
+import { openAppleMusicLink, openSubscribeLink } from "../platform/support.ts";
 import { createUpdaterService, type UpdaterService } from "../updater.ts";
 import {
   createAppleMusicLibraryClient,
@@ -76,9 +60,7 @@ import {
 } from "../musickit/library.ts";
 import { createLibraryCache, type LibraryCache } from "../library/cache.ts";
 import {
-  errorMessage,
   safeErrorMessage,
-  timestamp,
   type ControllerContext,
 } from "./controller-support.ts";
 import { createDiscovery } from "./discovery.ts";
@@ -111,38 +93,17 @@ import {
   createTrackNavigationResolver,
   type TrackNavigation,
 } from "../musickit/song-navigation.ts";
+import {
+  ACTIVITY_COMMANDS,
+  createPlaybackWrappers,
+  withActivity,
+} from "./controller-playback.ts";
+import { createCatalogLoaders } from "./controller-catalog.ts";
+import { createMusicKitStartup } from "./controller-musickit.ts";
+import { createControllerDiagnostics } from "./controller-diagnostics.ts";
 
 export type { DetailLoadOptions } from "./library-loader.ts";
 
-/** A clipboard write still pending after this falls through to the next path. */
-const CLIPBOARD_PLUGIN_TIMEOUT_MS = 2_000;
-const CLIPBOARD_BROWSER_TIMEOUT_MS = 2_000;
-/** Commands that count as user activity for the unattended playback cap. */
-const ACTIVITY_COMMANDS = [
-  "togglePlayback",
-  "play",
-  "pause",
-  "next",
-  "previous",
-  "seek",
-  "seekBy",
-  "setShuffleMode",
-  "cycleRepeatMode",
-  "setRepeatMode",
-  "playCollection",
-  "playPlaylist",
-  "playAlbum",
-  "playStation",
-  "startStation",
-  "playNextTracks",
-  "playLaterTracks",
-  "playQueueItem",
-  "removeQueueItem",
-  "moveQueueItem",
-  "clearUpNext",
-  "playTracksShuffled",
-  "queueCollection",
-] as const;
 /** Longest wait for the queue save before an update installs (as tray.rs). */
 const QUIT_SAVE_TIMEOUT_MS = 1_500;
 
@@ -195,6 +156,12 @@ export interface AppController {
   loadPlaylistCurator(
     playlistId: string,
   ): Promise<PlaylistCuratorRef | undefined>;
+  /** Resolves undefined when a newer label load has superseded this one. */
+  loadRecordLabel(id: string): Promise<RecordLabel | undefined>;
+  /** Resolves undefined when a newer activity load has superseded this one. */
+  loadActivity(id: string): Promise<Activity | undefined>;
+  /** Get Info for a song. Resolves undefined when a newer request superseded it. */
+  loadSongInfo(track: Track): Promise<SongInfo | undefined>;
   playStation(station: Station): Promise<void>;
   loadAlbum(
     id: string,
@@ -224,7 +191,11 @@ export interface AppController {
     description?: string,
     tracks?: readonly Track[] | readonly string[],
   ): Promise<LibraryEntity | undefined>;
-  createPlaylistFolder(name: string): Promise<LibraryEntity | undefined>;
+  /** `parentFolderId` puts the new folder inside an existing one. */
+  createPlaylistFolder(
+    name: string,
+    parentFolderId?: string,
+  ): Promise<LibraryEntity | undefined>;
   addTracksToPlaylist(
     playlistId: string,
     tracks: readonly Track[] | readonly string[],
@@ -317,6 +288,15 @@ export interface AppController {
   setAutoCheckUpdates(enabled: boolean): Promise<void>;
   /** Rejects when the runtime has no writable autoplay; saves only on success. */
   setAutoplay(enabled: boolean): Promise<void>;
+  /** Writes the MusicKit bitrate for the quality; saves only on success. */
+  setAudioQuality(quality: AudioQuality): Promise<void>;
+  /** Opens Apple's subscribe page; throws when MusicKit has no link. */
+  openSubscribe(): Promise<void>;
+  /**
+   * Opens a library playlist on music.apple.com, where Apple's web editor can
+   * edit it. Rejects an id that is not a plain Apple library ID.
+   */
+  openPlaylistInAppleMusic(id: string): Promise<void>;
   setTrayIcon(enabled: boolean): Promise<void>;
   /** Writes or removes the Windows sign-in entry; the Rust side owns the registry write. */
   setLaunchAtStartup(enabled: boolean): Promise<void>;
@@ -344,103 +324,6 @@ export interface AppController {
 
 export type { CreatePlaylistRequest } from "./playlist-editing.ts";
 
-/** Reloads at most this often when the connection returns after a failed init. */
-const ONLINE_RELOAD_DEBOUNCE_MS = 30_000;
-
-/**
- * Reloads the app when the window comes back online, so a MusicKit init that
- * failed for a network reason retries. Returns a function that stops listening.
- */
-function reloadWhenOnline(
-  now: () => number,
-  log: (message: string) => void,
-): () => void {
-  let lastReload: number | undefined;
-  const onOnline = (): void => {
-    const at = now();
-    if (
-      lastReload !== undefined &&
-      at - lastReload < ONLINE_RELOAD_DEBOUNCE_MS
-    ) {
-      return;
-    }
-    lastReload = at;
-    log("Connection restored. Reloading to retry Apple Music.");
-    window.location.reload();
-  };
-  window.addEventListener("online", onOnline);
-  return () => window.removeEventListener("online", onOnline);
-}
-
-/** Rejects with `message` if `pending` has not settled after `ms`. */
-async function withClipboardTimeout(
-  pending: Promise<void>,
-  ms: number,
-  message: string,
-): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([
-      pending,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), ms);
-      }),
-    ]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * Writes to the clipboard: the Tauri plugin first, then the browser clipboard,
- * each with its own timeout, because another app holding the clipboard can
- * leave a write pending. Only when both fail does it throw `busyMessage`.
- * Logs which path succeeded or failed.
- */
-async function writeClipboardWithFallback(
-  pluginWrite: (text: string) => Promise<void>,
-  text: string,
-  busyMessage: string,
-  log: (message: string) => void,
-): Promise<void> {
-  try {
-    await withClipboardTimeout(
-      pluginWrite(text),
-      CLIPBOARD_PLUGIN_TIMEOUT_MS,
-      "Clipboard plugin timed out.",
-    );
-    log("Clipboard write succeeded via the Tauri clipboard plugin.");
-    return;
-  } catch (error) {
-    log(
-      `Clipboard plugin write failed: ${safeErrorMessage(error)}. Trying the browser clipboard.`,
-    );
-  }
-  try {
-    await withClipboardTimeout(
-      navigator.clipboard.writeText(text),
-      CLIPBOARD_BROWSER_TIMEOUT_MS,
-      "Browser clipboard timed out.",
-    );
-    log("Clipboard write succeeded via navigator.clipboard.");
-    return;
-  } catch (error) {
-    log(`Browser clipboard write failed: ${safeErrorMessage(error)}.`);
-  }
-  throw new Error(busyMessage);
-}
-
-/** Calls a controller command, counting it as user activity first. */
-function withActivity<A extends unknown[], R>(
-  noteActivity: () => void,
-  command: (...args: A) => R,
-): (...args: A) => R {
-  return (...args: A): R => {
-    noteActivity();
-    return command(...args);
-  };
-}
-
 /**
  * Composition root for the app: owns MusicKit initialization, auth,
  * settings, pins, playlist edits, and the updater. Library loading,
@@ -449,30 +332,21 @@ function withActivity<A extends unknown[], R>(
 export function createAppController(
   dependencies: ControllerDependencies = {},
 ): AppController {
-  const initialize = dependencies.initializeMusicKit ?? initializeMusicKit;
   const invokeFn = dependencies.invokeFn ?? (invoke as InvokeFunction);
   const now = dependencies.now ?? Date.now;
   const diagnosticsStore = dependencies.diagnosticsStore;
   const createLibraryClient =
     dependencies.createLibraryClient ?? createAppleMusicLibraryClient;
   let music: MusicKit.MusicKitInstance | null = null;
-  let restoreAuthProbe: (() => void) | undefined;
-  let stopMusicKitEvents: (() => void) | undefined;
-  let stopOnlineReload: (() => void) | undefined;
 
-  const log = (message: string): void => {
-    const line = redactSensitive(`[${timestamp(now)}] ${message}`);
-    const failure = /failed|error|denied|unavailable|blocked|drm/i.test(
-      message,
-    );
-    appendDiagnosticLog(line, failure);
-    diagnosticsStore?.log(message, {
-      level: failure ? "error" : "info",
-      source: "app",
-    });
-    // Keep development diagnostics useful when the drawer is not mounted.
-    if (import.meta.env.DEV) console.info(line);
-  };
+  const diagnostics = createControllerDiagnostics({
+    now,
+    diagnosticsStore,
+    invokeFn,
+    writeClipboardText: dependencies.writeClipboardText,
+    lastSearchTracks: () => discovery.lastSearchTracks(),
+  });
+  const { log } = diagnostics;
 
   const requireMusic = (): MusicKit.MusicKitInstance => {
     if (!music) throw new Error("MusicKit is still initializing.");
@@ -516,13 +390,15 @@ export function createAppController(
     libraryClient: () => library.client(),
   });
   const trackNavigation = createTrackNavigationResolver(requireMusic);
-  const { requireLibrary, ensureLibraryCache } = library;
+  const { requireLibrary } = library;
+  const { cancelAutoplayCheck, playSongs, playStationAndCheck } =
+    createPlaybackWrappers({ playback, log });
   const collections = createCollectionPlayback({
     requireMusic: requirePlayableMusic,
     getMusic: () => music,
     requireLibrary,
-    playTracks: playback.playTracks,
-    setShuffleMode: playback.setShuffleMode,
+    playTracks: playSongs,
+    setShuffleMode: playback.setShuffleModeForPlay,
     continuationToken: playback.continuationToken,
     appendContinuation: playback.appendContinuation,
     log,
@@ -536,9 +412,9 @@ export function createAppController(
     options?: PlayOptions,
   ): Promise<void> => {
     collections.invalidate();
-    return playback
-      .playTracks(tracks, startIndex, undefined, options)
-      .then(() => undefined);
+    return playSongs(tracks, startIndex, undefined, options).then(
+      () => undefined,
+    );
   };
   const playCollection = collections.play;
   let stationResolver:
@@ -561,10 +437,11 @@ export function createAppController(
     log,
     playTracks,
     seek: playback.seek,
-    playStation: playback.playStation,
+    playStation: playStationAndCheck,
     // Play waits for a handoff's stop() still in flight.
     beforeResume: () => streamRelease.settled(),
     playIntent: playback.playIntent,
+    pauseCount: playback.pauseCount,
     fullQueue: playback.fullQueue,
   });
   const streamRelease = createStreamRelease({
@@ -637,140 +514,31 @@ export function createAppController(
     refreshCurrentData: () => controller.refreshCurrentData(),
   });
 
-  const syncPlaybackDiagnostics = (): void => {
-    if (!diagnosticsStore) return;
-    const snapshot = getState();
-    const current = snapshot.playback.current;
-    const catalogTrack =
-      snapshot.playback.queue.find((track) => isSameTrack(track, current)) ??
-      discovery
-        .lastSearchTracks()
-        .find((track) => isSameTrack(track, current)) ??
-      current;
-    diagnosticsStore.setMetadata({
-      tracksPlayed: snapshot.tracksPlayed,
-      playbackStatus: snapshot.playback.status,
-      playbackKind: classifyPlaybackKind({
-        catalogDurationSeconds:
-          catalogTrack?.durationMs !== undefined
-            ? catalogTrack.durationMs / 1000
-            : undefined,
-        playbackDurationSeconds: snapshot.playback.durationSeconds,
-      }),
-    });
-  };
-
-  const initializeController = async (): Promise<void> => {
-    playbackSession.start();
-    setInitializationState({ status: "loading" });
-    log("Initializing MusicKit…");
-    // Opens the SQLite cache during MusicKit configure. Nothing is shown from
-    // it here: the account is unknown until configure finishes.
-    void library.openLibraryCache();
-    try {
-      const instance = await initialize();
+  const musicKit = createMusicKitStartup(context, {
+    initialize: dependencies.initializeMusicKit ?? initializeMusicKit,
+    createLibraryClient,
+    setMusic: (instance) => {
       music = instance;
-      setUserTokenGuard(instance, {
-        blocked: isSessionExpired,
-        onRejected: (error, path) => accounts.suspectSession(error, path),
-      });
-      registerSensitiveValue(instance.developerToken);
-      setDeveloperTokenExpiry(developerTokenExpiry(instance.developerToken));
-      registerSensitiveValue(instance.musicUserToken);
-      playback.applyPlaybackVolume(getState().settings.volume);
-      try {
-        library.setClient(createLibraryClient(instance));
-      } catch (error) {
-        // Some preview/test instances intentionally omit the catalog API. Keep
-        // playback and authorization usable; library actions will report the
-        // narrower capability error when invoked.
-        library.setClient(null);
-        log(
-          `Library API unavailable until MusicKit catalog is ready: ${safeErrorMessage(error)}`,
-        );
-      }
-      stopMusicKitEvents?.();
-      stopMusicKitEvents = undefined;
-      if (typeof instance.addEventListener === "function") {
-        stopMusicKitEvents = registerMusicKitEvents(
-          instance,
-          () => {
-            if (getState().playback.status === "playing") autoSkip.onPlaying();
-            playback.maybeRefillQueue();
-            sleepTimer.observe(getState().playback);
-            syncPlaybackDiagnostics();
-            // Loads ratings only when the now-playing track changes.
-            ratings.syncCurrentTrack();
-          },
-          (message, error) => {
-            log(`Media playback error: ${message}`);
-            autoSkip.onPlaybackError(error);
-            accounts.suspectSession(error);
-          },
-          undefined,
-          () => playback.syncPlaybackModes(instance),
-          {
-            ignoreProviderPlayback: () =>
-              getState().playback.pendingRestore?.released === true,
-            onAuthorizationChange: () =>
-              accounts.onMusicKitAuthorizationChange(instance),
-            onMusicVolumeChange: (volume) => {
-              if (!playback.reflectMusicVolume(volume)) return;
-              // Saved on the same debounce as a drag, so it survives a restart.
-              preferences.scheduleVolumeSave();
-            },
-          },
-        );
-        playback.syncPlaybackModes(instance);
-      }
-      syncMusicKitQueue(instance);
-      preferences.applyAutoplaySetting(instance);
-      restoreAuthProbe = installAuthPopupProbe(log);
-      setInitializationState({ status: "ready" });
-      log("MusicKit initialized successfully.");
-      // Saved recents with no signed-in account belong to a session that
-      // ended, so they are not carried into the next sign-in.
-      if (!isAuthorized(instance)) clearRecentSearches();
-      if (isAuthorized(instance)) {
-        setAuthState({ status: "authorized" });
-        const cachePromise = ensureLibraryCache();
-        const storefront = String(instance.storefrontId ?? "").trim();
-        const nowPlaying = instance.nowPlayingItem
-          ? normalizeTrack(instance.nowPlayingItem)
-          : undefined;
-        if (nowPlaying) setCurrentTrack(nowPlaying);
-        // The saved queue restores now rather than after the cache metadata
-        // read; it is applied only to this authorized account.
-        playbackSession.tryRestore();
-        await cachePromise;
-        if (storefront) setAccountSummary({ storefront });
-        log("Already authorized from previous session.");
-        void pinning.resolveDetails();
-      }
-      // Not awaited: a restored queue must never hold up the update check.
-      playbackSession.tryRestore();
-      syncPlaybackDiagnostics();
-      ratings.syncCurrentTrack();
-    } catch (error) {
-      const message = safeErrorMessage(error);
-      setInitializationState({ status: "error", message });
-      log(`MusicKit init failed: ${message}`);
-      // An expired embedded token is not a connection problem: show the
-      // update notice instead of an offline banner whose Reconnect never works.
-      if ((error as { code?: unknown } | null)?.code === "TOKEN_EXPIRED") {
-        setDeveloperTokenExpiry(now());
-        return;
-      }
-      stopOnlineReload?.();
-      stopOnlineReload = reloadWhenOnline(now, log);
-      if (await library.enterOfflineMode()) {
-        log("Showing the cached library offline.");
-      }
-    }
-  };
+    },
+    library,
+    preferences,
+    playback,
+    playbackSession,
+    accounts,
+    pinning,
+    ratings,
+    autoSkip,
+    sleepTimer,
+    syncPlaybackDiagnostics: diagnostics.syncPlaybackDiagnostics,
+  });
+
+  const catalog = createCatalogLoaders({
+    requireMusic,
+    accountGeneration: () => accounts.generation(),
+  });
 
   const controller: AppController = {
-    initialize: initializeController,
+    initialize: musicKit.initialize,
 
     loadSettings: preferences.loadSettings,
 
@@ -820,19 +588,16 @@ export function createAppController(
     loadRadio: discovery.loadRadio,
 
     loadRadioGenre: discovery.loadRadioGenre,
-    loadCurator: (id, kind) => loadCuratorPage(requireMusic(), id, kind),
-    loadMoreCuratorPlaylists: (next) => {
-      const cursor = safeNextPath(next, ["/v1/catalog/"]);
-      return cursor
-        ? loadCuratorPlaylistsPage(requireMusic(), cursor)
-        : Promise.resolve({ playlists: [] });
-    },
-    loadPlaylistCurator: (playlistId) =>
-      loadPlaylistCurator(requireMusic(), playlistId),
+    loadCurator: catalog.loadCurator,
+    loadMoreCuratorPlaylists: catalog.loadMoreCuratorPlaylists,
+    loadPlaylistCurator: catalog.loadPlaylistCurator,
+    loadRecordLabel: catalog.loadRecordLabel,
+    loadActivity: catalog.loadActivity,
+    loadSongInfo: catalog.loadSongInfo,
 
     playStation(station: Station): Promise<void> {
       collections.invalidate();
-      return playback.playStation(station);
+      return playStationAndCheck(station);
     },
 
     loadAlbum(
@@ -995,7 +760,7 @@ export function createAppController(
       if (!station) {
         throw new Error(`No station is available for this ${target.kind}.`);
       }
-      await playback.playStation(station);
+      await playStationAndCheck(station);
     },
     async queueCollection(kind, id, source, where): Promise<void> {
       const instance = requireMusic();
@@ -1100,6 +865,23 @@ export function createAppController(
 
     setAutoplay: preferences.setAutoplay,
 
+    setAudioQuality: preferences.setAudioQuality,
+
+    async openSubscribe(): Promise<void> {
+      const url = requireMusic().subscribeURL;
+      if (!url) throw new Error("Subscribe link is not available.");
+      await openSubscribeLink(url);
+    },
+
+    async openPlaylistInAppleMusic(id: string): Promise<void> {
+      if (!/^[A-Za-z0-9._-]{1,256}$/.test(id)) {
+        throw new Error("This playlist can't be opened in Apple Music.");
+      }
+      await openAppleMusicLink(
+        `https://music.apple.com/library/playlist/${encodeURIComponent(id)}`,
+      );
+    },
+
     setTrayIcon: preferences.setTrayIcon,
 
     setLaunchAtStartup: preferences.setLaunchAtStartup,
@@ -1161,60 +943,25 @@ export function createAppController(
       setUiState({ diagnosticsOpen: false });
     },
 
-    async openMusicDiagnostic(): Promise<string> {
-      try {
-        const result = await invokeFn<string>("open_music_diagnostic");
-        log(`Diagnostic window ${result}.`);
-        return result;
-      } catch (error) {
-        log(`Diagnostic window failed: ${errorMessage(error)}`);
-        throw error;
-      }
-    },
-
-    setDiagnosticsEnvironment(environment: GateEnvironment): void {
-      diagnosticsStore?.setMetadata({ environment });
-    },
-
-    async copyDiagnosticsReport(): Promise<void> {
-      if (!diagnosticsStore) {
-        throw new Error("Diagnostics are unavailable in this session.");
-      }
-      await writeClipboardWithFallback(
-        dependencies.writeClipboardText ?? writeText,
-        createSupportReport(diagnosticsStore.getSnapshot()),
-        "Couldn't copy the report: the clipboard is busy. Try again.",
-        log,
-      );
-      log("Diagnostics report copied to the clipboard.");
-    },
-
-    async copyText(text: string): Promise<void> {
-      await writeClipboardWithFallback(
-        dependencies.writeClipboardText ?? writeText,
-        text,
-        "Couldn't copy: the clipboard is busy. Try again.",
-        log,
-      );
-    },
-
+    openMusicDiagnostic: diagnostics.openMusicDiagnostic,
+    setDiagnosticsEnvironment: diagnostics.setDiagnosticsEnvironment,
+    copyDiagnosticsReport: diagnostics.copyDiagnosticsReport,
+    copyText: diagnostics.copyText,
     log,
 
     dispose(): void {
       idle.dispose();
-      stopOnlineReload?.();
+      musicKit.stopOnlineReloadListener();
       playbackSession.stop();
       stopPauseListener();
+      cancelAutoplayCheck();
       collections.invalidate();
       stopSleepTimerPositions();
       sleepTimer.cancel();
       streamRelease.dispose();
       trackNavigation.clear();
       preferences.flushPendingVolume();
-      stopMusicKitEvents?.();
-      stopMusicKitEvents = undefined;
-      restoreAuthProbe?.();
-      restoreAuthProbe = undefined;
+      musicKit.stopMusicKitListeners();
       preferences.stopThemeWatching();
       updater.dispose();
     },

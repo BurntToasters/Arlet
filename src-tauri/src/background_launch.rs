@@ -7,9 +7,10 @@ use tauri::WebviewWindow;
 
 const BACKGROUND_ENV: &str = "ARLET_E2E_BACKGROUND";
 
-/// True when the E2E runner asked for a background launch.
+/// True when the E2E runner asked for a background launch. Ordinary builds
+/// ignore the variable.
 pub fn enabled() -> bool {
-    std::env::var(BACKGROUND_ENV).is_ok_and(|value| value == "1")
+    cfg!(feature = "e2e") && std::env::var(BACKGROUND_ENV).is_ok_and(|value| value == "1")
 }
 
 /// Strips activation from the main window's position changes. Call before

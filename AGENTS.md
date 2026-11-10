@@ -13,7 +13,7 @@ changes scoped to the requested subsystem.
 ## Validation
 
 - Run `npm run typecheck`, `npm run lint`, and `npm run format:check`.
-- App behaviour is tested end to end only; there is no frontend unit suite.
+- App behavior is tested end to end only; there is no frontend unit suite.
   Run focused script tests (`npm run test:scripts`) or the native E2E
   before `npm run test:all`.
 - Do not run formatting commands across the repository when unrelated files

@@ -82,6 +82,9 @@ function inlineChildren(source: string, keyPrefix: string): InlineChild[] {
         index = codeEnd + tickCount;
         continue;
       }
+      appendText(children, marker);
+      index += tickCount;
+      continue;
     }
 
     // Images intentionally stay literal: release notes never create image

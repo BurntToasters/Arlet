@@ -30,8 +30,62 @@
   overflow: hidden;
   background: var(--surface-solid);
   color: var(--text);
+  /* Holds the artwork, scrim and grain in one local paint order. */
+  isolation: isolate;
   animation: now-playing-enter var(--duration-normal) var(--ease-standard)
     backwards;
+}
+/* Both artwork images stay below one shared scrim. The inset gives the blur
+   room to fade before it reaches the clipped edge of the dialog. */
+.now-playing-backdrop {
+  position: absolute;
+  z-index: -4;
+  inset: -96px;
+  width: calc(100% + 192px);
+  height: calc(100% + 192px);
+  object-fit: cover;
+  filter: blur(88px) saturate(1.05);
+  opacity: 0.32;
+  pointer-events: none;
+}
+.now-playing.has-artwork-bloom::after {
+  position: absolute;
+  z-index: -2;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--surface-solid) 70%, transparent),
+    color-mix(in srgb, var(--surface-solid) 82%, transparent)
+  );
+  content: "";
+  pointer-events: none;
+}
+.now-playing.has-artwork-bloom::before {
+  position: absolute;
+  z-index: -1;
+  inset: 0;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='128' height='128' viewBox='0 0 128 128'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.72' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='.022'/%3E%3C/svg%3E")
+    0 0 / 128px 128px repeat;
+  content: "";
+  pointer-events: none;
+}
+@keyframes now-playing-bloom-drift {
+  0%,
+  100% {
+    transform: translate3d(-1.5%, 1%, 0) scale(1.02);
+  }
+  50% {
+    transform: translate3d(1.5%, -1.2%, 0) scale(1.07);
+  }
+}
+.now-playing-backdrop,
+.now-playing-artwork-bloom {
+  animation: now-playing-bloom-drift 18s ease-in-out infinite alternate;
+  animation-play-state: paused;
+}
+.now-playing.is-playing .now-playing-backdrop,
+.now-playing.is-playing .now-playing-artwork-bloom {
+  animation-play-state: running;
 }
 /* Leaving: focus has already moved back to the page, so the overlay must not
    take clicks while it fades out. It unmounts when the transition ends. */
@@ -119,6 +173,26 @@
   gap: 18px;
   text-align: center;
 }
+/* The cover halo participates in the dialog's stack, below the shared scrim. */
+.now-playing-artwork-stage {
+  position: relative;
+  display: grid;
+  width: min(100%, 320px);
+  aspect-ratio: 1;
+  place-items: center;
+}
+.now-playing-artwork-bloom {
+  position: absolute;
+  z-index: -3;
+  inset: -24%;
+  width: 148%;
+  height: 148%;
+  object-fit: cover;
+  border-radius: 28%;
+  filter: blur(64px) saturate(1.12);
+  opacity: 0.42;
+  pointer-events: none;
+}
 .now-playing-meta {
   display: grid;
   min-width: 0;
@@ -192,9 +266,10 @@
   gap: 12px;
   overflow: hidden;
   padding: 14px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-lg);
-  background: var(--surface-subtle);
+  background: color-mix(in srgb, var(--surface-solid) 62%, transparent);
+  backdrop-filter: blur(28px) saturate(1.18);
 }
 .now-playing-side-heading {
   margin: 0;
@@ -215,6 +290,7 @@
   display: grid;
   min-height: 0;
   flex: 1 1 auto;
+  align-content: start;
   margin: 0;
   padding: 0;
   overflow-y: auto;
@@ -260,7 +336,7 @@
 }
 .now-playing-queue-copy small {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: 11px;
 }
 
 /* Reduced motion keeps the fade but drops the movement. The dialog unmounts
@@ -272,6 +348,10 @@
   .now-playing.has-artwork-tint {
     transition: none;
   }
+  .now-playing-backdrop,
+  .now-playing-artwork-bloom {
+    animation: none;
+  }
 }
 
 /* Forced colors take over the palette, so the artwork tint is ignored. */
@@ -279,6 +359,18 @@
   .now-playing.has-artwork-tint {
     --text-muted: unset;
     background: var(--surface-solid);
+  }
+  .now-playing-backdrop,
+  .now-playing-artwork-bloom {
+    display: none;
+  }
+  .now-playing.has-artwork-bloom::before,
+  .now-playing.has-artwork-bloom::after {
+    display: none;
+  }
+  .now-playing-side {
+    background: Canvas;
+    backdrop-filter: none;
   }
 }
 
@@ -298,6 +390,9 @@
   .artwork-xl {
     width: min(100%, 220px);
   }
+  .now-playing-artwork-stage {
+    width: min(100%, 220px);
+  }
 }
 
 @media (max-width: 720px) {
@@ -306,6 +401,12 @@
   }
   .now-playing-controls {
     width: 100%;
+  }
+  .now-playing-controls .transport-controls {
+    position: static;
+  }
+  .now-playing-controls .volume-control {
+    display: flex;
   }
   .now-playing-actions .volume-control {
     flex: 1 1 100%;

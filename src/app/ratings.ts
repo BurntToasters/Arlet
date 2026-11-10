@@ -97,18 +97,20 @@ function trimCache(
 const RATING_BATCH_IDS = 100;
 // Set by createRatings, the one ratings owner the app builds.
 let batchLoader:
-  ((targets: readonly RatingTarget[]) => Promise<void>) | undefined;
+  | ((targets: readonly RatingTarget[]) => Promise<readonly string[]>)
+  | undefined;
 
 /**
  * Loads ratings for songs on screen, in requests of up to 100 ids per endpoint.
- * Values already in the store and lookups already in flight are skipped. Does
- * nothing before the app has created its ratings. Callers check sign-in and
- * connectivity first.
+ * Resolves with the keys whose lookup failed, so a caller waiting on them (the
+ * favorites filter) can stop waiting. Values already in the store and lookups
+ * already in flight are skipped. Does nothing before the app has created its
+ * ratings. Callers check sign-in and connectivity first.
  */
 export function requestRatings(
   targets: readonly RatingTarget[],
-): Promise<void> {
-  return batchLoader?.(targets) ?? Promise.resolve();
+): Promise<readonly string[]> {
+  return batchLoader?.(targets) ?? Promise.resolve([]);
 }
 
 export function trackRatingTarget(track: Track): RatingTarget {
@@ -142,6 +144,8 @@ export function createRatings(
   // never reused from earlier lookups: another device may have changed them.
   // Cleared by reset(), which runs on sign-in and sign-out.
   const lookups = new Map<string, Promise<void>>();
+  // Keys whose last lookup failed, so the favorites filter stops waiting.
+  const failed = new Set<string>();
   // Writes for one key run in click order, so the last click wins on the server.
   const tails = new Map<string, Promise<void>>();
   const inFlight = new Map<string, number>();
@@ -164,6 +168,13 @@ export function createRatings(
 
   const request = (): MusicRequest =>
     resolveMusicKitMusicRequest(context.requireMusic()) as MusicRequest;
+
+  // A failed key stays newest; old failures fall out with the ratings cache.
+  const markFailed = (key: string): void => {
+    failed.delete(key);
+    failed.add(key);
+    trimCache(failed, key, () => false);
+  };
 
   const fetchRating = (
     target: RatingTarget,
@@ -211,13 +222,16 @@ export function createRatings(
     };
     try {
       const values = await getRatings(request(), type, [target.id]);
+      failed.delete(key);
       apply(values.get(target.id) ?? 0);
     } catch (error) {
       // Apple answers 404 when the item has no rating.
       if (httpStatusOf(error) === 404) {
+        failed.delete(key);
         apply(0);
         return;
       }
+      markFailed(key);
       context.log(`Rating lookup failed: ${safeErrorMessage(error)}`);
     }
   };
@@ -362,13 +376,16 @@ export function createRatings(
         type,
         batch.map((target) => target.id),
       );
+      for (const target of batch) failed.delete(ratingKey(type, target.id));
     } catch (error) {
       if (httpStatusOf(error) !== 404) {
+        for (const target of batch) markFailed(ratingKey(type, target.id));
         context.log(`Rating lookup failed: ${safeErrorMessage(error)}`);
         return;
       }
       // Apple answers 404 when the items have no rating.
       values = new Map();
+      for (const target of batch) failed.delete(ratingKey(type, target.id));
     }
     const entries: [string, RatingValue][] = [];
     for (const target of batch) {
@@ -391,22 +408,26 @@ export function createRatings(
 
   const loadRatings = async (
     targets: readonly RatingTarget[],
-  ): Promise<void> => {
+  ): Promise<readonly string[]> => {
     const accountAtStart = accountGeneration;
     const byType = new Map<RatingResourceType, RatingTarget[]>();
     const queued = new Set<string>();
+    // Every key this call is responsible for, including in-flight lookups.
+    const wanted = new Set<string>();
+    const shared: Promise<void>[] = [];
     for (const target of targets) {
       const type = ratingResourceType(target);
       if (!type) continue;
       const key = ratingKey(type, target.id);
-      if (
-        queued.has(key) ||
-        getState().ratings[key] !== undefined ||
-        lookups.has(key)
-      ) {
+      if (queued.has(key) || getState().ratings[key] !== undefined) continue;
+      const inFlight = lookups.get(key);
+      if (inFlight) {
+        wanted.add(key);
+        shared.push(inFlight);
         continue;
       }
       queued.add(key);
+      wanted.add(key);
       const list = byType.get(type) ?? [];
       list.push(target);
       byType.set(type, list);
@@ -428,7 +449,10 @@ export function createRatings(
         );
       }
     }
-    await Promise.all(pending);
+    // In-flight lookups may have started before this call; waiting for them
+    // keeps the failure list accurate for every key the caller asked about.
+    await Promise.all([...pending, ...shared]);
+    return [...wanted].filter((key) => failed.has(key));
   };
   batchLoader = loadRatings;
 
@@ -437,6 +461,7 @@ export function createRatings(
     generations.clear();
     settled.clear();
     lookups.clear();
+    failed.clear();
     tails.clear();
     inFlight.clear();
     adding.clear();

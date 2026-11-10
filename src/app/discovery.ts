@@ -61,6 +61,8 @@ function emptySearchGroups(): SearchResourceGroups {
     playlists: [],
     stations: [],
     curators: [],
+    recordLabels: [],
+    activities: [],
     paging: {},
     status: "idle",
   };
@@ -88,6 +90,8 @@ function catalogGroups(result: CatalogSearchResult): SearchResourceGroups {
     playlists: result.playlists,
     stations: result.stations,
     curators: result.curators,
+    recordLabels: result.recordLabels ?? [],
+    activities: result.activities ?? [],
     top: result.top,
     paging: pagingFromCounts(result.counts),
     status: "success",
@@ -127,6 +131,16 @@ function appendPage(
       return { ...groups, stations: mergeById(groups.stations, page.items) };
     case "curators":
       return { ...groups, curators: mergeById(groups.curators, page.items) };
+    case "record-labels":
+      return {
+        ...groups,
+        recordLabels: mergeById(groups.recordLabels ?? [], page.items),
+      };
+    case "activities":
+      return {
+        ...groups,
+        activities: mergeById(groups.activities ?? [], page.items),
+      };
   }
 }
 
@@ -140,6 +154,23 @@ const CATALOG_NEXT_PREFIXES = ["/v1/catalog/"] as const;
 function shelfPaging(page: { next?: string }): BrowseShelfPaging {
   const next = safeNextPath(page.next, CATALOG_NEXT_PREFIXES);
   return { status: "idle", ...(next ? { next } : {}) };
+}
+
+/**
+ * A shelf page still loading when its refresh fails is dropped with that
+ * refresh, so the shelf goes back to idle and keeps its cursor for Load more.
+ */
+function settleLoadingPaging(
+  paging: BrowseState["paging"],
+): BrowseState["paging"] {
+  const settled: BrowseState["paging"] = { ...paging };
+  for (const kind of Object.keys(paging) as BrowseShelfKind[]) {
+    const shelf = paging[kind];
+    if (shelf?.status === "loading") {
+      settled[kind] = { ...shelf, status: "idle" };
+    }
+  }
+  return settled;
 }
 
 function pagingFromCharts(charts: BrowseCharts): BrowseState["paging"] {
@@ -262,6 +293,7 @@ export function createDiscovery(
       setBrowseState({
         status: "error",
         error: message,
+        paging: settleLoadingPaging(getState().browse.paging),
       });
       log(`Browse load failed: ${message}`);
       throw error;
@@ -380,9 +412,14 @@ export function createDiscovery(
   /**
    * Appends the next page of one Browse shelf. The shelf's cursor is kept
    * until a page comes back without one; a shelf reload drops the response.
+   * Nothing loads while a Browse load or refresh is running.
    */
   const loadMoreBrowseShelf = async (kind: BrowseShelfKind): Promise<void> => {
-    const paging = getState().browse.paging[kind];
+    const browse = getState().browse;
+    // A load or refresh replaces the shelves and their cursors, so no page
+    // follows the old cursor while one runs.
+    if (browse.status === "loading" || browse.status === "refreshing") return;
+    const paging = browse.paging[kind];
     if (!paging?.next || paging.status === "loading") return;
     const requestId = browseRequestId;
     // Re-checked where the cursor is followed; an invalid one ends the shelf.
@@ -471,6 +508,8 @@ export function createDiscovery(
             playlists: [],
             stations: [],
             curators: [],
+            recordLabels: [],
+            activities: [],
             counts: {
               songs: songs.length,
               albums: 0,
@@ -510,6 +549,8 @@ export function createDiscovery(
               ...results[1].value,
               stations: [],
               curators: [],
+              recordLabels: [],
+              activities: [],
               paging: {},
               status: "success",
             }
@@ -517,6 +558,8 @@ export function createDiscovery(
               ...currentSearch.library,
               stations: [],
               curators: [],
+              recordLabels: [],
+              activities: [],
               paging: {},
               status: "error",
               error: safeErrorMessage(results[1].reason),
@@ -646,14 +689,19 @@ export function createDiscovery(
         status: page.count < SEARCH_PAGE_LIMIT ? "done" : "idle",
         offset: paging.offset + page.count,
       };
+      // The page is cached under catalog either way. Playback only follows it
+      // while catalog is still the selected source; otherwise a Library tab
+      // selected mid-request would show Library rows with catalog play indices.
+      const updatesPlayback =
+        kind === "songs" && getState().search.activeSource === "catalog";
       setSearchState({
         catalog: {
           ...next,
           paging: { ...next.paging, [kind]: nextPaging },
         },
-        ...(kind === "songs" ? { results: next.songs } : {}),
+        ...(updatesPlayback ? { results: next.songs } : {}),
       });
-      if (kind === "songs") lastSearchTracks = next.songs;
+      if (updatesPlayback) lastSearchTracks = next.songs;
     } catch (error) {
       if (requestId !== searchRequestId) return;
       const message = safeErrorMessage(error);

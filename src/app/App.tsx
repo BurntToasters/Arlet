@@ -35,7 +35,9 @@ import { UpdateReadyModal } from "../components/UpdateReadyModal.tsx";
 import { ContextMenu } from "../components/ContextMenu.tsx";
 import { PlaylistDialogs } from "../components/PlaylistDialogs.tsx";
 import { ShortcutOverlay } from "../components/ShortcutOverlay.tsx";
+import { SongInfoDialog } from "../components/SongInfoDialog.tsx";
 import { ActionToasts } from "../components/ActionToasts.tsx";
+import { PreviewNotice } from "../components/PreviewNotice.tsx";
 import { SessionExpiredNotice } from "../components/SessionExpiredNotice.tsx";
 import { TokenExpiryNotice } from "../components/TokenExpiryNotice.tsx";
 import type { DiagnosticsStore } from "../diagnostics/store.ts";
@@ -47,13 +49,41 @@ import {
   listenWindowsMediaSeek,
   listenWindowsMediaShuffle,
   updateWindowsMediaTimeline,
+  type WindowsMediaControl,
 } from "../platform/windows-media.ts";
 import { listenBeforeQuit } from "../platform/quit.ts";
+import { safeErrorMessage } from "./controller-support.ts";
 
 export interface AppProps {
   controller: AppController;
   router: HashRouter;
   diagnosticsStore?: DiagnosticsStore;
+}
+
+/** Logs `<label>: <message>` for a failed call; never rethrows. */
+function logFailure(
+  controller: Pick<AppController, "log">,
+  label: string,
+): (error: unknown) => void {
+  return (error) => controller.log(`${label}: ${safeErrorMessage(error)}`);
+}
+
+/** Logs only the first failure of a streak; `reset` after a success. */
+function createFailureStreak(controller: Pick<AppController, "log">): {
+  reset(): void;
+  catchWith(label: string): (error: unknown) => void;
+} {
+  let failing = false;
+  return {
+    reset: () => {
+      failing = false;
+    },
+    catchWith: (label) => (error) => {
+      if (failing) return;
+      failing = true;
+      controller.log(`${label}: ${safeErrorMessage(error)}`);
+    },
+  };
 }
 
 /** Runs a transport shortcut; false means it did not apply to this state. */
@@ -179,6 +209,7 @@ function AppLayout({
         event.key.toLowerCase() === "k" &&
         !miniActive
       ) {
+        if (hasOpenDialog()) return;
         event.preventDefault();
         router.navigate({ kind: "search", query: "" });
         // The Search view may render a few frames after navigation.
@@ -191,12 +222,17 @@ function AppLayout({
         };
         requestAnimationFrame(focusSearch);
       } else if (event.ctrlKey && event.key.toLowerCase() === "r") {
+        if (hasOpenDialog()) return;
         event.preventDefault();
-        void controller.refreshCurrentData().catch(() => undefined);
+        void controller
+          .refreshCurrentData()
+          .catch(logFailure(controller, "Refresh failed"));
       } else if (event.altKey && event.key === "ArrowLeft") {
+        if (hasOpenDialog()) return;
         event.preventDefault();
         router.back();
       } else if (event.altKey && event.key === "ArrowRight") {
+        if (hasOpenDialog()) return;
         event.preventDefault();
         router.forward();
       }
@@ -214,7 +250,7 @@ function AppLayout({
         if (active) stop = unlisten;
         else unlisten();
       })
-      .catch(() => undefined);
+      .catch(logFailure(controller, "Quit listener failed to start"));
     return () => {
       active = false;
       stop?.();
@@ -225,19 +261,21 @@ function AppLayout({
     let active = true;
     let stop: (() => void) | undefined;
     void listenWindowsMediaControls((control) => {
-      if (control === "play")
-        void Promise.resolve(controller.play()).catch(() => undefined);
-      else if (control === "pause")
-        void Promise.resolve(controller.pause()).catch(() => undefined);
-      else if (control === "next")
-        void controller.next().catch(() => undefined);
-      else void controller.previous().catch(() => undefined);
+      const run: Record<WindowsMediaControl, () => unknown> = {
+        play: () => controller.play(),
+        pause: () => controller.pause(),
+        next: () => controller.next(),
+        previous: () => controller.previous(),
+      };
+      void Promise.resolve()
+        .then(run[control])
+        .catch(logFailure(controller, `Media control ${control} failed`));
     })
       .then((unlisten) => {
         if (active) stop = unlisten;
         else unlisten();
       })
-      .catch(() => undefined);
+      .catch(logFailure(controller, "Media control listener failed to start"));
     return () => {
       active = false;
       stop?.();
@@ -257,7 +295,9 @@ function AppLayout({
           if (active) stops.push(stop);
           else stop();
         })
-        .catch(() => undefined);
+        .catch(
+          logFailure(controller, "Media control listener failed to start"),
+        );
     };
     const ready = (): boolean => getState().initialization.status === "ready";
     track(
@@ -268,24 +308,26 @@ function AppLayout({
           getState().playback.durationSeconds,
         );
         if (target !== undefined) {
-          void controller.seek(target).catch(() => undefined);
+          void Promise.resolve()
+            .then(() => controller.seek(target))
+            .catch(logFailure(controller, "Media control seek failed"));
         }
       }),
     );
     track(
       listenWindowsMediaShuffle((enabled) => {
         if (!ready()) return;
-        void Promise.resolve(
-          controller.setShuffleMode(enabled ? "songs" : "off"),
-        ).catch(() => undefined);
+        void Promise.resolve()
+          .then(() => controller.setShuffleMode(enabled ? "songs" : "off"))
+          .catch(logFailure(controller, "Media control shuffle failed"));
       }),
     );
     track(
       listenWindowsMediaRepeat((mode) => {
         if (!ready()) return;
-        void Promise.resolve(controller.setRepeatMode(mode)).catch(
-          () => undefined,
-        );
+        void Promise.resolve()
+          .then(() => controller.setRepeatMode(mode))
+          .catch(logFailure(controller, "Media control repeat failed"));
       }),
     );
     return () => {
@@ -295,14 +337,16 @@ function AppLayout({
   }, [controller]);
 
   useEffect(() => {
+    const streak = createFailureStreak(controller);
+    const onFailure = streak.catchWith("Timeline update failed");
     const sync = createTimelineSync((timeline) => {
-      void updateWindowsMediaTimeline(timeline).catch(() => undefined);
+      void updateWindowsMediaTimeline(timeline).then(streak.reset, onFailure);
     });
     return subscribePlaybackPosition(() => {
       const { positionSeconds, durationSeconds, status } = getState().playback;
       sync({ positionSeconds, durationSeconds, playing: status === "playing" });
     });
-  }, []);
+  }, [controller]);
 
   if (state.ui.miniPlayer) {
     // Only the visible layout changes: playback sync and toasts stay mounted.
@@ -339,12 +383,14 @@ function AppLayout({
       <UpdateReadyModal />
       <ContextMenu />
       <PlaylistDialogs />
+      <SongInfoDialog />
       {shortcutsOpen ? (
         <ShortcutOverlay onClose={() => setShortcutsOpen(false)} />
       ) : null}
       <ActionToasts />
       <div className="notice-stack">
         <SessionExpiredNotice />
+        <PreviewNotice />
         <TokenExpiryNotice />
       </div>
     </div>

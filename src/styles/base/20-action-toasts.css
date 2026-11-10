@@ -16,8 +16,9 @@
   padding: 10px 10px 10px 12px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
-  background: var(--surface-solid);
+  background: var(--surface-popover);
   box-shadow: var(--shadow-popover);
+  backdrop-filter: var(--backdrop-popover);
   color: var(--text);
   font-size: 13px;
   line-height: 1.4;

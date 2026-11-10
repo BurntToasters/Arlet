@@ -1,7 +1,6 @@
 //! Local-only playlist pins persisted next to settings.
 
 use serde_json::Value;
-use tauri::Manager;
 
 static PINS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -17,7 +16,7 @@ fn lock_pins() -> Result<std::sync::MutexGuard<'static, ()>, String> {
 }
 
 fn pins_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let dir = crate::app_paths::data_dir(app)?;
     Ok(dir.join("pins.json"))
 }
 
@@ -100,13 +99,20 @@ fn write_pins_text(path: &std::path::Path, json: &str) -> Result<(), String> {
     crate::settings::atomic_write_text(path, json)
 }
 
-fn remove_pins_files(path: &std::path::Path) {
-    if path.exists() {
-        let _ = std::fs::remove_file(path);
-    }
+fn remove_pins_files(path: &std::path::Path) -> Result<(), String> {
     let backup = backup_path(path);
-    if backup.exists() {
-        let _ = std::fs::remove_file(&backup);
+    let mut failures = Vec::new();
+    for file in [path, backup.as_path()] {
+        if let Err(error) = std::fs::remove_file(file) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                failures.push(error.to_string());
+            }
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
     }
 }
 
@@ -124,9 +130,10 @@ pub fn save_pins(app: tauri::AppHandle, json: String) -> Result<(), String> {
 
 #[tauri::command(async)]
 pub fn delete_pins(app: tauri::AppHandle) -> Result<(), String> {
-    let _guard = lock_pins()?;
-    remove_pins_files(&pins_path(&app)?);
-    Ok(())
+    crate::app_paths::run_account_data_clear(&app, "delete_pins", || {
+        let _guard = lock_pins()?;
+        remove_pins_files(&pins_path(&app)?)
+    })
 }
 
 #[cfg(test)]
@@ -241,7 +248,7 @@ mod tests {
     fn delete_pins_on_missing_file_is_ok() {
         let dir = scoped_dir("delete-missing");
         let _ = std::fs::remove_dir_all(&dir);
-        remove_pins_files(&dir.join("pins.json"));
+        remove_pins_files(&dir.join("pins.json")).unwrap();
         assert!(!dir.exists());
     }
 
@@ -253,7 +260,7 @@ mod tests {
         write_pins_text(&path, &pins_doc(&[("a", "library")])).unwrap();
         write_pins_text(&path, &pins_doc(&[("b", "catalog")])).unwrap();
         assert!(backup_path(&path).exists());
-        remove_pins_files(&path);
+        remove_pins_files(&path).unwrap();
         assert!(!path.exists());
         assert!(!backup_path(&path).exists());
         let _ = std::fs::remove_dir_all(&dir);

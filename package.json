@@ -1,9 +1,9 @@
 {
   "name": "arlet",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "license": "GPL-3.0-only",
   "private": true,
-  "packageManager": "npm@12.0.2",
+  "packageManager": "npm@12.2.1",
   "description": "Unofficial Apple Music client for Windows 10 and 11, built with Tauri v2, Rust, and MusicKit.",
   "keywords": [
     "apple-music",
@@ -27,8 +27,8 @@
   },
   "type": "module",
   "engines": {
-    "node": "^22.22.2 || ^24.15.0 || >=26.0.0",
-    "npm": ">=12.0.2"
+    "node": "^24.22.1 || >=26.13.0",
+    "npm": ">=12.2.1"
   },
   "scripts": {
     "prepare": "node scripts/install-git-hooks.js",
@@ -40,7 +40,7 @@
     "test:e2e:app": "node scripts/e2e-app.js",
     "test:e2e:app:real": "dotenv -e .env -- node scripts/e2e-app.js --real-token",
     "test:all": "node scripts/test-all.js",
-    "test:scripts": "node --test scripts/*.test.js scripts/*.test.cjs",
+    "test:scripts": "node --test scripts/*.test.js scripts/*.test.cjs scripts/deps-majors.test.mjs",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.scripts.json",
     "lint": "eslint --max-warnings 0 src/ scripts/ && npm run lint:comments",
     "lint:comments": "node scripts/lint-comments.mjs src src-tauri/src scripts",
@@ -67,10 +67,11 @@
     "dist:list": "node scripts/dist-tools.js list",
     "wc": "npm run win-compiler:x64",
     "vi": "node scripts/vi.js",
-    "b": "git fetch origin && git switch -C beta origin/beta && npm run vi",
-    "r": "git fetch origin && git switch -C main origin/main && npm run vi && npm run gitprune:force",
+    "b": "node scripts/branch-setup.js origin beta",
+    "r": "node scripts/branch-setup.js origin main && npm run gitprune:force",
     "u": "node scripts/npm-safe-update.mjs && node scripts/cargo-safe-update.mjs --manifest-path src-tauri/Cargo.toml && node scripts/sync-version.js && npm run check:tauri-alignment",
     "check:tauri-alignment": "node scripts/check-tauri-alignment.mjs",
+    "deps:majors": "node scripts/deps-majors.mjs",
     "win-compiler:x64": "powershell -NoProfile -ExecutionPolicy Bypass -NoExit -File scripts/launch-vs-devshell.ps1 -Arch x64",
     "win-compiler:arm64": "powershell -NoProfile -ExecutionPolicy Bypass -NoExit -File scripts/launch-vs-devshell.ps1 -Arch arm64",
     "setup:win:artifact-signing": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-windows-artifact-signing.ps1",
@@ -80,8 +81,8 @@
     "build:win:x64": "npm run sync-version && npm run licenses && npm run build:win:x64:prepared",
     "build:win:arm64": "npm run sync-version && npm run licenses && npm run build:win:arm64:prepared",
     "build:win": "npm run sync-version && npm run licenses && npm run build:win:prepared",
-    "rust:update": "rustup toolchain install --profile minimal --component cargo,clippy,rustfmt",
-    "rust:targets:win": "rustup target add x86_64-pc-windows-msvc aarch64-pc-windows-msvc",
+    "rust:update": "node scripts/rust-toolchain.mjs --install",
+    "rust:targets:win": "node scripts/rust-toolchain.mjs --target x86_64-pc-windows-msvc aarch64-pc-windows-msvc",
     "workspace:bootstrap": "npm run rust:update && npm ci --ignore-scripts && npm run sync-version",
     "workspace:prepare": "npm run workspace:bootstrap && npm run test:all -- --require-clean-proof",
     "release:prepare": "npm run workspace:bootstrap && npm run test:all -- --require-clean-proof && npm run dist:clean-release-artifacts",
