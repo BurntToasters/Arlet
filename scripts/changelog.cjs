@@ -156,10 +156,13 @@ function validateChangelogForVersion(contents, version) {
     errors.push("CHANGELOG.md still has placeholder notes.");
   }
   if (!normalizedVersion.includes("-beta.")) {
-    if (/this is a beta build/i.test(body)) {
+    // GitHub hides closed HTML comments; sync-version comments the callout out
+    // on stable. An unclosed <!-- is left in so it cannot hide live text.
+    const rendered = body.replace(/<!--[\s\S]*?-->/g, "");
+    if (/this is a beta build/i.test(rendered)) {
       errors.push("Stable CHANGELOG.md must not include the Beta callout.");
     }
-    if (/\/v\d+\.\d+\.\d+-beta\.\d+/i.test(body)) {
+    if (/\/v\d+\.\d+\.\d+-beta\.\d+/i.test(rendered)) {
       errors.push("Stable CHANGELOG.md still has prerelease links.");
     }
   }

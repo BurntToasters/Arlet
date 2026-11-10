@@ -126,12 +126,25 @@ const CHANGELOG_TABLE_END = "\n> Arlet requires";
 export const CHANGELOG_INTRO_ANCHOR =
   "Arlet! An Apple Music client for Windows built on Tauri V2!\n\n";
 
+// The beta callout, live or wrapped in one HTML comment.
+const BETA_CALLOUT =
+  /(?:<!-- )?(> \[!NOTE\]\r?\n> 🅱️ This is a Beta build\.)(?: -->)?/;
+
+/** Live callout on beta versions, commented out on stable ones. */
+function syncBetaCallout(changelog, version) {
+  const keep = version.includes("-beta.");
+  return changelog.replace(BETA_CALLOUT, (_match, callout) =>
+    keep ? callout : `<!-- ${callout} -->`,
+  );
+}
+
 /**
- * Like Zinnia: point the CHANGELOG download table at `version` and add a
- * placeholder section when it is missing. The release preflight rejects the
- * placeholder, so notes must be written before a release.
+ * Like Zinnia: point the CHANGELOG download table at `version`, toggle the
+ * beta callout, and add a placeholder section when it is missing. The release
+ * preflight rejects the placeholder, so notes must be written before a release.
  */
 export function syncChangelogForVersion(changelog, version) {
+  changelog = syncBetaCallout(changelog, version);
   const start = changelog.indexOf(CHANGELOG_TABLE_START);
   const end = changelog.indexOf(CHANGELOG_TABLE_END, start);
   if (start === -1 || end === -1) {
