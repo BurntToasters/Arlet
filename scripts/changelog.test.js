@@ -77,3 +77,79 @@ test("rejects a body over the UTF-8 byte limit", () => {
     /exceeds the 65536-byte UTF-8 limit/,
   );
 });
+
+// Beta-callout failure modes: stable rejects the callout while it is commented
+// out; stable accepts a live callout; an unterminated <!-- hides a live
+// callout from the check; sync leaves the callout live on stable or commented
+// on beta; repeated syncs nest or duplicate comment markers (breaking
+// sync-version --check); CRLF changelogs are not toggled; sync touches text
+// outside the callout.
+const { validateChangelogForVersion } = require("./changelog.cjs");
+const { syncChangelogForVersion } = await import("./sync-version-helpers.js");
+
+const LIVE_CALLOUT = "> [!NOTE]\n> 🅱️ This is a Beta build.";
+const COMMENTED_CALLOUT = `<!-- ${LIVE_CALLOUT} -->`;
+
+function calloutChangelog(callout, version, eol = "\n") {
+  return [
+    callout,
+    "",
+    "# ⬇️ Downloads",
+    "",
+    `**EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v${version}/Arlet-Windows-x64.exe)`,
+    "",
+    "> Arlet requires Windows 10 or later.",
+    "",
+    "Arlet! An Apple Music client for Windows built on Tauri V2!",
+    "",
+    `## Changes in \`v${version}:\``,
+    "",
+    "- **Fix:** Notes.",
+    "",
+    "## ℹ️ Release Info",
+    "",
+    "- **GPG Signed:** Signed.",
+    "",
+  ]
+    .join("\n")
+    .replace(/\n/g, eol);
+}
+
+test("stable validation ignores a commented-out beta callout only", () => {
+  assert.deepEqual(
+    validateChangelogForVersion(
+      calloutChangelog(COMMENTED_CALLOUT, "1.2.3"),
+      "1.2.3",
+    ),
+    [],
+  );
+  for (const callout of [LIVE_CALLOUT, `<!-- unterminated\n${LIVE_CALLOUT}`]) {
+    assert.match(
+      validateChangelogForVersion(
+        calloutChangelog(callout, "1.2.3"),
+        "1.2.3",
+      ).join("\n"),
+      /must not include the Beta callout/,
+    );
+  }
+});
+
+test("sync comments the beta callout on stable and restores it on beta", () => {
+  for (const eol of ["\n", "\r\n"]) {
+    const live = calloutChangelog(LIVE_CALLOUT, "1.2.3", eol);
+    const commented = calloutChangelog(COMMENTED_CALLOUT, "1.2.3", eol);
+
+    const stable = syncChangelogForVersion(live, "1.2.3");
+    assert.equal(stable, commented);
+    assert.equal(syncChangelogForVersion(stable, "1.2.3"), commented);
+    assert.deepEqual(validateChangelogForVersion(stable, "1.2.3"), []);
+
+    const beta = syncChangelogForVersion(
+      calloutChangelog(COMMENTED_CALLOUT, "1.2.3-beta.1", eol),
+      "1.2.3-beta.1",
+    );
+    assert.equal(beta, calloutChangelog(LIVE_CALLOUT, "1.2.3-beta.1", eol));
+    assert.equal(syncChangelogForVersion(beta, "1.2.3-beta.1"), beta);
+    assert.deepEqual(validateChangelogForVersion(beta, "1.2.3-beta.1"), []);
+  }
+});
