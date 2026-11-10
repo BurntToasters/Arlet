@@ -41,27 +41,56 @@ function currentBranch(cwd) {
   return branch;
 }
 
-function currentUpstream(cwd, branch, remote) {
-  let upstream;
+function gitConfig(cwd, key) {
   try {
-    upstream = git(cwd, [
-      "rev-parse",
-      "--abbrev-ref",
-      "--symbolic-full-name",
-      "@{upstream}",
-    ]);
+    return git(cwd, ["config", "--get", key]);
   } catch {
+    return "";
+  }
+}
+
+// Read the configured upstream instead of resolving @{upstream}, which fails
+// once a deleted remote branch has been pruned locally.
+function currentUpstream(cwd, branch, remote) {
+  const upstreamRemote = gitConfig(cwd, `branch.${branch}.remote`);
+  const merge = gitConfig(cwd, `branch.${branch}.merge`);
+  if (!upstreamRemote || !merge) {
     throw new Error(
       `Current branch ${branch} has no upstream; refusing branch setup.`,
     );
   }
+  const upstream = `${upstreamRemote}/${merge.replace(/^refs\/heads\//, "")}`;
   const expected = `${remote}/${branch}`;
-  if (upstream !== expected) {
+  if (upstream !== expected || merge !== `refs/heads/${branch}`) {
     throw new Error(
       `Current branch ${branch} must track ${expected}; current upstream is ${upstream}.`,
     );
   }
   return `refs/remotes/${upstream}`;
+}
+
+function commitExists(cwd, ref) {
+  try {
+    git(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A deleted upstream is safe to leave only if origin still has every commit. */
+function requireHeadOnRemote(cwd, remote, branch, upstreamRef) {
+  const count = Number(
+    git(cwd, ["rev-list", "--count", "HEAD", "--not", `--remotes=${remote}`]),
+  );
+  if (!Number.isInteger(count)) {
+    throw new Error(`Could not compare ${branch} with ${remote} branches.`);
+  }
+  if (count > 0) {
+    throw new Error(
+      `Current upstream ${upstreamRef} was deleted from ${remote} and ${branch} has ${count} commit(s) on no ${remote} branch; push or preserve them before setup.`,
+    );
+  }
 }
 
 function requireCommitRef(cwd, ref, label) {
@@ -127,9 +156,12 @@ function assertTargetBranchSafe(cwd, remote, branch) {
   const current = currentBranch(cwd);
   const currentRef = currentUpstream(cwd, current, remote);
   git(cwd, ["fetch", "--prune", remote]);
-  requireCommitRef(cwd, currentRef, "Current upstream");
   requireCommitRef(cwd, targetRef, "Target branch");
-  aheadCount(cwd, currentRef, "HEAD", `Current branch ${current}`);
+  if (commitExists(cwd, currentRef)) {
+    aheadCount(cwd, currentRef, "HEAD", `Current branch ${current}`);
+  } else {
+    requireHeadOnRemote(cwd, remote, current, currentRef);
+  }
   if (hasLocalBranch(cwd, branch)) {
     aheadCount(
       cwd,

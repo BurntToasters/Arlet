@@ -11,8 +11,11 @@ import test from "node:test";
 // target branch commits ahead of their origin refs are lost; detached HEAD,
 // missing upstreams, missing branches, malformed remotes/refs, or a stale
 // remote ref are treated as safe; a failed npm setup happens after an unsafe
-// switch; or npm is invoked through a shell. Every destructive-path proof runs
-// in a temporary clone and confirms refused files, commits, and branches stay.
+// switch; npm is invoked through a shell; leaving a branch whose upstream was
+// deleted (beta after stable promotion) loses commits on no origin branch, is
+// blocked once the stale ref is pruned, or lets vi reset to a missing ref.
+// Every destructive-path proof runs in a temporary clone and confirms refused
+// files, commits, and branches stay.
 
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -267,4 +270,69 @@ test("branch setup fails closed for invalid refs, detached HEAD, and no upstream
     "local-only",
   );
   assert.equal(git(noUpstream.repo, ["rev-parse", "HEAD"]), localHead);
+});
+
+function deleteRemoteBetaWhileOnBeta(f, { prune }) {
+  git(f.repo, ["switch", "beta"]);
+  git(f.temp, ["--git-dir", f.remote, "update-ref", "-d", "refs/heads/beta"]);
+  if (prune) git(f.repo, ["fetch", "--prune", "origin"]);
+}
+
+test("branch setup leaves a deleted upstream when every commit is on origin", (t) => {
+  for (const prune of [false, true]) {
+    const f = fixture(t);
+    deleteRemoteBetaWhileOnBeta(f, { prune });
+    const mainTip = git(f.repo, ["rev-parse", "refs/remotes/origin/main"]);
+
+    const result = runScript(f, "branch-setup.js", ["origin", "main"]);
+
+    assert.equal(result.status, 0, `prune=${prune}: ${output(result)}`);
+    assert.equal(git(f.repo, ["branch", "--show-current"]), "main");
+    assert.equal(git(f.repo, ["rev-parse", "HEAD"]), mainTip);
+    assert.equal(fs.readFileSync(f.marker, "utf8"), "run vi");
+  }
+});
+
+test("branch setup keeps commits that are on no origin branch after upstream deletion", (t) => {
+  const f = fixture(t);
+  git(f.repo, ["switch", "beta"]);
+  fs.writeFileSync(path.join(f.repo, "beta-only.txt"), "keep\n");
+  git(f.repo, ["add", "beta-only.txt"]);
+  git(f.repo, ["commit", "-m", "pushed beta commit"]);
+  git(f.repo, ["push", "origin", "beta"]);
+  deleteRemoteBetaWhileOnBeta(f, { prune: false });
+  const head = git(f.repo, ["rev-parse", "HEAD"]);
+
+  const result = runScript(f, "branch-setup.js", ["origin", "main"]);
+
+  assert.notEqual(result.status, 0, output(result));
+  assert.match(output(result), /deleted from origin.*1 commit/s);
+  assert.equal(git(f.repo, ["branch", "--show-current"]), "beta");
+  assert.equal(git(f.repo, ["rev-parse", "HEAD"]), head);
+});
+
+test("vi refuses to reset a branch whose upstream was deleted", (t) => {
+  const f = fixture(t);
+  deleteRemoteBetaWhileOnBeta(f, { prune: true });
+  const head = git(f.repo, ["rev-parse", "HEAD"]);
+
+  const result = runScript(f, "vi.js");
+
+  assert.notEqual(result.status, 0, output(result));
+  assert.match(output(result), /origin\/beta.*does not exist/);
+  assert.equal(git(f.repo, ["branch", "--show-current"]), "beta");
+  assert.equal(git(f.repo, ["rev-parse", "HEAD"]), head);
+});
+
+test("branch setup refuses a branch tracking a differently named upstream", (t) => {
+  const f = fixture(t);
+  git(f.repo, ["switch", "-c", "other", "--track", "origin/main"]);
+  const head = git(f.repo, ["rev-parse", "HEAD"]);
+
+  const result = runScript(f, "branch-setup.js", ["origin", "beta"]);
+
+  assert.notEqual(result.status, 0, output(result));
+  assert.match(output(result), /must track origin\/other/);
+  assert.equal(git(f.repo, ["branch", "--show-current"]), "other");
+  assert.equal(git(f.repo, ["rev-parse", "HEAD"]), head);
 });
