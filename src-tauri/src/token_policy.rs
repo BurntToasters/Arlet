@@ -1,15 +1,8 @@
-//! MusicKit developer-token checks shared by `build.rs` (release embedding)
-//! and the runtime token command. Error text never includes the token.
+//! MusicKit developer-token checks. Release builds run `validate_hosted` on
+//! the signed hosted file (see `hosted_token`); debug builds read `.env` and
+//! only need `token_expiry`. Error text never includes the token.
 
 pub const TOKEN_ENV: &str = "MUSICKIT_DEVELOPER_TOKEN";
-/// Read by `build.rs`; the runtime uses the literal in `option_env!`.
-#[allow(dead_code)]
-pub const EMBEDDED_TOKEN_ENV: &str = "ARLET_MUSICKIT_DEVELOPER_TOKEN";
-#[allow(dead_code)]
-pub const SKIP_EMBED_ENV: &str = "ARLET_SKIP_MUSICKIT_TOKEN";
-/// A release must leave users at least this long before the token expires.
-#[allow(dead_code)] // Used by build.rs.
-pub const MIN_EMBED_REMAINING_SECONDS: u64 = 30 * 24 * 60 * 60;
 
 fn decode_base64url(segment: &str) -> Option<Vec<u8>> {
     let mut bits = 0u32;
@@ -63,37 +56,57 @@ pub fn token_expiry(token: &str) -> Result<u64, String> {
 
 /// Origin of the bundled frontend in release builds: Tauri 2 on Windows with
 /// `useHttpsScheme` off. Dev builds run on `http://localhost:5173` instead.
-#[allow(dead_code)] // Used by build.rs.
+/// The tests check it against tauri.conf.json.
+#[cfg(test)]
 pub const RELEASE_ORIGIN: &str = "http://tauri.localhost";
 
-#[allow(dead_code)] // Used by build.rs.
-#[derive(Debug)]
-pub struct EmbedCheck {
+/// A hosted token that passed the policy checks.
+#[derive(Debug, PartialEq, Eq)]
+pub struct HostedCheck {
     pub exp: u64,
 }
 
-/// Release builds refuse tokens that expire within the minimum window or
-/// carry any `origin` claim. Apple accepts an origin-restricted token for
-/// catalog requests but refuses `/v1/me` (library) requests, even from
-/// `http://tauri.localhost`: 0.1.0 shipped one and cannot load libraries.
-#[allow(dead_code)] // Used by build.rs.
-pub fn validate_for_embed(token: &str, now: u64) -> Result<EmbedCheck, String> {
-    let exp = token_expiry(token)?;
-    if exp < now.saturating_add(MIN_EMBED_REMAINING_SECONDS) {
-        let days_left = exp.saturating_sub(now) / 86_400;
-        return Err(format!(
-            "MusicKit developer token expires in {days_left} day(s); release builds need at least {} days. Mint a new token.",
-            MIN_EMBED_REMAINING_SECONDS / 86_400
+/// Why a hosted token is refused. `Expired` is separate so the caller can tell
+/// the user to restart instead of treating the file as bad.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PolicyError {
+    Expired { exp: u64 },
+    Rejected(String),
+}
+
+impl std::fmt::Display for PolicyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Expired { .. } => f.write_str("MusicKit developer token has expired"),
+            Self::Rejected(message) => f.write_str(message),
+        }
+    }
+}
+
+/// Policy for a hosted token: a bare, unexpired ES256 JWT with no `origin`
+/// claim. Apple accepts an origin-restricted token for catalog requests but
+/// refuses `/v1/me` (library) requests, even from `http://tauri.localhost`:
+/// 0.1.0 shipped one and cannot load libraries. Any `origin` key is refused,
+/// whatever its value.
+pub fn validate_hosted(token: &str, now: u64) -> Result<HostedCheck, PolicyError> {
+    if token.is_empty() || token.trim() != token {
+        return Err(PolicyError::Rejected(
+            "MusicKit developer token must not have surrounding whitespace".to_string(),
         ));
     }
-    let payload = decode_json_segment(token.trim().split('.').nth(1).unwrap_or(""), "payload")?;
+    let exp = token_expiry(token).map_err(PolicyError::Rejected)?;
+    let payload = decode_json_segment(token.split('.').nth(1).unwrap_or(""), "payload")
+        .map_err(PolicyError::Rejected)?;
     if payload.get("origin").is_some() {
-        return Err(
-            "MusicKit developer token has an origin claim; Apple then refuses library (/v1/me) requests. Mint the release token without MUSICKIT_TOKEN_ORIGINS."
+        return Err(PolicyError::Rejected(
+            "MusicKit developer token has an origin claim; Apple then refuses library (/v1/me) requests."
                 .to_string(),
-        );
+        ));
     }
-    Ok(EmbedCheck { exp })
+    if exp <= now {
+        return Err(PolicyError::Expired { exp });
+    }
+    Ok(HostedCheck { exp })
 }
 
 #[cfg(test)]
@@ -132,8 +145,7 @@ mod tests {
 
     // Failure modes: empty or whitespace token; wrong segment count; invalid
     // base64url; non-JSON header/payload; non-ES256 algorithm; missing,
-    // fractional, or negative `exp`; already expired; expiring inside the
-    // release window; error text that echoes the token.
+    // fractional, or negative `exp`.
     #[test]
     fn rejects_malformed_tokens() {
         let bad = [
@@ -167,22 +179,22 @@ mod tests {
         assert_eq!(token_expiry(&format!("  {token}\n")).unwrap(), NOW + 99);
     }
 
+    // Failure modes: a token that expires exactly now or earlier is reported as
+    // Expired rather than as a generic rejection; a token expiring soon is still
+    // accepted, because hosted tokens have no minimum remaining lifetime.
     #[test]
-    fn embed_requires_minimum_remaining_lifetime() {
+    fn hosted_policy_accepts_any_unexpired_token() {
+        let soon = es256(&format!(r#"{{"exp":{}}}"#, NOW + 1));
+        let boundary = es256(&format!(r#"{{"exp":{NOW}}}"#));
         let expired = es256(&format!(r#"{{"exp":{}}}"#, NOW - 1));
-        let soon = es256(&format!(
-            r#"{{"exp":{}}}"#,
-            NOW + MIN_EMBED_REMAINING_SECONDS - 1
-        ));
-        let ok = es256(&format!(
-            r#"{{"exp":{}}}"#,
-            NOW + MIN_EMBED_REMAINING_SECONDS
-        ));
-        assert!(validate_for_embed(&expired, NOW).is_err());
-        assert!(validate_for_embed(&soon, NOW).is_err());
+        assert_eq!(validate_hosted(&soon, NOW).unwrap().exp, NOW + 1);
         assert_eq!(
-            validate_for_embed(&ok, NOW).unwrap().exp,
-            NOW + MIN_EMBED_REMAINING_SECONDS
+            validate_hosted(&boundary, NOW),
+            Err(PolicyError::Expired { exp: NOW })
+        );
+        assert_eq!(
+            validate_hosted(&expired, NOW),
+            Err(PolicyError::Expired { exp: NOW - 1 })
         );
     }
 
@@ -190,15 +202,20 @@ mod tests {
         es256(&format!(r#"{{"exp":{},"origin":{origin}}}"#, NOW * 2))
     }
 
-    // Failure mode: a release embeds an origin-restricted token, including
-    // one scoped exactly to the release app; Apple refuses its library calls.
+    // Failure mode: the hosted file carries an origin-restricted token, including
+    // one scoped exactly to the app origin; Apple refuses its library calls. Any
+    // origin key, even with a null or empty value, is refused.
     #[test]
-    fn embed_rejects_every_origin_claim() {
+    fn hosted_policy_rejects_every_origin_claim() {
         for origin in [
             r#"["http://tauri.localhost"]"#,
             r#""http://tauri.localhost""#,
             r#"[]"#,
             r#"[42]"#,
+            r#"null"#,
+            r#"false"#,
+            r#""""#,
+            r#"{}"#,
             r#"["http://localhost:5173"]"#,
             r#"["https://tauri.localhost"]"#,
             r#"["http://tauri.localhost","http://localhost:5173"]"#,
@@ -206,17 +223,34 @@ mod tests {
             r#"["http://tauri.localhost/"]"#,
         ] {
             assert!(
-                validate_for_embed(&with_origin(origin), NOW).is_err(),
+                validate_hosted(&with_origin(origin), NOW).is_err(),
                 "accepted origin claim {origin}"
             );
         }
     }
 
     #[test]
-    fn embed_accepts_a_token_without_origin_claim() {
-        let open = validate_for_embed(&es256(&format!(r#"{{"exp":{}}}"#, NOW * 2)), NOW)
+    fn hosted_policy_accepts_a_token_without_origin_claim() {
+        let open = validate_hosted(&es256(&format!(r#"{{"exp":{}}}"#, NOW * 2)), NOW)
             .expect("unrestricted token accepted");
         assert_eq!(open.exp, NOW * 2);
+    }
+
+    // Failure modes: whitespace around the token would make the served string
+    // differ from the exact text that was signed.
+    #[test]
+    fn hosted_policy_requires_a_bare_token() {
+        let token = es256(&format!(r#"{{"exp":{}}}"#, NOW * 2));
+        for padded in [
+            format!(" {token}"),
+            format!("{token}\n"),
+            format!("\t{token}"),
+        ] {
+            assert!(
+                matches!(validate_hosted(&padded, NOW), Err(PolicyError::Rejected(_))),
+                "accepted padded token"
+            );
+        }
     }
 
     // Failure mode: the app's real origin drifts (https scheme or a
@@ -233,12 +267,20 @@ mod tests {
         assert_eq!(RELEASE_ORIGIN, "http://tauri.localhost");
     }
 
+    // Failure mode: a policy error for an expired, malformed, or origin-scoped
+    // token echoes the token or its segments into text that may be logged.
     #[test]
     fn errors_never_echo_the_token() {
-        let soon = es256(&format!(r#"{{"exp":{}}}"#, NOW + 10));
+        let expired = es256(&format!(r#"{{"exp":{}}}"#, NOW - 10));
         let alg = jwt(r#"{"alg":"HS256"}"#, r#"{"exp":1}"#);
-        for token in [soon.as_str(), alg.as_str(), "secretvalue.x.y"] {
-            let error = validate_for_embed(token, NOW).unwrap_err();
+        let origin = with_origin(r#"["http://tauri.localhost"]"#);
+        for token in [
+            expired.as_str(),
+            alg.as_str(),
+            origin.as_str(),
+            "secretvalue.x.y",
+        ] {
+            let error = validate_hosted(token, NOW).unwrap_err().to_string();
             for segment in token.split('.').filter(|s| s.len() > 2) {
                 assert!(!error.contains(segment), "leaked {segment}: {error}");
             }

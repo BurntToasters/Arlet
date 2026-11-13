@@ -71,28 +71,43 @@ first.
   **outside** the repo; it never prints the JWT or `.p8`.
 - **Debug builds** read the token from the process environment at runtime
   (`dotenv -e .env -- tauri dev`).
-- **Release builds** embed the token at compile time. `src-tauri/build.rs`
-  reads it from the release machine's `.env` and validates it with
-  `src-tauri/src/token_policy.rs` (ES256 JWT, integer `exp`, at least 30 days
-  left), or fails the build. At runtime `get_developer_token` serves only the
-  embedded token, never the user's environment, and reports an expired token
-  as "install the latest update". `release-preflight.js` runs the same check
-  before a draft release exists and needs 150 days left, so the token
-  outlives the weekly canary's 150-day release-age warning.
-- The embedded JWT can be extracted from the binary, as with any MusicKit web
-  app. Its lifetime is the exposure window: Apple caps it at 6 months, so a
-  new release must ship before the embedded token expires.
+- **Release builds** embed no token. At launch, the app starts downloading a
+  signed token file from one fixed HTTPS URL, before the main window exists,
+  `https://music-api.arlet.rosiecdn.win/musickit/arlet-token.json`, in
+  `src-tauri/src/hosted_token.rs`. The request is made in Rust, not by the
+  webview, so it needs no CSP or capability entry. It is the one outbound
+  request a release build adds on every launch. `get_developer_token` serves
+  only the verified token, never the user's environment.
+- The download is HTTPS only, follows no redirects, sends no cookies, uses the
+  system proxy settings, and is capped at 5 seconds and 16 KiB. The file is
+  `{ "version": 1, "token", "signature" }`. The signature is made with the
+  Tauri updater key over `arlet-musickit-developer-token-v1`, a newline, and
+  the JWT, and is checked against `plugins.updater.pubkey` in
+  `src-tauri/tauri.conf.json`. The token must then pass
+  `src-tauri/src/token_policy.rs`: a bare ES256 JWT with an integer `exp` that
+  has not passed and no `origin` claim. The prefix keeps an updater artifact
+  signature, or a signature over the bare JWT, from verifying as a token
+  signature.
+- The verified file is cached as `musickit-token.json` in the local app data
+  folder. The cache is verified again on every read, so an edited or truncated
+  copy is never served, and an older signed file never replaces a newer one.
+  With no network, a valid cache is served. An expired token shows "Arlet's
+  Apple Music access has expired. Restart Arlet to refresh it." If the
+  download fails and no valid cache exists, the offline banner appears with
+  Reconnect.
+- The JWT is public by design, as with any MusicKit web app: a browser receives
+  it too. The signature protects what installs accept, not the token's
+  secrecy. Its lifetime is the exposure window. Apple caps it at 6 months, so
+  republish the hosted token (`npm run token:publish`) before it expires.
+  Installed copies stop playing once it does.
 - Release tokens carry no `origin` claim. Apple accepts an origin-restricted
   token for catalog requests but refuses library (`/v1/me`) requests, even
   from `http://tauri.localhost`, so 0.1.0 cannot load anyone's library.
-  `build.rs` and `release:preflight` reject one, and the native E2E checks
-  the embedded token has none. The claim only limited browsers anyway: a
-  native client can send any `Origin` header.
-- Mint on a machine that holds the `.p8`, and copy only the JWT to the
-  release machine.
-- `ARLET_SKIP_MUSICKIT_TOKEN=1` builds a release binary without a token for
-  unpublished CI smoke builds only. `tauri-windows-build.js` and the release
-  preflight refuse it.
+  `hosted_token.rs` and the release scripts reject one, and the native E2E
+  checks that the hosted token has none. The claim only limited browsers
+  anyway: a native client can send any `Origin` header.
+- Mint on a machine that holds the `.p8`, and copy only the JWT to the machine
+  that runs `npm run token:publish`.
 
 ## Logging
 
@@ -187,7 +202,8 @@ any disk or OS call:
   `get_app_info`, `get_developer_token`, `get_beta_updater_target`,
   `get_log_dir`, `clear_logs`, `supports_window_fx`, `reset_settings`,
   `clear_windows_media_session`, `quit_ready`. Each returns fixed data or
-  acts on fixed paths.
+  acts on fixed paths. `get_developer_token` returns the verified hosted token
+  and, in a release build, downloads only the fixed hosted-token URL.
 
 Native events are not commands. Suspend and default-output-change pauses
 (`src-tauri/src/system_events.rs`) are triggered by Windows, not by the page,
@@ -204,7 +220,9 @@ clean.
 
 Windows Authenticode (Azure Artifact Signing), Tauri updater signatures, and
 GPG detached signatures are three independent mechanisms; one is never
-accepted as proof of another. See `docs/RELEASE.md`.
+accepted as proof of another. The hosted MusicKit token reuses the Tauri
+updater key, but its signature covers a separate prefixed payload, so neither
+kind verifies as the other. See `docs/RELEASE.md`.
 
 ## Reporting
 

@@ -33,26 +33,46 @@ Azure signing, and live updater feeds remain explicit release-environment gates.
    without it: after verification, cleaned artifacts are mirrored there with
    hash checks, because `release:finalize` then resets the checkout.
    Betas skip the mirror unless `OVERRIDE_BETA_MIRROR_SKIP=1`.
-5. **MusicKit developer token.** Release builds embed
-   `MUSICKIT_DEVELOPER_TOKEN` from the release VM's `.env`.
-   `prerelease:prepare` runs `release:mint-token` before the preflight:
+5. **MusicKit developer token (hosted).** Release builds embed no token. Each
+   launch downloads a signed copy from
+   `https://music-api.arlet.rosiecdn.win/musickit/arlet-token.json`, so the
+   token is republished separately from releases, with `npm run token:publish`
+   on the release machine:
    - With `MUSICKIT_TEAM_ID`, `MUSICKIT_KEY_ID`, and `MUSICKIT_P8_PATH` set
      (the `.p8` outside the repo), it mints a fresh 180-day token with no
-     `origin` claim into `.env` on every release. Dev
+     `origin` claim into `.env`. Dev
      `MUSICKIT_TOKEN_ORIGINS`/`MUSICKIT_TOKEN_TTL_SECONDS` are ignored.
-   - With none of them set, it keeps the pasted token, so the `.p8` can stay
-     off the release VM. Mint elsewhere with `MUSICKIT_TOKEN_ORIGINS` blank
-     and paste the JWT.
+   - With none of them set, it reuses the pasted `MUSICKIT_DEVELOPER_TOKEN`, so
+     the `.p8` can stay off the release VM. Mint elsewhere with
+     `MUSICKIT_TOKEN_ORIGINS` blank and paste the JWT.
    - With only some set, it fails rather than reuse a stale token.
+   - It checks the token with Apple, signs `arlet-musickit-developer-token-v1`
+     plus the token with `tauri signer sign` (`TAURI_SIGNING_PRIVATE_KEY` and
+     its password), verifies the signature against `plugins.updater.pubkey`,
+     and confirms the CDN endpoint's origin is the Spaces bucket. It uploads
+     the file to DigitalOcean Spaces as public-read, reads it back from the
+     origin, flushes that one CDN path, and polls the public URL until it
+     serves the new file.
+   - `npm run token:publish -- --if-expiring` publishes only when the live file
+     is missing or invalid, or has 60 days or fewer left. `prerelease:prepare`
+     runs it before `release:preflight`.
+   - `npm run token:check` reads the live file without secrets. It must be
+     valid, have at least 45 days left, and be accepted by Apple.
 
-   `build.rs` and `release:preflight` then refuse a missing token, a
-   non-ES256 JWT, or any `origin` claim. `build.rs` needs 30 days left;
-   `release:preflight` needs 170 days. The weekly canary warns at 130 days of
-   release age: the 40-day gap leaves at least 33 days after a weekly check
-   delay, assuming the release is published promptly after preflight. Mint a
-   fresh 180-day token when a pasted one has less than 170 days left. The
-   preflight then sends the token to Apple's catalog API and stops unless
-   Apple answers 200.
+   Setup goes in `.env` (see `.env.example`): `ARLET_TOKEN_SPACES_KEY`,
+   `ARLET_TOKEN_SPACES_SECRET`, `ARLET_TOKEN_SPACES_BUCKET`,
+   `ARLET_TOKEN_SPACES_REGION`, and `ARLET_TOKEN_CDN_ID` (from
+   `doctl compute cdn list`). Use a Spaces key limited to that bucket and a
+   doctl token limited to CDN, after `doctl auth init`. The CDN's edge TTL is 7
+   days, and each publish flushes it.
+
+   `release:preflight` requires the live file to be healthy (at least 45 days
+   left, accepted by Apple) and its signature to verify.
+
+   Before publishing a token from a new Media Services key, wait a day. A new
+   key's library requests fail for about two hours (see the 0.1.0 notes
+   below), and a hosted token reaches every 0.5.x install at once. Versions
+   0.4.x and older keep the token they embedded.
 
    0.1.0 failed every library (`/v1/me`) request for two reasons, fixed in
    0.1.1:
@@ -64,9 +84,9 @@ Azure signing, and live updater feeds remain explicit release-environment gates.
      hours. Create a new key at least a day before releasing with it.
 
    The `origin` check catches the first. Nothing automated catches the
-   second: library requests need a signed-in user. Before publishing, sign in to a build that
-   embeds the release token and open Library. Ship a release before the
-   embedded token expires or MusicKit stops working for users.
+   second: library requests need a signed-in user. Before publishing, sign in
+   to a build that downloads the hosted token and open Library. Republish the
+   hosted token before it expires (see Recurring duties).
 
 6. **GitHub CLI.** `gh auth login` with rights to create/edit releases in
    `BurntToasters/Arlet`. `GH_REPO_OWNER`/`GH_REPO_NAME` retargeting is
@@ -88,7 +108,7 @@ canonical text in `scripts/license-texts/`. Add the missing text there.
   upstream, synchronized versions (`package.json`, `tauri.conf.json`,
   `Cargo.toml`), updater pubkey presence, NSIS target config, and credential
   hygiene (no `.p8` in the worktree, `.env` never staged, no Vite-exposed
-  MusicKit developer token), and an embeddable MusicKit developer token.
+  MusicKit developer token), and the live hosted MusicKit token (step 5).
 - Stable release boundaries reject recovery overrides such as
   `SKIP_WIN_CODESIGN`, `FORCE_UPLOAD`, `SKIP_RELEASE_MIRROR`,
   `ALLOW_ASSET_REPLACE`, `SKIP_E2E`, `SKIP_WIN_CONTEXT_MENU`, and
@@ -131,7 +151,7 @@ and does not call `gh release view` or another release API to source notes.
 
 ```text
 npm run r                        # sync the VM to origin/main
-npm run release:win              # prerelease:prepare (warning + token mint + preflight + licenses), then release:prepare steps (bootstrap + full test:all + clean artifacts + build session), then release:win:continue
+npm run release:win              # prerelease:prepare (warning + token renewal when due + preflight + licenses), then release:prepare steps (bootstrap + full test:all + clean artifacts + build session), then release:win:continue
 npm run release:win:resume       # after a failure: prerelease:prepare + release:win:continue, reusing the build session (valid 24 h)
 ```
 
@@ -228,13 +248,14 @@ accident.
 These fail silently if nobody watches them, so they are scheduled or
 written down here.
 
-- **Ship before the token expires.** Each release embeds a developer token
-  with at least 170 days remaining at release preflight; it may reuse an
-  existing token. Apple caps token lifetime at 180 days. When it expires,
-  every installed copy stops playing. The `Canary` workflow
-  (`.github/workflows/musickit-canary.yml`) warns every Monday once the latest
-  stable release reaches 130 days old. Preflight requires at least 170 days
-  remaining, leaving about 33 days after one weekly-check delay.
+- **Republish the hosted token before it expires.** Apple caps a token at 180
+  days. `prerelease:prepare` renews the live file at 60 days or fewer. The
+  `hosted-token` job in the `Canary` workflow
+  (`.github/workflows/musickit-canary.yml`) runs `npm run token:check` every
+  Monday and fails below 45 days left. A failing run still leaves about 38
+  days to renew, so run `npm run token:publish` without a release. When the
+  token expires, every installed copy stops playing until the file is
+  republished and Arlet restarts.
 - **Watch for MusicKit changes.** Apple updates MusicKit JS in place. The same
   workflow runs the native E2E weekly; its "live MusicKit keeps every API
   Arlet relies on" check lists anything Apple removed.

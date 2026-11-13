@@ -43,8 +43,14 @@ Before beta.3 ships:
       the build and stops the release if it is missing or too short. Also
       confirm `MUSICKIT_DEVELOPER_TOKEN`, updater key and password,
       `AZURE_*`, `GPG_KEY_ID`, and `AFTER_PACK_LOC` are set.
-- [ ] **Token expiry calendar:** put the developer token's expiry date on the
-      calendar, and ship a new release before it lapses.
+- [ ] **Hosted token setup (0.5.0-beta.1):** create the Space and the CDN
+      endpoint for `music-api.arlet.rosiecdn.win` (7-day edge TTL), a Spaces
+      key limited to that bucket, and the `ARLET_TOKEN_*` keys in `.env`.
+      Install doctl on the release VM and run `doctl auth init` with a
+      CDN-only token. Then `npm run token:publish` and `npm run token:check`.
+- [ ] **Token expiry calendar:** the weekly canary's `hosted-token` job fails
+      below 45 days left. Put the hosted token's expiry on the calendar too,
+      and run `npm run token:publish` before it lapses.
 
 Before beta.6 ships:
 
@@ -79,13 +85,14 @@ window materials are implemented; the 2026-09-11 notes below are history.
       same run, then narrow the provisional CSP from it: the `*.apple.com`
       connect wildcard, `style-src 'unsafe-inline'`, and scripts to the
       `/musickit/` path (`docs/SECURITY.md`).
-- [ ] **Release VM `.env`:** `MUSICKIT_DEVELOPER_TOKEN` (≥ 30 days left),
-      updater key + password, `AZURE_*`, `GPG_KEY_ID`, `AFTER_PACK_LOC`.
+- [ ] **Release VM `.env`:** MusicKit mint inputs (or a pasted
+      `MUSICKIT_DEVELOPER_TOKEN`), `ARLET_TOKEN_*` publish keys, updater key +
+      password, `AZURE_*`, `GPG_KEY_ID`, `AFTER_PACK_LOC`.
       Back up the updater key offline.
 
 - [x] **Final app icon:** `src-tauri/icons` holds the production icons.
-- [ ] **Token expiry calendar:** the embedded token caps at 6 months; ship a
-      release before it expires.
+- [ ] **Token expiry calendar:** the hosted token caps at 6 months;
+      republish it with `npm run token:publish` before it expires (see above).
 
 ## ✅ Phase 0 Scaffolding (Completed)
 

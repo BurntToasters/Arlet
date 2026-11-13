@@ -109,36 +109,12 @@ const TOKEN_ENV_KEYS: [&str; 2] = [
     "VITE_MUSICKIT_DEVELOPER_TOKEN",
 ];
 
-/// Release builds compiled by `build.rs` carry a validated token.
-const EMBEDDED_TOKEN: Option<&str> = option_env!("ARLET_MUSICKIT_DEVELOPER_TOKEN");
-
-/// Debug builds read `.env` at runtime; release builds serve only the token
-/// embedded at compile time and never consult the user's environment.
-pub fn resolve_developer_token<F>(
-    debug: bool,
-    embedded: Option<&str>,
-    lookup: F,
-    now: u64,
-) -> Result<String, String>
+/// Debug builds read the token from `.env` at runtime. Release builds never
+/// call this: they serve the hosted token (see `hosted_token`).
+pub fn resolve_developer_token<F>(lookup: F) -> Result<String, String>
 where
     F: Fn(&str) -> Option<String>,
 {
-    if !debug {
-        let token = embedded
-            .map(str::trim)
-            .filter(|token| !token.is_empty())
-            .ok_or_else(|| {
-                "This Arlet build was compiled without a MusicKit developer token.".to_string()
-            })?;
-        let exp = crate::token_policy::token_expiry(token)?;
-        if exp <= now {
-            return Err(
-                "Arlet's Apple Music access token has expired. Install the latest Arlet update."
-                    .to_string(),
-            );
-        }
-        return Ok(token.to_string());
-    }
     for key in TOKEN_ENV_KEYS {
         if let Some(value) = lookup(key) {
             let trimmed = value.trim();
@@ -153,21 +129,17 @@ where
     )
 }
 
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or(0)
-}
-
+/// Debug builds use `.env`; release builds wait for the hosted token. Both
+/// branches compile in every profile, so neither is dead code.
 #[tauri::command]
-pub fn get_developer_token() -> Result<String, String> {
-    resolve_developer_token(
-        cfg!(debug_assertions),
-        EMBEDDED_TOKEN,
-        |key| std::env::var(key).ok(),
-        unix_now(),
-    )
+pub async fn get_developer_token(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::hosted_token::HostedTokenState>,
+) -> Result<String, String> {
+    if cfg!(debug_assertions) {
+        return resolve_developer_token(|key| std::env::var(key).ok());
+    }
+    crate::hosted_token::token(&app, &state).await
 }
 
 /// The only page `open_support_page` opens. The command takes no input, so
@@ -444,83 +416,34 @@ mod tests {
         assert!(json.contains("windows_build"));
     }
 
-    const NOW: u64 = 1_800_000_000;
-
-    fn embedded(exp: u64) -> String {
-        // {"alg":"ES256"} . {"exp":<exp>} . sig
-        let payload = format!("{{\"exp\":{exp}}}");
-        let encode = |bytes: &[u8]| {
-            const A: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-            let mut out = String::new();
-            for chunk in bytes.chunks(3) {
-                let n = chunk
-                    .iter()
-                    .enumerate()
-                    .fold(0u32, |acc, (i, b)| acc | (u32::from(*b) << (16 - 8 * i)));
-                for i in 0..=chunk.len() {
-                    out.push(A[((n >> (18 - 6 * i)) & 63) as usize] as char);
-                }
-            }
-            out
-        };
-        format!(
-            "{}.{}.{}",
-            encode(br#"{"alg":"ES256"}"#),
-            encode(payload.as_bytes()),
-            encode(b"sig")
-        )
-    }
-
     fn env_token(key: &str) -> Option<String> {
         (key == "MUSICKIT_DEVELOPER_TOKEN").then(|| " jwt-from-env ".to_string())
     }
 
     #[test]
     fn debug_reads_musickit_developer_token() {
-        let token = super::resolve_developer_token(true, None, env_token, NOW).expect("token");
+        let token = super::resolve_developer_token(env_token).expect("token");
         assert_eq!(token, "jwt-from-env");
     }
 
     #[test]
     fn debug_accepts_legacy_vite_token_alias() {
-        let token = super::resolve_developer_token(
-            true,
-            None,
-            |key| (key == "VITE_MUSICKIT_DEVELOPER_TOKEN").then(|| "legacy-jwt".to_string()),
-            NOW,
-        )
+        let token = super::resolve_developer_token(|key| {
+            (key == "VITE_MUSICKIT_DEVELOPER_TOKEN").then(|| "legacy-jwt".to_string())
+        })
         .expect("token");
         assert_eq!(token, "legacy-jwt");
     }
 
+    // Failure modes: an unset or whitespace-only variable is a missing token;
+    // the error names the variable and never echoes a value.
     #[test]
     fn missing_token_does_not_echo_secrets() {
-        let err = super::resolve_developer_token(true, None, |_| None, NOW).unwrap_err();
+        let err = super::resolve_developer_token(|_| None).unwrap_err();
         assert!(err.contains("MUSICKIT_DEVELOPER_TOKEN"));
         assert!(!err.contains("jwt"));
-    }
-
-    // Failure modes: release build without an embedded token falls back to a
-    // user-controlled env var; an expired embedded token reaches MusicKit and
-    // fails opaquely; error text echoes the embedded token.
-    #[test]
-    fn release_serves_embedded_token_only() {
-        let valid = embedded(NOW + 86_400);
-        assert_eq!(
-            super::resolve_developer_token(false, Some(&valid), env_token, NOW).unwrap(),
-            valid
-        );
-        let missing = super::resolve_developer_token(false, None, env_token, NOW).unwrap_err();
-        assert!(missing.contains("without"));
-    }
-
-    #[test]
-    fn release_rejects_expired_embedded_token() {
-        let expired = embedded(NOW - 1);
-        let err =
-            super::resolve_developer_token(false, Some(&expired), env_token, NOW).unwrap_err();
-        assert!(err.contains("update"));
-        assert!(!err.contains(expired.split('.').nth(1).unwrap()));
+        let blank = super::resolve_developer_token(|_| Some("   ".to_string())).unwrap_err();
+        assert_eq!(blank, err);
     }
 
     #[test]

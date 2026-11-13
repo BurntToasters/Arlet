@@ -1,16 +1,16 @@
 #!/usr/bin/env node
-// Native end-to-end gate (Windows, opt-in). Builds a release binary with a
-// synthetic MusicKit token, drives the real app over WebView2's DevTools
-// Protocol, and writes e2e-artifacts/<timestamp>/{report.json,screenshot.png,
-// arlet.log}. Each run uses an isolated marked data and WebView2 profile.
-// The failure modes it covers are listed in docs/TESTING.md.
+// Native end-to-end gate (Windows, opt-in). Builds a release binary with
+// --features e2e, serves token files from a local fixture signed with a
+// throwaway key (e2e-hosted-token.js), drives the app over WebView2's DevTools
+// Protocol, and writes e2e-artifacts/<timestamp>/ (report.json, arlet.log,
+// screenshots). Failure modes are listed in docs/TESTING.md.
 //
 // Usage: node scripts/e2e-app.js [--skip-build] [--real-token] [--foreground]
 //   [--scenarios name1,name2]
-// --real-token embeds MUSICKIT_DEVELOPER_TOKEN from the environment and checks
-// that Apple accepts it from the release origin (catalog request, no sign-in).
-// Arlet launches in the background (never the active window, behind other
-// windows) so a run does not take the keyboard; --foreground opts out.
+// --real-token serves MUSICKIT_DEVELOPER_TOKEN through the same fixture (never
+// printed) and checks that Apple accepts it from the release origin.
+// Arlet launches in the background so a run does not take the keyboard;
+// --foreground opts out.
 
 import { spawn, spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
@@ -58,6 +58,7 @@ import { sleep } from "./e2e-helpers.js";
 import { connectCdp, findPageTarget } from "./e2e-cdp.js";
 import { withE2eProfileSetup } from "./e2e-profile.js";
 import { startForegroundMonitor } from "./e2e-foreground.js";
+import { startHostedTokenFixture } from "./e2e-hosted-token.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TARGET_DIR = path.join(root, "src-tauri", "target", "e2e");
@@ -451,36 +452,27 @@ function buildWebView2Args(...extraSwitches) {
     .join(" ");
 }
 
-function syntheticToken() {
-  const encode = (value) =>
-    Buffer.from(JSON.stringify(value)).toString("base64url");
-  const exp = Math.floor(Date.now() / 1000) + 120 * 24 * 60 * 60;
-  return `${encode({ alg: "ES256", kid: "E2ETEST" })}.${encode({ iss: "E2E", iat: 0, exp })}.${Buffer.from("e2e-signature").toString("base64url")}`;
-}
-
+// Logged in check details instead of token values: a hash identifies which
+// token was served without revealing it.
 function tokenFingerprint(token) {
   return crypto.createHash("sha256").update(token).digest("hex");
 }
 
-function detectTokenMode(token) {
+function fileSha256(file) {
   try {
-    const [headerPart, payloadPart] = String(token).split(".");
-    const header = JSON.parse(Buffer.from(headerPart, "base64url").toString());
-    const payload = JSON.parse(
-      Buffer.from(payloadPart, "base64url").toString(),
-    );
-    return header.kid === "E2ETEST" && payload.iss === "E2E"
-      ? "synthetic"
-      : "real";
+    return crypto
+      .createHash("sha256")
+      .update(fs.readFileSync(file))
+      .digest("hex");
   } catch {
-    return "unknown";
+    return null;
   }
 }
 
-function build(token, tokenMode) {
+// The release binary embeds no token (the hosted token is downloaded at
+// launch), so the build needs none and its proof does not record one.
+function build() {
   const env = { ...process.env, CARGO_TARGET_DIR: TARGET_DIR };
-  env.MUSICKIT_DEVELOPER_TOKEN = token;
-  delete env.ARLET_SKIP_MUSICKIT_TOKEN;
   const result = spawnSync(
     "cmd.exe",
     ["/d", "/s", "/c", "npx tauri build --no-bundle --features e2e"],
@@ -501,8 +493,6 @@ function build(token, tokenMode) {
     `${JSON.stringify(
       {
         feature: "e2e",
-        tokenMode,
-        tokenFingerprint: tokenFingerprint(token),
         builtAt: new Date().toISOString(),
         sha256,
       },
@@ -512,11 +502,7 @@ function build(token, tokenMode) {
   );
 }
 
-function verifyE2eBuildProof(
-  token,
-  tokenMode,
-  { allowRefreshedSyntheticToken = false } = {},
-) {
+function verifyE2eBuildProof() {
   if (!fs.existsSync(EXE)) fail(`missing ${EXE}`);
   let proof;
   try {
@@ -530,19 +516,8 @@ function verifyE2eBuildProof(
     .createHash("sha256")
     .update(fs.readFileSync(EXE))
     .digest("hex");
-  if (
-    proof?.feature !== "e2e" ||
-    proof.sha256 !== sha256 ||
-    proof.tokenMode !== tokenMode ||
-    !/^[a-f0-9]{64}$/u.test(proof.tokenFingerprint ?? "")
-  ) {
+  if (proof?.feature !== "e2e" || proof.sha256 !== sha256) {
     fail("--skip-build binary does not match the verified E2E-feature build");
-  }
-  if (
-    (!allowRefreshedSyntheticToken || tokenMode !== "synthetic") &&
-    proof.tokenFingerprint !== tokenFingerprint(token)
-  ) {
-    fail("E2E build token does not match the requested token mode and value");
   }
   return proof;
 }
@@ -562,7 +537,8 @@ function dataDirs() {
 
 /**
  * Injected for the expired-token check only: answers `get_developer_token`
- * with the release build's expiry error, as Tauri's IPC protocol does.
+ * with the release build's expiry message (hosted_token.rs, ServeError::Expired),
+ * as Tauri's IPC protocol does.
  */
 const EXPIRED_TOKEN_SOURCE = `(() => {
   if (sessionStorage.getItem("arlet-e2e-expired-token") !== "1") return;
@@ -576,7 +552,7 @@ const EXPIRED_TOKEN_SOURCE = `(() => {
       ) {
         return Promise.resolve(
           new Response(
-            JSON.stringify("Arlet's Apple Music access token has expired. Install the latest Arlet update."),
+            JSON.stringify("Arlet's Apple Music access has expired. Restart Arlet to refresh it."),
             { headers: { "Content-Type": "application/json", "Tauri-Response": "error" } },
           ),
         );
@@ -613,6 +589,22 @@ function seedCorruptSettings() {
 }
 
 const CACHE_SCOPE = "current-account";
+
+/**
+ * Marks the cached library as signed-in (a storefront and a refresh time). The
+ * app shows its offline banner only from that state (enterOfflineMode), and a
+ * sign-out clears it. The suite signs out before the hosted-token cases run.
+ */
+function seedSignedInLibraryMeta() {
+  const db = new DatabaseSync(path.join(dataDirs().local, "arlet-library.db"));
+  try {
+    db.prepare(
+      "INSERT OR REPLACE INTO cache_meta (scope, storefront, last_refresh_at) VALUES (?, 'us', ?)",
+    ).run(CACHE_SCOPE, Date.now());
+  } finally {
+    db.close();
+  }
+}
 
 /** A cache written by the former SQL plugin: same tables, user_version 0. */
 function seedLegacyCache() {
@@ -1186,12 +1178,332 @@ function saveJson(artifactDir, name, value) {
   );
 }
 
+/** The hosted token cache in the app's local data directory (app_paths.rs). */
+const HOSTED_TOKEN_CACHE_FILE = "musickit-token.json";
+// Mirrors FAILED_FETCH_RETRY_SECS in hosted_token.rs.
+const HOSTED_RETRY_WINDOW_MS = 10_000;
+
+/** Environment for every isolated launch. The token URL and key are this run's fixture. */
+function appLaunchEnv({ profileRoot, tokenFixture, webview2Args }) {
+  return {
+    ...process.env,
+    MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN,
+    ARLET_E2E_RUN_KEY: E2E_RUN_KEY,
+    ARLET_E2E_DATA_ROOT: profileRoot,
+    WEBVIEW2_USER_DATA_FOLDER: path.join(profileRoot, "webview"),
+    ARLET_E2E_TOKEN_URL: tokenFixture.url,
+    ARLET_E2E_TOKEN_PUBKEY: tokenFixture.publicKey,
+    ...BACKGROUND_ENV,
+    ...(webview2Args && {
+      WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: webview2Args,
+    }),
+  };
+}
+
+/**
+ * Starts one more isolated Arlet on the same profile. The app downloads its
+ * token once per process, so each hosted-token case needs its own launch.
+ */
+async function launchIsolatedApp({ profileRoot, tokenFixture }) {
+  const debugPort = await allocateDebugPort();
+  const webview2Args = buildWebView2Args(
+    `--remote-debugging-port=${debugPort}`,
+    "--remote-debugging-address=127.0.0.1",
+    ...BACKGROUND_SWITCHES,
+  );
+  const child = spawn(EXE, [], {
+    env: appLaunchEnv({ profileRoot, tokenFixture, webview2Args }),
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  if (child.pid) ownedAppPids.add(child.pid);
+  captureChildOutput(child, { stdout: "", stderr: "" }, () => undefined);
+  let page;
+  const stop = async () => {
+    try {
+      page?.close();
+    } catch {
+      // The page may already be closed.
+    }
+    killOwnedArlet();
+    return { exited: await waitForArletExit() };
+  };
+  try {
+    const target = await findPageTarget({
+      port: debugPort,
+      timeoutMs: 60_000,
+      launched: child,
+    });
+    page = connectCdp(target.webSocketDebuggerUrl);
+    await page.opened;
+    if (!FOREGROUND) {
+      await page.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+    }
+  } catch (error) {
+    await stop();
+    throw error;
+  }
+  return { page, stop };
+}
+
+/** Runs `body` against a fresh isolated launch and stops that app afterwards. */
+async function withIsolatedApp({ profileRoot, tokenFixture }, body) {
+  const app = await launchIsolatedApp({ profileRoot, tokenFixture });
+  let result;
+  try {
+    result = await body(app);
+  } finally {
+    const stopped = await app.stop();
+    if (!stopped.exited) {
+      throw new Error("the isolated app did not exit after its check");
+    }
+  }
+  return result;
+}
+
+/** Records one check. A thrown error fails that check only; the others still run. */
+async function hostedTokenCheck(check, name, body) {
+  try {
+    const outcome = await body();
+    check(name, outcome.passed, outcome.detail);
+  } catch (error) {
+    check(name, false, String(error?.message ?? error));
+  }
+}
+
+const waitForShell = (page) =>
+  waitFor(page, `document.querySelector(".app-shell .player-bar")`, 30_000);
+
+/**
+ * Polls across Reconnect's reload: the marker set before the click is gone in
+ * the new document, and MusicKit has configured with a token.
+ */
+async function waitForReconnectedApp(page, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await sleep(250);
+    try {
+      const ready = await page.evaluate(
+        "return typeof window.__ARLET_E2E_RECONNECT__ === 'undefined' && Boolean(window.MusicKit?.getInstance?.());",
+      );
+      if (ready) return true;
+    } catch {
+      // The old document is going away; poll the new one.
+    }
+  }
+  return false;
+}
+
+/**
+ * Hosted-token checks (release builds). Each case seeds or removes the cache,
+ * then runs in a fresh app; the fixture's request counts show the app really
+ * downloaded the file under test. Failure modes they catch:
+ * - the app ignores ARLET_E2E_TOKEN_URL or the key, or still serves the
+ *   runtime env token (the served token is then not the fixture's);
+ * - a file with a bad signature is served, or it is refused but the verified
+ *   cache is not served in its place;
+ * - an older signed file replaces a newer cache (rollback);
+ * - a failed download blanks the app instead of serving the cache;
+ * - no cache and an unreachable fixture show no offline banner, or Reconnect
+ *   never downloads again once the fixture is back (the retry window stalls);
+ * - the throwaway signing key or the fixture server outlives the run.
+ * The served-token checks in run() cover the runtime env token and the origin
+ * claim.
+ */
+async function runHostedTokenChecks({ check, tokenFixture, profileRoot }) {
+  const cachePath = path.join(dataDirs().local, HOSTED_TOKEN_CACHE_FILE);
+  const { tokens, requests } = tokenFixture;
+  const seedCache = (bytes) => {
+    fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+    fs.writeFileSync(cachePath, bytes);
+    return fileSha256(cachePath);
+  };
+  const served = (result) => ({
+    ok: result.ok,
+    servedFingerprint:
+      typeof result.value === "string" ? tokenFingerprint(result.value) : null,
+    error: result.ok ? undefined : result.error,
+  });
+  const launch = (body) => withIsolatedApp({ profileRoot, tokenFixture }, body);
+
+  await hostedTokenCheck(
+    check,
+    "a bad signature is refused and the cached token is served",
+    async () => {
+      const cacheBefore = seedCache(tokenFixture.signFile(tokens.valid));
+      tokenFixture.setMode("badSignature");
+      const badBefore = requests.badSignature;
+      return launch(async (app) => {
+        const shell = await waitForShell(app.page);
+        const result = await settle(app.page, "get_developer_token");
+        const badRequests = requests.badSignature - badBefore;
+        const cacheUnchanged = fileSha256(cachePath) === cacheBefore;
+        return {
+          passed:
+            shell &&
+            result.ok &&
+            result.value === tokens.valid &&
+            badRequests > 0 &&
+            cacheUnchanged,
+          detail: {
+            shell,
+            ...served(result),
+            badFileRequests: badRequests,
+            cacheUnchanged,
+            expectedFingerprint: tokenFingerprint(tokens.valid),
+          },
+        };
+      });
+    },
+  );
+
+  await hostedTokenCheck(
+    check,
+    "an older signed file does not replace a newer cache",
+    async () => {
+      const cacheBefore = seedCache(tokenFixture.signFile(tokens.newer));
+      tokenFixture.setMode("older");
+      const olderBefore = requests.older;
+      return launch(async (app) => {
+        const shell = await waitForShell(app.page);
+        const result = await settle(app.page, "get_developer_token");
+        const olderRequests = requests.older - olderBefore;
+        const cacheUnchanged = fileSha256(cachePath) === cacheBefore;
+        return {
+          passed:
+            shell &&
+            result.ok &&
+            result.value === tokens.newer &&
+            olderRequests > 0 &&
+            cacheUnchanged,
+          detail: {
+            shell,
+            ...served(result),
+            olderFileRequests: olderRequests,
+            cacheUnchanged,
+            expectedFingerprint: tokenFingerprint(tokens.newer),
+          },
+        };
+      });
+    },
+  );
+
+  await hostedTokenCheck(
+    check,
+    "fixture down without a cache shows the offline banner, and Reconnect recovers once the fixture is back",
+    async () => {
+      fs.rmSync(cachePath, { force: true });
+      // No banner without a signed-in cached library (see enterOfflineMode).
+      seedSignedInLibraryMeta();
+      tokenFixture.setMode("missing");
+      const missingBefore = requests.missing;
+      return launch(async (app) => {
+        const shell = await waitForShell(app.page);
+        const banner = await waitFor(
+          app.page,
+          `document.querySelector(".offline-banner")`,
+          60_000,
+        );
+        // Taken at the end of the banner wait: what the page shows when no
+        // banner appears.
+        const pageAtBannerWait = banner
+          ? null
+          : await app.page.evaluate(`return {
+              text: document.body.innerText.slice(0, 300),
+              musicKit: typeof window.MusicKit,
+              hash: location.hash,
+            };`);
+        const outage = await settle(app.page, "get_developer_token");
+        // The failed download opened the retry window. Reconnect is tried
+        // only after it has passed, so the retry really downloads.
+        await sleep(HOSTED_RETRY_WINDOW_MS + 1_000);
+        tokenFixture.setMode("valid");
+        const clicked = await app.page.evaluate(`
+          const button = document.querySelector(".offline-banner button");
+          if (!button) return false;
+          window.__ARLET_E2E_RECONNECT__ = 1;
+          button.click();
+          return true;`);
+        const reloaded =
+          clicked && (await waitForReconnectedApp(app.page, 90_000));
+        const bannerAfter = reloaded
+          ? await app.page.evaluate(
+              "return Boolean(document.querySelector('.offline-banner'));",
+            )
+          : null;
+        const result = await settle(app.page, "get_developer_token");
+        const outageMessage = outage.ok ? "" : String(outage.error ?? "");
+        return {
+          passed:
+            shell &&
+            banner &&
+            !outage.ok &&
+            /could not download/u.test(outageMessage) &&
+            clicked &&
+            reloaded &&
+            bannerAfter === false &&
+            result.ok &&
+            result.value === tokens.valid,
+          detail: {
+            shell,
+            bannerShown: banner,
+            outageMessageIsDownloadError: /could not download/u.test(
+              outageMessage,
+            ),
+            fixtureRequestsWhileDown: requests.missing - missingBefore,
+            reconnectClicked: clicked,
+            reloaded,
+            bannerAfterReconnect: bannerAfter,
+            pageAtBannerWait,
+            ...served(result),
+            expectedFingerprint: tokenFingerprint(tokens.valid),
+          },
+        };
+      });
+    },
+  );
+
+  await hostedTokenCheck(
+    check,
+    "fixture down with a cache serves the cached token",
+    async () => {
+      const cacheBefore = seedCache(tokenFixture.signFile(tokens.valid));
+      await tokenFixture.stop();
+      return launch(async (app) => {
+        const shell = await waitForShell(app.page);
+        const result = await settle(app.page, "get_developer_token");
+        const configured = await waitFor(
+          app.page,
+          "window.MusicKit?.getInstance?.()",
+          60_000,
+        );
+        const cacheUnchanged = fileSha256(cachePath) === cacheBefore;
+        return {
+          passed:
+            shell &&
+            result.ok &&
+            result.value === tokens.valid &&
+            configured &&
+            cacheUnchanged,
+          detail: {
+            shell,
+            ...served(result),
+            musicKitConfigured: configured,
+            cacheUnchanged,
+            expectedFingerprint: tokenFingerprint(tokens.valid),
+          },
+        };
+      });
+    },
+  );
+}
+
 async function run() {
   processVerificationFailed = false;
   const realToken = process.argv.includes("--real-token");
-  const token = realToken
+  const realTokenValue = realToken
     ? String(process.env.MUSICKIT_DEVELOPER_TOKEN ?? "").trim()
-    : syntheticToken();
+    : "";
   const tokenMode = realToken ? "real" : "synthetic";
   const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
   const artifactDir = path.join(root, "e2e-artifacts", stamp);
@@ -1215,6 +1527,8 @@ async function run() {
   let runKeyMayExist = false;
   let musicRuntimeCapabilities;
   let buildProof;
+  let hostedTokenFixture;
+  let hostedTokenCleanup = null;
   let childSpawnError;
   let startupArguments = [];
   let webviewBrowserArguments = "";
@@ -1264,13 +1578,16 @@ async function run() {
         "cannot run in an SSH session (WebView2 has no desktop there); run it from a terminal at the machine's desktop",
       );
     }
-    if (!token) {
+    if (realToken && !realTokenValue) {
       fail("--real-token needs MUSICKIT_DEVELOPER_TOKEN (run via dotenv)");
     }
     const skipBuild = process.argv.includes("--skip-build");
-    if (!skipBuild) build(token, tokenMode);
-    buildProof = verifyE2eBuildProof(token, tokenMode, {
-      allowRefreshedSyntheticToken: skipBuild,
+    if (!skipBuild) build();
+    buildProof = verifyE2eBuildProof();
+    // Serves the token files every launch of this run downloads. Closed in
+    // the finally block, on every path.
+    hostedTokenFixture = await startHostedTokenFixture({
+      realToken: realTokenValue,
     });
 
     const running = spawnSync("tasklist", ["/FI", "IMAGENAME eq arlet.exe"], {
@@ -1318,15 +1635,11 @@ async function run() {
     ];
     webviewBrowserArguments = buildWebView2Args(...startupArguments);
     child = spawn(EXE, [], {
-      env: {
-        ...process.env,
-        MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN,
-        ARLET_E2E_RUN_KEY: E2E_RUN_KEY,
-        ARLET_E2E_DATA_ROOT: profile.root,
-        WEBVIEW2_USER_DATA_FOLDER: path.join(profile.root, "webview"),
-        ...BACKGROUND_ENV,
-        WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: webviewBrowserArguments,
-      },
+      env: appLaunchEnv({
+        profileRoot: profile.root,
+        tokenFixture: hostedTokenFixture,
+        webview2Args: webviewBrowserArguments,
+      }),
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -1551,7 +1864,7 @@ async function run() {
           return { ok: false, error: String(error?.errorCode ?? error?.message ?? error).slice(0, 200) };
         }`);
       check(
-        "Apple accepts the embedded token from the release origin",
+        "Apple accepts the hosted token from the release origin",
         catalog.ok,
         catalog,
       );
@@ -1705,30 +2018,31 @@ async function run() {
     );
     await page.evaluate('location.hash = "#/home"; return true;');
 
-    // 1. Release serves the embedded token, never the runtime env.
+    // 1. Release serves the hosted token, never the runtime env token. The
+    // fixture answers with the token it signed, so a match shows that
+    // ARLET_E2E_TOKEN_URL and the key were honored. Failure modes: the app
+    // serves MUSICKIT_DEVELOPER_TOKEN, or a token from another source, or a
+    // token carrying an origin claim (checked just below). Refusal and caching
+    // cases are in runHostedTokenChecks.
     const served = await settle(page, "get_developer_token");
-    const embeddedTokenMatchesBuild =
-      served.ok &&
-      typeof served.value === "string" &&
-      tokenFingerprint(served.value) === buildProof.tokenFingerprint;
-    const embeddedTokenMode =
-      typeof served.value === "string"
-        ? detectTokenMode(served.value)
-        : "unknown";
+    const servedMatchesFixture =
+      served.ok && served.value === hostedTokenFixture.tokens.valid;
     check(
-      "release serves build-embedded token",
-      embeddedTokenMatchesBuild &&
-        embeddedTokenMode === buildProof.tokenMode &&
-        served.value !== RUNTIME_ENV_TOKEN,
+      "release serves the hosted token, never the runtime env token",
+      servedMatchesFixture && served.value !== RUNTIME_ENV_TOKEN,
       {
         ok: served.ok,
-        matchesEmbedded: embeddedTokenMatchesBuild,
-        tokenMode: embeddedTokenMode,
-        matchesTokenMode: embeddedTokenMode === buildProof.tokenMode,
+        matchesFixture: servedMatchesFixture,
+        servedFingerprint:
+          typeof served.value === "string"
+            ? tokenFingerprint(served.value)
+            : null,
+        fixtureFingerprint: tokenFingerprint(hostedTokenFixture.tokens.valid),
+        fixtureRequests: hostedTokenFixture.requests.valid,
       },
     );
     // Apple refuses library (/v1/me) requests from an origin-restricted
-    // token (0.1.0), so the shipped token must carry none.
+    // token (0.1.0), so the served token must carry none.
     let servedOrigin = "unreadable";
     try {
       servedOrigin =
@@ -1738,9 +2052,11 @@ async function run() {
       // Left as "unreadable" so the check fails.
     }
     check(
-      "embedded token has no origin claim",
+      "hosted token has no origin claim",
       served.ok && servedOrigin === null,
-      { origin: servedOrigin },
+      {
+        origin: servedOrigin,
+      },
     );
 
     // 6. Windows build via registry, async command.
@@ -1985,9 +2301,9 @@ async function run() {
       { onlineReloaded, offlineAgain },
     );
 
-    // 11b. An expired embedded token: the update notice shows, not the
-    // offline banner (its Reconnect could never work). The token command is
-    // answered with the release-build error through Tauri's IPC transport.
+    // 11b. An expired token: the expiry notice shows, not the offline banner
+    // (its Reconnect could never work). The token command is answered with the
+    // release build's expiry message through Tauri's IPC transport.
     await page.send("Page.enable");
     const expiredScript = await page.send(
       "Page.addScriptToEvaluateOnNewDocument",
@@ -2008,7 +2324,7 @@ async function run() {
       notice: document.querySelector(".token-expiry-notice")?.textContent ?? null,
     };`);
     check(
-      "an expired embedded token shows the update notice, not the offline banner",
+      "an expired token shows the expiry notice, not the offline banner",
       expiredNotice && !expiredView.offlineBanner,
       expiredView,
     );
@@ -2416,17 +2732,11 @@ async function run() {
     // ask for it again.
     const relaunchWebView2Args = buildWebView2Args(...BACKGROUND_SWITCHES);
     const relaunch = spawn(EXE, [], {
-      env: {
-        ...process.env,
-        MUSICKIT_DEVELOPER_TOKEN: RUNTIME_ENV_TOKEN,
-        ARLET_E2E_RUN_KEY: E2E_RUN_KEY,
-        ARLET_E2E_DATA_ROOT: profile.root,
-        WEBVIEW2_USER_DATA_FOLDER: path.join(profile.root, "webview"),
-        ...BACKGROUND_ENV,
-        ...(relaunchWebView2Args && {
-          WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: relaunchWebView2Args,
-        }),
-      },
+      env: appLaunchEnv({
+        profileRoot: profile.root,
+        tokenFixture: hostedTokenFixture,
+        webview2Args: relaunchWebView2Args,
+      }),
       stdio: "ignore",
       windowsHide: true,
     });
@@ -2598,6 +2908,14 @@ async function run() {
         legacyLeft: fs.existsSync(legacyDb),
       },
     );
+
+    // Hosted-token cases start fresh apps, so they run once the main app has
+    // stopped (a single-instance app cannot be relaunched while it runs).
+    await runHostedTokenChecks({
+      check,
+      tokenFixture: hostedTokenFixture,
+      profileRoot: profile.root,
+    });
   } catch (error) {
     const native = profile
       ? readTestLog()
@@ -2674,6 +2992,23 @@ async function run() {
         check("isolated app process stops before profile cleanup", false, {
           error: String(error?.message ?? error),
         });
+      }
+    }
+    // The fixture closes last, after the apps above were stopped.
+    if (hostedTokenFixture) {
+      try {
+        hostedTokenCleanup = await hostedTokenFixture.close();
+        check(
+          "throwaway signing key and fixture server are removed",
+          hostedTokenCleanup.serverStopped && hostedTokenCleanup.keyRemoved,
+          hostedTokenCleanup,
+        );
+      } catch (error) {
+        check(
+          "throwaway signing key and fixture server are removed",
+          false,
+          String(error?.message ?? error),
+        );
       }
     }
     if (runKeyMayExist) {
@@ -2829,6 +3164,9 @@ async function run() {
         ? "webview-diagnostics.json"
         : null,
       processOutput: "browser-process.log",
+      // Requests the fixture answered, by mode. No token or key is recorded.
+      hostedTokenRequests: hostedTokenFixture?.requests ?? null,
+      hostedTokenCleanup,
     },
     checks,
   };

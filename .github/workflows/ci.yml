@@ -118,9 +118,7 @@ jobs:
       - run: npm run sync-version
       - run: npm run licenses
       - name: Unsigned Tauri build (no bundle, no signing)
-        # CI never holds the MusicKit token; this binary is never published.
-        env:
-          ARLET_SKIP_MUSICKIT_TOKEN: "1"
+        # CI holds no release secrets; this binary is never published.
         run: npx tauri build --no-bundle
       - name: Verify smoke binary
         shell: bash

@@ -23,6 +23,12 @@
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
 
+## Changes in `v0.5.0-beta.1:`
+
+- **Security:** Arlet now downloads its signed Apple Music access token at launch and keeps the last valid copy for offline use, so Apple Music access no longer runs out with an app version. Versions 0.4.0 and older keep the token they were built with.
+- **UI:** The Apple Music access notice says "Restart Arlet to refresh it." when access expires within 14 days or has expired.
+- **UI:** If Arlet cannot download Apple Music access and has no saved copy, the offline banner appears, and Reconnect tries again.
+
 ## Changes in `v0.4.0:`
 
 - **NEW - Edit in Apple Music:** Open a playlist you can edit on music.apple.com to rename it, reorder or remove songs, or delete it.

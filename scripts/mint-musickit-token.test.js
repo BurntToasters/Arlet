@@ -277,7 +277,7 @@ test("release mint refuses a partially configured .p8", () => {
   }
 });
 
-test("prerelease:prepare mints before the preflight token check", () => {
+test("prerelease:prepare publishes an expiring hosted token before the preflight", () => {
   const scripts = JSON.parse(
     readFileSync(
       path.join(
@@ -293,9 +293,8 @@ test("prerelease:prepare mints before the preflight token check", () => {
     "node scripts/mint-musickit-token.js --release",
   );
   const prepare = String(scripts["prerelease:prepare"]);
-  assert.ok(prepare.includes("npm run release:mint-token"));
+  assert.ok(prepare.includes("npm run token:publish -- --if-expiring"));
   assert.ok(
-    prepare.indexOf("release:mint-token") <
-      prepare.indexOf("release:preflight"),
+    prepare.indexOf("token:publish") < prepare.indexOf("release:preflight"),
   );
 });

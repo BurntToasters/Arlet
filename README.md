@@ -91,6 +91,8 @@
 2. `npm ci`
 3. Copy `.env.example` to `.env` and set `MUSICKIT_DEVELOPER_TOKEN`
    (`npm run phase0:mint-token` can mint it from your Media Services key).
+   Debug builds read it at runtime; release builds download a signed copy
+   instead.
 4. `npm start`
 
 ## Checks

@@ -30,19 +30,6 @@ const requiredEnv = [
   "AZURE_ARTIFACT_SIGNING_PUBLISHER_DN",
 ];
 
-// Published builds always embed the MusicKit developer token (build.rs
-// validates it). The skip switch exists only for unpublished CI smoke builds.
-if (process.env.ARLET_SKIP_MUSICKIT_TOKEN !== undefined) {
-  throw new Error(
-    "ARLET_SKIP_MUSICKIT_TOKEN is set; release builds must embed the MusicKit developer token.",
-  );
-}
-if (!process.env.MUSICKIT_DEVELOPER_TOKEN?.trim()) {
-  throw new Error(
-    "MUSICKIT_DEVELOPER_TOKEN is missing. Release builds embed it from the release machine's .env.",
-  );
-}
-
 if (process.platform !== "win32") {
   throw new Error("Signed Windows builds must run on Windows.");
 }
@@ -100,6 +87,8 @@ const SECRETS_NOT_FOR_BUILD = [
   "MUSICKIT_TEAM_ID",
   "MUSICKIT_KEY_ID",
   "MUSICKIT_P8_PATH",
+  "ARLET_TOKEN_SPACES_KEY",
+  "ARLET_TOKEN_SPACES_SECRET",
   "GH_TOKEN",
   "GITHUB_TOKEN",
 ];

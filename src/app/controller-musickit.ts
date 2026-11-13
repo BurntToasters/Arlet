@@ -212,8 +212,9 @@ export function createMusicKitStartup(
       const message = safeErrorMessage(error);
       setInitializationState({ status: "error", message });
       log(`MusicKit init failed: ${message}`);
-      // An expired embedded token is not a connection problem: show the
-      // update notice instead of an offline banner whose Reconnect never works.
+      // An expired token is not a connection problem: show the expiry notice
+      // (restarting Arlet refreshes the token) instead of an offline banner
+      // whose Reconnect never works.
       if ((error as { code?: unknown } | null)?.code === "TOKEN_EXPIRED") {
         setDeveloperTokenExpiry(now());
         return;

@@ -1,16 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { AppErrorCode } from "../domain/errors.ts";
-import { mapErrorToCode } from "./errors.ts";
 
-// Developer-token sourcing. `get_developer_token` serves `.env` at runtime in
-// debug builds and, in release builds, the token `build.rs` validated and
-// compiled from the release machine's `.env`. The JWT is never a Vite/VITE_
-// frontend env var, and the `.p8` private key is never shipped or committed.
-// `createServiceTokenProvider` remains for a future hosted token service.
+// Developer-token sourcing. Release builds get the token from the native
+// `get_developer_token` command, which downloads a signed hosted file at launch,
+// verifies it, and caches it. Debug builds read `.env` through the same command.
+// The JWT is never a Vite/VITE_ frontend env var, and the `.p8` private key is
+// never shipped or committed.
 
 export interface DeveloperToken {
   token: string;
-  source: "env" | "service";
+  source: "env";
 }
 
 export interface DeveloperTokenProvider {
@@ -32,15 +31,15 @@ export function createNativeTokenProvider(
         token = await invokeFn<string>("get_developer_token");
       } catch (error) {
         // Tauri rejects command errors with a plain string, which carries
-        // the release-build message (missing or expired embedded token).
+        // the native command's message (token unavailable or expired).
         const message =
           error instanceof Error
             ? error.message
             : typeof error === "string" && error.trim()
               ? error
               : "MusicKit developer token is not available.";
-        // Only an expired token is TOKEN_EXPIRED: it shows the update notice.
-        // A build without a token cannot start MusicKit at all.
+        // Only an expired token is TOKEN_EXPIRED: it shows the expiry notice.
+        // A token that cannot be downloaded is MUSICKIT_INIT_FAILED.
         const code: AppErrorCode = /expired/iu.test(message)
           ? "TOKEN_EXPIRED"
           : "MUSICKIT_INIT_FAILED";
@@ -56,32 +55,6 @@ export function createNativeTokenProvider(
         );
       }
       return { token, source: "env" };
-    },
-  };
-}
-
-export function createServiceTokenProvider(
-  endpoint: string,
-  fetchImpl: typeof fetch = fetch,
-): DeveloperTokenProvider {
-  return {
-    async getToken(): Promise<DeveloperToken> {
-      let response: Response;
-      try {
-        response = await fetchImpl(endpoint, { method: "GET" });
-      } catch (error) {
-        throw new Error(
-          `Developer token service unreachable: ${mapErrorToCode(error)}`,
-        );
-      }
-      if (!response.ok) {
-        throw new Error(`Developer token service returned ${response.status}`);
-      }
-      const data = (await response.json()) as { token?: unknown };
-      if (typeof data.token !== "string" || !data.token) {
-        throw new Error("Developer token service returned no token");
-      }
-      return { token: data.token, source: "service" };
     },
   };
 }

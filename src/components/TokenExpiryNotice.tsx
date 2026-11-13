@@ -7,8 +7,8 @@ export const TOKEN_EXPIRY_WARNING_DAYS = 14;
 const DAY_MS = 86_400_000;
 
 /**
- * The developer token is compiled into each release. Users who turned off
- * auto-update get this notice before Apple Music stops working.
+ * Apple Music access uses a developer token that Arlet downloads at launch.
+ * Warn before it expires; restarting Arlet downloads a fresh token.
  */
 export function TokenExpiryNotice({
   now = Date.now,
@@ -26,8 +26,8 @@ export function TokenExpiryNotice({
   const days = Math.max(1, Math.floor(remaining / DAY_MS));
   const message =
     remaining <= 0
-      ? "This version of Arlet has expired and can no longer play Apple Music. Install the latest update."
-      : `This version of Arlet stops working with Apple Music in ${days} ${days === 1 ? "day" : "days"}. Install the latest update.`;
+      ? "Arlet's Apple Music access has expired. Restart Arlet to refresh it."
+      : `Arlet's Apple Music access expires in ${days} ${days === 1 ? "day" : "days"}. Restart Arlet to refresh it.`;
   return (
     <div className="token-expiry-notice" role="alert">
       <CircleAlert aria-hidden="true" size={16} strokeWidth={1.9} />

@@ -18,18 +18,18 @@ reachable.
 ## Native app E2E
 
 `npm run test:e2e:app` (Windows only) builds a release binary into
-`src-tauri/target/e2e` with the `e2e` Cargo feature and a synthetic MusicKit
-token, launches the app with WebView2 remote debugging, and drives it over the
-DevTools Protocol. Every run gets a new marked root under the system temp
+`src-tauri/target/e2e` with the `e2e` Cargo feature, starts the local token
+fixture described under "Hosted MusicKit token", launches the app with WebView2
+remote debugging, and drives it over the DevTools Protocol. Every run gets a new marked root under the system temp
 folder. The harness passes that exact root through `ARLET_E2E_DATA_ROOT`; Rust
 stores app data, local cache, logs, and WebView2 storage in separate children
 of it. It does not override `APPDATA` or `LOCALAPPDATA`, move real profiles, or
 delete unmarked folders. The E2E binary rejects a missing or invalid root
 before startup can use a Known Folder path, and normal release builds ignore
-the E2E variable. `--skip-build` requires a SHA-256 proof that the binary was
-built with the E2E feature and matching token mode. The proof stores only a
-token fingerprint, never the token; synthetic-token runs verify against the
-fingerprint from the build because each fresh synthetic token has a new expiry.
+the E2E variable. `--skip-build` requires a SHA-256 proof, written by the build
+step, that the binary was built with the E2E feature. The proof records the
+feature, the build time, and the binary's SHA-256. The binary embeds no token,
+so the proof records no token mode or fingerprint.
 
 The suite writes `e2e-artifacts/<timestamp>/report.json` (binary SHA-256,
 commit, startup arguments, process exit/error, and per-check results),
@@ -86,7 +86,8 @@ is logged, and a pruning failure is logged as a warning without failing the run.
 
 Failure modes it covers:
 
-1. A release build cannot embed the token, or serves the runtime env instead.
+1. A release build serves the runtime env instead of the hosted token, or
+   serves a token that failed verification (see "Hosted MusicKit token").
 2. The window never renders its shell.
 3. A corrupt `settings.json` silently resets preferences (backup ignored).
 4. A long multibyte log entry panics and aborts the process.
@@ -156,22 +157,64 @@ so the failing check names the scenario that leaked.
 It also writes `screenshot-offline.png`. CI runs this gate on Windows x64 and
 uploads the report as the `e2e-report` artifact.
 
-`npm run test:e2e:app:real` embeds the real `MUSICKIT_DEVELOPER_TOKEN` from
-`.env` instead and adds a check that Apple's catalog API accepts it from the
-release origin and that it carries no `origin` claim. That proves the token
-on this machine; `release:preflight` checks the release VM's token against
-Apple separately. Library (`/v1/me`) requests need a signed-in user, so
-confirm them by hand on an installed build.
-
-Release token age:
-
-- The weekly canary warns 150 days after the latest stable release, assuming
-  its token was freshly minted for 180 days. A release built with an older
-  pasted token (30 days left passes the build) stops playback for everyone
-  before the canary warns. `release:preflight` now requires 150 days left.
-  The E2E binary then contains that token; it stays in `src-tauri/target/e2e`.
+`npm run test:e2e:app:real` (`--real-token`) serves the real `.env` token through
+the hosted-token fixture (see "Hosted MusicKit token"). The main flow then
+checks that Apple's catalog API accepts it from the release origin. That proves
+the token on this machine; `npm run token:check` and `release:preflight` check
+the live hosted file against Apple separately. Library (`/v1/me`) requests need
+a signed-in user, so confirm them by hand on an installed build.
 
 It does not sign in to Apple Music or play protected audio.
+
+## Hosted MusicKit token
+
+Release builds download their developer token at launch (see
+`docs/SECURITY.md`). The native suite starts `scripts/e2e-hosted-token.js`, a
+fixture on `127.0.0.1` that serves token files in the hosted shape
+(`{ version, token, signature }`). Each run generates two throwaway minisign
+keys in a private temp folder: one signs the served files, and an impostor key
+signs the bad-signature file. Every E2E launch gets `ARLET_E2E_TOKEN_URL` and
+`ARLET_E2E_TOKEN_PUBKEY` for this run's fixture. Only E2E-feature builds read
+those variables, and only loopback HTTP is accepted.
+
+The main flow runs these checks in the main app:
+
+- `release serves the hosted token, never the runtime env token`: the token the
+  app serves is the fixture's, not `MUSICKIT_DEVELOPER_TOKEN`.
+- `hosted token has no origin claim`.
+- `an expired token shows the expiry notice, not the offline banner`: the token
+  command is answered with the release build's expiry message, and the page
+  reloads in the same app.
+
+The app downloads once per process, so the next checks each start a fresh app
+and stop it before the next one starts. They run after the main app has
+stopped:
+
+- `a bad signature is refused and the cached token is served`
+- `an older signed file does not replace a newer cache`
+- `fixture down with a cache serves the cached token`: the fixture's listener is
+  closed before the launch, so the download is refused.
+- `fixture down without a cache shows the offline banner, and Reconnect recovers once the fixture is back`:
+  the cache is removed and the fixture answers 404 at first. After the 10 s
+  retry window, it serves the valid file, and Reconnect loads the app with the
+  token.
+
+Cleanup runs last, after every app has stopped. The fixture closes then, and
+`throwaway signing key and fixture server are removed` requires the listener to
+be stopped and the key folder deleted.
+
+`npm run test:e2e:app:real` (`--real-token`) serves the real `.env` token as the
+fixture's valid file, signed with the run's throwaway key. The token is never
+printed. The older, newer, and bad-signature files keep synthetic tokens. The
+main flow also checks `Apple accepts the hosted token from the release origin`.
+The Rust tests in `src-tauri/src/hosted_token.rs` cover the download, signature,
+policy, and cache failure modes, with fixtures in
+`src-tauri/tests/fixtures/hosted-token/`.
+
+The weekly canary's `hosted-token` job runs `npm run token:check`, which fails
+below 45 days left or when Apple rejects the live file. `release:preflight` also
+verifies the signature. Neither runs in the native suite; see
+`docs/RELEASE.md`.
 
 ## Song navigation and playlist playback
 
@@ -561,9 +604,8 @@ closing the window quits.
   up to 30 seconds of position and a pending volume change are lost.
   (Code-reviewed: both now run the same save the quit check covers; an
   update install needs a published release.)
-- An expired embedded developer token shows "You're offline" with a Reconnect
-  button that fails forever; the token notice never appears because the
-  expiry is only known after MusicKit started.
+- An expired developer token shows "You're offline" with a Reconnect button
+  that fails forever, instead of the restart notice.
 
 ## Stream handoff and sign-in expiry
 
@@ -1378,8 +1420,9 @@ Code-reviewed, no E2E:
   at 2000 with oldest-first eviction that skips in-flight entries. Reaching
   2000 distinct lookups in one session is not practical in the fixture.
 - Token-expiry notice in the stack (item 11): `developerTokenExpiresAt` comes
-  from the embedded developer token in a release build, and the suite cannot
-  change it. The suite checks only the `.notice-stack` container.
+  from the hosted token's `exp` in a release build. The hosted-token checks
+  show the notice alone; the stacking check covers only the `.notice-stack`
+  container.
 
 Second audit (spec items 1 to 5). Items 1 and 2 are driven by the native
 suite (`scripts/e2e-audit-fixes.js`, checks `re-auth failures`, `lost token`
@@ -1918,6 +1961,10 @@ the deterministic smoke gate:
   provider-account fixtures.
 - Apple developer-token/account credentials are required for the manual
   MusicKit authorization and protected full-track playback matrix.
+- Publishing the hosted token (`npm run token:publish`) needs the Spaces and
+  doctl credentials and the live CDN, so no E2E run covers it. After each
+  publish, run `npm run token:check`, then restart an installed build and
+  confirm that Library loads.
 - The Windows SMTC flyout and hardware media keys need a real desktop: the
   timeline seek, shuffle and repeat buttons (and whether Windows shows them),
   and Play, Pause, Next, and Previous with the app unfocused or minimized.
