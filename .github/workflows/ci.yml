@@ -126,8 +126,12 @@ jobs:
       # The Ubuntu gate cannot see cfg(windows) code, so lint it here.
       - name: Windows clippy
         run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
-      # Drives the real release binary (synthetic MusicKit token) through
-      # WebView2's DevTools Protocol. x64 only to bound CI time.
+      - name: Windows Rust tests
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --all-targets
+      # Builds with --features e2e and drives it through WebView2's DevTools
+      # Protocol. A local loopback fixture (scripts/e2e-hosted-token.js) serves
+      # a synthetic signed token. x64 only to bound CI time.
       - name: Native app E2E
         if: matrix.target == 'x86_64-pc-windows-msvc'
         run: npm run test:e2e:app

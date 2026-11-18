@@ -198,6 +198,15 @@ test("ci and release tooling drop the embedded-token gate and skip switch", () =
   assert.doesNotMatch(windowsBuild, /MUSICKIT_DEVELOPER_TOKEN is missing/);
 });
 
+test("release builds strip the MusicKit developer token from the build env", () => {
+  const windowsBuild = read("scripts/tauri-windows-build.js");
+  const match = windowsBuild.match(
+    /const SECRETS_NOT_FOR_BUILD = \[([\s\S]*?)\];/,
+  );
+  assert.ok(match, "SECRETS_NOT_FOR_BUILD list is missing");
+  assert.match(match[1], /"MUSICKIT_DEVELOPER_TOKEN"/);
+});
+
 test(".env.example documents the publish variables and keeps the debug token", () => {
   const envExample = read(".env.example");
   for (const key of [

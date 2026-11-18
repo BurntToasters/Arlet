@@ -609,6 +609,18 @@ function seedSignedInLibraryMeta() {
   }
 }
 
+/** Removes the signed-in marker, so the next launch has no signed-in cache. */
+function clearSignedInLibraryMeta() {
+  const dbPath = path.join(dataDirs().local, "arlet-library.db");
+  if (!fs.existsSync(dbPath)) return;
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.prepare("DELETE FROM cache_meta WHERE scope = ?").run(CACHE_SCOPE);
+  } finally {
+    db.close();
+  }
+}
+
 /** A cache written by the former SQL plugin: same tables, user_version 0. */
 function seedLegacyCache() {
   const db = new DatabaseSync(path.join(dataDirs().data, "arlet-library.db"));
@@ -1297,6 +1309,15 @@ async function waitForReconnectedApp(page, timeoutMs) {
   return false;
 }
 
+// The welcome card's buttons, read from the page (Home, signed out).
+const WELCOME_TRY_AGAIN_SHOWN = `[...document.querySelectorAll(".welcome-actions button")].some((node) => node.textContent.trim() === "Try again")`;
+const WELCOME_SIGN_IN_ENABLED = `[...document.querySelectorAll(".welcome-actions button")].some((node) => node.textContent.trim() === "Sign in to Apple Music" && !node.disabled)`;
+const WELCOME_TRY_AGAIN_CLICK = `const button = [...document.querySelectorAll(".welcome-actions button")].find((node) => node.textContent.trim() === "Try again");
+  if (!button) return false;
+  window.__ARLET_E2E_RECONNECT__ = 1;
+  button.click();
+  return true;`;
+
 /**
  * Hosted-token checks (release builds). Each case seeds or removes the cache,
  * then runs in a fresh app; the fixture's request counts show the app really
@@ -1309,6 +1330,10 @@ async function waitForReconnectedApp(page, timeoutMs) {
  * - a failed download blanks the app instead of serving the cache;
  * - no cache and an unreachable fixture show no offline banner, or Reconnect
  *   never downloads again once the fixture is back (the retry window stalls);
+ * - a signed-out launch with no cache shows no Try again on the welcome card,
+ *   shows the offline banner, or Try again never reaches the sign-in button;
+ * - a renewed file with a newer iat but an earlier exp loses to the cache
+ *   (the app orders files by (iat, exp));
  * - the throwaway signing key or the fixture server outlives the run.
  * The served-token checks in run() cover the runtime env token and the origin
  * claim.
@@ -1320,6 +1345,14 @@ async function runHostedTokenChecks({ check, tokenFixture, profileRoot }) {
     fs.mkdirSync(path.dirname(cachePath), { recursive: true });
     fs.writeFileSync(cachePath, bytes);
     return fileSha256(cachePath);
+  };
+  // The token the cache file holds, or null when it is missing or unreadable.
+  const cachedToken = () => {
+    try {
+      return JSON.parse(fs.readFileSync(cachePath, "utf8")).token ?? null;
+    } catch {
+      return null;
+    }
   };
   const served = (result) => ({
     ok: result.ok,
@@ -1393,6 +1426,39 @@ async function runHostedTokenChecks({ check, tokenFixture, profileRoot }) {
 
   await hostedTokenCheck(
     check,
+    "a renewed file with a newer iat replaces a cache with a later exp",
+    async () => {
+      // The cache's exp is later than the served file's, but its iat is older.
+      const cacheBefore = seedCache(tokenFixture.signFile(tokens.newer));
+      tokenFixture.setMode("renewed");
+      const renewedBefore = requests.renewed;
+      return launch(async (app) => {
+        const shell = await waitForShell(app.page);
+        const result = await settle(app.page, "get_developer_token");
+        const renewedRequests = requests.renewed - renewedBefore;
+        const cacheHoldsRenewed = cachedToken() === tokens.renewed;
+        return {
+          passed:
+            shell &&
+            result.ok &&
+            result.value === tokens.renewed &&
+            renewedRequests > 0 &&
+            cacheHoldsRenewed &&
+            fileSha256(cachePath) !== cacheBefore,
+          detail: {
+            shell,
+            ...served(result),
+            renewedFileRequests: renewedRequests,
+            cacheHoldsRenewed,
+            expectedFingerprint: tokenFingerprint(tokens.renewed),
+          },
+        };
+      });
+    },
+  );
+
+  await hostedTokenCheck(
+    check,
     "fixture down without a cache shows the offline banner, and Reconnect recovers once the fixture is back",
     async () => {
       fs.rmSync(cachePath, { force: true });
@@ -1458,6 +1524,73 @@ async function runHostedTokenChecks({ check, tokenFixture, profileRoot }) {
             reloaded,
             bannerAfterReconnect: bannerAfter,
             pageAtBannerWait,
+            ...served(result),
+            expectedFingerprint: tokenFingerprint(tokens.valid),
+          },
+        };
+      });
+    },
+  );
+
+  await hostedTokenCheck(
+    check,
+    "signed out with no cache shows Try again on the welcome card, and Try again signs in once the fixture is back",
+    async () => {
+      fs.rmSync(cachePath, { force: true });
+      // Signed out: no signed-in cache, so the welcome card is the only retry.
+      clearSignedInLibraryMeta();
+      tokenFixture.setMode("missing");
+      const missingBefore = requests.missing;
+      return launch(async (app) => {
+        const shell = await waitForShell(app.page);
+        const tryAgain = await waitFor(
+          app.page,
+          WELCOME_TRY_AGAIN_SHOWN,
+          60_000,
+        );
+        const bannerShown = await app.page.evaluate(
+          "return Boolean(document.querySelector('.offline-banner'));",
+        );
+        const messageShown = await app.page.evaluate(
+          "return (document.querySelector('.welcome-card [role=\"status\"]')?.textContent ?? '').trim().length > 0;",
+        );
+        const outage = await settle(app.page, "get_developer_token");
+        // The failed download opened the retry window; Try again is tried
+        // only after it has passed, so the reload really downloads.
+        await sleep(HOSTED_RETRY_WINDOW_MS + 1_000);
+        const fixtureRequestsWhileDown = requests.missing - missingBefore;
+        tokenFixture.setMode("valid");
+        const clicked = await app.page.evaluate(WELCOME_TRY_AGAIN_CLICK);
+        const reloaded =
+          clicked && (await waitForReconnectedApp(app.page, 90_000));
+        const signInEnabled =
+          reloaded &&
+          (await waitFor(app.page, WELCOME_SIGN_IN_ENABLED, 60_000));
+        const result = await settle(app.page, "get_developer_token");
+        return {
+          passed:
+            shell &&
+            tryAgain &&
+            messageShown &&
+            bannerShown === false &&
+            fixtureRequestsWhileDown > 0 &&
+            clicked &&
+            reloaded &&
+            signInEnabled &&
+            result.ok &&
+            result.value === tokens.valid,
+          detail: {
+            shell,
+            tryAgainShown: tryAgain,
+            welcomeMessageShown: messageShown,
+            bannerShown,
+            outageMessageIsDownloadError: /could not download/u.test(
+              outage.ok ? "" : String(outage.error ?? ""),
+            ),
+            fixtureRequestsWhileDown,
+            tryAgainClicked: clicked,
+            reloaded,
+            signInEnabledAfterRetry: signInEnabled,
             ...served(result),
             expectedFingerprint: tokenFingerprint(tokens.valid),
           },

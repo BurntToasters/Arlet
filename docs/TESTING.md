@@ -194,12 +194,22 @@ stopped:
 
 - `a bad signature is refused and the cached token is served`
 - `an older signed file does not replace a newer cache`
+- `a renewed file with a newer iat replaces a cache with a later exp`: the
+  cache holds a token with an older iat and a later exp. The fixture serves a
+  renewed file with a newer iat and an earlier exp, and the app must serve it
+  and write it to the cache. The app orders files by `(iat, exp)`.
 - `fixture down with a cache serves the cached token`: the fixture's listener is
   closed before the launch, so the download is refused.
 - `fixture down without a cache shows the offline banner, and Reconnect recovers once the fixture is back`:
   the cache is removed and the fixture answers 404 at first. After the 10 s
   retry window, it serves the valid file, and Reconnect loads the app with the
   token.
+- `signed out with no cache shows Try again on the welcome card, and Try again signs in once the fixture is back`:
+  the signed-in library marker is removed, so the app is signed out with no
+  cache. The welcome card shows the error and a Try again button, with no
+  offline banner. After the 10 s retry window, the fixture serves the valid
+  file, and Try again reloads the app to an enabled "Sign in to Apple Music"
+  button.
 
 Cleanup runs last, after every app has stopped. The fixture closes then, and
 `throwaway signing key and fixture server are removed` requires the listener to

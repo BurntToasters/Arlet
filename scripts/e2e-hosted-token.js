@@ -26,6 +26,7 @@ const TAURI_CLI = path.join(
   "tauri.js",
 );
 const TOKEN_PATH = "/arlet-token.json";
+const HOUR_SECONDS = 3_600;
 const DAY_SECONDS = 86_400;
 const GENERATE_TIMEOUT_MS = 60_000;
 
@@ -37,6 +38,7 @@ export const HOSTED_TOKEN_MODES = Object.freeze([
   "valid",
   "badSignature",
   "older",
+  "renewed",
   "missing",
 ]);
 
@@ -44,14 +46,14 @@ const encodeSegment = (value) =>
   Buffer.from(JSON.stringify(value)).toString("base64url");
 
 /**
- * An ES256 JWT with an integer exp and no origin claim. The JWT's own
+ * An ES256 JWT with integer iat and exp and no origin claim. The JWT's own
  * signature segment is a dummy: Arlet checks the minisign signature over the
  * whole token, and only the hosted file's signature proves it came from here.
  */
-export function syntheticMusicKitToken({ exp }) {
+export function syntheticMusicKitToken({ exp, iat }) {
   return [
     encodeSegment({ alg: "ES256", kid: "E2E" }),
-    encodeSegment({ iss: "E2E", exp, jti: crypto.randomUUID() }),
+    encodeSegment({ iss: "E2E", iat, exp, jti: crypto.randomUUID() }),
     Buffer.from("e2e-signature").toString("base64url"),
   ].join(".");
 }
@@ -124,11 +126,13 @@ function signTokenFile(key, token) {
 
 /**
  * Starts the fixture for one run. `realToken` (from --real-token) becomes the
- * "valid" token; every other token is synthetic. Tokens:
- *   valid  exp +120 days, served in "valid" mode and cached by the app
- *   older  exp +60 days, served in "older" mode (must not replace a newer cache)
- *   newer  exp +200 days, seeded as a cache by the checks, never served
- *   bad    exp +120 days, served in "badSignature" mode, signed by another key
+ * "valid" token; every other token is synthetic. Tokens are ordered by
+ * (iat, exp), which the app uses to pick a file. Tokens:
+ *   valid    iat -2 h, exp +120 days, served in "valid" mode and cached by the app
+ *   older    iat -3 h, exp +60 days, served in "older" mode (must not replace a newer cache)
+ *   newer    iat -1 h, exp +200 days, seeded as a cache by the checks, never served
+ *   renewed  iat now, exp +30 days, served in "renewed" mode (replaces a cache with a later exp)
+ *   bad      iat -2 h, exp +120 days, served in "badSignature" mode, signed by another key
  */
 export async function startHostedTokenFixture({
   realToken = "",
@@ -152,10 +156,26 @@ export async function startHostedTokenFixture({
     const tokens = {
       valid:
         realToken ||
-        syntheticMusicKitToken({ exp: nowSeconds + 120 * DAY_SECONDS }),
-      older: syntheticMusicKitToken({ exp: nowSeconds + 60 * DAY_SECONDS }),
-      newer: syntheticMusicKitToken({ exp: nowSeconds + 200 * DAY_SECONDS }),
-      bad: syntheticMusicKitToken({ exp: nowSeconds + 120 * DAY_SECONDS }),
+        syntheticMusicKitToken({
+          iat: nowSeconds - 2 * HOUR_SECONDS,
+          exp: nowSeconds + 120 * DAY_SECONDS,
+        }),
+      older: syntheticMusicKitToken({
+        iat: nowSeconds - 3 * HOUR_SECONDS,
+        exp: nowSeconds + 60 * DAY_SECONDS,
+      }),
+      newer: syntheticMusicKitToken({
+        iat: nowSeconds - HOUR_SECONDS,
+        exp: nowSeconds + 200 * DAY_SECONDS,
+      }),
+      renewed: syntheticMusicKitToken({
+        iat: nowSeconds,
+        exp: nowSeconds + 30 * DAY_SECONDS,
+      }),
+      bad: syntheticMusicKitToken({
+        iat: nowSeconds - 2 * HOUR_SECONDS,
+        exp: nowSeconds + 120 * DAY_SECONDS,
+      }),
     };
     const signedByFixture = new Map();
     const signFile = (token) => {
@@ -167,6 +187,7 @@ export async function startHostedTokenFixture({
     const files = {
       valid: signFile(tokens.valid),
       older: signFile(tokens.older),
+      renewed: signFile(tokens.renewed),
       badSignature: signTokenFile(impostor, tokens.bad),
     };
     const requests = Object.fromEntries(

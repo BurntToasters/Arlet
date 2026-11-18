@@ -133,7 +133,8 @@ function checkCredentialLeaks() {
     );
   }
   // MusicKit tokens live in `.env` like postal-snap secrets. They must not
-  // be Vite-prefixed; Rust reads them (runtime in debug, build.rs in release).
+  // be Vite-prefixed. No token is built into release binaries: release builds
+  // download the signed hosted token at launch, and debug reads the env var.
   const viteConfig = fs.readFileSync(path.join(root, "vite.config.ts"), "utf8");
   if (viteConfig.includes("VITE_MUSICKIT_DEVELOPER_TOKEN")) {
     throw new Error(
@@ -220,7 +221,8 @@ export function checkMusicKitTokenPolicy(
     );
   }
   // Apple refuses library (/v1/me) requests from an origin-restricted token,
-  // even from the release origin. Mirrors build.rs.
+  // even from the release origin. Mirrors the origin rejection in
+  // src-tauri/src/hosted_token.rs, which guards the hosted token at launch.
   if (payload.origin !== undefined) {
     throw new Error(
       "MusicKit developer token has an origin claim; Apple then refuses library (/v1/me) requests. Mint it without MUSICKIT_TOKEN_ORIGINS.",

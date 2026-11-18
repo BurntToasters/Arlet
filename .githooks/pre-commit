@@ -18,7 +18,7 @@ run_npm() {
 }
 
 # Only run JS tooling when staged files touch the frontend/tooling surface.
-if git diff --cached --name-only --diff-filter=ACM | grep -qE '\.(ts|css|html|js)$'; then
+if git diff --cached --name-only --diff-filter=ACM | grep -qE '\.(ts|tsx|css|html|js|mjs|cjs)$'; then
   echo "pre-commit: prettier --check"
   run_npm run --silent format:check
   echo "pre-commit: eslint"

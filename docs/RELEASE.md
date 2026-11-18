@@ -58,6 +58,11 @@ Azure signing, and live updater feeds remain explicit release-environment gates.
      runs it before `release:preflight`.
    - `npm run token:check` reads the live file without secrets. It must be
      valid, have at least 45 days left, and be accepted by Apple.
+   - Installs keep the newest token by `iat`. Republishing an older file does
+     not roll back installs that already cached a bad token. Recover by minting
+     and publishing a fresh token (newer `iat`) from a known-good key with
+     `npm run token:publish`. Reusing a pasted JWT helps only if its `iat` is
+     newer than the bad one.
 
    Setup goes in `.env` (see `.env.example`): `ARLET_TOKEN_SPACES_KEY`,
    `ARLET_TOKEN_SPACES_SECRET`, `ARLET_TOKEN_SPACES_BUCKET`,
@@ -255,13 +260,18 @@ written down here.
   Monday and fails below 45 days left. A failing run still leaves about 38
   days to renew, so run `npm run token:publish` without a release. When the
   token expires, every installed copy stops playing until the file is
-  republished and Arlet restarts.
+  republished. Arlet picks up a renewed token at its next restart, or at once
+  through the Reconnect button.
 - **Watch for MusicKit changes.** Apple updates MusicKit JS in place. The same
   workflow runs the native E2E weekly; its "live MusicKit keeps every API
   Arlet relies on" check lists anything Apple removed.
 - **Keep the updater key backed up.** If `TAURI_SIGNING_PRIVATE_KEY` is lost,
-  existing installs can never auto-update again. Confirm the offline backup
-  whenever the release VM is rebuilt.
+  existing installs can never auto-update again. The same key signs the hosted
+  MusicKit token, so losing it also ends Apple Music access for every install
+  within the token lifetime (180 days). Confirm the offline backup whenever the
+  release VM is rebuilt.
+- **Recovering a bad hosted token.** Follow the recovery steps in step 5 above.
+  Do not rely on republishing an older file.
 
 ## Changing the release tooling
 
