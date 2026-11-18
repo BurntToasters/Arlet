@@ -90,11 +90,15 @@ first.
   signature.
 - The verified file is cached as `musickit-token.json` in the local app data
   folder. The cache is verified again on every read, so an edited or truncated
-  copy is never served, and an older signed file never replaces a newer one.
-  With no network, a valid cache is served. An expired token shows "Arlet's
-  Apple Music access has expired. Restart Arlet to refresh it." If the
-  download fails and no valid cache exists, the offline banner appears with
-  Reconnect.
+  copy is never served. Files are ordered by the token's `iat`, then its
+  `exp`: a replayed older file never replaces a newer one, and a renewed
+  token with a shorter lifetime still does. With no network, a valid cache is
+  served. A process downloads once, and again on a reload once its token is
+  within 14 days of expiry, so a long-running app picks up a renewed file.
+- `get_developer_token` rejects with `{ code, message }`. The frontend reads
+  only `code` (`TOKEN_EXPIRED` or `TOKEN_UNAVAILABLE`). An expired token shows
+  "Arlet's Apple Music access has expired. Restart Arlet to refresh it." If
+  no usable token exists, the cached library shows offline with Reconnect.
 - The JWT is public by design, as with any MusicKit web app: a browser receives
   it too. The signature protects what installs accept, not the token's
   secrecy. Its lifetime is the exposure window. Apple caps it at 6 months, so
@@ -173,10 +177,13 @@ any disk or OS call:
 - `save_playback_session`: 256 KiB, at most 500 items, `schemaVersion` 1.
 - `library_cache_*`: scope, section, cursor, next cursor, and storefront at
   most 2048 bytes; item id and type at most 2048 bytes; 10,000 items and
-  16 MiB of item data per page. A rejected write is rolled back. There is no
+  16 MiB of item data per page. A section keeps at most 512 pages and
+  64 MiB, and the whole database at most 512 MiB; past either cap, a write
+  evicts the oldest pages (never the one just written), so new sections or
+  scopes cannot fill the disk. A rejected write is rolled back. There is no
   SQL.
 - `append_local_log`: 8 KiB per entry, line breaks escaped; the file rotates
-  at 5 MiB.
+  at 5 MiB. Native crash lines rotate at the same cap.
 - `update_windows_media_session`: title, artist, and album are cut to 1024
   characters; artwork URLs over 2048 bytes are dropped; only `*.mzstatic.com`
   and `*.apple.com` HTTPS artwork is passed to Windows.

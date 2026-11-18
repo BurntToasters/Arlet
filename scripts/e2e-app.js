@@ -537,8 +537,8 @@ function dataDirs() {
 
 /**
  * Injected for the expired-token check only: answers `get_developer_token`
- * with the release build's expiry message (hosted_token.rs, ServeError::Expired),
- * as Tauri's IPC protocol does.
+ * with the release build's expiry error (hosted_token.rs, TokenError from
+ * ServeError::Expired), as Tauri's IPC protocol does.
  */
 const EXPIRED_TOKEN_SOURCE = `(() => {
   if (sessionStorage.getItem("arlet-e2e-expired-token") !== "1") return;
@@ -552,7 +552,10 @@ const EXPIRED_TOKEN_SOURCE = `(() => {
       ) {
         return Promise.resolve(
           new Response(
-            JSON.stringify("Arlet's Apple Music access has expired. Restart Arlet to refresh it."),
+            JSON.stringify({
+              code: "TOKEN_EXPIRED",
+              message: "Arlet's Apple Music access has expired. Restart Arlet to refresh it.",
+            }),
             { headers: { "Content-Type": "application/json", "Tauri-Response": "error" } },
           ),
         );
@@ -2301,9 +2304,12 @@ async function run() {
       { onlineReloaded, offlineAgain },
     );
 
-    // 11b. An expired token: the expiry notice shows, not the offline banner
-    // (its Reconnect could never work). The token command is answered with the
-    // release build's expiry message through Tauri's IPC transport.
+    // 11b. An expired token: the expiry notice shows, and the cached library
+    // stays available with the offline banner, whose Reconnect downloads a
+    // fresh token. Failure modes: the expiry is read from the message text,
+    // not the error code; an expired token blanks the library. The token
+    // command is answered with the release build's expiry error through
+    // Tauri's IPC transport.
     await page.send("Page.enable");
     const expiredScript = await page.send(
       "Page.addScriptToEvaluateOnNewDocument",
@@ -2319,13 +2325,19 @@ async function run() {
       `document.querySelector(".token-expiry-notice")?.textContent.includes("expired")`,
       30_000,
     );
+    const expiredBanner = await waitFor(
+      page,
+      `document.querySelector(".offline-banner")`,
+      30_000,
+    );
     const expiredView = await page.evaluate(`return {
       offlineBanner: Boolean(document.querySelector(".offline-banner")),
+      cachedRow: document.body.textContent.includes("Cached Song"),
       notice: document.querySelector(".token-expiry-notice")?.textContent ?? null,
     };`);
     check(
-      "an expired token shows the expiry notice, not the offline banner",
-      expiredNotice && !expiredView.offlineBanner,
+      "an expired token shows the expiry notice and the cached library offline",
+      expiredNotice && expiredBanner && expiredView.cachedRow,
       expiredView,
     );
     await page.evaluate(

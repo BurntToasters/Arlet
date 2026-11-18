@@ -28,6 +28,9 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 - **Security:** Arlet now downloads its signed Apple Music access token at launch and keeps the last valid copy for offline use, so Apple Music access no longer runs out with an app version. Versions 0.4.0 and older keep the token they were built with.
 - **UI:** The Apple Music access notice says "Restart Arlet to refresh it." when access expires within 14 days or has expired.
 - **UI:** If Arlet cannot download Apple Music access and has no saved copy, the offline banner appears, and Reconnect tries again.
+- **UI:** When Apple Music access has expired, your cached library still shows offline, and Reconnect downloads fresh access.
+- **Fix:** Reconnect picks up renewed Apple Music access while Arlet keeps running, instead of only after a restart.
+- **Security:** Updated SQLite to fix a security advisory, and capped the library cache and crash log sizes.
 
 ## Changes in `v0.4.0:`
 

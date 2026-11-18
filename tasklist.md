@@ -2,10 +2,14 @@
 
 This document tracks our progress through the Arlet `docs/history/plan.md` architecture brief to easily pick up where we left off.
 
-## 📌 Status (2026-10-19 — read first)
+## 📌 Status (2026-11-18 — read first)
 
-`v0.3.0-beta.6` is written up in `CHANGELOG.md` and ships after the checks
-below. Performance, UI polish, and discovery are done for 0.3.0.
+`v0.5.0-beta.1` (hosted MusicKit token) is written up in `CHANGELOG.md`. It
+ships after the hosted token setup below: the token host does not resolve in
+DNS yet, so no release build has fetched the live HTTPS file. Bump
+`package.json` to `0.5.0-beta.1` and run `npm run sync-version` when
+drafting; the repo is still at `0.4.0`.
+0.3.0 and 0.4.0 shipped; their items below are kept for history.
 
 - [x] **0.3.0 performance:** virtualized library grid and Up Next, store
       subscriptions split by slice, sized artwork, batched ratings, WAL

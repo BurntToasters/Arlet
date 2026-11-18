@@ -182,11 +182,13 @@ The main flow runs these checks in the main app:
 - `release serves the hosted token, never the runtime env token`: the token the
   app serves is the fixture's, not `MUSICKIT_DEVELOPER_TOKEN`.
 - `hosted token has no origin claim`.
-- `an expired token shows the expiry notice, not the offline banner`: the token
-  command is answered with the release build's expiry message, and the page
-  reloads in the same app.
+- `an expired token shows the expiry notice and the cached library offline`:
+  the token command is answered with the release build's expiry error
+  (`{ code: "TOKEN_EXPIRED", message }`), and the page reloads in the same
+  app. The notice, the offline banner, and the cached library all show.
 
-The app downloads once per process, so the next checks each start a fresh app
+The app downloads once per process (again only when its token is within 14
+days of expiry), so the next checks each start a fresh app
 and stop it before the next one starts. They run after the main app has
 stopped:
 

@@ -60,10 +60,13 @@ pub fn token_expiry(token: &str) -> Result<u64, String> {
 #[cfg(test)]
 pub const RELEASE_ORIGIN: &str = "http://tauri.localhost";
 
-/// A hosted token that passed the policy checks.
+/// A hosted token that passed the policy checks. `iat` is 0 when the token
+/// has none; it orders hosted files, so a renewed token wins over an earlier
+/// one that expires later.
 #[derive(Debug, PartialEq, Eq)]
 pub struct HostedCheck {
     pub exp: u64,
+    pub iat: u64,
 }
 
 /// Why a hosted token is refused. `Expired` is separate so the caller can tell
@@ -103,10 +106,18 @@ pub fn validate_hosted(token: &str, now: u64) -> Result<HostedCheck, PolicyError
                 .to_string(),
         ));
     }
+    let iat = match payload.get("iat") {
+        None => 0,
+        Some(value) => value.as_u64().ok_or_else(|| {
+            PolicyError::Rejected(
+                "MusicKit developer token iat must be a non-negative integer".to_string(),
+            )
+        })?,
+    };
     if exp <= now {
         return Err(PolicyError::Expired { exp });
     }
-    Ok(HostedCheck { exp })
+    Ok(HostedCheck { exp, iat })
 }
 
 #[cfg(test)]
@@ -225,6 +236,25 @@ mod tests {
             assert!(
                 validate_hosted(&with_origin(origin), NOW).is_err(),
                 "accepted origin claim {origin}"
+            );
+        }
+    }
+
+    // Failure modes: the issue time that orders hosted files is not read, so a
+    // renewed token cannot win over an older one that expires later; a token
+    // without `iat` is refused (older tokens lack it, so it counts as 0); a
+    // fractional, negative, or string `iat` is accepted.
+    #[test]
+    fn hosted_policy_reads_the_issue_time() {
+        let issued = es256(&format!(r#"{{"iat":{NOW},"exp":{}}}"#, NOW * 2));
+        assert_eq!(validate_hosted(&issued, NOW).unwrap().iat, NOW);
+        let without = es256(&format!(r#"{{"exp":{}}}"#, NOW * 2));
+        assert_eq!(validate_hosted(&without, NOW).unwrap().iat, 0);
+        for iat in ["1.5", "-5", r#""now""#, "null"] {
+            let token = es256(&format!(r#"{{"iat":{iat},"exp":{}}}"#, NOW * 2));
+            assert!(
+                matches!(validate_hosted(&token, NOW), Err(PolicyError::Rejected(_))),
+                "accepted iat {iat}"
             );
         }
     }

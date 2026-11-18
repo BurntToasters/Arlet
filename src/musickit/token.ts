@@ -21,6 +21,44 @@ export type InvokeFn = <T>(
   args?: Record<string, unknown>,
 ) => Promise<T>;
 
+const TOKEN_UNAVAILABLE_MESSAGE = "MusicKit developer token is not available.";
+
+/**
+ * The native command rejects with `{ code, message }` (hosted_token.rs,
+ * TokenError). Only the code decides expiry; the message is for display.
+ */
+function readTokenError(error: unknown): {
+  message: string;
+  code: AppErrorCode;
+} {
+  if (error instanceof Error) {
+    return { message: error.message, code: "MUSICKIT_INIT_FAILED" };
+  }
+  if (typeof error === "string") {
+    return {
+      message: error.trim() || TOKEN_UNAVAILABLE_MESSAGE,
+      code: "MUSICKIT_INIT_FAILED",
+    };
+  }
+  const record =
+    error && typeof error === "object"
+      ? (error as { code?: unknown; message?: unknown })
+      : {};
+  const message =
+    typeof record.message === "string" && record.message.trim()
+      ? record.message
+      : TOKEN_UNAVAILABLE_MESSAGE;
+  // Only an expired token is TOKEN_EXPIRED: it shows the expiry notice.
+  // A token that cannot be downloaded is MUSICKIT_INIT_FAILED.
+  return {
+    message,
+    code:
+      record.code === "TOKEN_EXPIRED"
+        ? "TOKEN_EXPIRED"
+        : "MUSICKIT_INIT_FAILED",
+  };
+}
+
 export function createNativeTokenProvider(
   invokeFn: InvokeFn = invoke as InvokeFn,
 ): DeveloperTokenProvider {
@@ -30,19 +68,7 @@ export function createNativeTokenProvider(
       try {
         token = await invokeFn<string>("get_developer_token");
       } catch (error) {
-        // Tauri rejects command errors with a plain string, which carries
-        // the native command's message (token unavailable or expired).
-        const message =
-          error instanceof Error
-            ? error.message
-            : typeof error === "string" && error.trim()
-              ? error
-              : "MusicKit developer token is not available.";
-        // Only an expired token is TOKEN_EXPIRED: it shows the expiry notice.
-        // A token that cannot be downloaded is MUSICKIT_INIT_FAILED.
-        const code: AppErrorCode = /expired/iu.test(message)
-          ? "TOKEN_EXPIRED"
-          : "MUSICKIT_INIT_FAILED";
+        const { message, code } = readTokenError(error);
         throw Object.assign(new Error(message), { code });
       }
       if (typeof token !== "string" || !token.trim()) {

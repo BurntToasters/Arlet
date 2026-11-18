@@ -130,14 +130,16 @@ where
 }
 
 /// Debug builds use `.env`; release builds wait for the hosted token. Both
-/// branches compile in every profile, so neither is dead code.
+/// branches compile in every profile, so neither is dead code. Errors are
+/// `{ code, message }` (see `hosted_token::TokenError`).
 #[tauri::command]
 pub async fn get_developer_token(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::hosted_token::HostedTokenState>,
-) -> Result<String, String> {
+) -> Result<String, crate::hosted_token::TokenError> {
     if cfg!(debug_assertions) {
-        return resolve_developer_token(|key| std::env::var(key).ok());
+        return resolve_developer_token(|key| std::env::var(key).ok())
+            .map_err(crate::hosted_token::TokenError::unavailable);
     }
     crate::hosted_token::token(&app, &state).await
 }

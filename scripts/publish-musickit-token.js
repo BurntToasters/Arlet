@@ -314,6 +314,7 @@ export async function putSpacesObject({
         authorization,
       },
       body,
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
     });
   } catch (error) {
     throw new Error(

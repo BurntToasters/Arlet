@@ -53,6 +53,10 @@ pub const MAX_PAGE_BYTES: usize = 16 * 1024 * 1024;
 /// grow the file or a `read_section` response without bound.
 pub const MAX_SECTION_PAGES: i64 = 512;
 pub const MAX_SECTION_BYTES: i64 = 64 * 1024 * 1024;
+/// The section caps do not bound how many sections or scopes exist, so the
+/// whole database is capped too. Past it, a write evicts the oldest pages in
+/// any section or scope (never the page just written).
+pub const MAX_DATABASE_BYTES: i64 = 512 * 1024 * 1024;
 pub const DATABASE_FILE: &str = "arlet-library.db";
 
 /// Version 1 matches the tables the former SQL plugin created, so an
@@ -526,11 +530,76 @@ fn evict_section_overflow(
     Ok(())
 }
 
+/// Bytes in pages that hold data: the file size minus its free pages. Cheap:
+/// both values come from the database header.
+fn database_used_bytes(conn: &Connection) -> Result<i64, String> {
+    let pragma = |name: &str| {
+        conn.query_row(&format!("PRAGMA {name}"), [], |row| row.get::<_, i64>(0))
+            .map_err(sql_error)
+    };
+    let used_pages = pragma("page_count")? - pragma("freelist_count")?;
+    Ok(used_pages.saturating_mul(pragma("page_size")?))
+}
+
+/// Evicts the oldest pages in any scope or section until the database is
+/// inside `cap`. The page just written is kept; if it alone exceeds the cap,
+/// the loop stops once nothing else is left.
+fn evict_database_overflow(
+    tx: &rusqlite::Transaction<'_>,
+    keep: (&str, &str, &str),
+    cap: i64,
+) -> Result<(), String> {
+    let (keep_scope, keep_section, keep_cursor) = keep;
+    while database_used_bytes(tx)? > cap {
+        let oldest: Option<(String, String, String)> = tx
+            .prepare_cached(
+                "SELECT scope, section, cursor FROM music_pages
+                 WHERE NOT (scope = ?1 AND section = ?2 AND cursor = ?3)
+                 ORDER BY updated_at ASC, scope ASC, section ASC, cursor ASC LIMIT 1",
+            )
+            .map_err(sql_error)?
+            .query_row([keep_scope, keep_section, keep_cursor], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .optional()
+            .map_err(sql_error)?;
+        let Some((scope, section, cursor)) = oldest else {
+            break;
+        };
+        let previous = linked_resources(
+            tx,
+            "SELECT DISTINCT resource_type, resource_id FROM music_page_items
+             WHERE scope = ?1 AND section = ?2 AND cursor = ?3",
+            &[&scope, &section, &cursor],
+        )?;
+        for table in ["music_page_items", "music_pages"] {
+            tx.prepare_cached(&format!(
+                "DELETE FROM {table} WHERE scope = ?1 AND section = ?2 AND cursor = ?3"
+            ))
+            .map_err(sql_error)?
+            .execute([scope.as_str(), section.as_str(), cursor.as_str()])
+            .map_err(sql_error)?;
+        }
+        delete_orphans(tx, &scope, &previous)?;
+    }
+    Ok(())
+}
+
 pub fn write_page(
     conn: &mut Connection,
     scope: &str,
     section: &str,
     page: &CachedPage,
+) -> Result<(), String> {
+    write_page_capped(conn, scope, section, page, MAX_DATABASE_BYTES)
+}
+
+fn write_page_capped(
+    conn: &mut Connection,
+    scope: &str,
+    section: &str,
+    page: &CachedPage,
+    database_cap: i64,
 ) -> Result<(), String> {
     check_key("scope", scope)?;
     check_key("section", section)?;
@@ -621,6 +690,7 @@ pub fn write_page(
     }
     delete_orphans(&tx, scope, &previous)?;
     evict_section_overflow(&tx, scope, section, cursor)?;
+    evict_database_overflow(&tx, (scope, section, cursor), database_cap)?;
     tx.commit().map_err(sql_error)
 }
 
@@ -1230,5 +1300,70 @@ mod tests {
         assert!(write_page(&mut conn, "s", "songs", &page(None, heavy, None, 1)).is_err());
         // A failed write leaves nothing behind.
         assert!(read_section(&conn, "s", "songs").unwrap().is_none());
+    }
+
+    // Failure modes: the section caps are per section, so a page written into
+    // a new section or scope each time grows the file without bound; the
+    // database cap evicts the page just written; eviction picks a newer page
+    // over an older one; evicted pages leave orphaned resources behind; a
+    // database under the cap loses pages.
+    #[test]
+    fn database_cap_evicts_oldest_pages_across_sections_and_scopes() {
+        const CAP: i64 = 1024 * 1024;
+        let mut conn = memory();
+        let blob = "b".repeat(48 * 1024);
+        let heavy = |prefix: &str| {
+            vec![json!({ "id": format!("{prefix}-item"), "type": "songs", "blob": blob })]
+        };
+        for index in 0..60_i64 {
+            let scope = format!("scope-{}", index % 3);
+            let section = format!("section-{index}");
+            write_page_capped(
+                &mut conn,
+                &scope,
+                &section,
+                &page(None, heavy(&section), None, index),
+                CAP,
+            )
+            .unwrap();
+            assert!(database_used_bytes(&conn).unwrap() <= CAP);
+            assert!(
+                read_page(&conn, &scope, &section, None).unwrap().is_some(),
+                "the page just written was evicted"
+            );
+        }
+        assert!(read_page(&conn, "scope-0", "section-0", None)
+            .unwrap()
+            .is_none());
+        assert!(read_page(&conn, "scope-2", "section-59", None)
+            .unwrap()
+            .is_some());
+        let orphans: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM music_resources r WHERE NOT EXISTS (
+                   SELECT 1 FROM music_page_items i WHERE i.scope = r.scope
+                     AND i.resource_type = r.resource_type AND i.resource_id = r.resource_id)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(orphans, 0);
+
+        let mut small = memory();
+        for index in 0..5_i64 {
+            let section = format!("section-{index}");
+            write_page_capped(
+                &mut small,
+                "s",
+                &section,
+                &page(None, songs(&section, 3), None, index),
+                CAP,
+            )
+            .unwrap();
+        }
+        for index in 0..5_i64 {
+            let section = format!("section-{index}");
+            assert!(read_page(&small, "s", &section, None).unwrap().is_some());
+        }
     }
 }

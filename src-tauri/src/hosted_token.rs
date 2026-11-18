@@ -7,13 +7,14 @@
 //! policy), cached byte for byte, and the cache is verified again on every
 //! read, so an edited cache file is never served. Debug builds do no network.
 
-// Failure modes (module-wide), each covered by a test below: a body over the
-// 16 KiB cap; non-JSON or non-object bodies; a wrong `version`, missing or
-// wrong-typed fields, and unknown fields; a signature by another key, over the
-// bare JWT, or an updater-artifact signature replayed onto the token; a token
-// edited after signing; a signature that is not base64 or not minisign text; a
-// validly signed token that is expired, carries an origin claim, or is not
-// ES256; an older signed file replacing a newer cache; a tampered, truncated,
+// Failure modes (module-wide), each covered by a test below: an oversized,
+// non-JSON, or non-object body; a wrong `version`, missing, wrong-typed, or
+// unknown fields; a signature by another key, over the bare JWT, or replayed
+// from an updater artifact; a token edited after signing; a malformed
+// signature; a signed token that is expired, origin-scoped, or not ES256; an
+// older file replacing a newer cache, or a renewed shorter-lived token losing
+// to it; a running process never refreshing near expiry, or dropping a valid
+// token when a refresh fails; codeless command errors; a tampered, truncated,
 // or stray-temp cache; a stalled, redirected, non-200, oversized, or
 // unreachable server, with and without a cache; a non-HTTPS URL outside E2E
 // builds; E2E variables read by an ordinary build; a malformed public key; and
@@ -58,6 +59,11 @@ const E2E_TOKEN_PUBKEY_ENV: &str = "ARLET_E2E_TOKEN_PUBKEY";
 /// not repeated by the webview's first call, while Reconnect still retries.
 const FAILED_FETCH_RETRY_SECS: u64 = 10;
 
+/// A token fetched by this process is downloaded again once it is this close
+/// to expiry, so a reload in a long-running process picks up a renewed file.
+/// Matches the 14-day expiry notice in the frontend.
+const REFRESH_BEFORE_EXPIRY_SECS: u64 = 14 * 86_400;
+
 /// Process-wide state. The async mutex is held across a download, so a command
 /// call waits for an in-flight one.
 #[derive(Default)]
@@ -78,13 +84,22 @@ struct Attempts {
 #[derive(Clone)]
 struct VerifiedToken {
     token: String,
+    /// Issue time, 0 when absent. Newer files win by `(iat, exp)`.
+    iat: u64,
     exp: u64,
     bytes: Vec<u8>,
+}
+
+impl VerifiedToken {
+    fn order(&self) -> (u64, u64) {
+        (self.iat, self.exp)
+    }
 }
 
 impl fmt::Debug for VerifiedToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("VerifiedToken")
+            .field("iat", &self.iat)
             .field("exp", &self.exp)
             .finish_non_exhaustive()
     }
@@ -96,9 +111,7 @@ impl fmt::Debug for VerifiedToken {
 enum Verdict {
     Valid(VerifiedToken),
     /// Correctly signed and well-formed, but past its expiry.
-    Expired {
-        exp: u64,
-    },
+    Expired,
     Rejected,
 }
 
@@ -109,7 +122,41 @@ enum ServeError {
     Unavailable,
 }
 
+/// The `get_developer_token` error. The frontend reads `code`, never the
+/// message text, to tell an expired token from an outage.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TokenError {
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl TokenError {
+    /// Debug builds: the `.env` token is missing.
+    pub fn unavailable(message: String) -> Self {
+        Self {
+            code: "TOKEN_UNAVAILABLE",
+            message,
+        }
+    }
+}
+
+impl From<ServeError> for TokenError {
+    fn from(error: ServeError) -> Self {
+        Self {
+            code: error.code(),
+            message: error.message().to_string(),
+        }
+    }
+}
+
 impl ServeError {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Expired => "TOKEN_EXPIRED",
+            Self::Unavailable => "TOKEN_UNAVAILABLE",
+        }
+    }
+
     fn message(self) -> &'static str {
         match self {
             Self::Expired => {
@@ -276,10 +323,11 @@ fn verify_file(bytes: &[u8], public_key: &PublicKey, now: u64) -> Verdict {
     match token_policy::validate_hosted(&file.token, now) {
         Ok(check) => Verdict::Valid(VerifiedToken {
             token: file.token,
+            iat: check.iat,
             exp: check.exp,
             bytes: bytes.to_vec(),
         }),
-        Err(PolicyError::Expired { exp }) => Verdict::Expired { exp },
+        Err(PolicyError::Expired { .. }) => Verdict::Expired,
         Err(PolicyError::Rejected(_)) => Verdict::Rejected,
     }
 }
@@ -308,14 +356,14 @@ fn read_cache(path: &Path, public_key: &PublicKey, now: u64) -> Verdict {
     verify_file(&bytes, public_key, now)
 }
 
-/// A cache entry is replaced only by a file that expires no earlier, so an
-/// older signed file cannot roll the cache back. A tampered, expired, or
-/// missing cache has nothing to protect.
-fn should_replace(fetched_exp: u64, cached: &Verdict) -> bool {
+/// A cache entry is replaced only by a file issued no earlier (then expiring
+/// no earlier), so a replayed older file cannot roll the cache back, while a
+/// renewed token with a shorter lifetime still replaces it. A tampered,
+/// expired, or missing cache has nothing to protect.
+fn should_replace(fetched: &VerifiedToken, cached: &Verdict) -> bool {
     match cached {
-        Verdict::Valid(token) => fetched_exp >= token.exp,
-        Verdict::Expired { exp } => fetched_exp >= *exp,
-        Verdict::Rejected => true,
+        Verdict::Valid(token) => fetched.order() >= token.order(),
+        Verdict::Expired | Verdict::Rejected => true,
     }
 }
 
@@ -404,7 +452,7 @@ async fn fetch_and_store(settings: &Settings, now: u64) -> Verdict {
     let verdict = verify_file(&bytes, &settings.public_key, now);
     if let Verdict::Valid(token) = &verdict {
         let cached = read_cache(&settings.cache_path, &settings.public_key, now);
-        if should_replace(token.exp, &cached) {
+        if should_replace(token, &cached) {
             // A failed write only means the next launch downloads again.
             let _ = write_cache(&settings.cache_path, &token.bytes);
         }
@@ -412,20 +460,20 @@ async fn fetch_and_store(settings: &Settings, now: u64) -> Verdict {
     verdict
 }
 
-/// Serves the candidate with the latest expiry that is still in the future.
-/// Candidates that expire no later than `now` count as expired, and only
-/// rejected or missing candidates mean the token is unavailable.
+/// Serves the unexpired candidate issued last, then expiring last. Candidates
+/// that expire no later than `now` count as expired, and only rejected or
+/// missing candidates mean the token is unavailable.
 fn choose(now: u64, candidates: &[Verdict]) -> Result<VerifiedToken, ServeError> {
     let mut best: Option<&VerifiedToken> = None;
     let mut expired = false;
     for candidate in candidates {
         match candidate {
             Verdict::Valid(token) if token.exp > now => {
-                if best.is_none_or(|current| token.exp > current.exp) {
+                if best.is_none_or(|current| token.order() > current.order()) {
                     best = Some(token);
                 }
             }
-            Verdict::Valid(_) | Verdict::Expired { .. } => expired = true,
+            Verdict::Valid(_) | Verdict::Expired => expired = true,
             Verdict::Rejected => {}
         }
     }
@@ -445,30 +493,41 @@ fn retry_allowed(failed_at: Option<u64>, now: u64) -> bool {
     }
 }
 
+/// True when a token fetched by this process should be downloaded again.
+fn needs_refresh(token: &VerifiedToken, now: u64) -> bool {
+    now.saturating_add(REFRESH_BEFORE_EXPIRY_SECS) >= token.exp
+}
+
 impl HostedTokenState {
-    /// Waits for any in-flight download. While this process has no successful
-    /// download, it downloads again only once the retry window since the last
-    /// failure has passed. Then serves the best of the fetched token and the
-    /// verified cache.
+    /// Waits for any in-flight download. Downloads when this process has no
+    /// fetched token, or its fetched token is near expiry, and only once the
+    /// retry window since the last failure has passed. Then serves the best of
+    /// the new download, the earlier fetched token, and the verified cache.
     async fn serve(&self, settings: &Settings) -> Result<VerifiedToken, ServeError> {
         let now = (settings.clock)();
         let mut attempts = self.attempts.lock().await;
-        let latest = match attempts.fetched.clone() {
+        let previous = match attempts.fetched.clone() {
             Some(token) => Verdict::Valid(token),
-            None if !retry_allowed(attempts.failed_at, now) => Verdict::Rejected,
-            None => {
-                let verdict = fetch_and_store(settings, now).await;
-                match &verdict {
-                    Verdict::Valid(token) => attempts.fetched = Some(token.clone()),
-                    Verdict::Expired { .. } | Verdict::Rejected => {
-                        attempts.failed_at = Some((settings.clock)());
-                    }
+            None => Verdict::Rejected,
+        };
+        let wanted = attempts
+            .fetched
+            .as_ref()
+            .is_none_or(|token| needs_refresh(token, now));
+        let latest = if wanted && retry_allowed(attempts.failed_at, now) {
+            let verdict = fetch_and_store(settings, now).await;
+            match &verdict {
+                Verdict::Valid(token) => attempts.fetched = Some(token.clone()),
+                Verdict::Expired | Verdict::Rejected => {
+                    attempts.failed_at = Some((settings.clock)());
                 }
-                verdict
             }
+            verdict
+        } else {
+            Verdict::Rejected
         };
         let cached = read_cache(&settings.cache_path, &settings.public_key, now);
-        choose(now, &[latest, cached])
+        choose(now, &[latest, previous, cached])
     }
 }
 
@@ -482,7 +541,7 @@ fn unix_now() -> u64 {
 /// Serves the hosted token for `get_developer_token` (release builds). An
 /// unavailable token is logged only in Debug Mode, by category only, and never
 /// with the token, body, or signature.
-pub async fn token(app: &AppHandle, state: &HostedTokenState) -> Result<String, String> {
+pub async fn token(app: &AppHandle, state: &HostedTokenState) -> Result<String, TokenError> {
     let outcome = match settings_for_app(app) {
         Ok(settings) => state.serve(&settings).await,
         Err(_) => Err(ServeError::Unavailable),
@@ -495,7 +554,7 @@ pub async fn token(app: &AppHandle, state: &HostedTokenState) -> Result<String, 
             if crate::settings::debug_mode() {
                 logging::write_native_log(&format!("MusicKit access token unavailable: {error:?}"));
             }
-            Err(error.message().to_string())
+            Err(TokenError::from(error))
         }
     }
 }
@@ -563,11 +622,50 @@ mod tests {
     }
 
     fn token(label: &str, exp: u64) -> VerifiedToken {
+        issued(label, 0, exp)
+    }
+
+    fn issued(label: &str, iat: u64, exp: u64) -> VerifiedToken {
         VerifiedToken {
             token: label.to_string(),
+            iat,
             exp,
             bytes: Vec::new(),
         }
+    }
+
+    /// Reads one request head from a loopback connection.
+    fn read_head(stream: &mut TcpStream) {
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") && head.len() < 8192 {
+            match stream.read(&mut byte) {
+                Ok(1) => head.push(byte[0]),
+                _ => break,
+            }
+        }
+    }
+
+    /// A loopback server that answers each connection with the next body in
+    /// `bodies` (the last one repeats) and counts the requests.
+    fn sequence_server(bodies: Vec<Vec<u8>>) -> (String, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("local addr").port();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&requests);
+        thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let index = counter.fetch_add(1, Ordering::SeqCst);
+                read_head(&mut stream);
+                let body = &bodies[index.min(bodies.len() - 1)];
+                let _ = stream.write_all(&http_reply("200 OK", "", body));
+            }
+        });
+        (
+            format!("http://127.0.0.1:{port}/arlet-token.json"),
+            requests,
+        )
     }
 
     struct TempDir(PathBuf);
@@ -771,10 +869,7 @@ mod tests {
     // refuses library requests for it; a validly signed HS256 token is rejected.
     #[test]
     fn signed_but_unusable_tokens_are_classified() {
-        assert!(matches!(
-            verify(EXPIRED),
-            Verdict::Expired { exp: 1_000_000_000 }
-        ));
+        assert!(matches!(verify(EXPIRED), Verdict::Expired));
         assert!(is_rejected(&verify(ORIGIN)));
         assert!(is_rejected(&verify(HS256)));
     }
@@ -785,7 +880,7 @@ mod tests {
     fn expiry_is_judged_against_the_supplied_clock() {
         assert!(matches!(
             verify_file(VALID, &pubkey(), FAR_FUTURE),
-            Verdict::Expired { exp: FAR_FUTURE }
+            Verdict::Expired
         ));
         assert!(matches!(
             verify_file(VALID, &pubkey(), FAR_FUTURE - 1),
@@ -939,7 +1034,7 @@ mod tests {
     #[test]
     fn choose_reports_expiry_only_when_nothing_newer_is_usable() {
         assert_eq!(
-            choose(NOW, &[Verdict::Expired { exp: NOW - 1 }, Verdict::Rejected]).unwrap_err(),
+            choose(NOW, &[Verdict::Expired, Verdict::Rejected]).unwrap_err(),
             ServeError::Expired
         );
         assert_eq!(
@@ -954,10 +1049,7 @@ mod tests {
         assert_eq!(
             choose(
                 NOW,
-                &[
-                    Verdict::Expired { exp: NOW - 1 },
-                    Verdict::Valid(token("cache", NOW + 50))
-                ]
+                &[Verdict::Expired, Verdict::Valid(token("cache", NOW + 50))]
             )
             .unwrap()
             .token,
@@ -965,35 +1057,156 @@ mod tests {
         );
     }
 
-    // Failure modes: changing the user-visible strings breaks the frontend's
-    // expiry match; the unavailable text must never match /expired/i.
+    // Failure modes: the frontend tells expiry from an outage by matching the
+    // message text, so a reworded message silently changes behavior; the
+    // command error carries no code; the two cases share a code.
     #[test]
-    fn user_facing_messages_match_the_contract() {
+    fn command_errors_carry_a_code_and_the_user_message() {
+        let expired = TokenError::from(ServeError::Expired);
+        assert_eq!(expired.code, "TOKEN_EXPIRED");
         assert_eq!(
-            ServeError::Expired.message(),
+            expired.message,
             "Arlet's Apple Music access has expired. Restart Arlet to refresh it."
         );
+        let unavailable = TokenError::from(ServeError::Unavailable);
+        assert_eq!(unavailable.code, "TOKEN_UNAVAILABLE");
         assert_eq!(
-            ServeError::Unavailable.message(),
+            unavailable.message,
             "Arlet could not download its Apple Music access token. Check your connection and try again."
         );
-        assert!(!ServeError::Unavailable
-            .message()
-            .to_ascii_lowercase()
-            .contains("expired"));
+        assert_eq!(
+            serde_json::to_value(&expired).unwrap(),
+            json!({ "code": "TOKEN_EXPIRED", "message": expired.message })
+        );
     }
 
     // Failure modes: an older signed file replacing a newer cache moves the
-    // cache backwards; a file equal in expiry must replace it; a cache that is
-    // tampered or expired is replaced by any fresh file.
+    // cache backwards; a file equal in issue time and expiry must replace it;
+    // a cache that is tampered or expired is replaced by any fresh file.
     #[test]
     fn replacement_never_moves_the_cache_backwards() {
         let cached = |exp: u64| Verdict::Valid(token("cached", exp));
-        assert!(!should_replace(NOW + 99, &cached(NOW + 100)));
-        assert!(should_replace(NOW + 100, &cached(NOW + 100)));
-        assert!(should_replace(NOW + 101, &cached(NOW + 100)));
-        assert!(should_replace(NOW + 1, &Verdict::Rejected));
-        assert!(should_replace(NOW + 1, &Verdict::Expired { exp: NOW - 5 }));
+        assert!(!should_replace(
+            &token("fetched", NOW + 99),
+            &cached(NOW + 100)
+        ));
+        assert!(should_replace(
+            &token("fetched", NOW + 100),
+            &cached(NOW + 100)
+        ));
+        assert!(should_replace(
+            &token("fetched", NOW + 101),
+            &cached(NOW + 100)
+        ));
+        assert!(should_replace(
+            &token("fetched", NOW + 1),
+            &Verdict::Rejected
+        ));
+        assert!(should_replace(
+            &token("fetched", NOW + 1),
+            &Verdict::Expired
+        ));
+    }
+
+    // Failure modes: a renewed token with a shorter lifetime is never served or
+    // cached because an earlier file expires later; a replayed earlier file
+    // wins because it expires later; equal issue times stop falling back to
+    // the later expiry.
+    #[test]
+    fn choose_and_replace_prefer_the_latest_issued_token() {
+        let renewed = issued("renewed", NOW, NOW + 100);
+        let earlier = issued("earlier", NOW - 50, NOW + 500);
+        let candidates = [
+            Verdict::Valid(earlier.clone()),
+            Verdict::Valid(renewed.clone()),
+        ];
+        assert_eq!(choose(NOW, &candidates).unwrap().token, "renewed");
+        assert_eq!(
+            choose(
+                NOW,
+                &[
+                    Verdict::Valid(renewed.clone()),
+                    Verdict::Valid(earlier.clone())
+                ]
+            )
+            .unwrap()
+            .token,
+            "renewed"
+        );
+        assert!(should_replace(&renewed, &Verdict::Valid(earlier.clone())));
+        assert!(!should_replace(&earlier, &Verdict::Valid(renewed)));
+        assert_eq!(
+            choose(
+                NOW,
+                &[
+                    Verdict::Valid(issued("short", NOW, NOW + 10)),
+                    Verdict::Valid(issued("long", NOW, NOW + 20))
+                ]
+            )
+            .unwrap()
+            .token,
+            "long"
+        );
+    }
+
+    static REFRESH_NOW: AtomicU64 = AtomicU64::new(0);
+
+    fn refresh_now() -> u64 {
+        REFRESH_NOW.load(Ordering::SeqCst)
+    }
+
+    // Failure modes: a running process keeps serving the token it fetched
+    // first until it expires, so a reload (Reconnect, the online reload,
+    // WebView2 recovery) never picks up a renewed file; a token far from
+    // expiry is downloaded again on every call; a failed refresh drops a
+    // fetched token that is still valid; a failed refresh is retried inside
+    // the retry window.
+    #[test]
+    fn fetched_token_is_refreshed_only_near_expiry() {
+        const OLDER_EXP: u64 = 4_102_358_400;
+        let refresh_at = OLDER_EXP - REFRESH_BEFORE_EXPIRY_SECS;
+        let at = |settings: &Settings, state: &HostedTokenState, now: u64| {
+            REFRESH_NOW.store(now, Ordering::SeqCst);
+            tauri::async_runtime::block_on(state.serve(settings)).map(|token| token.token)
+        };
+
+        let dir = TempDir::new("refresh");
+        let (url, requests) = sequence_server(vec![OLDER.to_vec(), VALID.to_vec()]);
+        let mut settings = settings_for(&url, &dir.cache(), FETCH_TIMEOUT);
+        settings.clock = refresh_now;
+        let state = HostedTokenState::default();
+        assert_eq!(at(&settings, &state, NOW).unwrap(), field(OLDER, "token"));
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            at(&settings, &state, refresh_at - 1).unwrap(),
+            field(OLDER, "token")
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            at(&settings, &state, refresh_at).unwrap(),
+            field(VALID, "token")
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        assert_eq!(fs::read(dir.cache()).unwrap(), VALID);
+
+        let dir = TempDir::new("refresh-failed");
+        let (url, requests) = sequence_server(vec![OLDER.to_vec(), b"not json".to_vec()]);
+        let mut settings = settings_for(&url, &dir.cache(), FETCH_TIMEOUT);
+        settings.clock = refresh_now;
+        let state = HostedTokenState::default();
+        assert_eq!(at(&settings, &state, NOW).unwrap(), field(OLDER, "token"));
+        // Without the cache, only the fetched token can be served.
+        fs::remove_file(dir.cache()).unwrap();
+        assert_eq!(
+            at(&settings, &state, refresh_at).unwrap(),
+            field(OLDER, "token")
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            at(&settings, &state, refresh_at + FAILED_FETCH_RETRY_SECS - 1).unwrap(),
+            field(OLDER, "token")
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
     }
 
     // Failure modes: a stalled host and a body that never finishes both
@@ -1241,6 +1454,7 @@ mod tests {
         }
         for error in [ServeError::Expired, ServeError::Unavailable] {
             assert!(!error.message().contains(&token));
+            assert!(!format!("{:?}", TokenError::from(error)).contains(&token));
         }
     }
 }
