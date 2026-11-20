@@ -780,25 +780,39 @@ export function HomeView(): JSX.Element {
                 Sign in with your Apple Music account to search and play your
                 library.
               </p>
+              {state.initialization.status === "error" ? (
+                <p role="status">{state.initialization.message}</p>
+              ) : null}
               <div className="welcome-actions">
-                <button
-                  className="primary-button"
-                  type="button"
-                  disabled={
-                    state.initialization.status !== "ready" ||
-                    authorizationPending
-                  }
-                  onClick={() =>
-                    void controller.authorize().catch(reportActionError)
-                  }
-                >
-                  <Headphones aria-hidden="true" size={17} strokeWidth={2} />
-                  {authorizationPending
-                    ? "Signing in…"
-                    : state.initialization.status === "ready"
-                      ? "Sign in to Apple Music"
-                      : "Connecting…"}
-                </button>
+                {state.initialization.status === "error" ? (
+                  <button
+                    className="primary-button"
+                    type="button"
+                    onClick={() => window.location.reload()}
+                  >
+                    <RefreshCw aria-hidden="true" size={17} strokeWidth={2} />
+                    Try again
+                  </button>
+                ) : (
+                  <button
+                    className="primary-button"
+                    type="button"
+                    disabled={
+                      state.initialization.status !== "ready" ||
+                      authorizationPending
+                    }
+                    onClick={() =>
+                      void controller.authorize().catch(reportActionError)
+                    }
+                  >
+                    <Headphones aria-hidden="true" size={17} strokeWidth={2} />
+                    {authorizationPending
+                      ? "Signing in…"
+                      : state.initialization.status === "ready"
+                        ? "Sign in to Apple Music"
+                        : "Connecting…"}
+                  </button>
+                )}
                 <button
                   className="quiet-button"
                   type="button"

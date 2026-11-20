@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -156,5 +157,91 @@ export function verifyUpdaterSignatures({
     return true;
   } finally {
     fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Decodes a base64 signature (the text `tauri signer sign` writes to `.sig`)
+ * into its minisign envelope. Throws before any verifier runs on other input.
+ */
+export function decodeUpdaterSignatureEnvelope(signature) {
+  const text = String(signature ?? "").trim();
+  const envelope = text ? Buffer.from(text, "base64").toString("utf8") : "";
+  if (!envelope.startsWith("untrusted comment:")) {
+    throw new Error("Signature is not a base64 minisign envelope.");
+  }
+  return envelope;
+}
+
+/**
+ * Cryptographically verifies one payload (bytes) against a base64 minisign
+ * signature with the public key pinned in src-tauri/tauri.conf.json. The
+ * payload and signature live in a private temp directory that is removed on
+ * every path. Child output is piped, never inherited.
+ */
+const errorCodeOf = (error) => error?.code ?? "error";
+
+export function verifyUpdaterSignaturePayload({
+  root,
+  payload,
+  signature,
+  runner = spawnSync,
+  tempRoot = os.tmpdir(),
+  env,
+}) {
+  if (!Buffer.isBuffer(payload)) {
+    throw new Error(
+      "Updater signature verification requires a Buffer payload.",
+    );
+  }
+  const envelope = decodeUpdaterSignatureEnvelope(signature);
+  const publicKey = readPinnedPublicKey(root);
+  const directory = fs.mkdtempSync(
+    path.join(tempRoot, "arlet-updater-verify-"),
+  );
+  try {
+    const publicKeyPath = path.join(directory, "updater.pub");
+    const payloadPath = path.join(directory, "payload.bin");
+    const signaturePath = path.join(directory, "payload.minisig");
+    fs.writeFileSync(publicKeyPath, publicKey, { mode: 0o600 });
+    fs.writeFileSync(payloadPath, payload, { mode: 0o600 });
+    fs.writeFileSync(signaturePath, envelope, { mode: 0o600 });
+    const result = runner(
+      "cargo",
+      [
+        "run",
+        "--locked",
+        "--quiet",
+        "--manifest-path",
+        path.join(root, "src-tauri", "Cargo.toml"),
+        "--example",
+        "verify_updater_signatures",
+        "--",
+        publicKeyPath,
+        payloadPath,
+        signaturePath,
+      ],
+      {
+        cwd: root,
+        stdio: ["ignore", "pipe", "pipe"],
+        encoding: "utf8",
+        timeout: 180_000,
+        windowsHide: true,
+        ...(env ? { env } : {}),
+      },
+    );
+    if (result?.error) {
+      throw new Error(
+        `Could not run the updater signature verifier (${errorCodeOf(result.error)}).`,
+      );
+    }
+    if (result?.status !== 0) {
+      throw new Error(
+        `The MusicKit token signature does not verify against plugins.updater.pubkey (cargo exit ${result?.status ?? "unknown"}).`,
+      );
+    }
+    return true;
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 }

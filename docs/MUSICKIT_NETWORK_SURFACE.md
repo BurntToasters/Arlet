@@ -88,6 +88,22 @@ undocumented by Apple.
 | `*.mzstatic.com`            | Artwork/media |
 | (add observed domains here) |               |
 
+## Native Token Download (Rust, Release Builds)
+
+Rust makes this request, not the webview, so it needs no CSP entry and the
+webview gets no access to it. Release builds start it at launch, and each
+`get_developer_token` call retries it until one download succeeds in the
+process. Debug builds make no request.
+
+| Domain                         | Purpose                                                           |
+| ------------------------------ | ----------------------------------------------------------------- |
+| `music-api.arlet.rosiecdn.win` | Hosted MusicKit developer token, `GET /musickit/arlet-token.json` |
+
+The request is HTTPS only, with no redirects, no cookies, a 5 s total timeout,
+and a 16 KiB body cap. A verified copy is cached locally, so the app can serve
+the token offline until it expires. E2E builds can point this at a loopback
+HTTP fixture; ordinary builds cannot.
+
 ## Notes
 
 - CSP in `tauri.conf.json` must be updated to match the actual observed domains.

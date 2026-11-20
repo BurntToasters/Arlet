@@ -11,6 +11,7 @@ mod autostart;
 mod background_launch;
 mod clipboard_paste;
 mod commands;
+mod hosted_token;
 mod library_cache;
 mod logging;
 mod mini_player;
@@ -98,11 +99,16 @@ fn main() {
         .manage(LogFileLock(Mutex::new(())))
         .manage(library_cache::LibraryCacheState::default())
         .manage(window_state::WindowStateCache::default())
+        .manage(hosted_token::HostedTokenState::default())
         .setup(|app| {
             // Read before the webview exists: its first log lines must
             // already follow Debug Mode.
             let appearance = settings::load_startup_appearance(app.handle());
             settings::set_debug_mode(appearance.debug_mode);
+            // Starts the hosted MusicKit token download before the window
+            // exists, so it overlaps webview and MusicKit loading. Command calls
+            // wait on it. Debug builds do no network in this call.
+            tauri::async_runtime::spawn(hosted_token::prefetch(app.handle().clone()));
             // Rewrites the Run entry when the exe path has changed since it was written.
             if appearance.launch_at_startup {
                 if let Err(error) = autostart::apply(true) {

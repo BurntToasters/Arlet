@@ -1,11 +1,11 @@
-<!-- > [!NOTE]
-> 🅱️ This is a Beta build. -->
+> [!NOTE]
+> 🅱️ This is a Beta build.
 
 # ⬇️ Downloads
 
-| <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                            | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
-| :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.4.0/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                                          | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
+| :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.5.0-beta.1/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.5.0-beta.1/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -22,6 +22,18 @@
 ### ℹ️ Enjoying Arlet? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
+
+## Changes in `v0.5.0-beta.1:`
+
+- **NEW - Apple Music access refresh:** Arlet now downloads its Apple Music developer token at launch instead of including it in the app. I can renew it without shipping an app update! The last valid copy is kept locally if the download fails. This applies to `v0.5.0-beta.1` and newer; `v0.4.0` and older still use the token they shipped with.
+- **Security:** Added signature verification for downloaded and cached Apple Music tokens. Modified, expired, or incorrectly signed tokens are rejected, and older tokens cannot replace a newer cached copy.
+- **UI:** Updated the Apple Music access notice to ask you to restart Arlet when access is close to expiring or has expired. Reconnect can also pick up renewed access while Arlet is running.
+- **UI:** Updated connection errors so you can still browse your cached library when Apple Music access cannot be downloaded or has expired. Without a cached library, the welcome screen shows the error and a Try again button.
+- **Security:** Added a size limit across the library cache and log rotation for native crash logs so they cannot keep growing indefinitely.
+- **Security:** Updated SQLite to address a security advisory.
+- **Codebase:** Added signed token publishing through DigitalOcean Spaces and CDN cache clearing. Release preparation checks whether the hosted token needs renewing, and the weekly check now verifies the live token instead of the age of the latest release.
+- **Testing:** Added E2E coverage for hosted token downloads, offline startup, invalid tokens, and reconnecting after access is renewed.
+- **PKG:** Updated packages.
 
 ## Changes in `v0.4.0:`
 

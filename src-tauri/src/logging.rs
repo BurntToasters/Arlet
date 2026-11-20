@@ -95,10 +95,32 @@ fn redact_sensitive(text: &str) -> String {
     result
 }
 
+/// Appends one line, first rotating a file past the cap to `arlet.log.1`, so
+/// one rotated file keeps the history before a crash.
+fn append_line(path: &std::path::Path, line: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > MAX_LOG_FILE_BYTES) {
+        let rotated = path.with_extension("log.1");
+        let _ = std::fs::remove_file(&rotated);
+        if std::fs::rename(path, &rotated).is_err() {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "{line}")
+}
+
 /// Appends a `[native]` line to `arlet.log` without an `AppHandle`, for
 /// failures before or outside Tauri (startup, panics). Written even with
 /// Debug Mode off: these are the only record of a crash. Best effort: it
-/// never fails or panics, because its callers are already failing.
+/// never fails or panics, because its callers are already failing. It takes
+/// no lock (the panic hook may run while one is held), so a rotation racing
+/// `append_local_log` can lose the rotated file; the size cap still holds.
 pub fn write_native_log(message: &str) {
     let Some(dir) = crate::app_paths::native_log_dir() else {
         return;
@@ -107,15 +129,7 @@ pub fn write_native_log(message: &str) {
     let safe_entry = redact_sensitive(&truncate_entry(&entry))
         .replace('\r', "\\r")
         .replace('\n', "\\n");
-    if std::fs::create_dir_all(&dir).is_ok() {
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(dir.join(LOG_FILE_NAME))
-        {
-            let _ = writeln!(file, "{safe_entry}");
-        }
-    }
+    let _ = append_line(&dir.join(LOG_FILE_NAME), &safe_entry);
 }
 
 /// Release builds abort on panic with no console, which leaves only exit
@@ -185,30 +199,11 @@ pub fn append_local_log(app: tauri::AppHandle, entry: String) -> Result<(), Stri
         .lock()
         .map_err(|_| "Log lock poisoned".to_string())?;
     let path = log_path(&app)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    if let Ok(metadata) = std::fs::metadata(&path) {
-        if metadata.len() > MAX_LOG_FILE_BYTES {
-            // Keep one rotated file so the history before a crash survives.
-            let rotated = path.with_extension("log.1");
-            let _ = std::fs::remove_file(&rotated);
-            if std::fs::rename(&path, &rotated).is_err() {
-                let _ = std::fs::remove_file(&path);
-            }
-        }
-    }
     // Embedded line breaks would let one entry forge further log lines.
     let safe_entry = redact_sensitive(&truncate_entry(&entry))
         .replace('\r', "\\r")
         .replace('\n', "\\n");
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|e| e.to_string())?;
-    writeln!(file, "{safe_entry}").map_err(|e| e.to_string())?;
-    Ok(())
+    append_line(&path, &safe_entry).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -309,6 +304,32 @@ mod tests {
             assert!(!result.contains(token), "leaked in {result}");
             assert!(result.contains("[REDACTED]"));
         }
+    }
+
+    // Failure modes: the native log, written regardless of Debug Mode, grows
+    // without limit in a crash loop; rotation drops the previous history
+    // instead of keeping one file; a file under the cap is rotated; a line is
+    // written without its newline.
+    #[test]
+    fn appends_rotate_a_full_log_and_keep_one_previous_file() {
+        let dir = std::env::temp_dir().join(format!("arlet-log-rotate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(LOG_FILE_NAME);
+        let full = vec![b'x'; MAX_LOG_FILE_BYTES as usize + 1];
+        std::fs::write(&path, &full).unwrap();
+        append_line(&path, "after rotation").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "after rotation\n");
+        assert_eq!(
+            std::fs::read(path.with_extension("log.1")).unwrap().len(),
+            full.len()
+        );
+        append_line(&path, "second").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "after rotation\nsecond\n"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

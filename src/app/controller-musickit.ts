@@ -212,11 +212,11 @@ export function createMusicKitStartup(
       const message = safeErrorMessage(error);
       setInitializationState({ status: "error", message });
       log(`MusicKit init failed: ${message}`);
-      // An expired embedded token is not a connection problem: show the
-      // update notice instead of an offline banner whose Reconnect never works.
+      // An expired token shows the expiry notice. The cached library and
+      // Reconnect still apply: an offline launch with an expired saved token
+      // recovers once a reload can download a fresh one.
       if ((error as { code?: unknown } | null)?.code === "TOKEN_EXPIRED") {
         setDeveloperTokenExpiry(now());
-        return;
       }
       stopOnlineReload?.();
       stopOnlineReload = reloadWhenOnline(now, log);

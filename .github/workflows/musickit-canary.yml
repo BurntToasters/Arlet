@@ -3,8 +3,8 @@ name: Canary
 # Scheduled early warnings for things that change without a commit:
 # - Apple updates MusicKit JS in place on its CDN, and Arlet relies on some
 #   undocumented MusicKit APIs. The native E2E probes the live script.
-# - Every installed copy stops playing when the developer token embedded in
-#   the latest release expires (180 days after it was minted at release).
+# - Every installed copy stops playing when the hosted MusicKit token expires
+#   (180 days after minting). The hosted-token job checks the live file weekly.
 # A failed run emails the repository owner; nothing here holds secrets.
 
 on:
@@ -19,9 +19,6 @@ permissions:
 env:
   NODE_VERSION: "26.13.0"
   NPM_VERSION: "12.2.1"
-  # Start warning at 130 days. Release preflight requires 170 days left,
-  # leaving 40 days at the threshold and at least 33 after a weekly delay.
-  MAX_RELEASE_AGE_DAYS: "130"
 
 jobs:
   live-musickit:
@@ -62,19 +59,22 @@ jobs:
           path: e2e-artifacts/
           if-no-files-found: ignore
 
-  release-age:
+  hosted-token:
+    # Runs weekly. The check fails below 45 days left, so a failing run still
+    # leaves at least 38 days (45 minus one week) to renew. On failure, run
+    # `npm run token:publish` without a release.
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - name: Latest stable release is recent enough for its token
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          published=$(gh api "repos/$REPO/releases/latest" --jq .published_at)
-          age_days=$(( ( $(date -u +%s) - $(date -u -d "$published" +%s) ) / 86400 ))
-          echo "Latest stable release published $published ($age_days days ago)."
-          if [ "$age_days" -ge "$MAX_RELEASE_AGE_DAYS" ]; then
-            echo "::error::The latest release is $age_days days old. Release preflight requires at least 170 days remaining on its MusicKit developer token; this 130-day warning leaves about 40 days to renew (about 33 after a weekly check delay). Mint a new token and ship a release."
-            exit 1
-          fi
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Install npm 12
+        run: npm install --global npm@${{ env.NPM_VERSION }} --ignore-scripts
+      - run: npm ci --ignore-scripts
+      - name: Hosted MusicKit token has at least 45 days left
+        run: npm run token:check

@@ -1,16 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { AppErrorCode } from "../domain/errors.ts";
-import { mapErrorToCode } from "./errors.ts";
 
-// Developer-token sourcing. `get_developer_token` serves `.env` at runtime in
-// debug builds and, in release builds, the token `build.rs` validated and
-// compiled from the release machine's `.env`. The JWT is never a Vite/VITE_
-// frontend env var, and the `.p8` private key is never shipped or committed.
-// `createServiceTokenProvider` remains for a future hosted token service.
+// Developer-token sourcing. Release builds get the token from the native
+// `get_developer_token` command, which downloads a signed hosted file at launch,
+// verifies it, and caches it. Debug builds read `.env` through the same command.
+// The JWT is never a Vite/VITE_ frontend env var, and the `.p8` private key is
+// never shipped or committed.
 
 export interface DeveloperToken {
   token: string;
-  source: "env" | "service";
+  source: "env";
 }
 
 export interface DeveloperTokenProvider {
@@ -22,6 +21,44 @@ export type InvokeFn = <T>(
   args?: Record<string, unknown>,
 ) => Promise<T>;
 
+const TOKEN_UNAVAILABLE_MESSAGE = "MusicKit developer token is not available.";
+
+/**
+ * The native command rejects with `{ code, message }` (hosted_token.rs,
+ * TokenError). Only the code decides expiry; the message is for display.
+ */
+function readTokenError(error: unknown): {
+  message: string;
+  code: AppErrorCode;
+} {
+  if (error instanceof Error) {
+    return { message: error.message, code: "MUSICKIT_INIT_FAILED" };
+  }
+  if (typeof error === "string") {
+    return {
+      message: error.trim() || TOKEN_UNAVAILABLE_MESSAGE,
+      code: "MUSICKIT_INIT_FAILED",
+    };
+  }
+  const record =
+    error && typeof error === "object"
+      ? (error as { code?: unknown; message?: unknown })
+      : {};
+  const message =
+    typeof record.message === "string" && record.message.trim()
+      ? record.message
+      : TOKEN_UNAVAILABLE_MESSAGE;
+  // Only an expired token is TOKEN_EXPIRED: it shows the expiry notice.
+  // A token that cannot be downloaded is MUSICKIT_INIT_FAILED.
+  return {
+    message,
+    code:
+      record.code === "TOKEN_EXPIRED"
+        ? "TOKEN_EXPIRED"
+        : "MUSICKIT_INIT_FAILED",
+  };
+}
+
 export function createNativeTokenProvider(
   invokeFn: InvokeFn = invoke as InvokeFn,
 ): DeveloperTokenProvider {
@@ -31,19 +68,7 @@ export function createNativeTokenProvider(
       try {
         token = await invokeFn<string>("get_developer_token");
       } catch (error) {
-        // Tauri rejects command errors with a plain string, which carries
-        // the release-build message (missing or expired embedded token).
-        const message =
-          error instanceof Error
-            ? error.message
-            : typeof error === "string" && error.trim()
-              ? error
-              : "MusicKit developer token is not available.";
-        // Only an expired token is TOKEN_EXPIRED: it shows the update notice.
-        // A build without a token cannot start MusicKit at all.
-        const code: AppErrorCode = /expired/iu.test(message)
-          ? "TOKEN_EXPIRED"
-          : "MUSICKIT_INIT_FAILED";
+        const { message, code } = readTokenError(error);
         throw Object.assign(new Error(message), { code });
       }
       if (typeof token !== "string" || !token.trim()) {
@@ -56,32 +81,6 @@ export function createNativeTokenProvider(
         );
       }
       return { token, source: "env" };
-    },
-  };
-}
-
-export function createServiceTokenProvider(
-  endpoint: string,
-  fetchImpl: typeof fetch = fetch,
-): DeveloperTokenProvider {
-  return {
-    async getToken(): Promise<DeveloperToken> {
-      let response: Response;
-      try {
-        response = await fetchImpl(endpoint, { method: "GET" });
-      } catch (error) {
-        throw new Error(
-          `Developer token service unreachable: ${mapErrorToCode(error)}`,
-        );
-      }
-      if (!response.ok) {
-        throw new Error(`Developer token service returned ${response.status}`);
-      }
-      const data = (await response.json()) as { token?: unknown };
-      if (typeof data.token !== "string" || !data.token) {
-        throw new Error("Developer token service returned no token");
-      }
-      return { token: data.token, source: "service" };
     },
   };
 }
