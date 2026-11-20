@@ -3,8 +3,8 @@
 
 # ⬇️ Downloads
 
-| <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                            | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
-| :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
+| <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                                          | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
+| :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
 | **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.5.0-beta.1/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.5.0-beta.1/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
@@ -25,12 +25,15 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 
 ## Changes in `v0.5.0-beta.1:`
 
-- **Security:** Arlet now downloads its signed Apple Music access token at launch and keeps the last valid copy for offline use, so Apple Music access no longer runs out with an app version. Versions 0.4.0 and older keep the token they were built with.
-- **UI:** The Apple Music access notice says "Restart Arlet to refresh it." when access expires within 14 days or has expired.
-- **UI:** If Arlet cannot download Apple Music access, your cached library shows the offline banner, and Reconnect tries again. Without a cached library, the welcome screen shows the error, and Try again reloads Arlet to retry.
-- **UI:** When Apple Music access has expired, your cached library still shows offline, and Reconnect downloads fresh access.
-- **Fix:** Reconnect picks up renewed Apple Music access while Arlet keeps running, instead of only after a restart.
-- **Security:** Updated SQLite to fix a security advisory, and capped the library cache and crash log sizes.
+- **NEW - Apple Music access refresh:** Arlet now downloads its Apple Music developer token at launch instead of including it in the app. I can renew it without shipping an app update! The last valid copy is kept locally if the download fails. This applies to `v0.5.0-beta.1` and newer; `v0.4.0` and older still use the token they shipped with.
+- **Security:** Added signature verification for downloaded and cached Apple Music tokens. Modified, expired, or incorrectly signed tokens are rejected, and older tokens cannot replace a newer cached copy.
+- **UI:** Updated the Apple Music access notice to ask you to restart Arlet when access is close to expiring or has expired. Reconnect can also pick up renewed access while Arlet is running.
+- **UI:** Updated connection errors so you can still browse your cached library when Apple Music access cannot be downloaded or has expired. Without a cached library, the welcome screen shows the error and a Try again button.
+- **Security:** Added a size limit across the library cache and log rotation for native crash logs so they cannot keep growing indefinitely.
+- **Security:** Updated SQLite to address a security advisory.
+- **Codebase:** Added signed token publishing through DigitalOcean Spaces and CDN cache clearing. Release preparation checks whether the hosted token needs renewing, and the weekly check now verifies the live token instead of the age of the latest release.
+- **Testing:** Added E2E coverage for hosted token downloads, offline startup, invalid tokens, and reconnecting after access is renewed.
+- **PKG:** Updated packages.
 
 ## Changes in `v0.4.0:`
 
