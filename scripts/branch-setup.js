@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// Safely select a release branch before vi synchronizes it. Never replace a
-// branch while local work or commits that are not on origin could be lost.
+// Select a disposable VM release branch before vi synchronizes it. Local
+// commits may be discarded; uncommitted files still block setup.
 
 import { execFileSync, spawnSync } from "node:child_process";
 import npmCli from "./npm-cli.cjs";
@@ -69,65 +69,12 @@ function currentUpstream(cwd, branch, remote) {
   return `refs/remotes/${upstream}`;
 }
 
-function commitExists(cwd, ref) {
-  try {
-    git(cwd, ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** A deleted upstream is safe to leave only if origin still has every commit. */
-function requireHeadOnRemote(cwd, remote, branch, upstreamRef) {
-  const count = Number(
-    git(cwd, ["rev-list", "--count", "HEAD", "--not", `--remotes=${remote}`]),
-  );
-  if (!Number.isInteger(count)) {
-    throw new Error(`Could not compare ${branch} with ${remote} branches.`);
-  }
-  if (count > 0) {
-    throw new Error(
-      `Current upstream ${upstreamRef} was deleted from ${remote} and ${branch} has ${count} commit(s) on no ${remote} branch; push or preserve them before setup.`,
-    );
-  }
-}
-
 function requireCommitRef(cwd, ref, label) {
   try {
     git(cwd, ["rev-parse", "--verify", `${ref}^{commit}`]);
   } catch {
     throw new Error(`${label} ${ref} does not exist after fetching origin.`);
   }
-}
-
-function aheadCount(cwd, remoteRef, localRef, label) {
-  const counts = git(cwd, [
-    "rev-list",
-    "--left-right",
-    "--count",
-    `${remoteRef}...${localRef}`,
-  ]);
-  const match = /^(\d+)\s+(\d+)$/.exec(counts.trim());
-  if (!match) throw new Error(`Could not compare ${label} with ${remoteRef}.`);
-  const ahead = Number(match[2]);
-  if (ahead > 0) {
-    throw new Error(
-      `${label} has ${ahead} unpublished commit(s) ahead of ${remoteRef}; push or preserve them before setup.`,
-    );
-  }
-}
-
-function hasLocalBranch(cwd, branch) {
-  const result = spawnSync(
-    "git",
-    ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
-    { cwd, stdio: "ignore", shell: false },
-  );
-  if (result.error) throw result.error;
-  if (result.status === 0) return true;
-  if (result.status === 1) return false;
-  throw new Error(`Could not inspect local branch ${branch}.`);
 }
 
 function validateTarget(remote, branch) {
@@ -144,32 +91,17 @@ function assertCurrentBranchSafe(cwd, remote = "origin") {
   const upstreamRef = currentUpstream(cwd, branch, remote);
   git(cwd, ["fetch", "--prune", remote]);
   requireCommitRef(cwd, upstreamRef, "Current upstream");
-  aheadCount(cwd, upstreamRef, "HEAD", `Current branch ${branch}`);
   requireCleanWorktree(cwd);
   return { branch, remote, remoteRef: upstreamRef };
 }
 
-/** Check current and target branches before switch -C can replace the target. */
+/** Check files and the fetched target before replacing a disposable VM branch. */
 function assertTargetBranchSafe(cwd, remote, branch) {
   const targetRef = validateTarget(remote, branch);
   requireCleanWorktree(cwd);
   const current = currentBranch(cwd);
-  const currentRef = currentUpstream(cwd, current, remote);
   git(cwd, ["fetch", "--prune", remote]);
   requireCommitRef(cwd, targetRef, "Target branch");
-  if (commitExists(cwd, currentRef)) {
-    aheadCount(cwd, currentRef, "HEAD", `Current branch ${current}`);
-  } else {
-    requireHeadOnRemote(cwd, remote, current, currentRef);
-  }
-  if (hasLocalBranch(cwd, branch)) {
-    aheadCount(
-      cwd,
-      targetRef,
-      `refs/heads/${branch}`,
-      `target branch ${branch}`,
-    );
-  }
   requireCleanWorktree(cwd);
   if (currentBranch(cwd) !== current) {
     throw new Error("Current branch changed during preflight; refusing setup.");
@@ -197,6 +129,7 @@ function setupTargetBranch(cwd, remote, branch) {
   // branch replacement and leave setup half-complete.
   const npm = npmCli.npmInvocation();
   git(cwd, ["switch", "-C", branch, targetRef]);
+  git(cwd, ["branch", "--set-upstream-to", `${remote}/${branch}`, branch]);
   runNpm(cwd, npm, ["run", "vi"]);
 }
 
