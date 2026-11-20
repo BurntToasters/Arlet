@@ -23,8 +23,7 @@ function run(root, cmd, args) {
 }
 
 function runSetup(root) {
-  // Resolve npm first, then verify clean work plus both branch and upstream
-  // state before reset or clean can remove anything.
+  // Verify clean files and a fetched upstream before discarding VM commits.
   const npm = npmCli.npmInvocation();
   const { branch, remote, remoteRef } = assertCurrentBranchSafe(root);
   run(root, "git", ["reset", "--hard", remoteRef]);

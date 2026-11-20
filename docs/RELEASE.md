@@ -154,6 +154,12 @@ and does not call `gh release view` or another release API to source notes.
 
 ## Standard flow (Windows release VM)
 
+`npm run b` and `npm run r` replace the local `beta` or `main` branch with
+the fetched origin branch, discarding local commits on the target. The current
+branch does not need an upstream. `npm run vi` also discards local commits when
+syncing to its upstream. These are disposable VM setup commands; uncommitted
+files still block setup, and a missing remote target fails before any reset.
+
 ```text
 npm run r                        # sync the VM to origin/main
 npm run release:win              # prerelease:prepare (warning + token renewal when due + preflight + licenses), then release:prepare steps (bootstrap + full test:all + clean artifacts + build session), then release:win:continue

@@ -8,14 +8,12 @@ import test from "node:test";
 
 // Failure modes: vi resets or cleans tracked, staged, or untracked user work;
 // b/r switches over a dirty tree before vi gets a chance to refuse; current or
-// target branch commits ahead of their origin refs are lost; detached HEAD,
-// missing upstreams, missing branches, malformed remotes/refs, or a stale
+// target branch commits ahead of origin incorrectly block VM synchronization;
+// detached HEAD, missing branches, malformed remotes/refs, or a stale
 // remote ref are treated as safe; a failed npm setup happens after an unsafe
 // switch; npm is invoked through a shell; leaving a branch whose upstream was
-// deleted (beta after stable promotion) loses commits on no origin branch, is
-// blocked once the stale ref is pruned, or lets vi reset to a missing ref.
-// Every destructive-path proof runs in a temporary clone and confirms refused
-// files, commits, and branches stay.
+// deleted (beta after stable promotion) blocks switching to a valid target,
+// or lets vi reset to a missing ref. All destructive proof uses temp repos.
 
 const scriptsDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -149,7 +147,7 @@ test("branch setup refuses tracked, staged, and untracked work before switching"
   }
 });
 
-test("branch setup preserves unpublished commits on the current branch", (t) => {
+test("branch setup leaves unpublished current commits without blocking setup", (t) => {
   const f = fixture(t);
   fs.writeFileSync(path.join(f.repo, "current-only.txt"), "keep\n");
   git(f.repo, ["add", "current-only.txt"]);
@@ -158,35 +156,34 @@ test("branch setup preserves unpublished commits on the current branch", (t) => 
 
   const result = runScript(f, "branch-setup.js", ["origin", "beta"]);
 
-  assert.notEqual(result.status, 0, output(result));
-  assert.match(output(result), /unpublished commit/);
-  assert.equal(git(f.repo, ["branch", "--show-current"]), "main");
-  assert.equal(git(f.repo, ["rev-parse", "HEAD"]), head);
-  assert.equal(
-    fs.readFileSync(path.join(f.repo, "current-only.txt"), "utf8"),
-    "keep\n",
-  );
+  assert.equal(result.status, 0, output(result));
+  assert.equal(git(f.repo, ["branch", "--show-current"]), "beta");
+  assert.equal(git(f.repo, ["rev-parse", "main"]), head);
+  assert.equal(git(f.repo, ["show", "main:current-only.txt"]), "keep");
 });
 
-test("branch setup preserves unpublished commits on the target branch", (t) => {
+test("branch setup discards unpublished target commits on the VM", (t) => {
   const f = fixture(t);
   git(f.repo, ["switch", "beta"]);
   fs.writeFileSync(path.join(f.repo, "target-only.txt"), "keep\n");
   git(f.repo, ["add", "target-only.txt"]);
   git(f.repo, ["commit", "-m", "unpublished target commit"]);
-  const targetHead = git(f.repo, ["rev-parse", "HEAD"]);
+  const expected = git(f.repo, ["rev-parse", "origin/beta"]);
   git(f.repo, ["switch", "main"]);
 
   const result = runScript(f, "branch-setup.js", ["origin", "beta"]);
 
-  assert.notEqual(result.status, 0, output(result));
-  assert.match(output(result), /target branch beta has 1 unpublished commit/);
-  assert.equal(git(f.repo, ["branch", "--show-current"]), "main");
-  assert.equal(git(f.repo, ["rev-parse", "refs/heads/beta"]), targetHead);
-  assert.equal(
-    git(f.repo, ["show", "refs/heads/beta:target-only.txt"]),
-    "keep",
-  );
+  assert.equal(result.status, 0, output(result));
+  assert.equal(git(f.repo, ["branch", "--show-current"]), "beta");
+  assert.equal(git(f.repo, ["rev-parse", "HEAD"]), expected);
+  assert.equal(fs.existsSync(path.join(f.repo, "target-only.txt")), false);
+  assert.equal(git(f.repo, ["rev-parse", "@{upstream}"]), expected);
+
+  // Repeat while already on beta: its local commits must be discarded too.
+  git(f.repo, ["commit", "--allow-empty", "-m", "local beta"]);
+  const repeated = runScript(f, "branch-setup.js", ["origin", "beta"]);
+  assert.equal(repeated.status, 0, output(repeated));
+  assert.equal(git(f.repo, ["rev-parse", "HEAD"]), expected);
 });
 
 test("branch setup refuses a missing target even when its remote-tracking ref is stale", (t) => {
@@ -206,7 +203,7 @@ test("branch setup refuses a missing target even when its remote-tracking ref is
   assert.equal(git(f.repo, ["rev-parse", "HEAD"]), head);
 });
 
-test("vi refuses dirty work and unpublished commits before reset or clean", (t) => {
+test("vi refuses dirty work but discards unpublished VM commits", (t) => {
   const dirty = fixture(t);
   fs.writeFileSync(path.join(dirty.repo, "untracked.txt"), "keep\n");
   const dirtyHead = git(dirty.repo, ["rev-parse", "HEAD"]);
@@ -224,16 +221,16 @@ test("vi refuses dirty work and unpublished commits before reset or clean", (t) 
   git(ahead.repo, ["commit", "-m", "keep local commit"]);
   const aheadHead = git(ahead.repo, ["rev-parse", "HEAD"]);
   const aheadResult = runScript(ahead, "vi.js");
-  assert.notEqual(aheadResult.status, 0, output(aheadResult));
-  assert.match(output(aheadResult), /unpublished commit/);
-  assert.equal(git(ahead.repo, ["rev-parse", "HEAD"]), aheadHead);
+  assert.equal(aheadResult.status, 0, output(aheadResult));
+  assert.notEqual(git(ahead.repo, ["rev-parse", "HEAD"]), aheadHead);
   assert.equal(
-    fs.readFileSync(path.join(ahead.repo, "local-commit.txt"), "utf8"),
-    "keep\n",
+    git(ahead.repo, ["rev-parse", "HEAD"]),
+    git(ahead.repo, ["rev-parse", "origin/main"]),
   );
+  assert.equal(fs.existsSync(path.join(ahead.repo, "local-commit.txt")), false);
 });
 
-test("branch setup fails closed for invalid refs, detached HEAD, and no upstream", (t) => {
+test("branch setup rejects invalid refs and detached HEAD but allows no upstream", (t) => {
   const f = fixture(t);
   for (const args of [
     ["github", "beta"],
@@ -258,18 +255,12 @@ test("branch setup fails closed for invalid refs, detached HEAD, and no upstream
 
   const noUpstream = fixture(t);
   git(noUpstream.repo, ["switch", "-c", "local-only"]);
-  const localHead = git(noUpstream.repo, ["rev-parse", "HEAD"]);
   const noUpstreamResult = runScript(noUpstream, "branch-setup.js", [
     "origin",
     "beta",
   ]);
-  assert.notEqual(noUpstreamResult.status, 0, output(noUpstreamResult));
-  assert.match(output(noUpstreamResult), /upstream/);
-  assert.equal(
-    git(noUpstream.repo, ["branch", "--show-current"]),
-    "local-only",
-  );
-  assert.equal(git(noUpstream.repo, ["rev-parse", "HEAD"]), localHead);
+  assert.equal(noUpstreamResult.status, 0, output(noUpstreamResult));
+  assert.equal(git(noUpstream.repo, ["branch", "--show-current"]), "beta");
 });
 
 function deleteRemoteBetaWhileOnBeta(f, { prune }) {
@@ -293,7 +284,7 @@ test("branch setup leaves a deleted upstream when every commit is on origin", (t
   }
 });
 
-test("branch setup keeps commits that are on no origin branch after upstream deletion", (t) => {
+test("branch setup allows leaving local commits after upstream deletion", (t) => {
   const f = fixture(t);
   git(f.repo, ["switch", "beta"]);
   fs.writeFileSync(path.join(f.repo, "beta-only.txt"), "keep\n");
@@ -305,10 +296,9 @@ test("branch setup keeps commits that are on no origin branch after upstream del
 
   const result = runScript(f, "branch-setup.js", ["origin", "main"]);
 
-  assert.notEqual(result.status, 0, output(result));
-  assert.match(output(result), /deleted from origin.*1 commit/s);
-  assert.equal(git(f.repo, ["branch", "--show-current"]), "beta");
-  assert.equal(git(f.repo, ["rev-parse", "HEAD"]), head);
+  assert.equal(result.status, 0, output(result));
+  assert.equal(git(f.repo, ["branch", "--show-current"]), "main");
+  assert.equal(git(f.repo, ["rev-parse", "beta"]), head);
 });
 
 test("vi refuses to reset a branch whose upstream was deleted", (t) => {
@@ -324,15 +314,14 @@ test("vi refuses to reset a branch whose upstream was deleted", (t) => {
   assert.equal(git(f.repo, ["rev-parse", "HEAD"]), head);
 });
 
-test("branch setup refuses a branch tracking a differently named upstream", (t) => {
+test("branch setup allows leaving a branch with a differently named upstream", (t) => {
   const f = fixture(t);
   git(f.repo, ["switch", "-c", "other", "--track", "origin/main"]);
   const head = git(f.repo, ["rev-parse", "HEAD"]);
 
   const result = runScript(f, "branch-setup.js", ["origin", "beta"]);
 
-  assert.notEqual(result.status, 0, output(result));
-  assert.match(output(result), /must track origin\/other/);
-  assert.equal(git(f.repo, ["branch", "--show-current"]), "other");
-  assert.equal(git(f.repo, ["rev-parse", "HEAD"]), head);
+  assert.equal(result.status, 0, output(result));
+  assert.equal(git(f.repo, ["branch", "--show-current"]), "beta");
+  assert.equal(git(f.repo, ["rev-parse", "other"]), head);
 });
