@@ -1,4 +1,8 @@
 import {
+  applyHeldCleanWrite,
+  EXPLICIT_RESTRICTED_MESSAGE,
+} from "../musickit/content-restrictions.ts";
+import {
   friendlyPlaybackMessage,
   httpStatusOf,
   mapErrorToCode,
@@ -99,7 +103,14 @@ export function createPlayRequests(context: PlaybackContext) {
     if (!options.selection) {
       // Any new play replaces a station; playStation sets it again after this.
       session.station = undefined;
-      shuffleReady = preparePlaybackModesForPlay(instance ?? requireMusic());
+      const music = instance ?? requireMusic();
+      // Before the queue is replaced: a Clean held during playback applies now.
+      if (!applyHeldCleanWrite(music)) {
+        log(
+          "Explicit content setting could not be applied in this MusicKit runtime.",
+        );
+      }
+      shuffleReady = preparePlaybackModesForPlay(music);
     }
     const pauses = session.pauseCount;
     return {
@@ -229,6 +240,14 @@ export function createPlayTracks(
       requestedStart >= requestedTracks.length
     ) {
       throw new Error("The selected song is unavailable.");
+    }
+    // Only Apple's restriction is reported; a Clean choice is the user's own.
+    if (
+      getState().settings.explicitContent === "auto" &&
+      requestedTracks[requestedStart]?.explicit === true &&
+      instance.restrictedEnabled === true
+    ) {
+      reportActionError(new Error(EXPLICIT_RESTRICTED_MESSAGE));
     }
     const request = beginPlayRequest(instance);
     if (!request.shuffleReady) {

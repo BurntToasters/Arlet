@@ -511,6 +511,19 @@
   margin-top: 16px;
 }
 
+/* Refresh indicator in the action row. A zero basis means it never wraps the
+   row onto a new line, so showing or hiding it cannot move the track list. */
+.library-detail-refresh-status {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 180px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Pressed Favorite reads as active, like the player's toggle buttons. */
 .library-detail-actions .secondary-button[aria-pressed="true"] {
   border-color: color-mix(in srgb, var(--accent) 45%, var(--border-strong));

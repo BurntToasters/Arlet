@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-min-version-status"
+description = "Enables the min_version_status command without any pre-configured scope."
+commands.allow = ["min_version_status"]
+
+[[permission]]
+identifier = "deny-min-version-status"
+description = "Denies the min_version_status command without any pre-configured scope."
+commands.deny = ["min_version_status"]

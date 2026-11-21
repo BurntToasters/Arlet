@@ -19,6 +19,7 @@ const themeSchema = z.enum(["system", "light", "dark"]);
 const windowEffectSchema = z.enum(["acrylic", "mica", "solid"]);
 const updateChannelSchema = z.enum(["auto", "stable", "beta"]);
 const audioQualitySchema = z.enum(["high", "standard", "automatic"]);
+const explicitContentSchema = z.enum(["auto", "clean", "allow"]);
 const volumeSchema = z.number().check(z.gte(0), z.lte(1));
 
 function systemMediaQuery(): Pick<MediaQueryList, "matches"> {
@@ -68,7 +69,15 @@ export function migrateSettings(raw: unknown): AppSettings {
     trayIcon: z.boolean().safeParse(parsed.trayIcon),
     launchAtStartup: z.boolean().safeParse(parsed.launchAtStartup),
     debugMode: z.boolean().safeParse(parsed.debugMode),
+    explicitContent: explicitContentSchema.safeParse(parsed.explicitContent),
+    explicitFix: z.boolean().safeParse(parsed.explicitFix),
   };
+  const explicitFix = candidate.explicitFix.success
+    ? candidate.explicitFix.data
+    : DEFAULT_SETTINGS.explicitFix;
+  const explicitContent = candidate.explicitContent.success
+    ? candidate.explicitContent.data
+    : DEFAULT_SETTINGS.explicitContent;
   const reserved = Object.fromEntries(
     Object.entries(parsed).filter(([key]) => key.startsWith("_")),
   );
@@ -108,6 +117,10 @@ export function migrateSettings(raw: unknown): AppSettings {
     debugMode: candidate.debugMode.success
       ? candidate.debugMode.data
       : DEFAULT_SETTINGS.debugMode,
+    // "allow" only means something with the fix agreed to; otherwise Auto.
+    explicitContent:
+      explicitContent === "allow" && !explicitFix ? "auto" : explicitContent,
+    explicitFix,
   };
 }
 
@@ -129,6 +142,8 @@ export function serializeSettings(settings: AppSettings): string {
     trayIcon: settings.trayIcon,
     launchAtStartup: settings.launchAtStartup,
     debugMode: settings.debugMode,
+    explicitContent: settings.explicitContent,
+    explicitFix: settings.explicitFix,
   });
 }
 

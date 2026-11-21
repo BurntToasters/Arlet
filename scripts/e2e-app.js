@@ -53,6 +53,7 @@ import { runAuditRegressions } from "./e2e-audit-regressions.js";
 import { runDeepRegressions } from "./e2e-deep-regressions.js";
 import { runHandoffSettingsRegressions } from "./e2e-handoff-settings-regressions.js";
 import { runUiAudit } from "./e2e-ui-audit.js";
+import { runExplicitContent } from "./e2e-explicit-content.js";
 import { runSessionRestore } from "./e2e-session-restore.js";
 import { sleep } from "./e2e-helpers.js";
 import { connectCdp, findPageTarget } from "./e2e-cdp.js";
@@ -188,6 +189,7 @@ const SCENARIO_REGISTRY = [
   // genre caches those scenarios assert on.
   ["musickit-parity", runMusicKitParity],
   ["ui-audit", runUiAudit],
+  ["explicit-content", runExplicitContent],
   // Last in the full suite because it signs out at the end.
   ["session-restore", runSessionRestore],
 ];
@@ -213,6 +215,8 @@ const FIXTURE_CONTROL_DEFAULTS = {
   rejectQueryKeys: [],
   rejectMeStatus: 0,
   rejectAuthorize: false,
+  startUnauthorized: false,
+  otherAccount: false,
   rejectPlay: false,
   rejectPlayTimes: 0,
   repeatPlaylistCursor: false,
@@ -231,6 +235,10 @@ const FIXTURE_CONTROL_DEFAULTS = {
   // Live MusicKit starts at STANDARD unless configured; the fixture keeps the
   // high setting the scenarios expect.
   startupBitrate: 256,
+  // Apple's explicit-content report (configure({ restricted })) and the songs
+  // the fixture marks explicit (configure({ explicitSongIds })).
+  restricted: false,
+  explicitSongIds: [],
 };
 
 /**
@@ -1258,7 +1266,7 @@ async function launchIsolatedApp({ profileRoot, tokenFixture }) {
     await stop();
     throw error;
   }
-  return { page, stop };
+  return { page, stop, pid: child.pid };
 }
 
 /** Runs `body` against a fresh isolated launch and stops that app afterwards. */
@@ -1274,6 +1282,50 @@ async function withIsolatedApp({ profileRoot, tokenFixture }, body) {
     }
   }
   return result;
+}
+
+/**
+ * Closes the page, waits for the old process to exit, and connects to the
+ * restarted process on the same debugging port. A restart is a new process, so
+ * the page's DevTools injections are gone until injectMusicFixture runs again.
+ */
+async function reconnectAfterRestart({ page: oldPage, pid }) {
+  oldPage?.close();
+  const exitDeadline = Date.now() + 30_000;
+  while (Date.now() < exitDeadline && processAlive(pid)) {
+    await sleep(250);
+  }
+  const exited = !processAlive(pid);
+  await sleep(1000);
+  const restarted = await findPageTarget({
+    port: DEBUG_PORT,
+    timeoutMs: 30_000,
+  });
+  const page = connectCdp(restarted.webSocketDebuggerUrl);
+  await page.opened;
+  if (!FOREGROUND) {
+    await page.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+  }
+  return { page, exited };
+}
+
+/** Blocks Apple's MusicKit script and injects the fixture for the page's next load. */
+async function injectMusicFixture(page) {
+  await page.send("Network.enable");
+  await page.send("Network.setBlockedURLs", {
+    urls: ["*js-cdn.music.apple.com*"],
+  });
+  await page.send("Page.enable");
+  const fixtureScript = await page.send(
+    "Page.addScriptToEvaluateOnNewDocument",
+    {
+      source: musicFixtureSource,
+    },
+  );
+  await page.send("Page.addScriptToEvaluateOnNewDocument", {
+    source: desktopEventRecorderSource,
+  });
+  return fixtureScript;
 }
 
 /** Records one check. A thrown error fails that check only; the others still run. */
@@ -1318,6 +1370,178 @@ const WELCOME_TRY_AGAIN_CLICK = `const button = [...document.querySelectorAll(".
   button.click();
   return true;`;
 
+/** Like settle, but keeps the error `code` the frontend reads (TokenError). */
+async function settleWithCode(page, command) {
+  return page.evaluate(
+    `try { return { ok: true, value: await ${invoke(command)} }; } catch (error) { return { ok: false, code: error?.code ?? null, error: String(error?.message ?? error) }; }`,
+  );
+}
+
+/**
+ * Minimum-version checks (release builds). Each launch reads the fixture's
+ * /min_ver.txt, so the body set here is what that app sees:
+ * - a minimum above this version shows the Update required dialog, Escape
+ *   does not close it, and the token command refuses with UPDATE_REQUIRED, so
+ *   MusicKit is never configured;
+ * - a minimum equal to this version, or a body that is not a version, shows no
+ *   dialog and serves the token as usual.
+ * Failure modes: the gate is missing (the token is served below the minimum),
+ * the dialog can be dismissed, Quit Arlet leaves the process running, a garbage
+ * file blocks startup, or the file is
+ * fetched but ignored (the fetch count stays at zero).
+ */
+async function runMinimumVersionChecks({
+  check,
+  tokenFixture,
+  profileRoot,
+  artifactDir,
+}) {
+  const { tokens } = tokenFixture;
+  const appVersion = JSON.parse(
+    fs.readFileSync(path.join(root, "package.json"), "utf8"),
+  ).version;
+  const launch = (body) => withIsolatedApp({ profileRoot, tokenFixture }, body);
+  const dialogShown = `Boolean(document.getElementById("update-required-title"))`;
+  const fetchesSince = (before) => tokenFixture.minimumRequests - before;
+
+  try {
+    tokenFixture.setMode("valid");
+    tokenFixture.setMinimumVersion("99.0.0");
+    await hostedTokenCheck(
+      check,
+      "a minimum above this version shows Update required, Escape keeps it open, and MusicKit gets no token",
+      async () => {
+        const before = tokenFixture.minimumRequests;
+        return launch(async (app) => {
+          const shell = await waitForShell(app.page);
+          const shown = await waitFor(app.page, dialogShown, 30_000);
+          const checkButton = await app.page.evaluate(
+            `return [...document.querySelectorAll(".update-modal button")].some((node) => node.textContent.trim() === "Check for updates");`,
+          );
+          const shot = await app.page.send("Page.captureScreenshot", {
+            format: "png",
+          });
+          fs.writeFileSync(
+            path.join(artifactDir, "screenshot-update-required.png"),
+            Buffer.from(shot.data, "base64"),
+          );
+          for (const type of ["keyDown", "keyUp"]) {
+            await app.page.send("Input.dispatchKeyEvent", {
+              type,
+              key: "Escape",
+              code: "Escape",
+              windowsVirtualKeyCode: 27,
+            });
+          }
+          await sleep(500);
+          const escapeIgnored = await app.page.evaluate(
+            `return ${dialogShown};`,
+          );
+          const token = await settleWithCode(app.page, "get_developer_token");
+          const musicKitConfigured = await app.page.evaluate(
+            "return Boolean(window.MusicKit?.getInstance?.());",
+          );
+          const minimumFetches = fetchesSince(before);
+          return {
+            passed:
+              shell &&
+              shown &&
+              checkButton &&
+              escapeIgnored &&
+              !token.ok &&
+              token.code === "UPDATE_REQUIRED" &&
+              !musicKitConfigured &&
+              minimumFetches > 0,
+            detail: {
+              shell,
+              dialogShown: shown,
+              checkForUpdatesShown: checkButton,
+              escapeIgnored,
+              tokenOk: token.ok,
+              tokenErrorCode: token.code ?? null,
+              musicKitConfigured,
+              minimumFetches,
+              appVersion,
+            },
+          };
+        });
+      },
+    );
+
+    await hostedTokenCheck(
+      check,
+      "Quit Arlet on Update required exits the process",
+      async () =>
+        launch(async (app) => {
+          const shell = await waitForShell(app.page);
+          const shown = await waitFor(app.page, dialogShown, 30_000);
+          const quitButton = `[...document.querySelectorAll(".update-modal button")].find((node) => node.textContent.trim() === "Quit Arlet")`;
+          const quitShown = await app.page.evaluate(
+            `return Boolean(${quitButton});`,
+          );
+          await app.page.evaluate(`${quitButton}?.click(); return true;`);
+          const exited = await waitUntil(() => !processAlive(app.pid), 15_000);
+          return {
+            passed: shell && shown && quitShown && exited,
+            detail: { shell, dialogShown: shown, quitShown, exited },
+          };
+        }),
+    );
+
+    for (const [name, minimum] of [
+      [
+        "a minimum equal to this version shows no Update required prompt and serves the token",
+        appVersion,
+      ],
+      [
+        "a garbage minimum-version file shows no Update required prompt and serves the token",
+        "not-a-version",
+      ],
+    ]) {
+      tokenFixture.setMinimumVersion(minimum);
+      await hostedTokenCheck(check, name, async () => {
+        const before = tokenFixture.minimumRequests;
+        return launch(async (app) => {
+          const shell = await waitForShell(app.page);
+          const configured = await waitFor(
+            app.page,
+            "window.MusicKit?.getInstance?.()",
+            60_000,
+          );
+          // The dialog is set from the same startup check; give it time to appear.
+          await sleep(1_000);
+          const shown = await app.page.evaluate(`return ${dialogShown};`);
+          const result = await settle(app.page, "get_developer_token");
+          const minimumFetches = fetchesSince(before);
+          return {
+            passed:
+              shell &&
+              configured &&
+              !shown &&
+              result.ok &&
+              result.value === tokens.valid &&
+              minimumFetches > 0,
+            detail: {
+              shell,
+              musicKitConfigured: configured,
+              dialogShown: shown,
+              ...(result.ok
+                ? { servedFingerprint: tokenFingerprint(result.value) }
+                : { error: result.error }),
+              expectedFingerprint: tokenFingerprint(tokens.valid),
+              minimumFetches,
+              minimum,
+            },
+          };
+        });
+      });
+    }
+  } finally {
+    tokenFixture.setMinimumVersion(null);
+    tokenFixture.setMode("valid");
+  }
+}
+
 /**
  * Hosted-token checks (release builds). Each case seeds or removes the cache,
  * then runs in a fresh app; the fixture's request counts show the app really
@@ -1335,10 +1559,16 @@ const WELCOME_TRY_AGAIN_CLICK = `const button = [...document.querySelectorAll(".
  * - a renewed file with a newer iat but an earlier exp loses to the cache
  *   (the app orders files by (iat, exp));
  * - the throwaway signing key or the fixture server outlives the run.
+ * The minimum-version checks (runMinimumVersionChecks) cover the startup gate.
  * The served-token checks in run() cover the runtime env token and the origin
  * claim.
  */
-async function runHostedTokenChecks({ check, tokenFixture, profileRoot }) {
+async function runHostedTokenChecks({
+  check,
+  tokenFixture,
+  profileRoot,
+  artifactDir,
+}) {
   const cachePath = path.join(dataDirs().local, HOSTED_TOKEN_CACHE_FILE);
   const { tokens, requests } = tokenFixture;
   const seedCache = (bytes) => {
@@ -1598,6 +1828,14 @@ async function runHostedTokenChecks({ check, tokenFixture, profileRoot }) {
       });
     },
   );
+
+  // Before the last case, which stops the fixture for good.
+  await runMinimumVersionChecks({
+    check,
+    tokenFixture,
+    profileRoot,
+    artifactDir,
+  });
 
   await hostedTokenCheck(
     check,
@@ -2655,26 +2893,12 @@ async function run() {
     await page.evaluate(openReset);
     await waitFor(page, `document.querySelector("[role=alertdialog]")`, 5_000);
     await page.evaluate(clickInDialog("Reset and restart"));
-    page.close();
-    page = undefined;
     // request_restart exits this process and starts a new one with the same
     // environment, so the debugging port comes back on the new webview.
-    const restartDeadline = Date.now() + 30_000;
-    while (Date.now() < restartDeadline && processAlive(child.pid)) {
-      await sleep(250);
-    }
-    const oldProcessExited = !processAlive(child.pid);
-    await sleep(1000);
-    const restarted = await findPageTarget({
-      port: DEBUG_PORT,
-      timeoutMs: 30_000,
-    });
-    page = connectCdp(restarted.webSocketDebuggerUrl);
-    await page.opened;
+    const resetRestart = await reconnectAfterRestart({ page, pid: child.pid });
+    page = resetRestart.page;
+    const oldProcessExited = resetRestart.exited;
     appProcessRecord = readAppProcessRecord();
-    if (!FOREGROUND) {
-      await page.send("Emulation.setFocusEmulationEnabled", { enabled: true });
-    }
     const restartedShell = await waitFor(
       page,
       `document.querySelector(".app-shell .player-bar")`,
@@ -2752,18 +2976,7 @@ async function run() {
 
     // Exercise application behavior with a deterministic provider. The
     // fixture is injected only by DevTools; production code has no test hook.
-    await page.send("Network.enable");
-    await page.send("Network.setBlockedURLs", {
-      urls: ["*js-cdn.music.apple.com*"],
-    });
-    await page.send("Page.enable");
-    const fixtureScript = await page.send(
-      "Page.addScriptToEvaluateOnNewDocument",
-      { source: musicFixtureSource },
-    );
-    await page.send("Page.addScriptToEvaluateOnNewDocument", {
-      source: desktopEventRecorderSource,
-    });
+    let fixtureScript = await injectMusicFixture(page);
     await page.evaluate('location.hash = "#/home";');
     await page.send("Page.reload", { ignoreCache: true });
     await sleep(1000);
@@ -2810,16 +3023,57 @@ async function run() {
           await page.evaluate(
             'document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); return true;',
           );
+          // The isolated app's own process, so native window helpers never
+          // touch another Arlet window open on this desktop.
+          let scenarioPid = runningArletPid();
           await scenario({
             page,
             check,
-            // The isolated app's own process, so native window helpers never
-            // touch another Arlet window open on this desktop.
-            appPid: runningArletPid(),
+            appPid: scenarioPid,
             dataDir: dataDirs().data,
             logDir: dataDirs().logs,
             profileRoot: dataDirs().root,
             artifactDir,
+            // A real process restart. The fixture is installed again in the
+            // new process, which the scenario continues on. The optional
+            // fixture options are applied before the app's first script runs.
+            restartApp: async (oldPage, fixtureOptions) => {
+              const restarted = await reconnectAfterRestart({
+                page: oldPage,
+                pid: scenarioPid,
+              });
+              page = restarted.page;
+              // A second restart in this scenario waits on the new process.
+              scenarioPid = runningArletPid();
+              appProcessRecord = readAppProcessRecord();
+              fixtureScript = await injectMusicFixture(page);
+              let injection;
+              if (fixtureOptions) {
+                injection = await page.send(
+                  "Page.addScriptToEvaluateOnNewDocument",
+                  {
+                    source: `window.__ARLET_E2E_MUSIC__?.configure(${JSON.stringify(fixtureOptions)});`,
+                  },
+                );
+              }
+              let ready;
+              try {
+                await page.send("Page.reload", { ignoreCache: true });
+                await sleep(1000);
+                ready = await waitFor(
+                  page,
+                  `window.__ARLET_E2E_MUSIC__ && document.querySelector(".app-shell .player-bar")`,
+                  30_000,
+                );
+              } finally {
+                if (injection) {
+                  await page.send("Page.removeScriptToEvaluateOnNewDocument", {
+                    identifier: injection.identifier,
+                  });
+                }
+              }
+              return { page, exited: restarted.exited, ready };
+            },
           });
         } catch (error) {
           check(`${name} completes`, false, String(error?.message ?? error));
@@ -3060,6 +3314,7 @@ async function run() {
       check,
       tokenFixture: hostedTokenFixture,
       profileRoot: profile.root,
+      artifactDir,
     });
   } catch (error) {
     const native = profile

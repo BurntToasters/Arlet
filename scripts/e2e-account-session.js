@@ -3,7 +3,8 @@
 // (docs/TESTING.md "Stream handoff and sign-in expiry"): the handoff stops
 // MusicKit and Play resumes in place; a rejected token shows the banner with
 // one probe and keeps all data; a license error with a healthy token does not;
-// Sign in again, a closed window, and Sign out behave. The 60 s delay is
+// Sign in again, a closed window, and Sign out behave; a fresh Sign in keeps
+// the pins only for the Apple ID that owns them. The 60 s delay is
 // shortened by remapping setTimeout (removed before Play). The 30 s probe
 // cooldown uses the app's own Date.now, so the page reloads first and the one
 // second-probe check waits. Leaves the app signed in and healthy.
@@ -244,7 +245,7 @@ async function waitForAccountDataClearSettlement(
   return last;
 }
 
-async function clickSignOut(page) {
+export async function clickSignOut(page) {
   const hasNotice = await page.evaluate(
     `return Boolean(document.querySelector(${q(NOTICE)}));`,
   );
@@ -267,10 +268,10 @@ const openHash = async (page, hash, ready, timeoutMs = 10_000) => {
   return ready ? waitFor(page, ready, timeoutMs) : true;
 };
 
-/** Reloads with /v1/me rejected so only account-local cached data could render. */
-async function reloadWithOfflineAccountData(page) {
+/** Reloads with the fixture configured before the app starts, then waits for the shell. */
+export async function reloadWithFixtureOptions(page, options) {
   const injection = await page.send("Page.addScriptToEvaluateOnNewDocument", {
-    source: "window.__ARLET_E2E_MUSIC__?.configure({ rejectMeStatus: 403 });",
+    source: `window.__ARLET_E2E_MUSIC__?.configure(${q(options)});`,
   });
   try {
     await page.send("Page.reload", { ignoreCache: true });
@@ -285,6 +286,10 @@ async function reloadWithOfflineAccountData(page) {
     });
   }
 }
+
+/** Reloads with /v1/me rejected so only account-local cached data could render. */
+const reloadWithOfflineAccountData = (page) =>
+  reloadWithFixtureOptions(page, { rejectMeStatus: 403 });
 
 /** Queues and plays the two fixture songs, and reports 0:42 elapsed. */
 async function startPlayback(page) {
@@ -367,7 +372,7 @@ async function saveRecentSearch(page) {
   );
 }
 
-async function pinFixturePlaylist(page) {
+export async function pinFixturePlaylist(page) {
   await openHash(
     page,
     "#/playlist/playlist-1",
@@ -391,8 +396,159 @@ async function pinFixturePlaylist(page) {
   return clicked && shown;
 }
 
-const pinKept = async (page) =>
+export const pinKept = async (page) =>
   (await pinsOf(page)).some((text) => text.startsWith("Fixture Playlist"));
+
+export const FIXTURE_PIN_ID = "playlist-1";
+const SIGN_IN_BUTTON_READY = `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign in" && !node.disabled)`;
+const LIBRARY_LOOKUP_DONE = (at) =>
+  `${FIXTURE}.snapshot().requests.slice(${at.requests}).some((item) => item.path === "/v1/me/library/playlists" && item.query?.ids !== undefined && item.completedAt)`;
+
+/** The pin IDs in the saved pins file, read through the native command; null if unreadable. */
+export async function storedPinIds(page) {
+  try {
+    const raw = await page.evaluate(
+      `return await window.__TAURI_INTERNALS__.invoke("load_pins");`,
+    );
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return (Array.isArray(parsed?.pins) ? parsed.pins : []).map(
+      (pin) => pin.id,
+    );
+  } catch {
+    return null;
+  }
+}
+
+/** Settings' Sign in button: a fresh sign-in, not Sign in again. True once Connected. */
+export async function signInFromSettings(page) {
+  await openHash(page, "#/settings", SIGN_IN_BUTTON_READY, 15_000);
+  const clicked = await page.evaluate(`
+    const button = [...document.querySelectorAll("button")]
+      .find((node) => node.textContent.trim() === "Sign in" && !node.disabled);
+    button?.click();
+    return Boolean(button);`);
+  const connected = await waitFor(
+    page,
+    `document.querySelector(${q(STATUS)})?.textContent.includes("Connected")`,
+    15_000,
+  );
+  return clicked && connected;
+}
+
+/**
+ * A fresh Sign in after MusicKit lost its token and Arlet restarted. The same
+ * Apple ID keeps the pins; another Apple ID shows none of them, and a Sign out
+ * leaves none to bring back.
+ */
+async function freshSignIn(page, check) {
+  const pinned = await pinFixturePlaylist(page);
+  const seeded = (await storedPinIds(page))?.includes(FIXTURE_PIN_ID) === true;
+  check(
+    "a fresh sign-in starts from a pinned playlist saved on disk",
+    pinned && seeded,
+    { pinned, seeded },
+  );
+
+  const restarted = await reloadWithFixtureOptions(page, {
+    startUnauthorized: true,
+  });
+  await fixtureCall(page, "configure", [{ startUnauthorized: false }]);
+  const lostToken = await snapshot(page);
+  const savedAfterRestart = await storedPinIds(page);
+  check(
+    "a restart without the token starts signed out with the pins still saved",
+    restarted &&
+      lostToken.authorized === false &&
+      Array.isArray(savedAfterRestart) &&
+      savedAfterRestart.includes(FIXTURE_PIN_ID),
+    { restarted, authorized: lostToken.authorized, saved: savedAfterRestart },
+  );
+
+  const sameAt = await mark(page);
+  const sameSignedIn = await signInFromSettings(page);
+  const sameLooked = await waitFor(page, LIBRARY_LOOKUP_DONE(sameAt), 10_000);
+  const sameShown = await waitFor(
+    page,
+    `[...document.querySelectorAll(${q(PINS)})].some((node) => node.textContent.startsWith("Fixture Playlist"))`,
+    10_000,
+  );
+  const sameSaved = await storedPinIds(page);
+  const sameTrace = await since(page, sameAt);
+  check(
+    "a fresh Sign in to the same Apple ID keeps the pins on screen and on disk",
+    sameSignedIn &&
+      sameLooked &&
+      sameShown &&
+      Array.isArray(sameSaved) &&
+      sameSaved.includes(FIXTURE_PIN_ID) &&
+      sameTrace.transitions.some(
+        (item) => item.type === "authorize" && item.popup === true,
+      ),
+    {
+      sameSignedIn,
+      sameLooked,
+      sameShown,
+      saved: sameSaved,
+      types: sameTrace.transitions.map((item) => item.type),
+    },
+  );
+
+  const otherRestarted = await reloadWithFixtureOptions(page, {
+    startUnauthorized: true,
+    otherAccount: true,
+  });
+  await fixtureCall(page, "configure", [{ startUnauthorized: false }]);
+  const otherAt = await mark(page);
+  const otherSignedIn = await signInFromSettings(page);
+  const otherLooked = await waitFor(page, LIBRARY_LOOKUP_DONE(otherAt), 10_000);
+  await sleep(800);
+  const otherShown = await pinKept(page);
+  const otherSaved = await storedPinIds(page);
+  await fixtureCall(page, "configure", [{ otherAccount: false }]);
+  check(
+    "a fresh Sign in to another Apple ID shows and keeps none of the old pins",
+    otherRestarted &&
+      otherSignedIn &&
+      otherLooked &&
+      !otherShown &&
+      Array.isArray(otherSaved) &&
+      !otherSaved.includes(FIXTURE_PIN_ID),
+    {
+      otherRestarted,
+      otherSignedIn,
+      otherLooked,
+      shown: otherShown,
+      saved: otherSaved,
+    },
+  );
+
+  const repinned = await pinFixturePlaylist(page);
+  const signedOutClicked = await clickSignOut(page);
+  const signedOut = await waitFor(page, SIGN_IN_BUTTON_READY, 15_000);
+  const signedInAgain = await signInFromSettings(page);
+  await sleep(1000);
+  const afterSignOut = await pinKept(page);
+  const savedAfterSignOut = await storedPinIds(page);
+  check(
+    "explicit Sign out and then Sign in ends with no old pins",
+    repinned &&
+      signedOutClicked &&
+      signedOut &&
+      signedInAgain &&
+      !afterSignOut &&
+      Array.isArray(savedAfterSignOut) &&
+      !savedAfterSignOut.includes(FIXTURE_PIN_ID),
+    {
+      repinned,
+      signedOut,
+      signedInAgain,
+      shown: afterSignOut,
+      saved: savedAfterSignOut,
+    },
+  );
+  // A restart without a token clears recent searches, and revocation expects one.
+  await saveRecentSearch(page);
+}
 
 /** The cached playlist list still renders after the library is blocked. */
 async function cachedLibraryShown(page) {
@@ -1103,6 +1259,9 @@ export async function runAccountSession({ page, check, artifactDir, dataDir }) {
     const lastProbeAt = probeTimes.length ? Math.max(...probeTimes) : 0;
     await group(check, "license error with a healthy token", () =>
       licenseError(page, check, lastProbeAt),
+    );
+    await group(check, "fresh sign-in after the token is lost", () =>
+      freshSignIn(page, check),
     );
     await group(check, "revocation", () =>
       revocation(page, check, artifactDir, dataDir),

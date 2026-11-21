@@ -947,6 +947,60 @@ export async function runLibraryView({ page, check, artifactDir }) {
         { hasToolbar },
       );
     }
+
+    // Detail refresh indicator: a revisit shows saved tracks while the delayed
+    // refresh runs; the first track row must not move when the indicator goes.
+    const firstRowTop = `(document.querySelector('.library-track-list [data-context-id]')?.getBoundingClientRect().top ?? null)`;
+    await page.evaluate(
+      `location.hash = "#/playlist/playlist-1"; return true;`,
+    );
+    await waitFor(
+      page,
+      "document.querySelector('.library-track-list [data-context-id]')",
+      15_000,
+    );
+    await sleep(300);
+    await page.evaluate(`location.hash = "#/library/playlists"; return true;`);
+    await sleep(200);
+    await fixtureCall(page, "configure", [
+      { delayPaths: ["playlist-1/tracks"], delayMs: 1500 },
+    ]);
+    await page.evaluate(
+      `location.hash = "#/playlist/playlist-1"; return true;`,
+    );
+    const rowsCached = await waitFor(
+      page,
+      "document.querySelector('.library-track-list [data-context-id]')",
+      5_000,
+    );
+    const indicatorShown = await waitFor(
+      page,
+      "document.querySelector('.library-detail-refresh-status[role=\"status\"]')",
+      4_000,
+    );
+    const topWhileUpdating = await page.evaluate(`return ${firstRowTop};`);
+    const indicatorCleared = await waitFor(
+      page,
+      "!document.querySelector('.library-detail-refresh-status')",
+      10_000,
+    );
+    const topAfterUpdate = await page.evaluate(`return ${firstRowTop};`);
+    await fixtureCall(page, "configure", [{ delayPaths: [], delayMs: 800 }]);
+    record(
+      "detail refresh indicator leaves the track list in place",
+      rowsCached &&
+        indicatorShown &&
+        indicatorCleared &&
+        typeof topWhileUpdating === "number" &&
+        topWhileUpdating === topAfterUpdate,
+      {
+        rowsCached,
+        indicatorShown,
+        indicatorCleared,
+        topWhileUpdating,
+        topAfterUpdate,
+      },
+    );
   } finally {
     await page.evaluate(
       `localStorage.removeItem(${q(STORAGE_KEY)}); return true;`,

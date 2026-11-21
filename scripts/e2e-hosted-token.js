@@ -26,6 +26,8 @@ const TAURI_CLI = path.join(
   "tauri.js",
 );
 const TOKEN_PATH = "/arlet-token.json";
+// The minimum-version file sits beside the token file (src-tauri/src/min_version.rs).
+const MINIMUM_PATH = "/min_ver.txt";
 const HOUR_SECONDS = 3_600;
 const DAY_SECONDS = 86_400;
 const GENERATE_TIMEOUT_MS = 60_000;
@@ -133,6 +135,9 @@ function signTokenFile(key, token) {
  *   newer    iat -1 h, exp +200 days, seeded as a cache by the checks, never served
  *   renewed  iat now, exp +30 days, served in "renewed" mode (replaces a cache with a later exp)
  *   bad      iat -2 h, exp +120 days, served in "badSignature" mode, signed by another key
+ *
+ * `/min_ver.txt` answers 404 until setMinimumVersion(body) sets a body, which
+ * is then served as text/plain. Its request count is minimumRequests.
  */
 export async function startHostedTokenFixture({
   realToken = "",
@@ -194,7 +199,24 @@ export async function startHostedTokenFixture({
       HOSTED_TOKEN_MODES.map((name) => [name, 0]),
     );
     let mode = "valid";
+    let minimumBody = null;
+    let minimumRequests = 0;
     server = http.createServer((request, response) => {
+      if (request.method === "GET" && request.url === MINIMUM_PATH) {
+        minimumRequests += 1;
+        if (minimumBody === null) {
+          response.writeHead(404, { Connection: "close" });
+          response.end();
+          return;
+        }
+        response.writeHead(200, {
+          "Content-Type": "text/plain",
+          "Content-Length": String(Buffer.byteLength(minimumBody)),
+          Connection: "close",
+        });
+        response.end(minimumBody);
+        return;
+      }
       if (request.method !== "GET" || request.url !== TOKEN_PATH) {
         response.writeHead(404, { Connection: "close" });
         response.end();
@@ -235,6 +257,16 @@ export async function startHostedTokenFixture({
           throw new Error(`unknown hosted token mode: ${next}`);
         }
         mode = next;
+      },
+      /** The body of /min_ver.txt, or null to answer 404 again. */
+      setMinimumVersion(body) {
+        if (body !== null && typeof body !== "string") {
+          throw new Error("minimum version body must be a string or null");
+        }
+        minimumBody = body;
+      },
+      get minimumRequests() {
+        return minimumRequests;
       },
       /** A file signed with the fixture key, for seeding the app's cache. */
       signFile,

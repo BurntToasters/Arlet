@@ -305,6 +305,10 @@ export function LibraryDetailView({
   const artist = resource?.artistName;
   const artworkTrack = resource ? toTrack(resource) : undefined;
   const isArtist = kind === "artist";
+  const updating =
+    detail.source === "cache" ||
+    detail.stale === true ||
+    detail.isStale === true;
   // Album and playlist headers glow behind their cover; artist pages keep
   // their own banner/backdrop selectors (e2e-discovery checks those).
   const detailBackdrop =
@@ -481,8 +485,21 @@ export function LibraryDetailView({
                 callLoader(loader, id, source, { refresh: true });
               }}
             >
-              <RefreshCw aria-hidden="true" size={16} />
+              <RefreshCw
+                aria-hidden="true"
+                size={16}
+                className={updating ? "spin" : undefined}
+              />
             </button>
+            {updating ? (
+              <span
+                className="library-detail-refresh-status"
+                role="status"
+                title="Showing saved data while Apple Music refreshes."
+              >
+                Updating…
+              </span>
+            ) : null}
           </div>
         </div>
       </section>
@@ -490,11 +507,6 @@ export function LibraryDetailView({
         <DetailMore kind={kind} resource={resource} />
       ) : null}
       {artistBio ? <ArtistBio key={id} notes={artistBio} /> : null}
-      {detail.source === "cache" || detail.stale || detail.isStale ? (
-        <p className="library-stale-note" role="status">
-          Showing saved data while Apple Music refreshes.
-        </p>
-      ) : null}
       {detail.error && resources.length ? (
         <p className="library-stale-note" role="status">
           Refresh failed; showing saved data. {detail.error}

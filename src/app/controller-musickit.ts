@@ -7,6 +7,7 @@ import { registerMusicKitEvents } from "../musickit/events.ts";
 import { mapErrorToCode } from "../musickit/errors.ts";
 import { syncMusicKitQueue } from "../musickit/player.ts";
 import type { AppleMusicLibraryClient } from "../musickit/library.ts";
+import { checkMinimumVersion } from "../platform/min-version.ts";
 import { registerSensitiveValue } from "../platform/redact.ts";
 import {
   clearRecentSearches,
@@ -121,6 +122,7 @@ export function createMusicKitStartup(
       setMusic(instance);
       // Records MusicKit's startup bitrate before any write below.
       preferences.captureStartupBitrate(instance);
+      preferences.applyExplicitContentSetting(instance);
       setUserTokenGuard(instance, {
         blocked: isSessionExpired,
         onRejected: (error, path) => accounts.suspectSession(error, path),
@@ -217,6 +219,9 @@ export function createMusicKitStartup(
       // recovers once a reload can download a fresh one.
       if ((error as { code?: unknown } | null)?.code === "TOKEN_EXPIRED") {
         setDeveloperTokenExpiry(now());
+      }
+      if ((error as { code?: unknown } | null)?.code === "UPDATE_REQUIRED") {
+        void checkMinimumVersion();
       }
       stopOnlineReload?.();
       stopOnlineReload = reloadWhenOnline(now, log);

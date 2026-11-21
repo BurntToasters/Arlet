@@ -32,6 +32,7 @@ import { MediaSessionSync } from "./MediaSessionSync.tsx";
 import { MiniPlayer } from "../components/MiniPlayer.tsx";
 import { exitMiniPlayer, toggleMiniPlayer } from "./mini-player.ts";
 import { UpdateReadyModal } from "../components/UpdateReadyModal.tsx";
+import { UpdateRequiredDialog } from "../components/UpdateRequiredDialog.tsx";
 import { ContextMenu } from "../components/ContextMenu.tsx";
 import { PlaylistDialogs } from "../components/PlaylistDialogs.tsx";
 import { ShortcutOverlay } from "../components/ShortcutOverlay.tsx";
@@ -411,6 +412,7 @@ export function App({
   return (
     <AppProvider controller={controller} router={router}>
       <AppLayout diagnosticsStore={diagnosticsStore} />
+      <UpdateRequiredDialog />
     </AppProvider>
   );
 }

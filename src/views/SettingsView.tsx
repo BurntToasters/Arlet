@@ -1,6 +1,7 @@
 import {
   AlertCircle,
   AudioLines,
+  Ban,
   Bug,
   Check,
   ClipboardCopy,
@@ -21,6 +22,7 @@ import {
   Scale,
   Sun,
   UserRound,
+  Wrench,
 } from "lucide-preact";
 import type { JSX, TargetedEvent } from "preact";
 import { useEffect, useState } from "preact/hooks";
@@ -33,11 +35,13 @@ import { SHORTCUT_HELP } from "../app/shortcuts.ts";
 import { lazyView } from "../components/lazy.tsx";
 import { EmptyState } from "./EmptyState.tsx";
 import { ResetSettingsDialog } from "../components/ResetSettingsDialog.tsx";
+import { ExplicitFixDialog } from "../components/ExplicitFixDialog.tsx";
 import {
   createTauriEnvironmentAdapter,
   type NativeDiagnosticsInfo,
 } from "../diagnostics/native.ts";
 import type {
+  ExplicitContentPreference,
   RuntimeAppState,
   ThemePreference,
   UpdateChannel,
@@ -152,6 +156,19 @@ function updateChannelDescription(channel: UpdateChannel): string {
   }
 }
 
+function explicitContentDescription(
+  preference: ExplicitContentPreference,
+): string {
+  switch (preference) {
+    case "auto":
+      return "Follows your Apple Account's content restrictions.";
+    case "clean":
+      return "Always skips explicit songs, starting with the next song you play.";
+    case "allow":
+      return "Plays explicit songs even when Apple reports this account as restricted. Apple's servers can still refuse some songs.";
+  }
+}
+
 function initializationCopy(status: RuntimeAppState["initialization"]): string {
   switch (status.status) {
     case "ready":
@@ -187,6 +204,7 @@ export function SettingsView(): JSX.Element {
   const account = state.account;
   const [licensesOpen, setLicensesOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
+  const [explicitFixOpen, setExplicitFixOpen] = useState(false);
   const [aboutExpanded, setAboutExpanded] = useState(false);
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
   // undefined while loading, null when app info is unavailable (browser dev).
@@ -235,6 +253,28 @@ export function SettingsView(): JSX.Element {
       controller.setAudioQuality(event.currentTarget.value as AudioQuality),
     ).catch(reportActionError);
   };
+  const updateExplicitContent = (
+    event: TargetedEvent<HTMLSelectElement>,
+  ): void => {
+    void Promise.resolve(
+      controller.setExplicitContent(
+        event.currentTarget.value as ExplicitContentPreference,
+      ),
+    ).catch(reportActionError);
+  };
+  const agreeExplicitFix = async (): Promise<void> => {
+    await controller.setExplicitFix(true);
+    setExplicitFixOpen(false);
+  };
+  const explicitStatus = controller.explicitContentStatus();
+  // MusicKit reads its restriction only at a fresh page session, so a change
+  // back to Auto after an override needs a restart to take effect.
+  const explicitRestartNeeded =
+    settings.explicitContent === "auto" && explicitStatus.overridden;
+  const explicitRestrictedNow =
+    settings.explicitContent === "auto" &&
+    authorized &&
+    explicitStatus.restricted;
   const updateEffect = (event: TargetedEvent<HTMLSelectElement>): void => {
     void controller
       .setWindowEffect(event.currentTarget.value as WindowEffectPreference)
@@ -523,6 +563,23 @@ export function SettingsView(): JSX.Element {
                 <option value="automatic">Automatic</option>
               </select>
             </label>
+            <label className="settings-field">
+              <span>
+                <Ban aria-hidden="true" size={16} strokeWidth={1.8} /> Explicit
+                content
+              </span>
+              <select
+                aria-label="Explicit content"
+                value={settings.explicitContent}
+                onChange={updateExplicitContent}
+              >
+                <option value="auto">Auto</option>
+                <option value="clean">Clean</option>
+                {settings.explicitFix ? (
+                  <option value="allow">Allow</option>
+                ) : null}
+              </select>
+            </label>
           </div>
           <p className="settings-field-help">
             Restores the last queue and position after restart, paused. Turning
@@ -533,6 +590,33 @@ export function SettingsView(): JSX.Element {
             <p className="settings-field-help" aria-live="polite">
               {`Streaming at ${streamingBitrate} kbps`}
             </p>
+          ) : null}
+          <p className="settings-field-help">
+            {explicitContentDescription(settings.explicitContent)}
+          </p>
+          {explicitRestrictedNow ? (
+            <p className="settings-field-help" role="status">
+              Apple reports explicit content as restricted for this account, so
+              explicit songs are skipped. Apple only updates this when you sign
+              in, so after changing your Apple Account settings, sign out and
+              sign in again.
+            </p>
+          ) : null}
+          {explicitRestartNeeded ? (
+            <div className="explicit-restart-note" role="status">
+              <span>Restart Arlet to apply.</span>
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() =>
+                  void controller
+                    .restartToApplyExplicitContent()
+                    .catch(reportActionError)
+                }
+              >
+                Restart Arlet
+              </button>
+            </div>
           ) : null}
         </section>
 
@@ -875,6 +959,39 @@ export function SettingsView(): JSX.Element {
               </div>
               <div className="settings-advanced-group">
                 <div className="settings-advanced-heading">
+                  <h3>Explicit songs</h3>
+                  <p>
+                    Use this if your Apple Account allows explicit songs but
+                    Arlet skips them.
+                  </p>
+                </div>
+                <div className="settings-fields">
+                  <label className="settings-field settings-toggle-field">
+                    <span>
+                      <Wrench aria-hidden="true" size={16} strokeWidth={1.8} />
+                      Fix explicit songs not playing
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={settings.explicitFix}
+                      onChange={(event) => {
+                        const input = event.currentTarget;
+                        if (input.checked) {
+                          // Only the dialog's "I Agree" turns the fix on.
+                          input.checked = false;
+                          setExplicitFixOpen(true);
+                          return;
+                        }
+                        void controller
+                          .setExplicitFix(false)
+                          .catch(reportActionError);
+                      }}
+                    />
+                  </label>
+                </div>
+              </div>
+              <div className="settings-advanced-group">
+                <div className="settings-advanced-heading">
                   <h3>Reset</h3>
                   <p>
                     Restore default settings and restart Arlet. You stay signed
@@ -931,6 +1048,12 @@ export function SettingsView(): JSX.Element {
         <ResetSettingsDialog
           onCancel={() => setResetOpen(false)}
           onConfirm={controller.resetSettingsAndRestart}
+        />
+      ) : null}
+      {explicitFixOpen ? (
+        <ExplicitFixDialog
+          onCancel={() => setExplicitFixOpen(false)}
+          onAgree={agreeExplicitFix}
         />
       ) : null}
     </>

@@ -22,6 +22,7 @@
     "allow-paste-clipboard-text",
     "allow-get-app-info",
     "allow-get-developer-token",
+    "allow-min-version-status",
     "allow-get-beta-updater-target",
     "allow-open-support-page",
     "allow-open-about-link",
@@ -54,6 +55,8 @@
     "allow-clear-windows-media-session",
     "allow-set-mini-player",
     "allow-set-mini-player-on-top",
-    "allow-quit-ready"
+    "allow-quit-ready",
+    "allow-quit-app",
+    "allow-restart-app"
   ]
 }

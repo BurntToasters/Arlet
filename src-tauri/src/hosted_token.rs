@@ -44,9 +44,12 @@ const FILE_VERSION: u64 = 1;
 /// The hosted file is under 1 KB; anything past this cap is refused unread.
 const MAX_FILE_BYTES: usize = 16 * 1024;
 /// Total budget for one download, body included.
-const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const CACHE_FILE_NAME: &str = "musickit-token.json";
-const USER_AGENT: &str = concat!("Arlet/", env!("CARGO_PKG_VERSION"));
+pub(crate) const USER_AGENT: &str = concat!("Arlet/", env!("CARGO_PKG_VERSION"));
+/// Shown instead of the token when this version is below the minimum.
+const UPDATE_REQUIRED_MESSAGE: &str =
+    "This version of Arlet is no longer supported. Update Arlet to keep listening.";
 
 /// E2E-only overrides. Ordinary builds never read these variables.
 #[cfg(feature = "e2e")]
@@ -138,6 +141,14 @@ impl TokenError {
             message,
         }
     }
+
+    /// This build is below the minimum version in `min_ver.txt`.
+    pub fn update_required() -> Self {
+        Self {
+            code: "UPDATE_REQUIRED",
+            message: UPDATE_REQUIRED_MESSAGE.to_string(),
+        }
+    }
 }
 
 impl From<ServeError> for TokenError {
@@ -172,7 +183,7 @@ impl ServeError {
 /// Why a source is unusable or a download could not finish. Values are only
 /// compared in tests, so no field-level detail is carried.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SourceError {
+pub(crate) enum SourceError {
     InsecureUrl,
     PublicKey,
     CacheDir,
@@ -262,7 +273,14 @@ fn settings_for_app(app: &AppHandle) -> Result<Settings, SourceError> {
     })
 }
 
-fn validate_url(url: &str, allow_loopback_http: bool) -> Result<(), SourceError> {
+/// The token URL for this build and whether plain loopback HTTP is allowed.
+/// `min_version` derives its file from the same URL.
+pub(crate) fn token_source(app: &AppHandle) -> Result<(String, bool), SourceError> {
+    let settings = settings_for_app(app)?;
+    Ok((settings.url, settings.allow_loopback_http))
+}
+
+pub(crate) fn validate_url(url: &str, allow_loopback_http: bool) -> Result<(), SourceError> {
     let parsed = url::Url::parse(url).map_err(|_| SourceError::InsecureUrl)?;
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(SourceError::InsecureUrl);
@@ -393,7 +411,7 @@ fn write_cache(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 /// reqwest is built without a bundled crypto provider, as tauri-plugin-updater
 /// does, so ring becomes the process default before the first client exists.
-fn ensure_tls_provider() {
+pub(crate) fn ensure_tls_provider() {
     if rustls::crypto::CryptoProvider::get_default().is_none() {
         let _ = rustls::crypto::ring::default_provider().install_default();
     }
@@ -542,6 +560,9 @@ fn unix_now() -> u64 {
 /// unavailable token is logged only in Debug Mode, by category only, and never
 /// with the token, body, or signature.
 pub async fn token(app: &AppHandle, state: &HostedTokenState) -> Result<String, TokenError> {
+    if crate::min_version::status(app).await.required {
+        return Err(TokenError::update_required());
+    }
     let outcome = match settings_for_app(app) {
         Ok(settings) => state.serve(&settings).await,
         Err(_) => Err(ServeError::Unavailable),

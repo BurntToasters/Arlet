@@ -26,6 +26,7 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 ## Changes in `v0.5.0-beta.1:`
 
 - **NEW - Apple Music access refresh:** Arlet now downloads its Apple Music developer token at launch instead of including it in the app. I can renew it without shipping an app update! The last valid copy is kept locally if the download fails. This applies to `v0.5.0-beta.1` and newer; `v0.4.0` and older still use the token they shipped with.
+- **NEW - Required updates:** Arlet can now require an update when a release has a serious issue, and shows an Update required prompt with a Check for updates button.
 - **Security:** Added signature verification for downloaded and cached Apple Music tokens. Modified, expired, or incorrectly signed tokens are rejected, and older tokens cannot replace a newer cached copy.
 - **UI:** Updated the Apple Music access notice to ask you to restart Arlet when access is close to expiring or has expired. Reconnect can also pick up renewed access while Arlet is running.
 - **UI:** Updated connection errors so you can still browse your cached library when Apple Music access cannot be downloaded or has expired. Without a cached library, the welcome screen shows the error and a Try again button.
@@ -33,6 +34,7 @@ Arlet! An Apple Music client for Windows built on Tauri V2!
 - **Security:** Updated SQLite to address a security advisory.
 - **Codebase:** Added signed token publishing through DigitalOcean Spaces and CDN cache clearing. Release preparation checks whether the hosted token needs renewing, and the weekly check now verifies the live token instead of the age of the latest release.
 - **Testing:** Added E2E coverage for hosted token downloads, offline startup, invalid tokens, and reconnecting after access is renewed.
+- **UI:** Added an Advanced setting to fix explicit songs not playing for some Apple Accounts, and an Explicit content setting (Auto or Clean) in Playback.
 - **PKG:** Updated packages.
 
 ## Changes in `v0.4.0:`

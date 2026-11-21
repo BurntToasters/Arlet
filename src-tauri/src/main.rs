@@ -14,6 +14,7 @@ mod commands;
 mod hosted_token;
 mod library_cache;
 mod logging;
+mod min_version;
 mod mini_player;
 mod music_diagnostic;
 mod pins;
@@ -100,6 +101,7 @@ fn main() {
         .manage(library_cache::LibraryCacheState::default())
         .manage(window_state::WindowStateCache::default())
         .manage(hosted_token::HostedTokenState::default())
+        .manage(min_version::MinVersionState::default())
         .setup(|app| {
             // Read before the webview exists: its first log lines must
             // already follow Debug Mode.
@@ -109,6 +111,9 @@ fn main() {
             // exists, so it overlaps webview and MusicKit loading. Command calls
             // wait on it. Debug builds do no network in this call.
             tauri::async_runtime::spawn(hosted_token::prefetch(app.handle().clone()));
+            // The minimum-version check runs beside it, so the token call
+            // rarely waits on it.
+            tauri::async_runtime::spawn(min_version::prefetch(app.handle().clone()));
             // Rewrites the Run entry when the exe path has changed since it was written.
             if appearance.launch_at_startup {
                 if let Err(error) = autostart::apply(true) {
@@ -236,12 +241,15 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_info,
             commands::get_developer_token,
+            min_version::min_version_status,
             commands::get_beta_updater_target,
             commands::open_support_page,
             commands::open_about_link,
             commands::open_subscribe_link,
             clipboard_paste::paste_clipboard_text,
             tray::quit_ready,
+            tray::quit_app,
+            tray::restart_app,
             music_diagnostic::open_music_diagnostic,
             settings::load_settings,
             settings::save_settings,

@@ -25,6 +25,7 @@ import {
   reportNotice,
 } from "../components/action-errors.ts";
 import { createIdleGuard } from "./idle-guard.ts";
+import type { ExplicitContentStatus } from "../musickit/content-restrictions.ts";
 import {
   DEFAULT_SETTINGS,
   getState,
@@ -34,6 +35,7 @@ import {
   setUpdateState,
   subscribePlaybackPosition,
   type AudioQuality,
+  type ExplicitContentPreference,
   type LibraryEntity,
   type LibrarySection,
   type ThemePreference,
@@ -52,6 +54,7 @@ import type {
 } from "../domain/music.ts";
 import type { DiagnosticsStore } from "../diagnostics/store.ts";
 import type { GateEnvironment } from "../phase0/gate-session.ts";
+import { checkMinimumVersion } from "../platform/min-version.ts";
 import { openAppleMusicLink, openSubscribeLink } from "../platform/support.ts";
 import { createUpdaterService, type UpdaterService } from "../updater.ts";
 import {
@@ -290,6 +293,13 @@ export interface AppController {
   setAutoplay(enabled: boolean): Promise<void>;
   /** Writes the MusicKit bitrate for the quality; saves only on success. */
   setAudioQuality(quality: AudioQuality): Promise<void>;
+  /** Rejects "allow" until the fix is on; applies from the next Play. */
+  setExplicitContent(preference: ExplicitContentPreference): Promise<void>;
+  /** Turning it off also sets Allow back to Auto; Clean stays. */
+  setExplicitFix(enabled: boolean): Promise<void>;
+  explicitContentStatus(): ExplicitContentStatus;
+  /** Restarts Arlet so MusicKit applies a restriction change; the queue is saved first. */
+  restartToApplyExplicitContent(): Promise<void>;
   /** Opens Apple's subscribe page; throws when MusicKit has no link. */
   openSubscribe(): Promise<void>;
   /**
@@ -512,6 +522,7 @@ export function createAppController(
       stationResolver = undefined;
     },
     refreshCurrentData: () => controller.refreshCurrentData(),
+    preferences,
   });
 
   const musicKit = createMusicKitStartup(context, {
@@ -538,7 +549,11 @@ export function createAppController(
   });
 
   const controller: AppController = {
-    initialize: musicKit.initialize,
+    initialize: async (): Promise<void> => {
+      // Not awaited: a required update must not wait behind MusicKit startup.
+      void checkMinimumVersion(invokeFn);
+      await musicKit.initialize();
+    },
 
     loadSettings: preferences.loadSettings,
 
@@ -866,6 +881,14 @@ export function createAppController(
     setAutoplay: preferences.setAutoplay,
 
     setAudioQuality: preferences.setAudioQuality,
+
+    setExplicitContent: preferences.setExplicitContent,
+
+    setExplicitFix: preferences.setExplicitFix,
+
+    explicitContentStatus: preferences.explicitContentStatus,
+
+    restartToApplyExplicitContent: preferences.restartToApplyExplicitContent,
 
     async openSubscribe(): Promise<void> {
       const url = requireMusic().subscribeURL;

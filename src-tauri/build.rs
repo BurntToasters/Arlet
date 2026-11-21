@@ -9,6 +9,7 @@ fn main() {
     const COMMANDS: &[&str] = &[
         "get_app_info",
         "get_developer_token",
+        "min_version_status",
         "get_beta_updater_target",
         "open_support_page",
         "open_about_link",
@@ -43,6 +44,8 @@ fn main() {
         "set_mini_player",
         "set_mini_player_on_top",
         "quit_ready",
+        "quit_app",
+        "restart_app",
     ];
     tauri_build::try_build(
         tauri_build::Attributes::new()

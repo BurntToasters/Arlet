@@ -197,15 +197,98 @@ export function createControllerPins(
   };
 
   /**
-   * Local sign-out step: pins are local and not tied to an Apple ID, so the
-   * next account to sign in on this PC must not see them. A failure is logged.
+   * Local clear for a sign-out or a fresh sign-in: drops the pins from memory
+   * and disk. Library pins belong to one Apple ID, so restoreIfOwned may bring
+   * them back after a fresh sign-in.
    */
   const clearStored = async (): Promise<void> => {
     setPins([]);
     await deletePersistedPins(invokeFn);
   };
 
-  return { reload, resolveDetails, togglePin, unpin, clearStored };
+  /**
+   * True when one of the library IDs is in the signed-in library. A batch
+   * lookup that throws is retried one ID at a time, where a per-ID error means
+   * that ID is not owned. False once `stillCurrent` stops holding.
+   */
+  const ownsAnyLibraryPin = async (
+    client: AppleMusicLibraryClient,
+    ids: readonly string[],
+    stillCurrent: () => boolean,
+  ): Promise<boolean> => {
+    try {
+      const found = await client.getPlaylistsByIds(ids, "library");
+      return found.some((playlist) => ids.includes(playlist.id));
+    } catch (error) {
+      log(
+        `Pinned playlist batch check failed, checking one by one: ${safeErrorMessage(error)}`,
+      );
+    }
+    for (const id of ids) {
+      if (!stillCurrent()) return false;
+      let found: Playlist | undefined;
+      try {
+        found = await client.getPlaylist(id, "library");
+      } catch {
+        // A per-ID error (such as a 404) means this pin is not in the library.
+        found = undefined;
+      }
+      if (!stillCurrent()) return false;
+      if (found?.id === id) return true;
+    }
+    return false;
+  };
+
+  /**
+   * After a fresh sign-in, brings back the pins saved before it, but only when
+   * the new account owns one of their library playlists (library IDs belong to
+   * one Apple ID). `stillCurrent` must hold after each await. Fails closed:
+   * anything else restores nothing, and a failure never fails the sign-in.
+   * Resolves true only when ownership was proven and the pins were kept.
+   */
+  const restoreIfOwned = async (
+    previous: readonly PinnedPlaylist[],
+    stillCurrent: () => boolean,
+  ): Promise<boolean> => {
+    const libraryIds = previous
+      .filter((pin) => pin.source === "library")
+      .map((pin) => pin.id);
+    const client = deps.libraryClient();
+    if (libraryIds.length === 0 || !client) return false;
+    try {
+      const owned = await ownsAnyLibraryPin(client, libraryIds, stillCurrent);
+      if (!stillCurrent()) return false;
+      if (!owned) {
+        log(
+          "Pinned playlists not restored: the new sign-in owns none of them.",
+        );
+        return false;
+      }
+      const next = [...previous];
+      for (const pin of getState().pins) {
+        if (!next.some((item) => item.id === pin.id)) next.push(pin);
+      }
+      const restored = next.slice(0, MAX_PINS);
+      await persistPins(restored);
+      if (!stillCurrent()) return false;
+      setPins(restored);
+      log("Pinned playlists kept: the new sign-in owns them.");
+      void resolveDetails();
+      return true;
+    } catch (error) {
+      log(`Pinned playlists not restored: ${safeErrorMessage(error)}`);
+      return false;
+    }
+  };
+
+  return {
+    reload,
+    resolveDetails,
+    togglePin,
+    unpin,
+    clearStored,
+    restoreIfOwned,
+  };
 }
 
 export type ControllerPins = ReturnType<typeof createControllerPins>;

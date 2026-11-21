@@ -43,6 +43,9 @@ export function friendlyPlaybackMessage(error: unknown): string {
   if (reason && LICENSE_REASONS.has(reason)) {
     return "Apple Music couldn't start playback. If it's playing on another device, stop it there. If you changed your Apple ID password, sign in again.";
   }
+  if (reason === "CONTENT_RESTRICTED") {
+    return "Apple restricts this song for this Apple Account. See Settings > Playback.";
+  }
   return redactSensitive(messageOf(error));
 }
 

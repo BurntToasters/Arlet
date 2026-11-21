@@ -1956,6 +1956,38 @@ existing Home, curator, label, and activity checks staying green. They have no
 new check. Failure mode 18 is guarded by the polish scenario waiting for the
 theme transition before its dark screenshots.
 
+## Explicit content
+
+The `explicit-content` scenario in `scripts/e2e-explicit-content.js` drives the
+explicit-content choice against the MusicKit fixture, including the sign-in and
+sign-out checks. The checks live in that scenario, not in `account-session`
+(`scripts/e2e-account-session.js`), which only exports the helpers it reuses.
+Run it with `node scripts/e2e-app.js --scenarios explicit-content` after a
+matching E2E-feature build is available.
+
+The fixture models MusicKit's latch: `snapshot().restrictionLatched` and
+`snapshot().storedRestriction` show whether the public setter has latched and
+what `itre` holds. The scenario checks:
+
+- "startup without a token does not write MusicKit before sign-in".
+- "choosing Clean or Allow while signed out does not write MusicKit".
+- "a same-account sign-in keeps Apple's report and applies Allow after it"
+  (also checks the explicit-content log line when `arlet.log` exists).
+- "a CONTENT_RESTRICTED skip says Apple restricts the song, never can't be
+  played" (the auto-skip notice).
+- "a CONTENT_RESTRICTED failure on the last song shows the restricted text in
+  the player bar".
+- "sign-out after an override restarts Arlet and leaves no fix or old account
+  data".
+- "after the restart, another account Apple reports as restricted is restricted
+  under Auto".
+- "explicit content ends with no override latched and signed in" (cleanup
+  reloads the page, so Arlet's in-memory override and the fixture latch clear).
+
+Live MusicKit cannot be driven by the E2E. Run one manual check at the desktop:
+turn Allow on, sign out (Arlet restarts), sign in, and confirm the explicit-content
+log line shows Apple's stored report and the effective value.
+
 ## Release-only evidence
 
 The following checks require a Windows release environment and are kept out of

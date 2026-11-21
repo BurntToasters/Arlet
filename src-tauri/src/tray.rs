@@ -123,6 +123,15 @@ static QUIT_READY: AtomicBool = AtomicBool::new(false);
 /// forget and is lost when the process exits first, so a quit while playing
 /// used to drop up to 30 seconds of position.
 pub fn request_quit(app: &AppHandle) {
+    request_exit(app, false);
+}
+
+/// Restarts the process after the page has saved, as a quit does.
+pub fn request_restart(app: &AppHandle) {
+    request_exit(app, true);
+}
+
+fn request_exit(app: &AppHandle, restart: bool) {
     if QUIT_REQUESTED.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -141,7 +150,11 @@ pub fn request_quit(app: &AppHandle) {
         while asked && !QUIT_READY.load(Ordering::SeqCst) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(25));
         }
-        handle.exit(0);
+        if restart {
+            handle.request_restart();
+        } else {
+            handle.exit(0);
+        }
     });
 }
 
@@ -149,6 +162,18 @@ pub fn request_quit(app: &AppHandle) {
 #[tauri::command]
 pub fn quit_ready() {
     QUIT_READY.store(true, Ordering::SeqCst);
+}
+
+/// Quits Arlet once the page has saved its queue.
+#[tauri::command]
+pub fn quit_app(app: AppHandle) {
+    request_quit(&app);
+}
+
+/// Restarts Arlet once the page has saved its queue.
+#[tauri::command]
+pub fn restart_app(app: AppHandle) {
+    request_restart(&app);
 }
 
 fn quit(app: &AppHandle) {

@@ -1,6 +1,16 @@
 import { setNativeLogDebugMode } from "../diagnostics/native.ts";
 import { reportActionError } from "../components/action-errors.ts";
 import {
+  appleReportedRestriction,
+  applyExplicitContent,
+  explicitContentStatus as readExplicitContentStatus,
+  holdCleanWriteForNextPlay,
+  isInstanceAuthorized,
+  releaseHeldCleanWrite,
+  type ExplicitContentStatus,
+} from "../musickit/content-restrictions.ts";
+import { restartArlet } from "../platform/quit.ts";
+import {
   readMusicKitBitrate,
   setAutoplayEnabled,
   writeMusicKitBitrate,
@@ -11,6 +21,7 @@ import {
   setWindowEffectState,
   type AppSettings,
   type AudioQuality,
+  type ExplicitContentPreference,
   type ThemePreference,
   type UpdateChannel,
   type WindowEffectPreference,
@@ -140,6 +151,27 @@ export function createControllerSettings(
     return false;
   };
 
+  /** Pushes the saved explicit-content choice to MusicKit. */
+  const applyExplicitContentSetting = (
+    instance: MusicKit.MusicKitInstance,
+  ): void => {
+    const choice = getState().settings.explicitContent;
+    if (!applyExplicitContent(instance, choice)) {
+      log(
+        "Explicit content setting could not be applied in this MusicKit runtime.",
+      );
+    }
+    if (!isInstanceAuthorized(instance)) return;
+    const reported = appleReportedRestriction();
+    const appleReport =
+      reported === undefined ? "unknown" : reported ? "yes" : "no";
+    const musicKitRestricts =
+      instance.restrictedEnabled === true ? "yes" : "no";
+    log(
+      `Explicit content: choice ${choice}; Apple reports restricted: ${appleReport}; MusicKit restricts: ${musicKitRestricts}.`,
+    );
+  };
+
   /**
    * Saves the latest settings once a volume drag settles. During a drag the
    * live level is only in `playback.volume`, so it is copied into settings here.
@@ -194,6 +226,7 @@ export function createControllerSettings(
     if (music) {
       applyAutoplaySetting(music);
       applyAudioQuality(music);
+      applyExplicitContentSetting(music);
     }
     configureUpdater(settings);
     const effectPromise = applyCurrentEffect();
@@ -265,6 +298,75 @@ export function createControllerSettings(
     await persistSettings({ ...getState().settings, audioQuality: quality });
   };
 
+  /**
+   * Applies from the next Play; "allow" needs the fix agreed to. A Clean chosen
+   * while a song plays waits for the next Play, since MusicKit would stop it.
+   */
+  const setExplicitContent = async (
+    preference: ExplicitContentPreference,
+  ): Promise<void> => {
+    if (preference === "allow" && !getState().settings.explicitFix) {
+      throw new Error(
+        "Turn on the explicit content fix to allow explicit songs.",
+      );
+    }
+    const instance = context.getMusic();
+    const { status, queue } = getState().playback;
+    const playing =
+      status === "playing" || status === "loading" || status === "paused";
+    releaseHeldCleanWrite();
+    if (
+      instance &&
+      preference === "clean" &&
+      instance.restrictedEnabled !== true &&
+      playing &&
+      queue.length > 0
+    ) {
+      holdCleanWriteForNextPlay();
+    } else if (instance && !applyExplicitContent(instance, preference)) {
+      throw new Error(
+        "Explicit content is not available in this MusicKit runtime.",
+      );
+    }
+    await persistSettings({
+      ...getState().settings,
+      explicitContent: preference,
+    });
+  };
+
+  /** Turning the fix off returns Allow to Auto; Clean is the user's own choice and stays. */
+  const setExplicitFix = async (enabled: boolean): Promise<void> => {
+    const settings = getState().settings;
+    await persistSettings(
+      enabled
+        ? { ...settings, explicitFix: true }
+        : {
+            ...settings,
+            explicitFix: false,
+            explicitContent:
+              settings.explicitContent === "allow"
+                ? "auto"
+                : settings.explicitContent,
+          },
+    );
+  };
+
+  /** Back to the defaults; a failed save is logged and never blocks sign-in or sign-out. */
+  const resetExplicitContent = async (): Promise<void> => {
+    releaseHeldCleanWrite();
+    const { settings } = getState();
+    if (!settings.explicitFix && settings.explicitContent === "auto") return;
+    try {
+      await persistSettings({
+        ...settings,
+        explicitFix: false,
+        explicitContent: "auto",
+      });
+    } catch (error) {
+      log(`Explicit content reset failed: ${errorMessage(error)}`);
+    }
+  };
+
   const setTrayIcon = async (enabled: boolean): Promise<void> => {
     await persistSettings({ ...getState().settings, trayIcon: enabled });
   };
@@ -314,6 +416,13 @@ export function createControllerSettings(
     await resetPersistedSettings(invokeFn);
   };
 
+  /**
+   * Restarts Arlet. MusicKit only reads its restriction in a new process, so
+   * this is how a change back to Auto takes effect. The queue is saved on the
+   * before-quit handshake, and settings, sign-in and pins are kept.
+   */
+  const restartToApplyExplicitContent = (): Promise<void> => restartArlet();
+
   return {
     loadSettings,
     setVolume,
@@ -322,6 +431,13 @@ export function createControllerSettings(
     setAutoCheckUpdates,
     setAutoplay,
     setAudioQuality,
+    setExplicitContent,
+    setExplicitFix,
+    resetExplicitContent,
+    applyExplicitContentSetting,
+    explicitContentStatus: (): ExplicitContentStatus =>
+      readExplicitContentStatus(context.getMusic()),
+    restartToApplyExplicitContent,
     setTrayIcon,
     setLaunchAtStartup,
     setDebugMode,

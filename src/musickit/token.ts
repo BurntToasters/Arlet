@@ -48,13 +48,14 @@ function readTokenError(error: unknown): {
     typeof record.message === "string" && record.message.trim()
       ? record.message
       : TOKEN_UNAVAILABLE_MESSAGE;
-  // Only an expired token is TOKEN_EXPIRED: it shows the expiry notice.
-  // A token that cannot be downloaded is MUSICKIT_INIT_FAILED.
+  // Only an expired token is TOKEN_EXPIRED: it shows the expiry notice. A
+  // build below the minimum version is UPDATE_REQUIRED. A token that cannot
+  // be downloaded is MUSICKIT_INIT_FAILED.
   return {
     message,
     code:
-      record.code === "TOKEN_EXPIRED"
-        ? "TOKEN_EXPIRED"
+      record.code === "TOKEN_EXPIRED" || record.code === "UPDATE_REQUIRED"
+        ? record.code
         : "MUSICKIT_INIT_FAILED",
   };
 }

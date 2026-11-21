@@ -129,6 +129,25 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  *   https://finance-app.itunes.apple.com/deeplink?p=subscribe.
  *   instance.storefrontCountryCode is "us". snapshot().subscription is { has,
  *   previewOnly }, where has is the value hasMusicSubscription() resolves.
+ * Explicit content (scripts/e2e-explicit-content.js): configure({ restricted:
+ *   true }) records Apple's sign-in report (state.restricted). Live MusicKit
+ *   applies that report only at sign-in, so authorize() applies it, and
+ *   configure() applies it only while authorized and not latched. The effective
+ *   value is instance.restrictedEnabled: the in-memory value once one is set,
+ *   otherwise the stored itre while authorized (itre !== "0"), otherwise false.
+ *   The instance setter always applies its value in memory and then latches:
+ *   while latched, configure() and authorize() reports are ignored and not
+ *   stored. The latch clears only on a fresh page load and on reset(). Setting
+ *   the restriction while authorized and playing stops playback only on the
+ *   first change to restricted (status moves to RESTRICTED); a Clean write
+ *   (true) stops, an Allow write (false) does not. While it is true,
+ *   setQueue, playNext and playLater drop songs whose contentRating is
+ *   "explicit", as live does. configure({ explicitSongIds: [...] }) marks
+ *   those songs explicit in queues and in library playlist tracks. MusicKit's
+ *   stored report is localStorage music.arlet-e2e.itre ("1" or "0"), written
+ *   only while authorized. unauthorize() removes it and clears the in-memory
+ *   value but keeps the latch. reset() removes it. snapshot().storedRestriction
+ *   reads it, and snapshot().restrictionLatched reports the latch.
  *
  * UI polish ids (scripts/e2e-polish.js; docs/TESTING.md "UI polish"). Served
  * only at their own catalog paths, and the search term "polish" finds them.
@@ -215,6 +234,12 @@ export const MUSIC_FIXTURE_SEED = "arlet-playlist-continuation-2026-10-08";
  *   unauthorize() records "unauthorize", sets isAuthorized = false and emits
  *     authorizationStatusDidChange.
  *   reset() clears rejectMeStatus and rejectAuthorize.
+ *   configure({ startUnauthorized: true }) makes MusicKit.configure() leave
+ *     isAuthorized false, as after a restart once the sign-in expired. It is
+ *     read at configure, so inject it before the page loads.
+ *   configure({ otherAccount: true }) makes the library answer as another Apple
+ *     ID: playlist-1 is missing from the library list, its detail and ?ids=.
+ *   reset() clears both.
  *
  * Audit fixes (scripts/e2e-audit-fixes.js; docs/TESTING.md "Audit fixes"):
  *   configure({ hangAuthorize: true }) makes authorize() record
@@ -558,6 +583,60 @@ function installMusicKitFixture(fixtureSeed) {
     };
   };
 
+  // MusicKit stores the restriction it is given under music.<team>.itre ("1" or
+  // "0"), and a fresh page reads it back. The fixture uses one team name.
+  const ITRE_KEY = "music.arlet-e2e.itre";
+  const readStoredItre = () => {
+    try {
+      return localStorage.getItem(ITRE_KEY);
+    } catch {
+      // Storage is unavailable, so the fixture has no stored value.
+      return null;
+    }
+  };
+  const writeStoredItre = (value) => {
+    try {
+      if (value === undefined) localStorage.removeItem(ITRE_KEY);
+      else localStorage.setItem(ITRE_KEY, value ? "1" : "0");
+    } catch {
+      // Storage is unavailable; nothing is kept.
+    }
+  };
+  // Effective restriction (header comment): the in-memory value once set, else
+  // the stored report while authorized, else false.
+  const restrictionValue = () => {
+    if (typeof state.restrictedValue === "boolean")
+      return state.restrictedValue;
+    if (instance.isAuthorized === true) {
+      const stored = readStoredItre();
+      if (stored !== null) return stored !== "0";
+    }
+    return false;
+  };
+  // Live status is RESTRICTED while authorized with the restriction on.
+  const restrictionStatusRestricted = () =>
+    instance.isAuthorized === true && restrictionValue();
+  // MusicKit's internal restriction setter (non-latched path): applies the
+  // value in memory, writes itre only while authorized, and stops playback when
+  // the status moves to RESTRICTED. record adds the public setter's transition.
+  const applyRestriction = (value, record = false) => {
+    const wasRestricted = restrictionStatusRestricted();
+    state.restrictedValue = value === true;
+    if (instance.isAuthorized === true) writeStoredItre(state.restrictedValue);
+    if (record) {
+      state.transitions.push({
+        type: "restrictedEnabled",
+        value: state.restrictedValue,
+      });
+    }
+    if (
+      !wasRestricted &&
+      restrictionStatusRestricted() &&
+      instance.playbackState === PLAYING
+    ) {
+      instance.stop();
+    }
+  };
   const state = {
     configured: false,
     listeners: new Map(),
@@ -579,6 +658,13 @@ function installMusicKitFixture(fixtureSeed) {
     // Subscription (header comment). The delay applies to hasMusicSubscription().
     subscription: true,
     subscriptionDelayMs: 0,
+    // Explicit content (header): Apple's report, the effective restriction, and
+    // the song IDs marked explicit.
+    restricted: false,
+    // In-memory restriction (undefined until set) and the latch (header).
+    restrictedValue: undefined,
+    restrictionLatched: false,
+    explicitSongIds: [],
     // Selection stop on changeToMediaAtIndex and changeToMediaItem (header).
     selectStops: true,
     // Station queue (header); cleared by a songs queue, reset() and clearing.
@@ -665,6 +751,10 @@ function installMusicKitFixture(fixtureSeed) {
     // Sign-in expiry controls (header comment).
     rejectMeStatus: 0,
     rejectAuthorize: false,
+    // Fresh sign-in checks (header comment): no token at configure, and a
+    // library without the pinned playlist.
+    startUnauthorized: false,
+    otherAccount: false,
     // Sign-in window that never reports back (audit fixes, cancel a stuck
     // sign-in). Held calls wait in authorizeReleases until releaseAuthorize().
     hangAuthorize: false,
@@ -857,8 +947,17 @@ function installMusicKitFixture(fixtureSeed) {
   };
   // A queue item also gets the top-level `artwork` that MusicKit's MediaItem
   // carries, which is where the app reads queue artwork from.
+  const withFixtureRating = (item) =>
+    state.explicitSongIds.includes(item.id) && item.attributes
+      ? {
+          ...item,
+          attributes: { ...item.attributes, contentRating: "explicit" },
+        }
+      : item;
+  const isExplicitId = (id) =>
+    mediaItem(id).attributes?.contentRating === "explicit";
   const mediaItem = (id) => {
-    const item = clone(resource(String(id)));
+    const item = clone(withFixtureRating(resource(String(id))));
     if (!state.artworkTemplate || !item.attributes?.artwork) return item;
     const templated = templateArtwork(item, String(id));
     return { ...templated, artwork: clone(templated.attributes.artwork) };
@@ -3379,7 +3478,7 @@ function installMusicKitFixture(fixtureSeed) {
               ...state.createdPlaylists.map((entry) => entry.resource),
             ]
           : [
-              playlist,
+              ...(state.otherAccount ? [] : [playlist]),
               bigPlaylist,
               ...state.createdPlaylists.map((entry) => entry.resource),
             ];
@@ -3399,7 +3498,7 @@ function installMusicKitFixture(fixtureSeed) {
         : itemResponse(createdPlaylist.playlist.resource);
     }
     if (pathname === "/v1/me/library/playlists/playlist-1") {
-      return itemResponse(playlist);
+      return state.otherAccount ? { data: [] } : itemResponse(playlist);
     }
     if (pathname === "/v1/me/library/playlists/playlist-big") {
       return itemResponse(bigPlaylist);
@@ -3432,7 +3531,9 @@ function installMusicKitFixture(fixtureSeed) {
     }
     if (String(path).includes(secondPlaylistPage)) {
       return {
-        data: playlistItems.slice(4).map(clone),
+        data: playlistItems
+          .slice(4)
+          .map((item) => clone(withFixtureRating(item))),
         ...(state.repeatPlaylistCursor ? { next: secondPlaylistPage } : {}),
       };
     }
@@ -3444,7 +3545,7 @@ function installMusicKitFixture(fixtureSeed) {
           ...(state.playlistPrepended
             ? [track("song-new", "Newly Added Song")]
             : []),
-          ...playlistItems.slice(0, 4),
+          ...playlistItems.slice(0, 4).map(withFixtureRating),
         ].map(clone),
         next: secondPlaylistPage,
       };
@@ -3585,7 +3686,9 @@ function installMusicKitFixture(fixtureSeed) {
     if (pathname === "/v1/me/library/playlists") {
       const listed = state.libraryView
         ? libraryViewPlaylists.map(clone)
-        : [clone(playlist)];
+        : state.otherAccount
+          ? []
+          : [clone(playlist)];
       listed.push(
         ...state.createdPlaylists.map((entry) => clone(entry.resource)),
       );
@@ -3956,7 +4059,11 @@ function installMusicKitFixture(fixtureSeed) {
       error.data = missing.map((id) => ({ id, kind: "song" }));
       throw error;
     }
-    return itemIds.filter((id) => !state.unplayableIds.includes(id));
+    const playable = itemIds.filter((id) => !state.unplayableIds.includes(id));
+    // Live MusicKit drops explicit songs silently while its restriction is on.
+    return restrictionValue()
+      ? playable.filter((id) => !isExplicitId(id))
+      : playable;
   };
 
   instance = {
@@ -3989,6 +4096,15 @@ function installMusicKitFixture(fixtureSeed) {
     // The live storekit deeplink for subscribe, with no extra parameters.
     get subscribeURL() {
       return "https://finance-app.itunes.apple.com/deeplink?p=subscribe";
+    },
+    // Live restrictedEnabled: the setter applies its value and then latches
+    // Apple's report out until a fresh page load or reset() (header comment).
+    get restrictedEnabled() {
+      return restrictionValue();
+    },
+    set restrictedEnabled(value) {
+      applyRestriction(value === true, true);
+      state.restrictionLatched = true;
     },
     // Removing this property simulates a runtime without autoplay support.
     get autoplayEnabled() {
@@ -4146,10 +4262,16 @@ function installMusicKitFixture(fixtureSeed) {
       state.rejectMeStatus = 0;
       this.isAuthorized = true;
       resetApi();
+      // Sign-in assigns Apple's report through MusicKit's internal setter, which
+      // a latch ignores (header comment).
+      if (!state.restrictionLatched) applyRestriction(state.restricted);
       return this.musicUserToken;
     },
     async unauthorize() {
       this.isAuthorized = false;
+      // Sign-out clears the in-memory value and itre; the latch stays.
+      state.restrictedValue = undefined;
+      writeStoredItre(undefined);
       state.transitions.push({ type: "unauthorize" });
       resetApi();
       emit(events.authorizationStatusDidChange, {});
@@ -4536,6 +4658,12 @@ function installMusicKitFixture(fixtureSeed) {
       if (Object.prototype.hasOwnProperty.call(options, "hangAuthorize")) {
         state.hangAuthorize = options.hangAuthorize === true;
       }
+      if (Object.prototype.hasOwnProperty.call(options, "startUnauthorized")) {
+        state.startUnauthorized = options.startUnauthorized === true;
+      }
+      if (Object.prototype.hasOwnProperty.call(options, "otherAccount")) {
+        state.otherAccount = options.otherAccount === true;
+      }
       if (Object.prototype.hasOwnProperty.call(options, "selectStops")) {
         state.selectStops = options.selectStops !== false;
       }
@@ -4559,6 +4687,19 @@ function installMusicKitFixture(fixtureSeed) {
           );
         }
         state.startupBitrate = value;
+      }
+      if (Object.prototype.hasOwnProperty.call(options, "restricted")) {
+        // Apple's report is always recorded; it takes effect only while
+        // authorized and not latched (header comment).
+        state.restricted = options.restricted === true;
+        if (instance.isAuthorized === true && !state.restrictionLatched) {
+          applyRestriction(state.restricted);
+        }
+      }
+      if (Object.prototype.hasOwnProperty.call(options, "explicitSongIds")) {
+        state.explicitSongIds = [...(options.explicitSongIds ?? [])].map(
+          String,
+        );
       }
       if (Object.prototype.hasOwnProperty.call(options, "subscription")) {
         state.subscription = options.subscription !== false;
@@ -4626,9 +4767,16 @@ function installMusicKitFixture(fixtureSeed) {
       state.rejectAuthorize = false;
       state.hangAuthorize = false;
       releaseHeldAuthorize();
+      state.startUnauthorized = false;
+      state.otherAccount = false;
       state.selectStops = true;
       state.subscription = true;
       state.subscriptionDelayMs = 0;
+      state.restricted = false;
+      state.restrictedValue = undefined;
+      state.restrictionLatched = false;
+      writeStoredItre(undefined);
+      state.explicitSongIds = [];
       // The configured startup applies here, then the startup returns to 256.
       setBitrate(state.startupBitrate, false);
       state.startupBitrate = PlaybackBitrate.HIGH;
@@ -4954,6 +5102,9 @@ function installMusicKitFixture(fixtureSeed) {
           previewOnly: instance.previewOnly,
         },
         authorized: instance.isAuthorized === true,
+        restrictedEnabled: restrictionValue(),
+        restrictionLatched: state.restrictionLatched === true,
+        storedRestriction: readStoredItre(),
         apiGeneration,
         authorizeHeld: state.authorizeReleases.length,
         // Request controls a scenario can leave set; the runner's isolation
@@ -4962,6 +5113,8 @@ function installMusicKitFixture(fixtureSeed) {
           holdSetQueue: state.holdSetQueue,
           holdSeek: state.holdSeek,
           hangAuthorize: state.hangAuthorize,
+          startUnauthorized: state.startUnauthorized,
+          otherAccount: state.otherAccount,
           delayPaths: clone(state.delayPaths),
           delayMs: state.delayMs,
           delayTerms: clone(state.delayTerms),
@@ -4990,6 +5143,8 @@ function installMusicKitFixture(fixtureSeed) {
           subscription: state.subscription,
           subscriptionDelayMs: state.subscriptionDelayMs,
           startupBitrate: state.startupBitrate,
+          restricted: state.restricted,
+          explicitSongIds: clone(state.explicitSongIds),
         },
         configure: state.configureOptions
           ? clone(state.configureOptions)
@@ -5024,6 +5179,7 @@ function installMusicKitFixture(fixtureSeed) {
         keys: Object.keys(options ?? {}),
         suppressErrorDialog: options?.suppressErrorDialog === true,
       };
+      if (state.startUnauthorized) instance.isAuthorized = false;
       return instance;
     },
     getInstance() {

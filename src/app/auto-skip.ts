@@ -49,7 +49,11 @@ export function createAutoSkip(dependencies: AutoSkipDependencies): AutoSkip {
       consecutive += 1;
       const title = current?.title ?? "A song";
       dependencies.log(`Skipping unplayable song (${reason}).`);
-      dependencies.notify(`Skipped “${title}” because it can't be played.`);
+      dependencies.notify(
+        reason === "CONTENT_RESTRICTED"
+          ? `Skipped “${title}” because Apple restricts it for this Apple Account.`
+          : `Skipped “${title}” because it can't be played.`,
+      );
       void dependencies.skipToNext().catch((skipError: unknown) => {
         dependencies.log(
           `Skip after playback error failed: ${

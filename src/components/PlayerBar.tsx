@@ -46,6 +46,8 @@ export function playerErrorLabel(code: AppErrorCode): string {
       return "Subscription needed";
     case "TOKEN_EXPIRED":
       return "Session expired";
+    case "UPDATE_REQUIRED":
+      return "Update required";
     case "MUSICKIT_INIT_FAILED":
       return "Player unavailable";
     case "PLAYBACK_FAILED":

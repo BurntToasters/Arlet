@@ -55,6 +55,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   trayIcon: true,
   launchAtStartup: false,
   debugMode: false,
+  explicitContent: "auto",
+  explicitFix: false,
 };
 
 const initialPlaybackState: PlaybackState = {
