@@ -395,12 +395,14 @@ function installMusicKitFixture(fixtureSeed) {
     },
   });
 
+  const cleanPlaylistTrack = track("song-e", "Track E");
+  cleanPlaylistTrack.attributes.contentRating = "clean";
   const playlistItems = [
     track("song-a", "Track A"),
     track("song-duplicate", "Duplicate Occurrence"),
     track("song-c", "Track C"),
     track("song-duplicate", "Duplicate Occurrence"),
-    track("song-e", "Track E"),
+    cleanPlaylistTrack,
     track("song-f", "Track F"),
   ];
   const albumItems = [
@@ -664,7 +666,9 @@ function installMusicKitFixture(fixtureSeed) {
     // In-memory restriction (undefined until set) and the latch (header).
     restrictedValue: undefined,
     restrictionLatched: false,
+    restrictedEnabledReads: 0,
     explicitSongIds: [],
+    cleanSongIds: [],
     // Selection stop on changeToMediaAtIndex and changeToMediaItem (header).
     selectStops: true,
     // Station queue (header); cleared by a songs queue, reset() and clearing.
@@ -947,13 +951,17 @@ function installMusicKitFixture(fixtureSeed) {
   };
   // A queue item also gets the top-level `artwork` that MusicKit's MediaItem
   // carries, which is where the app reads queue artwork from.
-  const withFixtureRating = (item) =>
-    state.explicitSongIds.includes(item.id) && item.attributes
-      ? {
-          ...item,
-          attributes: { ...item.attributes, contentRating: "explicit" },
-        }
+  const withFixtureRating = (item) => {
+    if (!item.attributes) return item;
+    const contentRating = state.explicitSongIds.includes(item.id)
+      ? "explicit"
+      : state.cleanSongIds.includes(item.id)
+        ? "clean"
+        : undefined;
+    return contentRating
+      ? { ...item, attributes: { ...item.attributes, contentRating } }
       : item;
+  };
   const isExplicitId = (id) =>
     mediaItem(id).attributes?.contentRating === "explicit";
   const mediaItem = (id) => {
@@ -2416,6 +2424,7 @@ function installMusicKitFixture(fixtureSeed) {
       composerName: "Composer C",
       genreNames: ["Alternative"],
       releaseDate: "2026-03-01",
+      contentRating: "explicit",
     },
     // Get Info's catalog twin for get-info-song: a numeric ID, as Apple sends.
     1700000001: {
@@ -2823,7 +2832,11 @@ function installMusicKitFixture(fixtureSeed) {
           })),
           ...entry.topResults.map((content) => ({
             kind: "topResults",
-            content: clone(content),
+            // Search suggestion art is templated by the desktop E2E to the
+            // app's own icon, so its load check never depends on Apple's CDN.
+            content: state.artworkTemplate
+              ? templateArtwork(content, content.id)
+              : clone(content),
           })),
         ]
       : [];
@@ -4100,6 +4113,7 @@ function installMusicKitFixture(fixtureSeed) {
     // Live restrictedEnabled: the setter applies its value and then latches
     // Apple's report out until a fresh page load or reset() (header comment).
     get restrictedEnabled() {
+      state.restrictedEnabledReads += 1;
       return restrictionValue();
     },
     set restrictedEnabled(value) {
@@ -4425,6 +4439,9 @@ function installMusicKitFixture(fixtureSeed) {
         type: "playNext",
         ids: [...itemIds],
         index: start,
+        ...(window.__ARLET_E2E_CAPTURE_CONTEXT_PLAY_NEXT__ === true
+          ? { options: options === undefined ? undefined : clone(options) }
+          : {}),
       });
       syncProviderQueue(true, false);
     },
@@ -4701,6 +4718,9 @@ function installMusicKitFixture(fixtureSeed) {
           String,
         );
       }
+      if (Object.prototype.hasOwnProperty.call(options, "cleanSongIds")) {
+        state.cleanSongIds = [...(options.cleanSongIds ?? [])].map(String);
+      }
       if (Object.prototype.hasOwnProperty.call(options, "subscription")) {
         state.subscription = options.subscription !== false;
       }
@@ -4775,8 +4795,10 @@ function installMusicKitFixture(fixtureSeed) {
       state.restricted = false;
       state.restrictedValue = undefined;
       state.restrictionLatched = false;
+      state.restrictedEnabledReads = 0;
       writeStoredItre(undefined);
       state.explicitSongIds = [];
+      state.cleanSongIds = [];
       // The configured startup applies here, then the startup returns to 256.
       setBitrate(state.startupBitrate, false);
       state.startupBitrate = PlaybackBitrate.HIGH;
@@ -5095,6 +5117,7 @@ function installMusicKitFixture(fixtureSeed) {
           shuffle: shuffleModeOf() === PlayerShuffleMode.songs,
           repeat: repeatModeOf(),
         },
+        autoplayEnabled: instance.autoplayEnabled,
         volume: state.volume,
         bitrate: { current: state.bitrate, startup: state.startupBitrate },
         subscription: {
@@ -5104,6 +5127,7 @@ function installMusicKitFixture(fixtureSeed) {
         authorized: instance.isAuthorized === true,
         restrictedEnabled: restrictionValue(),
         restrictionLatched: state.restrictionLatched === true,
+        restrictedEnabledReads: state.restrictedEnabledReads,
         storedRestriction: readStoredItre(),
         apiGeneration,
         authorizeHeld: state.authorizeReleases.length,
@@ -5145,6 +5169,7 @@ function installMusicKitFixture(fixtureSeed) {
           startupBitrate: state.startupBitrate,
           restricted: state.restricted,
           explicitSongIds: clone(state.explicitSongIds),
+          cleanSongIds: clone(state.cleanSongIds),
         },
         configure: state.configureOptions
           ? clone(state.configureOptions)
@@ -5189,6 +5214,11 @@ function installMusicKitFixture(fixtureSeed) {
 
   window.__ARLET_E2E_MUSIC__ = fixture;
   window.MusicKit = musicKit;
+  const initialOptions = window.__ARLET_E2E_MUSIC_OPTIONS__;
+  if (initialOptions && typeof initialOptions === "object") {
+    fixture.configure(initialOptions);
+    delete window.__ARLET_E2E_MUSIC_OPTIONS__;
+  }
 }
 
 export const musicFixtureSource = `(${installMusicKitFixture.toString()})(${JSON.stringify(MUSIC_FIXTURE_SEED)});`;

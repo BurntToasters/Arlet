@@ -208,12 +208,12 @@ any disk or OS call:
 - No argument from the page: `open_support_page`, `open_music_diagnostic`,
   `get_app_info`, `get_developer_token`, `get_beta_updater_target`,
   `get_log_dir`, `clear_logs`, `supports_window_fx`, `reset_settings`,
-  `clear_windows_media_session`, `quit_ready`, `quit_app`, `restart_app`,
-  `min_version_status`. Each returns fixed data or acts on fixed paths.
+  `clear_windows_media_session`, `quit_ready`, `quit_app`, `restart_app`.
+  Each command returns fixed data or acts on fixed paths.
   `get_developer_token` returns the verified hosted token and, in a release
-  build, downloads only the fixed hosted-token URL. `min_version_status`
-  downloads only `min_ver.txt` beside the fixed hosted-token URL, and any
-  failure means no requirement.
+  build, downloads only the fixed hosted-token URL. No unauthenticated plain
+  text minimum-version file participates in token access; update installs use
+  Tauri's signed updater metadata and artifacts.
 
 Native events are not commands. Suspend and default-output-change pauses
 (`src-tauri/src/system_events.rs`) are triggered by Windows, not by the page,

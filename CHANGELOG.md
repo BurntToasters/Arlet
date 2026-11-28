@@ -5,7 +5,7 @@
 
 | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/windows.png" /> Windows                                                                                                          | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/mac.png" /> macOS | <img height="20" src="https://raw.githubusercontent.com/BurntToasters/bcls/main/media/linux.png" /> Linux |
 | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------- |
-| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.5.0-beta.1/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.5.0-beta.1/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
+| **EXE:** [x64](https://github.com/BurntToasters/Arlet/releases/download/v0.5.0-beta.2/Arlet-Windows-x64.exe) / [arm64](https://github.com/BurntToasters/Arlet/releases/download/v0.5.0-beta.2/Arlet-Windows-arm64.exe) |                                                                                                         |                                                                                                           |
 
 > Arlet requires Windows 10 version 22H2 (build 19045) or newer.
 
@@ -22,6 +22,16 @@
 ### ℹ️ Enjoying Arlet? Consider [❤️ Supporting Me! ❤️](https://rosie.run/support)
 
 Arlet! An Apple Music client for Windows built on Tauri V2!
+
+## Changes in `v0.5.0-beta.2:`
+
+- **Security:** Removed the unsigned plain-text minimum-version gate. Update installs continue to use signed Tauri updater metadata and artifacts.
+- **Security:** Bounded local settings and pinned-playlist reads, and normalized saved legacy override choices to safe defaults.
+- **Security:** `Allow` remains disabled when reading legacy settings.
+- **UI:** Clean skips explicit and unverified songs without substituting another song.
+- **Security:** Signing in again clears account data from the previous session.
+- **Security:** Updated URL parsing for a RustSec advisory and removed origin formatting from rejected navigation logs.
+- **PKG:** Updated packages.
 
 ## Changes in `v0.5.0-beta.1:`
 

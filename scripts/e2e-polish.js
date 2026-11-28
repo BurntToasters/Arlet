@@ -752,41 +752,74 @@ async function searchSuggestions(page, check) {
     `Boolean(document.querySelector('.search-form input[role="combobox"]'))`,
     12_000,
   );
+  const iconUrl = await page.evaluate(
+    `return document.querySelector("img.brand-mark")?.src ?? null;`,
+  );
+  const localArtworkTemplate = iconUrl ? `${iconUrl}?artwork={id}` : "";
+  await fixtureCall(page, "configure", [
+    { artworkTemplate: localArtworkTemplate },
+  ]);
   const typed = await page.evaluate(
     `const input = document.querySelector('.search-form input[role="combobox"]'); if (!input) return false; input.focus(); input.select(); return true;`,
   );
-  if (typed) await page.send("Input.insertText", { text: "polish" });
-  const suggestion = await waitFor(
-    page,
-    `[...document.querySelectorAll(".search-suggestions li[role=option]")].some((node) => node.querySelector(".search-suggestion-art"))`,
-    8000,
-  );
-  const rows = await page.evaluate(`
-    return [...document.querySelectorAll(".search-suggestions li[role='option']")].map((node) => {
-      const art = node.querySelector(".search-suggestion-art");
-      const box = art?.getBoundingClientRect();
-      return {
-        label: node.querySelector(".search-suggestion-copy > span")?.textContent ?? null,
-        detail: node.querySelector(".search-suggestion-copy > small")?.textContent ?? null,
-        art: Boolean(art),
-        alt: art?.querySelector("img")?.getAttribute("alt") ?? null,
-        src: art?.querySelector("img")?.getAttribute("src") ?? null,
-        size: box ? [Math.round(box.width), Math.round(box.height)] : null,
-      };
-    });
-  `);
+  let suggestion = false;
+  let thumbnailLoaded = false;
+  let rows = [];
+  try {
+    if (typed) await page.send("Input.insertText", { text: "polish" });
+    suggestion = await waitFor(
+      page,
+      `[...document.querySelectorAll(".search-suggestions li[role=option]")].some((node) => node.querySelector(".search-suggestion-art"))`,
+      8000,
+    );
+    thumbnailLoaded = await waitFor(
+      page,
+      `(() => {
+        const row = [...document.querySelectorAll(".search-suggestions li[role='option']")]
+          .find((node) => node.querySelector(".search-suggestion-copy > span")?.textContent === ${q(ALBUM.title)});
+        const image = row?.querySelector(".search-suggestion-art img");
+        return Boolean(image?.complete && image.naturalWidth > 0);
+      })()`,
+      8000,
+    );
+    rows = await page.evaluate(`
+      return [...document.querySelectorAll(".search-suggestions li[role='option']")].map((node) => {
+        const art = node.querySelector(".search-suggestion-art");
+        const image = art?.querySelector("img");
+        const box = art?.getBoundingClientRect();
+        return {
+          label: node.querySelector(".search-suggestion-copy > span")?.textContent ?? null,
+          detail: node.querySelector(".search-suggestion-copy > small")?.textContent ?? null,
+          art: Boolean(art),
+          alt: image?.getAttribute("alt") ?? null,
+          src: image?.getAttribute("src") ?? null,
+          loaded: Boolean(image?.complete && image.naturalWidth > 0),
+          naturalWidth: image?.naturalWidth ?? 0,
+          size: box ? [Math.round(box.width), Math.round(box.height)] : null,
+        };
+      });
+    `);
+  } finally {
+    // Later polish checks use the original fixture art on albums and tracks.
+    await fixtureCall(page, "configure", [
+      { artworkTemplate: ARTWORK_TEMPLATE },
+    ]);
+  }
   const media = rows.find((row) => row.label === ALBUM.title);
   const terms = rows.filter((row) =>
     ["Polish Fixture", "Polka"].includes(row.label),
   );
   check(
     "media suggestions show a 32 px thumbnail and their kind; text completions do not",
-    typed &&
+    Boolean(iconUrl) &&
+      typed &&
       suggestion &&
+      thumbnailLoaded &&
       media?.art === true &&
       media.alt === "" &&
-      media.src?.includes("/image/thumb/Music/e2e/album-polish/") === true &&
-      /\/\d+x\d+bb\.jpg$/u.test(media.src ?? "") &&
+      media.src === `${iconUrl}?artwork=${ALBUM.id}` &&
+      media.loaded === true &&
+      media.naturalWidth > 0 &&
       media.detail === `Album${DOT}Fixture Artist` &&
       JSON.stringify(media.size) === JSON.stringify([32, 32]) &&
       terms.length === 2 &&

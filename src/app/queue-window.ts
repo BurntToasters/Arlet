@@ -70,6 +70,8 @@ export interface PlayOptions {
    * before the chosen one are history only, never upcoming.
    */
   keepOrder?: boolean;
+  /** Rebuild the queue without starting it; used to preserve a paused queue. */
+  startPaused?: boolean;
 }
 
 /**

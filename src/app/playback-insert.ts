@@ -11,7 +11,11 @@ import {
   withResolvableTracks,
 } from "../musickit/unresolved.ts";
 import { musicKitReasonOf } from "../musickit/errors.ts";
-import { reportActionError } from "../components/action-errors.ts";
+import { resolveCleanTracks } from "../musickit/catalog.ts";
+import {
+  reportActionError,
+  reportNotice,
+} from "../components/action-errors.ts";
 import { getState, setQueue, setQueueSnapshot } from "../state.ts";
 import {
   errorMessage,
@@ -66,11 +70,31 @@ export function createQueueInsert(
     }
     const allTracks = materializeTracks(tracks);
     // Same request limit as playTracks; the first songs are kept in order.
-    const requestedTracks = allTracks.slice(0, MAX_QUEUE_LENGTH);
+    let requestedTracks = allTracks.slice(0, MAX_QUEUE_LENGTH);
     if (requestedTracks.length < allTracks.length) {
       log(
         `Added the first ${requestedTracks.length} of ${allTracks.length} songs to stay within Apple's request limits.`,
       );
+    }
+    if (getState().settings.explicitContent === "clean") {
+      const clean = await resolveCleanTracks(
+        context.getMusic(),
+        requestedTracks,
+      );
+      if (!isCurrent()) return [];
+      requestedTracks = clean.tracks;
+      if (clean.lookupFailures > 0) {
+        log(
+          `Clean could not verify ${clean.lookupFailures} catalog song lookup${clean.lookupFailures === 1 ? "" : "s"}.`,
+        );
+      }
+      if (clean.skipped.length > 0) {
+        const count = clean.skipped.length;
+        reportNotice(
+          `Clean skipped ${count} song${count === 1 ? "" : "s"} without a verified clean rating.`,
+        );
+      }
+      if (requestedTracks.length === 0) return [];
     }
     // A Play may still be replacing the provider queue. Wait for that setup so
     // the snapshot below is the queue the user will actually hear. The settled
@@ -126,6 +150,14 @@ export function createQueueInsert(
               queueOptions,
             );
           const attemptTracks = attempt.map((entry) => entry.track);
+          if (
+            getState().settings.explicitContent === "clean" &&
+            attemptTracks.some((track) => track.explicit !== false)
+          ) {
+            throw new Error(
+              "Clean was enabled while songs were being added. Try the queue action again.",
+            );
+          }
           // Song details skip MusicKit's lookup (one request per 16 songs).
           const detailed = byId
             ? undefined
@@ -172,6 +204,14 @@ export function createQueueInsert(
     if (!current()) return [];
     const { entries, skipped } = resolved;
     const normalizedTracks = entries.map((entry) => entry.track);
+    if (
+      getState().settings.explicitContent === "clean" &&
+      normalizedTracks.some((track) => track.explicit !== false)
+    ) {
+      throw new Error(
+        "Clean was enabled while songs were being added. Try the queue action again.",
+      );
+    }
     if (skipped.length) {
       log(`Skipped ${skipped.length} unavailable songs.`);
       const message = skippedMessage(skipped.length);

@@ -60,6 +60,10 @@ import { connectCdp, findPageTarget } from "./e2e-cdp.js";
 import { withE2eProfileSetup } from "./e2e-profile.js";
 import { startForegroundMonitor } from "./e2e-foreground.js";
 import { startHostedTokenFixture } from "./e2e-hosted-token.js";
+import {
+  isIgnorableReleaseDirtyPath,
+  porcelainPaths,
+} from "./release-session.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const TARGET_DIR = path.join(root, "src-tauri", "target", "e2e");
@@ -236,9 +240,10 @@ const FIXTURE_CONTROL_DEFAULTS = {
   // high setting the scenarios expect.
   startupBitrate: 256,
   // Apple's explicit-content report (configure({ restricted })) and the songs
-  // the fixture marks explicit (configure({ explicitSongIds })).
+  // the fixture marks explicit or clean in catalog and library results.
   restricted: false,
   explicitSongIds: [],
+  cleanSongIds: [],
 };
 
 /**
@@ -477,9 +482,40 @@ function fileSha256(file) {
   }
 }
 
+function releaseCheckoutState() {
+  const commit = spawnSync("git", ["rev-parse", "HEAD"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  const status = spawnSync(
+    "git",
+    ["status", "--porcelain=v1", "--untracked-files=all"],
+    { cwd: root, encoding: "utf8" },
+  );
+  const changedPaths = porcelainPaths(status.stdout ?? "").filter(
+    (filePath) => !isIgnorableReleaseDirtyPath(filePath),
+  );
+  return {
+    commit: commit.status === 0 ? (commit.stdout ?? "").trim() : "",
+    dirtyWorktree:
+      Boolean(commit.error) ||
+      commit.status !== 0 ||
+      Boolean(status.error) ||
+      status.status !== 0 ||
+      changedPaths.length > 0,
+  };
+}
+
+function isSshSession() {
+  return Boolean(
+    process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.SSH_TTY,
+  );
+}
+
 // The release binary embeds no token (the hosted token is downloaded at
 // launch), so the build needs none and its proof does not record one.
 function build() {
+  const source = releaseCheckoutState();
   const env = { ...process.env, CARGO_TARGET_DIR: TARGET_DIR };
   const result = spawnSync(
     "cmd.exe",
@@ -496,6 +532,7 @@ function build() {
     .createHash("sha256")
     .update(fs.readFileSync(EXE))
     .digest("hex");
+  const afterBuild = releaseCheckoutState();
   fs.writeFileSync(
     E2E_BUILD_PROOF,
     `${JSON.stringify(
@@ -503,6 +540,11 @@ function build() {
         feature: "e2e",
         builtAt: new Date().toISOString(),
         sha256,
+        commit: source.commit,
+        dirtyWorktree:
+          source.dirtyWorktree ||
+          afterBuild.dirtyWorktree ||
+          source.commit !== afterBuild.commit,
       },
       null,
       2,
@@ -595,6 +637,8 @@ function seedCorruptSettings() {
       theme: "light",
       windowEffect: "solid",
       volume: 0.37,
+      explicitContent: "allow",
+      explicitFix: true,
     }),
   );
 }
@@ -1370,27 +1414,11 @@ const WELCOME_TRY_AGAIN_CLICK = `const button = [...document.querySelectorAll(".
   button.click();
   return true;`;
 
-/** Like settle, but keeps the error `code` the frontend reads (TokenError). */
-async function settleWithCode(page, command) {
-  return page.evaluate(
-    `try { return { ok: true, value: await ${invoke(command)} }; } catch (error) { return { ok: false, code: error?.code ?? null, error: String(error?.message ?? error) }; }`,
-  );
-}
-
 /**
- * Minimum-version checks (release builds). Each launch reads the fixture's
- * /min_ver.txt, so the body set here is what that app sees:
- * - a minimum above this version shows the Update required dialog, Escape
- *   does not close it, and the token command refuses with UPDATE_REQUIRED, so
- *   MusicKit is never configured;
- * - a minimum equal to this version, or a body that is not a version, shows no
- *   dialog and serves the token as usual.
- * Failure modes: the gate is missing (the token is served below the minimum),
- * the dialog can be dismissed, Quit Arlet leaves the process running, a garbage
- * file blocks startup, or the file is
- * fetched but ignored (the fetch count stays at zero).
+ * The fixture serves an unsigned minimum above this build. Startup must ignore
+ * it, leave the blocking dialog closed, and serve the verified token.
  */
-async function runMinimumVersionChecks({
+async function runUnsignedMinimumCheck({
   check,
   tokenFixture,
   profileRoot,
@@ -1409,97 +1437,8 @@ async function runMinimumVersionChecks({
     tokenFixture.setMinimumVersion("99.0.0");
     await hostedTokenCheck(
       check,
-      "a minimum above this version shows Update required, Escape keeps it open, and MusicKit gets no token",
+      "an unsigned minimum above this version cannot block the verified token or MusicKit",
       async () => {
-        const before = tokenFixture.minimumRequests;
-        return launch(async (app) => {
-          const shell = await waitForShell(app.page);
-          const shown = await waitFor(app.page, dialogShown, 30_000);
-          const checkButton = await app.page.evaluate(
-            `return [...document.querySelectorAll(".update-modal button")].some((node) => node.textContent.trim() === "Check for updates");`,
-          );
-          const shot = await app.page.send("Page.captureScreenshot", {
-            format: "png",
-          });
-          fs.writeFileSync(
-            path.join(artifactDir, "screenshot-update-required.png"),
-            Buffer.from(shot.data, "base64"),
-          );
-          for (const type of ["keyDown", "keyUp"]) {
-            await app.page.send("Input.dispatchKeyEvent", {
-              type,
-              key: "Escape",
-              code: "Escape",
-              windowsVirtualKeyCode: 27,
-            });
-          }
-          await sleep(500);
-          const escapeIgnored = await app.page.evaluate(
-            `return ${dialogShown};`,
-          );
-          const token = await settleWithCode(app.page, "get_developer_token");
-          const musicKitConfigured = await app.page.evaluate(
-            "return Boolean(window.MusicKit?.getInstance?.());",
-          );
-          const minimumFetches = fetchesSince(before);
-          return {
-            passed:
-              shell &&
-              shown &&
-              checkButton &&
-              escapeIgnored &&
-              !token.ok &&
-              token.code === "UPDATE_REQUIRED" &&
-              !musicKitConfigured &&
-              minimumFetches > 0,
-            detail: {
-              shell,
-              dialogShown: shown,
-              checkForUpdatesShown: checkButton,
-              escapeIgnored,
-              tokenOk: token.ok,
-              tokenErrorCode: token.code ?? null,
-              musicKitConfigured,
-              minimumFetches,
-              appVersion,
-            },
-          };
-        });
-      },
-    );
-
-    await hostedTokenCheck(
-      check,
-      "Quit Arlet on Update required exits the process",
-      async () =>
-        launch(async (app) => {
-          const shell = await waitForShell(app.page);
-          const shown = await waitFor(app.page, dialogShown, 30_000);
-          const quitButton = `[...document.querySelectorAll(".update-modal button")].find((node) => node.textContent.trim() === "Quit Arlet")`;
-          const quitShown = await app.page.evaluate(
-            `return Boolean(${quitButton});`,
-          );
-          await app.page.evaluate(`${quitButton}?.click(); return true;`);
-          const exited = await waitUntil(() => !processAlive(app.pid), 15_000);
-          return {
-            passed: shell && shown && quitShown && exited,
-            detail: { shell, dialogShown: shown, quitShown, exited },
-          };
-        }),
-    );
-
-    for (const [name, minimum] of [
-      [
-        "a minimum equal to this version shows no Update required prompt and serves the token",
-        appVersion,
-      ],
-      [
-        "a garbage minimum-version file shows no Update required prompt and serves the token",
-        "not-a-version",
-      ],
-    ]) {
-      tokenFixture.setMinimumVersion(minimum);
-      await hostedTokenCheck(check, name, async () => {
         const before = tokenFixture.minimumRequests;
         return launch(async (app) => {
           const shell = await waitForShell(app.page);
@@ -1508,11 +1447,17 @@ async function runMinimumVersionChecks({
             "window.MusicKit?.getInstance?.()",
             60_000,
           );
-          // The dialog is set from the same startup check; give it time to appear.
           await sleep(1_000);
           const shown = await app.page.evaluate(`return ${dialogShown};`);
           const result = await settle(app.page, "get_developer_token");
           const minimumFetches = fetchesSince(before);
+          const shot = await app.page.send("Page.captureScreenshot", {
+            format: "png",
+          });
+          fs.writeFileSync(
+            path.join(artifactDir, "screenshot-unsigned-minimum-ignored.png"),
+            Buffer.from(shot.data, "base64"),
+          );
           return {
             passed:
               shell &&
@@ -1520,22 +1465,22 @@ async function runMinimumVersionChecks({
               !shown &&
               result.ok &&
               result.value === tokens.valid &&
-              minimumFetches > 0,
+              minimumFetches === 0,
             detail: {
               shell,
               musicKitConfigured: configured,
-              dialogShown: shown,
+              blockingDialogShown: shown,
               ...(result.ok
                 ? { servedFingerprint: tokenFingerprint(result.value) }
                 : { error: result.error }),
               expectedFingerprint: tokenFingerprint(tokens.valid),
               minimumFetches,
-              minimum,
+              appVersion,
             },
           };
         });
-      });
-    }
+      },
+    );
   } finally {
     tokenFixture.setMinimumVersion(null);
     tokenFixture.setMode("valid");
@@ -1559,7 +1504,7 @@ async function runMinimumVersionChecks({
  * - a renewed file with a newer iat but an earlier exp loses to the cache
  *   (the app orders files by (iat, exp));
  * - the throwaway signing key or the fixture server outlives the run.
- * The minimum-version checks (runMinimumVersionChecks) cover the startup gate.
+ * The unsigned minimum resource is not fetched or enforced.
  * The served-token checks in run() cover the runtime env token and the origin
  * claim.
  */
@@ -1830,7 +1775,7 @@ async function runHostedTokenChecks({
   );
 
   // Before the last case, which stops the fixture for good.
-  await runMinimumVersionChecks({
+  await runUnsignedMinimumCheck({
     check,
     tokenFixture,
     profileRoot,
@@ -1910,7 +1855,7 @@ async function run() {
   let webviewDiagnostics;
   let appProcessRecord;
   let childOutput = { stdout: "", stderr: "" };
-  const startedAt = new Date().toISOString();
+  let startedAt = new Date().toISOString();
   const onInterrupt = () => {
     interrupted = true;
     console.error("[e2e-app] Interrupted; stopping this isolated E2E process.");
@@ -1947,7 +1892,7 @@ async function run() {
     if (process.platform !== "win32") fail("Windows only");
     // Windows OpenSSH sessions are elevated and have no interactive desktop;
     // WebView2 fails there with "Invalid window handle" after a long wait.
-    if (process.env.SSH_CONNECTION || process.env.SSH_CLIENT) {
+    if (isSshSession()) {
       fail(
         "cannot run in an SSH session (WebView2 has no desktop there); run it from a terminal at the machine's desktop",
       );
@@ -1958,6 +1903,9 @@ async function run() {
     const skipBuild = process.argv.includes("--skip-build");
     if (!skipBuild) build();
     buildProof = verifyE2eBuildProof();
+    // The report's run interval covers scenarios; the separately recorded
+    // build proof must precede it to qualify for release publication.
+    startedAt = new Date().toISOString();
     // Serves the token files every launch of this run downloads. Closed in
     // the finally block, on every path.
     hostedTokenFixture = await startHostedTokenFixture({
@@ -2300,6 +2248,51 @@ async function run() {
       "corrupt settings restore backup (theme light, volume 0.37)",
       appearance.theme === "light" && Number(appearance.volume) === 0.37,
       appearance,
+    );
+    const legacyPreferences = await page.evaluate(`
+      return JSON.parse(await window.__TAURI_INTERNALS__.invoke("load_settings"));`);
+    check(
+      "native settings normalize legacy Allow and opt-in from the backup",
+      legacyPreferences.explicitContent === "auto" &&
+        legacyPreferences.explicitFix === false,
+      {
+        explicitContent: legacyPreferences.explicitContent ?? null,
+        explicitFix: legacyPreferences.explicitFix ?? null,
+      },
+    );
+    const legacySave = await page.evaluate(`
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      const payload = {
+        ...JSON.parse(await invoke("load_settings")),
+        explicitContent: "allow",
+        explicitFix: true,
+      };
+      await invoke("save_settings", { json: JSON.stringify(payload) });
+      return JSON.parse(await invoke("load_settings"));`);
+    let legacyDiskSettings = null;
+    try {
+      legacyDiskSettings = JSON.parse(
+        fs.readFileSync(path.join(dataDirs().data, "settings.json"), "utf8"),
+      );
+    } catch {
+      // Details below show a failed normalization.
+    }
+    check(
+      "native settings do not persist legacy Allow or opt-in writes",
+      legacySave.explicitContent === "auto" &&
+        legacySave.explicitFix === false &&
+        legacyDiskSettings?.explicitContent === "auto" &&
+        legacyDiskSettings?.explicitFix === false,
+      {
+        loaded: {
+          explicitContent: legacySave.explicitContent ?? null,
+          explicitFix: legacySave.explicitFix ?? null,
+        },
+        disk: {
+          explicitContent: legacyDiskSettings?.explicitContent ?? null,
+          explicitFix: legacyDiskSettings?.explicitFix ?? null,
+        },
+      },
     );
 
     // Debug Mode: off by default, so startup wrote no log file. Turning it
@@ -3525,28 +3518,33 @@ async function run() {
       String(error?.message ?? error),
     );
   }
-  const commitResult = spawnSync("git", ["rev-parse", "HEAD"], {
-    cwd: root,
-    encoding: "utf8",
-  });
-  const status = spawnSync("git", ["status", "--porcelain"], {
-    cwd: root,
-    encoding: "utf8",
-  });
-  const dirty = (status.stdout ?? "").trim().length > 0;
+  const checkout = releaseCheckoutState();
+  const dirty = checkout.dirtyWorktree;
   const report = {
     passed: checks.length > 0 && checks.every((entry) => entry.passed),
     finishedAt: new Date().toISOString(),
     startedAt,
-    commit: commitResult.stdout?.trim() ?? "",
+    commit: checkout.commit,
     dirtyWorktree: dirty,
     host: `${os.type()} ${os.release()} ${os.arch()}`,
+    platform: process.platform,
+    sshSession: isSshSession(),
     binary,
     e2eBuild: buildProof ?? null,
     tokenMode,
     selectedScenarios,
+    scenarioCount: selectedScenarios.length,
     fullSuite,
-    releaseProofEligible: fullSuite,
+    releaseProofEligible:
+      fullSuite &&
+      !scenarioSelectionError &&
+      process.platform === "win32" &&
+      !isSshSession() &&
+      !dirty &&
+      buildProof?.feature === "e2e" &&
+      buildProof?.commit === checkout.commit &&
+      buildProof?.dirtyWorktree === false &&
+      buildProof?.sha256 === binary.sha256,
     scenarioSelectionError,
     musicFixtureSeed: MUSIC_FIXTURE_SEED,
     musicRuntimeCapabilities,

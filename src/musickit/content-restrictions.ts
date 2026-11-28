@@ -1,5 +1,11 @@
+/**
+ * DORMANT legacy override implementation. Keep out of production imports and
+ * runtime entry points; beta 2 handles Clean in Arlet's queue layer instead.
+ */
 import type { ExplicitContentPreference } from "../state-types.ts";
 import { isAuthorized } from "./auth.ts";
+
+type LegacyExplicitContentPreference = ExplicitContentPreference | "allow";
 
 export const EXPLICIT_RESTRICTED_MESSAGE =
   "Explicit songs are restricted for this Apple Account. See Settings > Playback.";
@@ -111,7 +117,7 @@ export function appleReportedRestriction(): boolean | undefined {
  */
 export function applyExplicitContent(
   instance: MusicKit.MusicKitInstance,
-  preference: ExplicitContentPreference,
+  preference: LegacyExplicitContentPreference,
 ): boolean {
   if (preference === "auto") return true;
   if (!isInstanceAuthorized(instance)) return true;
@@ -158,8 +164,9 @@ export function applyHeldCleanWrite(
 export function explicitContentStatus(
   instance: MusicKit.MusicKitInstance | null,
 ): ExplicitContentStatus {
+  const record = instance as unknown as Record<string, unknown> | null;
   return {
-    restricted: instance?.restrictedEnabled === true,
+    restricted: record?.restrictedEnabled === true,
     overridden: overrideApplied,
   };
 }

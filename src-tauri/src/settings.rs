@@ -157,13 +157,7 @@ pub fn load_startup_appearance(app: &tauri::AppHandle) -> StartupAppearance {
     // the native startup state matches what the frontend loads.
     [path.clone(), backup_path(&path)]
         .iter()
-        .find_map(|candidate| {
-            let metadata = std::fs::metadata(candidate).ok()?;
-            if metadata.len() > MAX_SETTINGS_BYTES as u64 {
-                return None;
-            }
-            read_valid_settings(candidate)
-        })
+        .find_map(|candidate| read_valid_settings(candidate))
         .map(|content| parse_startup_appearance(&content))
         .unwrap_or_default()
 }
@@ -271,21 +265,79 @@ fn is_settings_object(content: &str) -> bool {
         && serde_json::from_str::<Value>(content).is_ok_and(|value| value.is_object())
 }
 
+/// Reads at most `max_bytes + 1` bytes, so an oversized local file is rejected
+/// before its full contents are allocated.
+pub(crate) fn read_bounded_text(
+    path: &std::path::Path,
+    max_bytes: usize,
+) -> std::io::Result<Option<String>> {
+    use std::io::Read;
+
+    let mut content = String::new();
+    std::fs::File::open(path)?
+        .take((max_bytes as u64).saturating_add(1))
+        .read_to_string(&mut content)?;
+    if content.len() > max_bytes {
+        Ok(None)
+    } else {
+        Ok(Some(content))
+    }
+}
+
+/// The old consent workflow is retired. Normalize its persisted Allow choice
+/// and opt-in bit on both reads and writes, while preserving independent Clean.
+fn normalize_legacy_explicit_settings(content: &str) -> String {
+    let Ok(mut value) = serde_json::from_str::<Value>(content) else {
+        return content.to_string();
+    };
+    let Some(object) = value.as_object_mut() else {
+        return content.to_string();
+    };
+
+    let mut changed = false;
+    if object
+        .get("explicitContent")
+        .and_then(Value::as_str)
+        .is_some_and(|choice| choice == "allow")
+    {
+        object.insert(
+            "explicitContent".to_string(),
+            Value::String("auto".to_string()),
+        );
+        changed = true;
+    }
+    if object
+        .get("explicitFix")
+        .and_then(Value::as_bool)
+        .is_some_and(|enabled| enabled)
+    {
+        object.insert("explicitFix".to_string(), Value::Bool(false));
+        changed = true;
+    }
+
+    if changed {
+        serde_json::to_string(&value).unwrap_or_else(|_| content.to_string())
+    } else {
+        content.to_string()
+    }
+}
+
 fn read_valid_settings(path: &std::path::Path) -> Option<String> {
-    std::fs::read_to_string(path)
-        .ok()
-        .filter(|content| is_settings_object(content))
+    let content = read_bounded_text(path, MAX_SETTINGS_BYTES).ok()??;
+    is_settings_object(&content).then(|| normalize_legacy_explicit_settings(&content))
 }
 
 /// A readable but corrupt file falls back to the backup instead of silently
 /// resetting every preference on the next save.
 fn read_settings_text(path: &std::path::Path) -> Result<String, String> {
-    match std::fs::read_to_string(path) {
-        Ok(content) if is_settings_object(&content) => Ok(content),
+    match read_bounded_text(path, MAX_SETTINGS_BYTES) {
+        Ok(Some(content)) if is_settings_object(&content) => {
+            Ok(normalize_legacy_explicit_settings(&content))
+        }
+        Ok(_) => Ok(read_valid_settings(&backup_path(path)).unwrap_or_else(|| "{}".to_string())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             Ok(read_valid_settings(&backup_path(path)).unwrap_or_else(|| "{}".to_string()))
         }
-        Ok(_) => Ok(read_valid_settings(&backup_path(path)).unwrap_or_else(|| "{}".to_string())),
         Err(e) => read_valid_settings(&backup_path(path))
             .ok_or_else(|| format!("Settings and backup unreadable: {e}")),
     }
@@ -293,10 +345,10 @@ fn read_settings_text(path: &std::path::Path) -> Result<String, String> {
 
 fn write_settings_text(path: &std::path::Path, json: &str) -> Result<(), String> {
     // Only a valid current file may replace the backup.
-    if read_valid_settings(path).is_some() {
-        let _ = std::fs::copy(path, backup_path(path));
+    if let Some(current) = read_valid_settings(path) {
+        let _ = atomic_write_text(&backup_path(path), &current);
     }
-    atomic_write_text(path, json)
+    atomic_write_text(path, &normalize_legacy_explicit_settings(json))
 }
 
 #[tauri::command(async)]
@@ -323,7 +375,14 @@ pub fn save_settings(app: tauri::AppHandle, json: String) -> Result<(), String> 
     if !parsed.is_object() {
         return Err("Invalid settings JSON: expected an object".to_string());
     }
-    write_settings_text(&settings_path(&app)?, &json)?;
+    let normalized = normalize_legacy_explicit_settings(&json);
+    if normalized.len() > MAX_SETTINGS_BYTES {
+        return Err(format!(
+            "Settings payload too large ({} bytes, max {MAX_SETTINGS_BYTES})",
+            normalized.len()
+        ));
+    }
+    write_settings_text(&settings_path(&app)?, &normalized)?;
     set_debug_mode(debug_mode_setting(&parsed));
     let tray_icon = tray_icon_setting(&parsed);
     set_tray_icon(tray_icon);

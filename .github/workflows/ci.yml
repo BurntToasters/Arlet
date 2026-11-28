@@ -135,11 +135,14 @@ jobs:
       - name: Native app E2E
         if: matrix.target == 'x86_64-pc-windows-msvc'
         run: npm run test:e2e:app
+      - name: Verify release E2E report
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        run: npm run release:verify:e2e
       - name: Upload E2E report
         if: always() && matrix.target == 'x86_64-pc-windows-msvc'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: e2e-report
+          name: e2e-report-${{ github.sha }}
           path: e2e-artifacts/
           if-no-files-found: error
 

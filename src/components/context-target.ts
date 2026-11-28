@@ -13,6 +13,7 @@ export interface ContextTarget {
   artworkUrl?: string;
   resourceType?: string;
   catalogId?: string;
+  explicit?: boolean;
   /** Validated Apple Music web link; see catalogLinkOf. */
   catalogUrl?: string;
   source?: "library" | "catalog";
@@ -179,6 +180,11 @@ export function parseTarget(node: HTMLElement | null): ContextTarget {
     artworkUrl: node.dataset.contextArtwork,
     resourceType: node.dataset.contextResourceType,
     catalogId: node.dataset.contextCatalogId,
+    ...(node.dataset.contextExplicit === "true"
+      ? { explicit: true as const }
+      : node.dataset.contextExplicit === "false"
+        ? { explicit: false as const }
+        : {}),
     catalogUrl: catalogLinkOf(node.dataset.contextCatalogUrl),
     source,
     route,
@@ -226,6 +232,7 @@ export function targetTrack(target: ContextTarget): Track | undefined {
       : undefined,
     resourceType: target.resourceType,
     catalogId: target.catalogId,
+    explicit: target.explicit,
     albumRef: target.albumRef,
     artistRefs: target.artistRefs,
   };

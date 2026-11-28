@@ -15,6 +15,7 @@ import {
   isSelectingSong,
   readMusicKitBitrate,
   seekAwarePosition,
+  setAutoplayEnabled,
   syncMusicKitQueue,
 } from "./player.ts";
 import {
@@ -185,8 +186,17 @@ export function registerMusicKitEvents(
     queueMicrotask(() => {
       const runtimeEnabled = instance.autoplayEnabled;
       if (typeof runtimeEnabled !== "boolean") return;
-      if (runtimeEnabled === getState().settings.autoplay) {
+      const settings = getState().settings;
+      const expected =
+        settings.explicitContent === "clean" ? false : settings.autoplay;
+      if (runtimeEnabled === expected) {
         loggedAutoplayMismatch = undefined;
+      } else if (settings.explicitContent === "clean" && runtimeEnabled) {
+        if (!setAutoplayEnabled(instance, false)) {
+          handlers.log?.(
+            "MusicKit autoplay could not be disabled for Clean playback.",
+          );
+        }
       } else if (loggedAutoplayMismatch !== runtimeEnabled) {
         // Log only: MusicKit may flip autoplay itself, and the saved setting
         // must never follow it.

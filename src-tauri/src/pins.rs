@@ -72,19 +72,20 @@ fn validate_pins_json(json: &str) -> Result<(), String> {
 }
 
 fn read_valid_pins(path: &std::path::Path) -> Option<String> {
-    std::fs::read_to_string(path)
-        .ok()
-        .filter(|content| validate_pins_json(content).is_ok())
+    let content = crate::settings::read_bounded_text(path, MAX_PINS_BYTES).ok()??;
+    validate_pins_json(&content).is_ok().then_some(content)
 }
 
 /// A corrupt or truncated file falls back to the last valid backup, matching
 /// settings and session restore.
 fn read_pins_text(path: &std::path::Path) -> Result<String, String> {
-    match std::fs::read_to_string(path) {
-        Ok(content) => match validate_pins_json(&content) {
+    match crate::settings::read_bounded_text(path, MAX_PINS_BYTES) {
+        Ok(Some(content)) => match validate_pins_json(&content) {
             Ok(()) => Ok(content),
             Err(error) => read_valid_pins(&backup_path(path)).ok_or(error),
         },
+        Ok(None) => read_valid_pins(&backup_path(path))
+            .ok_or_else(|| format!("Pins payload too large (exceeds max {MAX_PINS_BYTES} bytes)")),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok("[]".to_string()),
         Err(e) => read_valid_pins(&backup_path(path)).ok_or_else(|| e.to_string()),
     }

@@ -13,6 +13,7 @@ import { sleep, waitFor as pollFor } from "./e2e-helpers.js";
 const SESSION_FILE = "playback-session.json";
 const BACKUP_FILE = "playback-session.json.bak";
 const NOW_PLAYING = ".player-bar .player-track-copy strong";
+const EXPLICIT_CONTENT_SELECT = 'select[aria-label="Explicit content"]';
 const SAVED_IDS = ["song-a", "song-c", "song-e"];
 const SAVED_INDEX = 1;
 const SAVED_POSITION = 42.5;
@@ -63,12 +64,17 @@ async function waitForFile(file, present, timeoutMs = 6_000) {
 
 async function reloadApp(page) {
   await page.send("Page.reload", { ignoreCache: true });
-  await sleep(1000);
-  return waitFor(
+  const ready = await waitFor(
     page,
-    "window.__ARLET_E2E_MUSIC__ && document.querySelector('.app-shell .player-bar')",
+    `window.__ARLET_E2E_MUSIC__ &&
+      document.querySelector('.app-shell .player-bar') &&
+      window.MusicKit?.getInstance?.()?.isAuthorized === true &&
+      typeof window.MusicKit?.getInstance?.()?.api?.music === "function" &&
+      document.querySelector('.titlebar-status')?.textContent.includes('Connected')`,
     30_000,
   );
+  await sleep(1000);
+  return ready;
 }
 
 function readJson(file) {
@@ -121,10 +127,74 @@ function setResumeToggle(page, checked) {
     return true;`);
 }
 
+async function savedSettings(page) {
+  const raw = await page.evaluate(
+    'return await window.__TAURI_INTERNALS__.invoke("load_settings");',
+  );
+  return typeof raw === "string" ? JSON.parse(raw) : raw;
+}
+
+async function establishSessionSettings(page, check) {
+  await page.evaluate('location.hash = "#/settings"; return true;');
+  const ready = await waitFor(
+    page,
+    `document.querySelector(${JSON.stringify(EXPLICIT_CONTENT_SELECT)}) &&
+      document.querySelector("#playback-heading")`,
+  );
+  const selected = ready
+    ? await page.evaluate(`
+        const select = document.querySelector(${JSON.stringify(EXPLICIT_CONTENT_SELECT)});
+        if (!select) return false;
+        select.value = "auto";
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+        return select.value === "auto";`)
+    : false;
+  const resumeEnabled = ready && (await setResumeToggle(page, true));
+  const deadline = Date.now() + 5000;
+  let settings;
+  while (Date.now() < deadline) {
+    settings = await savedSettings(page);
+    if (
+      settings?.explicitContent === "auto" &&
+      settings?.restoreSession === true
+    ) {
+      break;
+    }
+    await sleep(100);
+  }
+  const autoplayApplied =
+    typeof settings?.autoplay === "boolean" &&
+    (await waitFor(
+      page,
+      `window.MusicKit?.getInstance?.()?.autoplayEnabled === ${settings.autoplay}`,
+      5000,
+    ));
+  check(
+    "session restore starts in Auto with Resume enabled",
+    ready &&
+      selected &&
+      resumeEnabled &&
+      settings?.explicitContent === "auto" &&
+      settings?.restoreSession === true &&
+      autoplayApplied,
+    {
+      ready,
+      selected,
+      resumeEnabled,
+      explicitContent: settings?.explicitContent,
+      restoreSession: settings?.restoreSession,
+      autoplay: settings?.autoplay,
+      autoplayApplied,
+    },
+  );
+}
+
 /** Session restore: corrupt, valid, play, toggle, and sign-out cases. */
 export async function runSessionRestore({ page, check, dataDir }) {
   const sessionFile = path.join(dataDir, SESSION_FILE);
   const backupFile = path.join(dataDir, BACKUP_FILE);
+
+  await establishSessionSettings(page, check);
 
   // Earlier scenarios leave a queue behind. reset() empties it, so the
   // pagehide save on reload has nothing to write over the seeded files.
@@ -186,7 +256,7 @@ export async function runSessionRestore({ page, check, dataDir }) {
       restoredView.position === "0:42" &&
       restoredView.activeRow?.includes("Track C") &&
       restoredView.transitions.length === 0,
-    { queueRows, ...restoredView },
+    { restored, queueRows, ...restoredView },
   );
   await page.evaluate(`
     document.querySelector('button[aria-label="Toggle Playing Next"]')?.click();

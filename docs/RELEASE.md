@@ -172,7 +172,12 @@ commands without one, where WebView2 cannot open a window (`0x80070578`,
 other stage and records the native suite as deferred in the proof, never as
 verified; only that suite can be deferred. `test:all` and `release-session`
 print a reminder. Before `release:publish`, run `npm run test:e2e:app` at a
-Windows desktop on the release commit. Non-Windows hosts still fail.
+Windows desktop on the release commit, then `npm run release:verify:e2e`.
+Publication independently enforces a passing full-suite report from the exact
+commit, a clean worktree at build, run, and publication time, and a matching
+E2E binary hash. The report expires after 24 hours. Focused scenario runs, SSH
+runs, and reports from dirty or different commits do not count. Non-Windows
+hosts still fail.
 
 `release:win:continue` runs: session verify → licenses → draft (single
 creator) → Rust targets → x64 + ARM64 NSIS builds (in-build Authenticode via

@@ -30,7 +30,6 @@ import {
 import { createSessionHealth } from "./session-health.ts";
 import type { createCollectionPlayback } from "./collection-playback.ts";
 import type { createControllerPins } from "./controller-pins.ts";
-import type { createControllerSettings } from "./controller-settings.ts";
 import type { createDiscovery } from "./discovery.ts";
 import type { LibraryLoader } from "./library-loader.ts";
 import type { createPlayback } from "./playback.ts";
@@ -81,18 +80,13 @@ export interface ControllerAccountDependencies {
   resetStations(): void;
   /** Reloads the current view after a successful re-auth. */
   refreshCurrentData(): Promise<void>;
-  preferences: Pick<
-    ReturnType<typeof createControllerSettings>,
-    | "applyExplicitContentSetting"
-    | "resetExplicitContent"
-    | "explicitContentStatus"
-    | "restartToApplyExplicitContent"
-  >;
 }
 
 export interface ControllerAccount {
   authorize(): Promise<void>;
-  /** Signs in again after the Apple sign-in expired; local data is kept. */
+  /**
+   * Reauthorizes; the popup may change Apple IDs, so old account data is cleared.
+   */
   reauthorize(): Promise<void>;
   signOut(): Promise<void>;
   /** Clears the pending sign-in at once; a late success still signs in. */
@@ -123,9 +117,8 @@ interface SignInAttempt {
 
 /**
  * Sign-in, re-auth, sign-out, session expiry, and MusicKit authorization
- * changes. Local data is cleared only by a sign-out or a fresh sign-in, and a
- * fresh sign-in restores its pins only when the new account owns them; an
- * expired session keeps everything until the user signs in again.
+ * changes. Every authorization popup is treated as a possible account change;
+ * a successful one clears old account data before loading the new account.
  */
 export function createControllerAccount(
   context: ControllerContext,
@@ -143,7 +136,6 @@ export function createControllerAccount(
     sleepTimer,
     streamRelease,
     trackNavigation,
-    preferences,
   } = deps;
 
   /** Bumped on sign-in and sign-out; work started earlier must not land. */
@@ -154,8 +146,6 @@ export function createControllerAccount(
   let accountTransitions = 0;
   /** The attempt the user is waiting on; cancelSignIn abandons it. */
   let signInAttempt: SignInAttempt | undefined;
-  /** A fresh sign-in to another account left an override in MusicKit; restart after it. */
-  let explicitRestartPending = false;
   /** Includes cancelled popups that may still authorize after their UI attempt ends. */
   const activeSignInAttempts = new Set<SignInAttempt>();
 
@@ -419,14 +409,11 @@ export function createControllerAccount(
     };
     try {
       instance = requireMusic();
-      // A fresh authorization may select another Apple ID. Fence old data
-      // before opening the popup; re-auth is the same account and keeps its
-      // saved queue by design.
-      if (!options.reauth) {
-        // Pins to bring back if the new sign-in turns out to be the same account.
-        previousPins = [...getState().pins];
-        invalidation = beginAccountDataInvalidation();
-      }
+      // Any authorization popup can select another Apple ID. Fence account
+      // data before opening it; only fresh sign-in may later restore verified
+      // owned pins. Reauthorization discards pins and the saved queue.
+      if (!options.reauth) previousPins = [...getState().pins];
+      invalidation = beginAccountDataInvalidation();
       authorizationStarted = true;
       signInAttempt = attempt;
       activeSignInAttempts.add(attempt);
@@ -438,37 +425,32 @@ export function createControllerAccount(
       authorized = true;
       registerSensitiveValue(userToken);
       if (await stopIfSignedOut()) return;
+      // MusicKit may have switched accounts while the popup was open. Drop
+      // the old in-memory view before any new account data can load.
+      const initialization = getState().initialization;
+      const wasSessionExpired = getState().auth.sessionExpired === true;
+      resetState();
+      setPins([]);
       if (options.reauth) {
-        // Same account: the choice applies at once. A fresh sign-in waits for proof.
-        preferences.applyExplicitContentSetting(instance);
-        try {
-          await library.clearLibraryCache();
-        } catch (error) {
-          log(
-            `Library cache clear after re-auth failed: ${safeErrorMessage(error)}`,
-          );
-        }
-        if (await stopIfSignedOut()) return;
-      } else {
-        // MusicKit may have switched accounts while the popup was open. Drop
-        // the old in-memory view before any new account data can load.
-        const initialization = getState().initialization;
-        resetState();
-        setPins([]);
-        setAuthPending(true);
-        setInitializationState(initialization);
-        try {
-          await clearPersistedAccountData(() => !attempt.invalidatedBySignOut);
-        } catch (error) {
-          // Categories whose clear failed stay fenced, while the new sign-in
-          // can continue without reading or writing those files.
-          log(
-            `Account data clear after authorization failed: ${safeErrorMessage(error)}`,
-          );
-        }
-        if (await stopIfSignedOut()) return;
-        setInitializationState({ status: "ready" });
+        // Keep the re-auth transition visible until every persisted category
+        // has cleared. Otherwise resetState briefly looks signed out, hiding
+        // the expired-session notice before the native clears finish.
+        setAuthState({ status: "authorized" });
+        if (wasSessionExpired) setSessionExpired(true);
       }
+      setAuthPending(true);
+      setInitializationState(initialization);
+      try {
+        await clearPersistedAccountData(() => !attempt.invalidatedBySignOut);
+      } catch (error) {
+        // Categories whose clear failed stay fenced, while the new sign-in
+        // can continue without reading or writing those files.
+        log(
+          `Account data clear after authorization failed: ${safeErrorMessage(error)}`,
+        );
+      }
+      if (await stopIfSignedOut()) return;
+      setInitializationState({ status: "ready" });
       if (await stopIfSignedOut()) return;
       // Keep the user token private to MusicKit; only expose auth status.
       setAuthState({ status: "authorized" });
@@ -490,7 +472,7 @@ export function createControllerAccount(
       await Promise.all([library.ensureLibraryCache(), pinning.reload()]);
       if (await stopIfSignedOut()) return;
       if (!options.reauth) {
-        const sameAccount = await pinning.restoreIfOwned(
+        await pinning.restoreIfOwned(
           previousPins,
           () =>
             !attempt.abandoned &&
@@ -498,15 +480,6 @@ export function createControllerAccount(
             generation === accountGeneration,
         );
         if (await stopIfSignedOut()) return;
-        // The explicit-content fix is for the account that agreed to it.
-        if (sameAccount) {
-          preferences.applyExplicitContentSetting(instance);
-        } else {
-          // MusicKit keeps an override in memory, so only a restart drops it.
-          explicitRestartPending =
-            preferences.explicitContentStatus().overridden;
-          await preferences.resetExplicitContent();
-        }
       }
       const storefront = String(instance.storefrontId ?? "").trim();
       if (storefront) setAccountSummary({ storefront, connectedAt: now() });
@@ -551,18 +524,7 @@ export function createControllerAccount(
   };
 
   const authorizeAccount = async (): Promise<void> => {
-    explicitRestartPending = false;
-    if (preferences.explicitContentStatus().overridden) {
-      log(
-        "Restarting Arlet before sign-in so Apple's explicit-content report is kept.",
-      );
-      await preferences.restartToApplyExplicitContent();
-      return;
-    }
     await signIn({ reauth: false });
-    if (!explicitRestartPending) return;
-    explicitRestartPending = false;
-    await preferences.restartToApplyExplicitContent();
   };
 
   const reauthorize = async (): Promise<void> => {
@@ -618,7 +580,6 @@ export function createControllerAccount(
       clearRecentSearches();
       resetState();
       setPins([]);
-      await preferences.resetExplicitContent();
       const persistedClear = clearPersistedAccountData();
       // The clear is also awaited below; this handler prevents an early
       // rejection from becoming unhandled while MusicKit is unauthorizing.
@@ -663,15 +624,6 @@ export function createControllerAccount(
         throw new Error(failures.map(safeErrorMessage).join("; "));
       }
       log("Signed out.");
-      // MusicKit keeps an override in memory until restart, so a later sign-in
-      // would lose Apple's report. A failed restart does not undo the sign-out.
-      if (preferences.explicitContentStatus().overridden) {
-        try {
-          await preferences.restartToApplyExplicitContent();
-        } catch (error) {
-          log(`Restart after sign-out failed: ${safeErrorMessage(error)}`);
-        }
-      }
     } catch (error) {
       const message = safeErrorMessage(error);
       log(`Sign out failed: ${message}`);

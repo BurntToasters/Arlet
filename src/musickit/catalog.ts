@@ -5,6 +5,7 @@ import type {
   Station,
   Track,
 } from "../domain/music.ts";
+import { idSource } from "../domain/music.ts";
 import { httpStatusOf, mapErrorToCode } from "./errors.ts";
 import { asRecord, dataArray, resultsOf } from "./response.ts";
 import {
@@ -453,6 +454,164 @@ export async function searchCatalogSongs(
     },
   );
   return songsFromSearchResponse(raw).map(normalizeCatalogSong);
+}
+
+export interface CleanTrackResolution {
+  tracks: Track[];
+  originalIndices: number[];
+  skipped: Track[];
+  lookupFailures: number;
+}
+
+function catalogIdOf(track: Track): string | undefined {
+  return [track.catalogId, track.id].find(
+    (id): id is string => id !== undefined && idSource(id) === "catalog",
+  );
+}
+
+function resourcesById(raw: unknown): Map<string, AppleMusicResource> {
+  const resources = new Map<string, AppleMusicResource>();
+  for (const value of dataArray(raw)) {
+    const record = asRecord(value);
+    if (typeof record?.id === "string" && record.id) {
+      resources.set(record.id, value as AppleMusicResource);
+    }
+  }
+  return resources;
+}
+
+function cleanRatedTrack(
+  track: Track,
+  resource: AppleMusicResource,
+): Track | undefined {
+  const normalized = normalizeTrackResource(resource);
+  if (normalized?.explicit !== false) return undefined;
+  return {
+    ...track,
+    ...(normalized.title !== "Unknown Title"
+      ? { title: normalized.title }
+      : {}),
+    ...(normalized.artistName !== "Unknown Artist"
+      ? { artistName: normalized.artistName }
+      : {}),
+    ...(normalized.albumTitle ? { albumTitle: normalized.albumTitle } : {}),
+    ...(normalized.artwork ? { artwork: normalized.artwork } : {}),
+    ...(normalized.durationMs ? { durationMs: normalized.durationMs } : {}),
+    ...(normalized.resourceType
+      ? { resourceType: normalized.resourceType }
+      : {}),
+    catalogId: normalized.id,
+    explicit: false,
+  };
+}
+
+/**
+ * Resolves tracks for Clean playback. Known clean tracks pass through; every
+ * other track needs an exact catalog `clean` rating. Explicit tracks are
+ * skipped; an equivalent is a different recording and is never selected
+ * without the user asking for it.
+ */
+export async function resolveCleanTracks(
+  instance: MusicKit.MusicKitInstance | null | undefined,
+  tracks: readonly Track[],
+): Promise<CleanTrackResolution> {
+  const resolved = new Map<number, Track>();
+  const skipped = new Set<number>();
+  const unknownIds = new Map<string, number[]>();
+  let lookupFailures = 0;
+
+  tracks.forEach((track, index) => {
+    if (track.explicit === false) {
+      resolved.set(index, track);
+      return;
+    }
+    if (track.explicit === true) {
+      skipped.add(index);
+      return;
+    }
+    const id = catalogIdOf(track);
+    if (!id) {
+      skipped.add(index);
+      return;
+    }
+    const positions = unknownIds.get(id);
+    if (positions) positions.push(index);
+    else unknownIds.set(id, [index]);
+  });
+
+  if (unknownIds.size > 0) {
+    let request: MusicKitMusicRequest | undefined;
+    try {
+      if (instance) request = resolveMusicKitMusicRequest(instance);
+    } catch {
+      request = undefined;
+    }
+    const storefront =
+      instance && request
+        ? await resolveStorefront(instance).catch(() => undefined)
+        : undefined;
+    if (!storefront || !instance || !request) {
+      lookupFailures += unknownIds.size;
+      for (const positions of unknownIds.values()) {
+        positions.forEach((index) => skipped.add(index));
+      }
+    } else {
+      const base = `/v1/catalog/${encodeURIComponent(storefront)}/songs`;
+      const originalResources = new Map<string, AppleMusicResource>();
+      const ids = [...unknownIds.keys()];
+      for (let offset = 0; offset < ids.length; offset += 25) {
+        const batch = ids.slice(offset, offset + 25);
+        try {
+          const resources = resourcesById(
+            await request(base, { ids: batch.join(",") }),
+          );
+          for (const [id, resource] of resources) {
+            originalResources.set(id, resource);
+          }
+        } catch {
+          // Missing resources below count each song whose rating could not
+          // be obtained; a failed batch does not add another failure count.
+        }
+      }
+
+      for (const [id, positions] of unknownIds) {
+        const resource = originalResources.get(id);
+        const normalized = resource
+          ? normalizeTrackResource(resource)
+          : undefined;
+        if (resource && normalized?.explicit === false) {
+          for (const index of positions) {
+            const track = tracks[index];
+            const clean = track ? cleanRatedTrack(track, resource) : undefined;
+            if (clean) resolved.set(index, clean);
+            else skipped.add(index);
+          }
+        } else {
+          if (!resource || !normalized) lookupFailures += 1;
+          positions.forEach((index) => skipped.add(index));
+        }
+      }
+    }
+  }
+
+  const resultTracks: Track[] = [];
+  const originalIndices: number[] = [];
+  const resultSkipped: Track[] = [];
+  tracks.forEach((track, index) => {
+    const clean = resolved.get(index);
+    if (!clean || skipped.has(index)) {
+      resultSkipped.push(track);
+      return;
+    }
+    resultTracks.push(clean);
+    originalIndices.push(index);
+  });
+  return {
+    tracks: resultTracks,
+    originalIndices,
+    skipped: resultSkipped,
+    lookupFailures,
+  };
 }
 
 export async function searchMusicResources(

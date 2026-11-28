@@ -1005,7 +1005,11 @@ export function queueDescriptorsForTracks(
         ...(track.durationMs ? { durationInMillis: track.durationMs } : {}),
         // Without a lookup MusicKit only knows a rating it is given; the
         // explicit badge and any account content limit rely on it.
-        ...(track.explicit === true ? { contentRating: "explicit" } : {}),
+        ...(track.explicit === true
+          ? { contentRating: "explicit" }
+          : track.explicit === false
+            ? { contentRating: "clean" }
+            : {}),
         ...(track.artwork
           ? {
               artwork: {

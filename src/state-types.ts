@@ -32,8 +32,8 @@ export type UpdateChannel = "auto" | "stable" | "beta";
 export type AudioQuality = "high" | "standard" | "automatic";
 /** Apple Music subscription as far as MusicKit has reported it. */
 export type SubscriptionStatus = "unknown" | "active" | "none";
-/** Auto follows Apple's report; Clean skips explicit songs; Allow needs explicitFix. */
-export type ExplicitContentPreference = "auto" | "clean" | "allow";
+/** Auto leaves playback to Apple Music; Clean filters explicit queue entries. */
+export type ExplicitContentPreference = "auto" | "clean";
 
 export type UpdateStatus =
   | "idle"
@@ -63,10 +63,7 @@ export interface AppSettings {
   launchAtStartup: boolean;
   /** Write the app log to disk (`arlet.log`). Off by default. */
   debugMode: boolean;
-  // Explicit-content fix: user-confirmed override of MusicKit's restriction flag (see docs/explicit-content-fix.md).
   explicitContent: ExplicitContentPreference;
-  /** The user agreed to the explicit-content fix; "allow" is offered only while on. */
-  explicitFix: boolean;
   /** Reserved for forward-compatible settings owned by other versions. */
   [key: string]: unknown;
 }

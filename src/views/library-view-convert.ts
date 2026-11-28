@@ -174,6 +174,10 @@ function convertResource(value: unknown): ResourceLike | undefined {
         ? raw.explicit
         : typeof attributes.contentRating === "string"
           ? attributes.contentRating.toLowerCase() === "explicit"
+            ? true
+            : attributes.contentRating.toLowerCase() === "clean"
+              ? false
+              : undefined
           : undefined,
     // `href` is an API path (/v1/...), not a page link.
     catalogUrl: stringValue(raw.catalogUrl, attributes.url),

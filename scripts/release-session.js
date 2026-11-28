@@ -360,7 +360,7 @@ if (isDirectExecution()) {
     const { deferredStages = [] } = verifyQualityGate();
     if (deferredStages.length > 0) {
       console.warn(
-        `release-session: deferred quality-gate stages (${deferredStages.join(", ")}); run npm run test:e2e:app at a Windows desktop on this commit before publishing.`,
+        `release-session: deferred quality-gate stages (${deferredStages.join(", ")}); run npm run test:e2e:app at a Windows desktop on this commit, then npm run release:verify:e2e before publishing.`,
       );
     }
     console.log(

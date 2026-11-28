@@ -1,6 +1,6 @@
 {
   "name": "arlet",
-  "version": "0.5.0-beta.1",
+  "version": "0.5.0-beta.2",
   "license": "GPL-3.0-only",
   "private": true,
   "packageManager": "npm@12.2.1",
@@ -89,6 +89,7 @@
     "workspace:prepare": "npm run workspace:bootstrap && npm run test:all -- --require-clean-proof",
     "release:prepare": "npm run workspace:bootstrap && npm run test:all -- --require-clean-proof && npm run dist:clean-release-artifacts",
     "release:session:verify": "node scripts/release-session.js",
+    "release:verify:e2e": "node scripts/release-e2e-report.js",
     "release:draft": "dotenv -e .env -- node scripts/ensure-draft-release.cjs",
     "release:publish": "dotenv -e .env -- node scripts/publish-release.cjs",
     "release:wait-draft": "dotenv -e .env -- node scripts/wait-for-draft-release.cjs",
@@ -124,7 +125,6 @@
     "dotenv-cli": "^11.0.0",
     "eslint": "^10.12.0",
     "eslint-plugin-react-hooks": "^7.1.1",
-    "license-checker-rseidelsohn": "^5.0.1",
     "prettier": "^3.9.9",
     "typescript": "~6.0.3",
     "vite": "^8.3.3"

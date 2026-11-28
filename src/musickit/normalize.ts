@@ -450,7 +450,11 @@ export function normalizeTrack(item: MusicKit.MediaItem): Track {
     ...(stringValue(playParams?.catalogId)
       ? { catalogId: stringValue(playParams?.catalogId) }
       : {}),
-    ...(contentRating ? { explicit: contentRating === "explicit" } : {}),
+    ...(contentRating === "explicit"
+      ? { explicit: true }
+      : contentRating === "clean"
+        ? { explicit: false }
+        : {}),
   };
 }
 
@@ -493,6 +497,11 @@ export function normalizeCatalogSong(resource: CatalogSongResource): Track {
     ...(streamable(attributes as Record<string, unknown>, "songs")
       ? {}
       : { playable: false }),
+    ...(String(attributes.contentRating ?? "").toLowerCase() === "explicit"
+      ? { explicit: true }
+      : String(attributes.contentRating ?? "").toLowerCase() === "clean"
+        ? { explicit: false }
+        : {}),
   };
 }
 
@@ -530,8 +539,9 @@ function normalizeResourceTrack(
       type === "music-videos" ||
       type === "library-music-videos",
   };
-  const explicit = stringValue(attributes.contentRating);
-  if (explicit) track.explicit = explicit.toLowerCase() === "explicit";
+  const contentRating = stringValue(attributes.contentRating)?.toLowerCase();
+  if (contentRating === "explicit") track.explicit = true;
+  if (contentRating === "clean") track.explicit = false;
   const dateAdded = dateAddedOf(attributes.dateAdded);
   if (dateAdded) track.dateAdded = dateAdded;
   const discNumber = positiveInteger(attributes.discNumber);

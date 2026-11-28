@@ -46,8 +46,6 @@ export function playerErrorLabel(code: AppErrorCode): string {
       return "Subscription needed";
     case "TOKEN_EXPIRED":
       return "Session expired";
-    case "UPDATE_REQUIRED":
-      return "Update required";
     case "MUSICKIT_INIT_FAILED":
       return "Player unavailable";
     case "PLAYBACK_FAILED":
@@ -193,6 +191,9 @@ export function PlayerBar(): JSX.Element {
         data-context-album={current?.albumTitle}
         data-context-resource-type={current?.resourceType}
         data-context-catalog-id={current?.catalogId}
+        data-context-explicit={
+          current?.explicit === undefined ? undefined : String(current.explicit)
+        }
         data-context-catalog-url={current?.catalogUrl}
         data-context-album-ref={refs.album}
         data-context-artist-refs={refs.artists}

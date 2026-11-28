@@ -91,10 +91,8 @@ pub fn create_main_window(app: &App) -> Result<WebviewWindow, Box<dyn std::error
         .on_navigation(move |url| {
             let allowed = is_allowed_main_navigation(url, dev_url.as_ref());
             if !allowed {
-                eprintln!(
-                    "Blocked main window navigation to {}",
-                    url.origin().ascii_serialization()
-                );
+                // Do not call origin formatting on an untrusted rejected URL.
+                eprintln!("Blocked main window navigation");
             }
             allowed
         })

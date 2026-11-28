@@ -442,7 +442,11 @@ async function cancelSignIn(page, check, artifactDir) {
   // becomes healthy and the notice clears.
   await fixtureCall(page, "configure", [{ hangAuthorize: false }]);
   const released = await fixtureCall(page, "releaseAuthorize");
-  const healed = await noticeGone(page, 15_000);
+  const healed = await waitFor(
+    page,
+    `!document.querySelector(${q(NOTICE)}) && document.querySelector(${q(STATUS)})?.textContent.includes("Connected") && !document.querySelector('.account-card button[data-action="cancel-sign-in"]') && window.__ARLET_E2E_MUSIC__.snapshot().authorized === true`,
+    15_000,
+  );
   const healthy = (await statusText(page))?.includes("Connected") === true;
   check(
     "an abandoned sign-in that completes later still signs in",
@@ -726,7 +730,12 @@ async function reauthFailures(page, check, logDir) {
   );
 
   // A cancel while MusicKit still holds a token (regained during the wait) does not expire.
-  await openHash(page, "#/settings");
+  await openHash(
+    page,
+    "#/settings",
+    `[...document.querySelectorAll(".account-card button")].some((node) => node.textContent.trim() === "Sign in again" && !node.disabled)`,
+    15_000,
+  );
   await fixtureCall(page, "configure", [{ hangAuthorize: true }]);
   await clickSettingsSignIn(page);
   const pendingAgain = await waitFor(
@@ -745,8 +754,24 @@ async function reauthFailures(page, check, logDir) {
     pendingAgain && !expiredWhileAuthorized && stillAuthorized && connected,
     { pendingAgain, expiredWhileAuthorized, stillAuthorized, connected },
   );
+  const lateSuccessBefore = logCount(logDir, "Authorization successful.");
   await fixtureCall(page, "configure", [{ hangAuthorize: false }]);
-  await fixtureCall(page, "releaseAuthorize");
+  const lateRelease = await fixtureCall(page, "releaseAuthorize");
+  const lateSuccess = await logGrew(
+    logDir,
+    "Authorization successful.",
+    lateSuccessBefore,
+  );
+  const lateSettled = await waitFor(
+    page,
+    `document.querySelector(${q(STATUS)})?.textContent.includes("Connected") && !document.querySelector('.account-card button[data-action="cancel-sign-in"]') && [...document.querySelectorAll(".account-card button")].some((node) => node.textContent.trim() === "Sign in again" && !node.disabled)`,
+    15_000,
+  );
+  check(
+    "a cancelled attempt that succeeds while MusicKit holds a token settles before another sign-in",
+    lateRelease === 1 && lateSuccess && lateSettled,
+    { lateRelease, lateSuccess, lateSettled },
+  );
   await waitFor(
     page,
     `window.__ARLET_E2E_MUSIC__.snapshot().authorizeHeld === 0`,

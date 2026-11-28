@@ -87,6 +87,9 @@ function trackContextAttributes(track: Track): Record<string, string> {
       ? { "data-context-resource-type": track.resourceType }
       : {}),
     ...(track.catalogId ? { "data-context-catalog-id": track.catalogId } : {}),
+    ...(track.explicit !== undefined
+      ? { "data-context-explicit": String(track.explicit) }
+      : {}),
     ...(track.catalogUrl
       ? { "data-context-catalog-url": track.catalogUrl }
       : {}),

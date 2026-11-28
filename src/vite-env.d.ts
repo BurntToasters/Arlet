@@ -43,8 +43,6 @@ declare namespace MusicKit {
     storefrontCountryCode?: string;
     /** Autoplay keeps adding songs after the user's queue when on. */
     autoplayEnabled?: boolean;
-    /** MusicKit's content restriction; true drops explicit songs from queues. */
-    restrictedEnabled?: boolean;
     play(): Promise<void>;
     playNext?(
       options?: QueueOptions | string | MediaItem,

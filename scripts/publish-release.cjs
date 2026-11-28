@@ -44,6 +44,16 @@ function currentReleaseCommit() {
   return commit;
 }
 
+function assertPublicationCheckout(assertTreeClean, expectedCommit) {
+  assertTreeClean(REPO_ROOT);
+  const finalCommit = currentReleaseCommit();
+  if (finalCommit !== expectedCommit) {
+    throw new Error(
+      `Release checkout changed from ${expectedCommit} to ${finalCommit}; refusing to publish.`,
+    );
+  }
+}
+
 function assertReleaseTargetsCommit(release, commit) {
   if (release?.target_commitish === commit) return;
   if (FORCE_UPLOAD) {
@@ -138,8 +148,20 @@ async function warnIfNewerBetaNeedsSync() {
 
 async function main() {
   assertStableReleaseOverridesAllowed(process.env, VERSION);
-  assertGitHubCliAuthenticated();
   const commit = currentReleaseCommit();
+  const [{ verifyReleaseE2eReport }, { assertReleaseTreeClean }] =
+    await Promise.all([
+      import("./release-e2e-report.js"),
+      import("./release-session.js"),
+    ]);
+  const { reportPath } = verifyReleaseE2eReport(REPO_ROOT, {
+    commit,
+    requireCleanWorktree: true,
+  });
+  console.log(
+    `[release:publish] Verified full desktop E2E report for ${commit.slice(0, 12)}: ${reportPath}`,
+  );
+  assertGitHubCliAuthenticated();
   // Taken before verification: the publish below must ship exactly the
   // assets that were verified.
   const verifiedAssets = assetSnapshot(getDraftRelease());
@@ -158,6 +180,7 @@ async function main() {
   }
   assertReleaseTargetsCommit(draft, commit);
   assertTagTargetsCommit(commit);
+  assertPublicationCheckout(assertReleaseTreeClean, commit);
   const published = githubApi("PATCH", `/repos/${REPO}/releases/${draft.id}`, {
     tag_name: TAG_NAME,
     target_commitish: commit,

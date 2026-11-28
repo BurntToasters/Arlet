@@ -56,7 +56,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   launchAtStartup: false,
   debugMode: false,
   explicitContent: "auto",
-  explicitFix: false,
 };
 
 const initialPlaybackState: PlaybackState = {

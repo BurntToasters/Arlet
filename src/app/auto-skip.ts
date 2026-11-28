@@ -51,7 +51,7 @@ export function createAutoSkip(dependencies: AutoSkipDependencies): AutoSkip {
       dependencies.log(`Skipping unplayable song (${reason}).`);
       dependencies.notify(
         reason === "CONTENT_RESTRICTED"
-          ? `Skipped “${title}” because Apple restricts it for this Apple Account.`
+          ? `Skipped “${title}” because MusicKit restricted this track.`
           : `Skipped “${title}” because it can't be played.`,
       );
       void dependencies.skipToNext().catch((skipError: unknown) => {

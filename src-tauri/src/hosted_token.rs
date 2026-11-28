@@ -47,10 +47,6 @@ const MAX_FILE_BYTES: usize = 16 * 1024;
 pub(crate) const FETCH_TIMEOUT: Duration = Duration::from_secs(5);
 const CACHE_FILE_NAME: &str = "musickit-token.json";
 pub(crate) const USER_AGENT: &str = concat!("Arlet/", env!("CARGO_PKG_VERSION"));
-/// Shown instead of the token when this version is below the minimum.
-const UPDATE_REQUIRED_MESSAGE: &str =
-    "This version of Arlet is no longer supported. Update Arlet to keep listening.";
-
 /// E2E-only overrides. Ordinary builds never read these variables.
 #[cfg(feature = "e2e")]
 const E2E_TOKEN_URL_ENV: &str = "ARLET_E2E_TOKEN_URL";
@@ -139,14 +135,6 @@ impl TokenError {
         Self {
             code: "TOKEN_UNAVAILABLE",
             message,
-        }
-    }
-
-    /// This build is below the minimum version in `min_ver.txt`.
-    pub fn update_required() -> Self {
-        Self {
-            code: "UPDATE_REQUIRED",
-            message: UPDATE_REQUIRED_MESSAGE.to_string(),
         }
     }
 }
@@ -271,13 +259,6 @@ fn settings_for_app(app: &AppHandle) -> Result<Settings, SourceError> {
     Settings::for_build(config_key, dir.join(CACHE_FILE_NAME), |name| {
         std::env::var(name).ok()
     })
-}
-
-/// The token URL for this build and whether plain loopback HTTP is allowed.
-/// `min_version` derives its file from the same URL.
-pub(crate) fn token_source(app: &AppHandle) -> Result<(String, bool), SourceError> {
-    let settings = settings_for_app(app)?;
-    Ok((settings.url, settings.allow_loopback_http))
 }
 
 pub(crate) fn validate_url(url: &str, allow_loopback_http: bool) -> Result<(), SourceError> {
@@ -560,9 +541,6 @@ fn unix_now() -> u64 {
 /// unavailable token is logged only in Debug Mode, by category only, and never
 /// with the token, body, or signature.
 pub async fn token(app: &AppHandle, state: &HostedTokenState) -> Result<String, TokenError> {
-    if crate::min_version::status(app).await.required {
-        return Err(TokenError::update_required());
-    }
     let outcome = match settings_for_app(app) {
         Ok(settings) => state.serve(&settings).await,
         Err(_) => Err(ServeError::Unavailable),

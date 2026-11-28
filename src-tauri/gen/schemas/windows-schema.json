@@ -291,12 +291,6 @@
           "markdownDescription": "Enables the load_settings command without any pre-configured scope."
         },
         {
-          "description": "Enables the min_version_status command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-min-version-status",
-          "markdownDescription": "Enables the min_version_status command without any pre-configured scope."
-        },
-        {
           "description": "Enables the open_about_link command without any pre-configured scope.",
           "type": "string",
           "const": "allow-open-about-link",
@@ -523,12 +517,6 @@
           "type": "string",
           "const": "deny-load-settings",
           "markdownDescription": "Denies the load_settings command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the min_version_status command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-min-version-status",
-          "markdownDescription": "Denies the min_version_status command without any pre-configured scope."
         },
         {
           "description": "Denies the open_about_link command without any pre-configured scope.",

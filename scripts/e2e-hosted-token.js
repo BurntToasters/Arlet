@@ -26,7 +26,7 @@ const TAURI_CLI = path.join(
   "tauri.js",
 );
 const TOKEN_PATH = "/arlet-token.json";
-// The minimum-version file sits beside the token file (src-tauri/src/min_version.rs).
+// The fixture serves this unsigned file as bait; startup must not request it.
 const MINIMUM_PATH = "/min_ver.txt";
 const HOUR_SECONDS = 3_600;
 const DAY_SECONDS = 86_400;

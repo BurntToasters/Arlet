@@ -10,6 +10,7 @@ import {
   seekToTime,
   settleSeek,
   setRepeatMode as setMusicRepeatMode,
+  setAutoplayEnabled,
   setShuffleMode as setMusicShuffleMode,
   setVolume as setMusicVolume,
   skipToNext,
@@ -22,7 +23,11 @@ import {
   skippedMessage,
   withResolvableTracks,
 } from "../musickit/unresolved.ts";
-import { reportActionError } from "../components/action-errors.ts";
+import {
+  reportActionError,
+  reportNotice,
+} from "../components/action-errors.ts";
+import { resolveCleanTracks } from "../musickit/catalog.ts";
 import {
   MAX_QUEUE_LENGTH,
   lastUserIndex,
@@ -54,11 +59,16 @@ import {
   setPlaybackPosition,
   setPlaybackStatus,
   setQueue,
+  setQueueRest,
   setQueueSnapshot,
   setVolume,
   subscribe,
 } from "../state.ts";
-import { errorMessage, type ControllerContext } from "./controller-support.ts";
+import {
+  errorMessage,
+  sameTrackIds,
+  type ControllerContext,
+} from "./controller-support.ts";
 import { createPlayRequests, createPlayTracks } from "./playback-play.ts";
 import { createQueueInsert } from "./playback-insert.ts";
 import { createQueueContinuation } from "./queue-continuation.ts";
@@ -659,11 +669,268 @@ export function createPlayback(context: ControllerContext) {
     }
   };
 
+  const fullQueueSnapshot = (): { tracks: Track[]; index: number } => {
+    const { queue, queueIndex, pendingRestore } = getState().playback;
+    const upcoming = withoutUpcomingAutoplay(queue, queueIndex);
+    if (pendingRestore) return { tracks: upcoming, index: queueIndex };
+    const history =
+      queue[0] !== undefined && isSameTrack(queue[0], session.historyAnchor)
+        ? session.startHistory
+        : [];
+    return {
+      tracks: [...history, ...upcoming, ...currentRest(queue)],
+      index: history.length + queueIndex,
+    };
+  };
+
+  let cleanQueueWork: Promise<void> | undefined;
+  let cleanQueueRetryPending = false;
+  let cleanResumeIntent: { playIntent: number; pauseCount: number } | undefined;
+  const syncEffectiveAutoplay = (
+    instance: MusicKit.MusicKitInstance | null,
+  ): boolean => {
+    if (!instance) return true;
+    const settings = getState().settings;
+    const enabled =
+      settings.explicitContent === "clean" ? false : settings.autoplay;
+    const actual = instance.autoplayEnabled;
+    if (actual === enabled || (enabled === false && actual !== true)) {
+      return true;
+    }
+    if (!setAutoplayEnabled(instance, enabled)) {
+      log(
+        settings.explicitContent === "clean"
+          ? "MusicKit autoplay could not be disabled for Clean playback."
+          : "MusicKit autoplay preference could not be restored.",
+      );
+      return false;
+    }
+    return true;
+  };
+  const pauseForCleanVerification = (
+    instance: MusicKit.MusicKitInstance | null,
+  ): void => {
+    const playback = getState().playback;
+    if (
+      (playback.status !== "playing" && playback.status !== "loading") ||
+      !instance ||
+      getState().settings.explicitContent !== "clean"
+    ) {
+      return;
+    }
+    cleanResumeIntent =
+      playback.status === "playing"
+        ? {
+            playIntent: session.playIntent,
+            pauseCount: session.pauseCount,
+          }
+        : undefined;
+    void Promise.resolve(instance.pause()).catch((error: unknown) => {
+      log(`Pausing for Clean verification failed: ${errorMessage(error)}`);
+    });
+    setPlaybackStatus("paused");
+  };
+  const shouldResumeAfterCleanVerification = (): boolean =>
+    cleanResumeIntent?.playIntent === session.playIntent &&
+    cleanResumeIntent.pauseCount === session.pauseCount;
+  const clearForNoCleanTrack = async (
+    instance: MusicKit.MusicKitInstance | null,
+  ): Promise<void> => {
+    try {
+      await instance?.stop();
+      await instance?.setQueue({ songs: [] });
+    } catch (error) {
+      log(`Clearing a Clean-filtered queue failed: ${errorMessage(error)}`);
+    }
+    clearContinuation();
+    setRest([]);
+    session.station = undefined;
+    session.collection = [];
+    session.collectionIntact = false;
+    session.occurrences = [];
+    session.startHistory = [];
+    session.historyAnchor = undefined;
+    cleanResumeIntent = undefined;
+    setQueue([]);
+    setCurrentTrack(undefined);
+    setPendingRestore(undefined);
+    setPlaybackStatus("paused");
+  };
+
+  const enforceCleanQueue = (): Promise<void> => {
+    if (cleanQueueWork) return cleanQueueWork;
+    const work = (async (): Promise<void> => {
+      if (getState().settings.explicitContent !== "clean") return;
+      const instance = getMusic();
+      if (session.station !== undefined) {
+        await clearForNoCleanTrack(instance);
+        reportNotice(
+          "Clean stopped station playback because its songs cannot be verified.",
+        );
+        return;
+      }
+      while (session.queueSetup) {
+        await session.queueSetup;
+        if (getState().settings.explicitContent !== "clean") return;
+      }
+      await continuation.settleRefills();
+      if (
+        !syncEffectiveAutoplay(instance) &&
+        instance?.autoplayEnabled === true
+      ) {
+        await clearForNoCleanTrack(instance);
+        reportNotice(
+          "Clean stopped playback because MusicKit autoplay could not be disabled.",
+        );
+        return;
+      }
+      const before = getState().playback;
+      if (before.queue.length === 0) {
+        if (before.current && before.current.explicit !== false) {
+          await clearForNoCleanTrack(instance);
+          reportNotice(
+            "Clean stopped playback because the current song has no verified clean rating.",
+          );
+        }
+        return;
+      }
+      const full = fullQueueSnapshot();
+      if (!instance) return;
+      const intent = session.playIntent;
+      const result = await resolveCleanTracks(instance, full.tracks);
+      if (getState().settings.explicitContent !== "clean") return;
+      const afterLookup = getState().playback;
+      if (
+        session.playIntent !== intent ||
+        afterLookup.queue !== before.queue ||
+        afterLookup.queueIndex !== before.queueIndex ||
+        afterLookup.pendingRestore !== before.pendingRestore ||
+        afterLookup.status !== before.status
+      ) {
+        cleanQueueRetryPending = true;
+        return;
+      }
+      if (result.lookupFailures > 0) {
+        log(
+          `Clean could not verify ${result.lookupFailures} catalog song lookup${result.lookupFailures === 1 ? "" : "s"}.`,
+        );
+      }
+      if (result.skipped.length > 0) {
+        const count = result.skipped.length;
+        reportNotice(
+          `Clean skipped ${count} song${count === 1 ? "" : "s"} without a verified clean rating.`,
+        );
+      }
+      const startIndex = result.originalIndices.findIndex(
+        (index) => index >= full.index,
+      );
+      const resumePlayback =
+        before.status === "playing" || shouldResumeAfterCleanVerification();
+      if (startIndex < 0 || result.tracks.length === 0) {
+        await clearForNoCleanTrack(instance);
+        if (result.skipped.length === 0) {
+          reportNotice(
+            "Clean stopped playback because no remaining song has a verified clean rating.",
+          );
+        }
+        return;
+      }
+      const alreadyVerified =
+        result.tracks.length === full.tracks.length &&
+        full.tracks.every(
+          (track, index) =>
+            track.explicit === false && result.tracks[index]?.id === track.id,
+        );
+      if (alreadyVerified) return;
+
+      if (before.pendingRestore) {
+        setQueueSnapshot(result.tracks, startIndex, false);
+        session.queueRest = [];
+        session.restAnchor = undefined;
+        setQueueRest(0);
+        session.collection = [...result.tracks];
+        session.collectionIntact = true;
+        session.occurrences = [];
+        session.startHistory = [];
+        session.historyAnchor = undefined;
+        return;
+      }
+      const hasUpcomingAutoplay = before.queue.some(
+        (track, index) => index > before.queueIndex && track.autoplay,
+      );
+      if (result.skipped.length > 0 || hasUpcomingAutoplay) {
+        await playTracks(result.tracks, startIndex, undefined, {
+          keepOrder: true,
+          startPaused: !resumePlayback,
+        });
+        cleanResumeIntent = undefined;
+        return;
+      }
+
+      // Rating lookups may prove an unchanged queue clean. Keep the provider
+      // playing and replace only the local copies with the verified ratings.
+      const userQueue = withoutUpcomingAutoplay(
+        before.queue,
+        before.queueIndex,
+      );
+      const currentHistory =
+        full.tracks.length -
+        userQueue.length -
+        currentRest(before.queue).length;
+      let fullPosition = currentHistory;
+      const verifiedQueue = before.queue.map((track, index) => {
+        if (index > before.queueIndex && track.autoplay) return track;
+        return result.tracks[fullPosition++] ?? track;
+      });
+      session.startHistory = result.tracks.slice(0, currentHistory);
+      session.queueRest = result.tracks.slice(fullPosition);
+      session.restAnchor =
+        session.queueRest.length > 0
+          ? result.tracks[fullPosition - 1]
+          : undefined;
+      setQueueRest(session.queueRest.length);
+      session.collection = [...result.tracks];
+      setQueueSnapshot(verifiedQueue, before.queueIndex, false);
+      if (
+        resumePlayback &&
+        instance &&
+        instance.playbackState !== MusicKit.PlaybackStates.playing
+      ) {
+        if (shouldResumeAfterCleanVerification()) {
+          await instance.play();
+        }
+      }
+      cleanResumeIntent = undefined;
+    })();
+    cleanQueueWork = work;
+    const retryIfNeeded = (): void => {
+      if (cleanQueueWork === work) cleanQueueWork = undefined;
+      if (
+        !cleanQueueRetryPending ||
+        getState().settings.explicitContent !== "clean"
+      ) {
+        return;
+      }
+      cleanQueueRetryPending = false;
+      void Promise.resolve()
+        .then(() => enforceCleanQueue())
+        .catch((error: unknown) => {
+          log(`Clean queue enforcement failed: ${errorMessage(error)}`);
+        });
+    };
+    void work.then(retryIfNeeded, (error: unknown) => {
+      log(`Clean queue enforcement failed: ${errorMessage(error)}`);
+      retryIfNeeded();
+    });
+    return work;
+  };
+
   const playback = {
     applyPlaybackVolume,
     reflectMusicVolume,
     syncPlaybackModes,
     playTracks,
+    enforceCleanQueue,
     maybeRefillQueue,
     clearContinuation,
     appendContinuation,
@@ -694,6 +961,11 @@ export function createPlayback(context: ControllerContext) {
     currentStation: (): Station | undefined => session.station,
 
     async playStation(station: Station): Promise<void> {
+      if (getState().settings.explicitContent === "clean") {
+        throw new Error(
+          "Stations cannot be verified clean and will not play while Clean is on.",
+        );
+      }
       const url = station.url?.trim();
       const id = station.id.trim();
       if (!url && !id) throw new Error("This station cannot be played.");
@@ -744,6 +1016,17 @@ export function createPlayback(context: ControllerContext) {
 
     async playQueueItem(index: number): Promise<void> {
       const instance = requireMusic();
+      if (getState().settings.explicitContent === "clean") {
+        const before = getState().playback;
+        await enforceCleanQueue();
+        const after = getState().playback;
+        if (!sameTrackIds(before.queue, after.queue)) {
+          if (after.queue.length > 0 && before.status !== "playing") {
+            await playback.playQueueItem(after.queueIndex);
+          }
+          return;
+        }
+      }
       // Checked before any sync or loading status: both would drop the restore.
       if (getState().playback.pendingRestore) {
         const saved = getState().playback.queue;
@@ -917,6 +1200,13 @@ export function createPlayback(context: ControllerContext) {
           recordTransportIntent(false);
           pausePlayback();
         } else {
+          await enforceCleanQueue();
+          if (
+            getState().settings.explicitContent === "clean" &&
+            getState().playback.queue.length === 0
+          ) {
+            return;
+          }
           recordTransportIntent(true);
           session.playPressedAt = session.pauseCount;
         }
@@ -929,6 +1219,13 @@ export function createPlayback(context: ControllerContext) {
 
     async play(): Promise<void> {
       const instance = requireMusic();
+      await enforceCleanQueue();
+      if (
+        getState().settings.explicitContent === "clean" &&
+        getState().playback.queue.length === 0
+      ) {
+        throw new Error("No songs with a verified clean rating are queued.");
+      }
       recordTransportIntent(true);
       session.playPressedAt = session.pauseCount;
       await instance.play();
@@ -1002,6 +1299,17 @@ export function createPlayback(context: ControllerContext) {
 
     async previous(): Promise<void> {
       try {
+        const before = getState().playback;
+        if (getState().settings.explicitContent === "clean") {
+          await enforceCleanQueue();
+          const after = getState().playback;
+          if (
+            (before.current || after.current) &&
+            !isSameTrack(before.current, after.current)
+          ) {
+            return;
+          }
+        }
         const {
           pendingRestore,
           queue,
@@ -1077,6 +1385,17 @@ export function createPlayback(context: ControllerContext) {
 
     async next(): Promise<void> {
       try {
+        const before = getState().playback;
+        if (getState().settings.explicitContent === "clean") {
+          await enforceCleanQueue();
+          const after = getState().playback;
+          if (
+            (before.current || after.current) &&
+            !isSameTrack(before.current, after.current)
+          ) {
+            return;
+          }
+        }
         const { pendingRestore, queue, queueIndex, repeatMode } =
           getState().playback;
         if (pendingRestore && queue.length > 0) {
@@ -1127,5 +1446,60 @@ export function createPlayback(context: ControllerContext) {
 
     seek,
   };
+  let observedQueue = getState().playback.queue;
+  let observedQueueIndex = getState().playback.queueIndex;
+  let observedCurrentId = getState().playback.current?.id;
+  let observedExplicitContent = getState().settings.explicitContent;
+  let observedAutoplayPreference = getState().settings.autoplay;
+  subscribe(() => {
+    const { settings, playback: current } = getState();
+    const policyChanged = settings.explicitContent !== observedExplicitContent;
+    const autoplayChanged = settings.autoplay !== observedAutoplayPreference;
+    const queueChanged = current.queue !== observedQueue;
+    const positionChanged = current.queueIndex !== observedQueueIndex;
+    const currentChanged = current.current?.id !== observedCurrentId;
+    observedExplicitContent = settings.explicitContent;
+    observedAutoplayPreference = settings.autoplay;
+    observedQueue = current.queue;
+    observedQueueIndex = current.queueIndex;
+    observedCurrentId = current.current?.id;
+
+    if (settings.explicitContent === "clean") {
+      syncEffectiveAutoplay(getMusic());
+      const queuedCurrent = current.queue[current.queueIndex];
+      const candidate =
+        queuedCurrent &&
+        (!current.current || isSameTrack(queuedCurrent, current.current))
+          ? queuedCurrent
+          : current.current;
+      if (
+        (policyChanged || queueChanged || positionChanged || currentChanged) &&
+        candidate &&
+        candidate.explicit !== false
+      ) {
+        pauseForCleanVerification(getMusic());
+      }
+      if (policyChanged || queueChanged || positionChanged || currentChanged) {
+        void enforceCleanQueue().catch((error: unknown) => {
+          log(`Clean queue enforcement failed: ${errorMessage(error)}`);
+        });
+      }
+    } else {
+      const resumeAfterAuto =
+        policyChanged && shouldResumeAfterCleanVerification();
+      if (policyChanged || autoplayChanged) {
+        syncEffectiveAutoplay(getMusic());
+      }
+      cleanResumeIntent = undefined;
+      const instance = getMusic();
+      if (resumeAfterAuto && current.status === "paused" && instance) {
+        void instance.play().catch((error: unknown) => {
+          log(
+            `Resuming after Auto was selected failed: ${errorMessage(error)}`,
+          );
+        });
+      }
+    }
+  });
   return playback;
 }

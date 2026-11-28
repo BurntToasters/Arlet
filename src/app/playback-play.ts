@@ -1,8 +1,4 @@
 import {
-  applyHeldCleanWrite,
-  EXPLICIT_RESTRICTED_MESSAGE,
-} from "../musickit/content-restrictions.ts";
-import {
   friendlyPlaybackMessage,
   httpStatusOf,
   mapErrorToCode,
@@ -20,6 +16,7 @@ import {
 } from "../musickit/player.ts";
 import { labelOccurrences } from "../musickit/queue-edit.ts";
 import { isSameTrack, type Track } from "../domain/music.ts";
+import { resolveCleanTracks } from "../musickit/catalog.ts";
 import { normalizeTrack } from "../musickit/normalize.ts";
 import {
   keptStartIndex,
@@ -28,7 +25,10 @@ import {
   unresolvedIds,
   withResolvableTracks,
 } from "../musickit/unresolved.ts";
-import { reportActionError } from "../components/action-errors.ts";
+import {
+  reportActionError,
+  reportNotice,
+} from "../components/action-errors.ts";
 import type { PlayTiming } from "./collection-playback.ts";
 import {
   FIRST_BATCH_LENGTH,
@@ -104,12 +104,6 @@ export function createPlayRequests(context: PlaybackContext) {
       // Any new play replaces a station; playStation sets it again after this.
       session.station = undefined;
       const music = instance ?? requireMusic();
-      // Before the queue is replaced: a Clean held during playback applies now.
-      if (!applyHeldCleanWrite(music)) {
-        log(
-          "Explicit content setting could not be applied in this MusicKit runtime.",
-        );
-      }
       shuffleReady = preparePlaybackModesForPlay(music);
     }
     const pauses = session.pauseCount;
@@ -130,8 +124,9 @@ export function createPlayRequests(context: PlaybackContext) {
   const startAudio = async (
     instance: MusicKit.MusicKitInstance,
     request: ReturnType<typeof beginPlayRequest>,
+    shouldStart = true,
   ): Promise<void> => {
-    if (request.mayStart()) await instance.play();
+    if (request.mayStart() && shouldStart) await instance.play();
     else if (request.current()) instance.pause();
   };
 
@@ -241,27 +236,57 @@ export function createPlayTracks(
     ) {
       throw new Error("The selected song is unavailable.");
     }
-    // Only Apple's restriction is reported; a Clean choice is the user's own.
-    if (
-      getState().settings.explicitContent === "auto" &&
-      requestedTracks[requestedStart]?.explicit === true &&
-      instance.restrictedEnabled === true
-    ) {
-      reportActionError(new Error(EXPLICIT_RESTRICTED_MESSAGE));
-    }
     const request = beginPlayRequest(instance);
     if (!request.shuffleReady) {
       const error = new Error("Shuffle could not be restored before playback.");
       reportPlayFailure("Play failed", error);
       throw error;
     }
+    // Hold queue inserts while Clean checks catalog ratings, so an insertion
+    // started after this Play can target the queue this Play will set.
+    const releaseQueueSetup = beginQueueSetup(session);
+    let tracks = requestedTracks;
+    let startIndex = requestedStart;
+    if (getState().settings.explicitContent === "clean") {
+      let clean: Awaited<ReturnType<typeof resolveCleanTracks>>;
+      try {
+        clean = await resolveCleanTracks(instance, requestedTracks);
+      } catch (error) {
+        releaseQueueSetup();
+        reportPlayFailure("Play failed", error);
+        throw error;
+      }
+      if (!request.current()) {
+        releaseQueueSetup();
+        return undefined;
+      }
+      tracks = clean.tracks;
+      if (clean.lookupFailures > 0) {
+        log(
+          `Clean could not verify ${clean.lookupFailures} catalog song lookup${clean.lookupFailures === 1 ? "" : "s"}.`,
+        );
+      }
+      if (clean.skipped.length > 0) {
+        const count = clean.skipped.length;
+        reportNotice(
+          `Clean skipped ${count} song${count === 1 ? "" : "s"} without a verified clean rating.`,
+        );
+      }
+      const nextClean = clean.originalIndices.findIndex(
+        (index) => index >= requestedStart,
+      );
+      if (nextClean < 0) {
+        releaseQueueSetup();
+        const error = new Error(
+          "No verified clean songs are available from this selection.",
+        );
+        reportPlayFailure("Play failed", error);
+        throw error;
+      }
+      startIndex = nextClean;
+    }
     const shuffled = readPlaybackModes(instance).shuffleMode === "songs";
-    const split = startWindow(
-      requestedTracks,
-      requestedStart,
-      shuffled,
-      options,
-    );
+    const split = startWindow(tracks, startIndex, shuffled, options);
     let batch = split.batch;
     let rest = split.rest;
     const playbackBefore = getState().playback;
@@ -293,17 +318,24 @@ export function createPlayTracks(
       if (!request.current()) {
         throw new Error("Play request is no longer current.");
       }
+      if (
+        getState().settings.explicitContent === "clean" &&
+        tracks.some((track) => track.explicit !== false)
+      ) {
+        throw new Error(
+          "Clean was enabled while the queue was being prepared. Try Play again.",
+        );
+      }
       await instance.setQueue(options);
     };
     if (rest.length) {
       log(
-        `Queued ${batch.length} of ${requestedTracks.length} songs; the rest load as the queue plays.`,
+        `Queued ${batch.length} of ${tracks.length} songs; the rest load as the queue plays.`,
       );
     }
     clearPlaybackError();
     // Inserts wait on this while the Play replaces the provider queue, so they
     // plan against the new queue instead of the one being replaced.
-    const releaseQueueSetup = beginQueueSetup(session);
     try {
       // Live MusicKit reshuffles the whole queue on every setQueue while its
       // shuffle is on, which would undo a resume's saved order. With keepOrder
@@ -318,7 +350,7 @@ export function createPlayTracks(
       let batchStart = split.startIndex;
       setQueue([...batch], batchStart);
       // A Play starts a new collection: the whole list in the order it came.
-      session.collection = [...requestedTracks];
+      session.collection = [...tracks];
       session.collectionIntact = true;
       session.occurrences = [];
       // The previous song's position would otherwise show until MusicKit's
@@ -425,7 +457,7 @@ export function createPlayTracks(
       // The rest of the playlist is still recorded below for a paused queue.
       let retriedById = false;
       try {
-        await startAudio(instance, request);
+        await startAudio(instance, request, options.startPaused !== true);
       } catch (error) {
         // MusicKit took the song details but could not start them: queue the
         // same songs by ID once, which makes it look them up first.
@@ -459,7 +491,7 @@ export function createPlayTracks(
           }
         }
         if (request.current()) session.historyAnchor = queue[start];
-        await startAudio(instance, request);
+        await startAudio(instance, request, options.startPaused !== true);
       }
       step(retriedById ? "play() after ID retry" : "play()");
       // Labels the chosen song's collection index on the queue MusicKit now
@@ -472,7 +504,7 @@ export function createPlayTracks(
           now.queue,
           now.queueIndex,
           [],
-          requestedStart,
+          startIndex,
         );
       }
       if (generation === session.restGeneration) {

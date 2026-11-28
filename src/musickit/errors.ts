@@ -44,7 +44,7 @@ export function friendlyPlaybackMessage(error: unknown): string {
     return "Apple Music couldn't start playback. If it's playing on another device, stop it there. If you changed your Apple ID password, sign in again.";
   }
   if (reason === "CONTENT_RESTRICTED") {
-    return "Apple restricts this song for this Apple Account. See Settings > Playback.";
+    return "MusicKit restricted this song. Check your Apple Music content settings.";
   }
   return redactSensitive(messageOf(error));
 }

@@ -2,9 +2,9 @@
 // Stream handoff and expired sign-in against the MusicKit fixture
 // (docs/TESTING.md "Stream handoff and sign-in expiry"): the handoff stops
 // MusicKit and Play resumes in place; a rejected token shows the banner with
-// one probe and keeps all data; a license error with a healthy token does not;
-// Sign in again, a closed window, and Sign out behave; a fresh Sign in keeps
-// the pins only for the Apple ID that owns them. The 60 s delay is
+// one probe and keeps data until reauthorization; a license error with a
+// healthy token does not; every successful Sign in again clears old pins and
+// the saved queue. The 60 s delay is
 // shortened by remapping setTimeout (removed before Play). The 30 s probe
 // cooldown uses the app's own Date.now, so the page reloads first and the one
 // second-probe check waits. Leaves the app signed in and healthy.
@@ -270,14 +270,28 @@ const openHash = async (page, hash, ready, timeoutMs = 10_000) => {
 
 /** Reloads with the fixture configured before the app starts, then waits for the shell. */
 export async function reloadWithFixtureOptions(page, options) {
+  const previousTimeOrigin = await page.evaluate(
+    "return performance.timeOrigin;",
+  );
   const injection = await page.send("Page.addScriptToEvaluateOnNewDocument", {
-    source: `window.__ARLET_E2E_MUSIC__?.configure(${q(options)});`,
+    source: `(() => {
+      const options = ${q(options)};
+      window.__ARLET_E2E_MUSIC_OPTIONS__ = options;
+      if (window.__ARLET_E2E_MUSIC__) {
+        window.__ARLET_E2E_MUSIC__.configure(options);
+        delete window.__ARLET_E2E_MUSIC_OPTIONS__;
+      }
+    })();`,
   });
   try {
     await page.send("Page.reload", { ignoreCache: true });
+    const configured =
+      options.startUnauthorized === true
+        ? `${FIXTURE}.snapshot().configure !== null && ${FIXTURE}.snapshot().authorized === false`
+        : `${FIXTURE}.snapshot().configure !== null`;
     return await waitFor(
       page,
-      `${FIXTURE} && document.querySelector('.app-shell .player-bar')`,
+      `performance.timeOrigin !== ${q(previousTimeOrigin)} && ${FIXTURE} && document.querySelector('.app-shell .player-bar') && ${configured}`,
       30_000,
     );
   } finally {
@@ -417,6 +431,16 @@ export async function storedPinIds(page) {
   } catch {
     return null;
   }
+}
+
+/** The persisted queue, or null when no queue is saved. */
+async function savedPlaybackSession(page) {
+  return page.evaluate(`
+    const raw = await window.__TAURI_INTERNALS__.invoke("load_playback_session");
+    if (raw === null || raw === undefined) return null;
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return parsed && Array.isArray(parsed.items) ? parsed : null;
+  `);
 }
 
 /** Settings' Sign in button: a fresh sign-in, not Sign in again. True once Connected. */
@@ -764,11 +788,17 @@ async function expiry(page, check, artifactDir) {
   return at;
 }
 
-/** Sign in again: unauthorize first, a real popup, data kept, Play works. */
+/** Sign in again: each successful popup isolates prior account data. */
 async function signInAgain(page, check) {
+  await fixtureCall(page, "configure", [{ otherAccount: true }]);
   const at = await mark(page);
   const clicked = await clickNotice(page, "Sign in again");
   const cleared = await noticeGone(page);
+  const connected = await waitFor(
+    page,
+    `${q(STATUS)} && document.querySelector(${q(STATUS)}).textContent.includes("Connected") && !document.querySelector(${q(NOTICE)}) && !document.querySelector('.account-card button[data-action="cancel-sign-in"]')`,
+    15_000,
+  );
   const after = await since(page, at);
   const unauthorizeIndex = after.transitions.findIndex(
     (item) => item.type === "unauthorize",
@@ -789,31 +819,93 @@ async function signInAgain(page, check) {
   const ui = await uiOf(page);
   check(
     "after Sign in again the banner clears and the title says Connected",
-    cleared && !ui.notice && ui.status?.includes("Connected"),
-    { cleared, ui },
+    cleared && connected && !ui.notice && ui.status?.includes("Connected"),
+    { cleared, connected, ui },
   );
+  const pins = await storedPinIds(page);
+  const session = await savedPlaybackSession(page);
   check(
-    "Sign in again keeps the pins and the parked queue",
-    (await pinKept(page)) &&
-      ui.title === "Track A" &&
-      ui.position === "0:42" &&
-      ui.button === "Play",
-    { ui, pins: await pinsOf(page) },
+    "expired-session Sign in again clears the old account pins and parked queue",
+    Array.isArray(pins) &&
+      pins.length === 0 &&
+      session === null &&
+      ui.title === "Nothing playing",
+    { ui, pins, session },
   );
+  await fixtureCall(page, "configure", [{ otherAccount: false }]);
   const refetched = await waitFor(
     page,
     `${FIXTURE}.snapshot().requests.slice(${at.requests}).some((item) => String(item.path).startsWith("/v1/me/library"))`,
     10_000,
   );
   check("Sign in again refetches the library", refetched, {});
-  const playAt = await mark(page);
-  await clickPlayButton(page);
-  const played = await waitForTransition(page, playAt, "play");
-  const playing = await buttonIs(page, "Pause");
-  check("Play works after Sign in again", played && playing, {
-    played,
-    playing,
-  });
+
+  const playAfterReauth = await startPlayback(page);
+  await sleep(2500);
+  const pinned = await pinFixturePlaylist(page);
+  const pinsBeforeHealthyReauth = await storedPinIds(page);
+  const sessionBeforeHealthyReauth = await savedPlaybackSession(page);
+  check(
+    "healthy-session reauthorization starts with old account data persisted",
+    playAfterReauth &&
+      pinned &&
+      pinsBeforeHealthyReauth?.includes(FIXTURE_PIN_ID) === true &&
+      Array.isArray(sessionBeforeHealthyReauth?.items) &&
+      sessionBeforeHealthyReauth.items.length > 0,
+    {
+      playAfterReauth,
+      pinned,
+      pinsBeforeHealthyReauth,
+      sessionBeforeHealthyReauth,
+    },
+  );
+
+  await fixtureCall(page, "configure", [{ otherAccount: true }]);
+  await openHash(
+    page,
+    "#/settings",
+    `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign in again" && !node.disabled)`,
+    15_000,
+  );
+  const healthyReauthAt = await mark(page);
+  const healthyReauthClicked = await page.evaluate(`
+    const button = [...document.querySelectorAll("button")]
+      .find((node) => node.textContent.trim() === "Sign in again" && !node.disabled);
+    button?.click();
+    return Boolean(button);`);
+  const popup = await waitForTransition(page, healthyReauthAt, "authorize");
+  const reauthReady = await waitFor(
+    page,
+    `[...document.querySelectorAll("button")].some((node) => node.textContent.trim() === "Sign in again" && !node.disabled) && !document.querySelector('.account-card button[data-action="cancel-sign-in"]') && document.querySelector(${q(STATUS)})?.textContent.includes("Connected")`,
+    15_000,
+  );
+  const afterHealthyReauth = await uiOf(page);
+  const healthyPins = await storedPinIds(page);
+  const healthySession = await savedPlaybackSession(page);
+  const healthyTrace = await since(page, healthyReauthAt);
+  check(
+    "healthy-session Sign in again clears pins and the saved queue for another account",
+    healthyReauthClicked &&
+      popup &&
+      reauthReady &&
+      healthyTrace.transitions.some(
+        (item) => item.type === "authorize" && item.popup === true,
+      ) &&
+      Array.isArray(healthyPins) &&
+      healthyPins.length === 0 &&
+      healthySession === null &&
+      afterHealthyReauth.title === "Nothing playing",
+    {
+      healthyReauthClicked,
+      popup,
+      reauthReady,
+      ui: afterHealthyReauth,
+      pins: healthyPins,
+      session: healthySession,
+      types: healthyTrace.transitions.map((item) => item.type),
+    },
+  );
+  await fixtureCall(page, "configure", [{ otherAccount: false }]);
 }
 
 /** A parked station resumes as a station, not as loose songs. */

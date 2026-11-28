@@ -539,6 +539,11 @@ async function albumShelves(page, check) {
 async function searchSuggestions(page, check) {
   await fixtureCall(page, "reset");
   await home(page);
+  const iconUrl = await page.evaluate(
+    `return document.querySelector("img.brand-mark")?.src ?? null;`,
+  );
+  const artworkTemplate = iconUrl ? `${iconUrl}?artwork={id}` : "";
+  await fixtureCall(page, "configure", [{ artworkTemplate }]);
   const ready = await openHash(
     page,
     "#/search",
@@ -563,16 +568,29 @@ async function searchSuggestions(page, check) {
     `document.querySelectorAll(${q(SUGGESTION_OPTIONS)}).length >= 3`,
     6000,
   );
+  const thumbnailLoaded = await waitFor(
+    page,
+    `(() => {
+      const row = [...document.querySelectorAll(${q(SUGGESTION_OPTIONS)})]
+        .find((node) => node.querySelector(".search-suggestion-copy > span")?.textContent === "Polish Fixture Album");
+      const image = row?.querySelector(".search-suggestion-art img");
+      return Boolean(image?.complete && image.naturalWidth > 0);
+    })()`,
+    8000,
+  );
   const labels = await textOf(page, SUGGESTION_OPTIONS);
   const suggestionArt = await page.evaluate(`
     return [...document.querySelectorAll(${q(SUGGESTION_OPTIONS)})].map((node) => {
       const art = node.querySelector(".search-suggestion-art");
+      const image = art?.querySelector("img");
       return {
         label: node.querySelector(".search-suggestion-copy > span")?.textContent ?? null,
         detail: node.querySelector(".search-suggestion-copy > small")?.textContent ?? null,
         art: Boolean(art),
-        alt: art?.querySelector("img")?.getAttribute("alt") ?? null,
-        src: art?.querySelector("img")?.getAttribute("src") ?? null,
+        alt: image?.getAttribute("alt") ?? null,
+        src: image?.getAttribute("src") ?? null,
+        loaded: Boolean(image?.complete && image.naturalWidth > 0),
+        naturalWidth: image?.naturalWidth ?? 0,
       };
     });
   `);
@@ -583,14 +601,58 @@ async function searchSuggestions(page, check) {
     ["Polish Fixture", "Polka"].includes(row.label),
   );
   check(
-    "media suggestions carry a decorative thumbnail; term suggestions stay text-only",
-    mediaRow?.art === true &&
+    "media suggestions load deterministic decorative art; term suggestions stay text-only",
+    Boolean(iconUrl) &&
+      shown &&
+      thumbnailLoaded &&
+      mediaRow?.art === true &&
       mediaRow.alt === "" &&
-      mediaRow.src?.includes("/image/thumb/Music/e2e/album-polish/") === true &&
+      mediaRow.src === `${iconUrl}?artwork=album-polish` &&
+      mediaRow.loaded === true &&
+      mediaRow.naturalWidth > 0 &&
       mediaRow.detail === "Album · Fixture Artist" &&
       termRows.length === 2 &&
       termRows.every((row) => row.art === false),
-    suggestionArt,
+    { iconUrl, shown, thumbnailLoaded, suggestionArt },
+  );
+  const dispatchedError = await page.evaluate(`
+    const row = [...document.querySelectorAll(${q(SUGGESTION_OPTIONS)})]
+      .find((node) => node.querySelector(".search-suggestion-copy > span")?.textContent === "Polish Fixture Album");
+    const image = row?.querySelector(".search-suggestion-art img");
+    if (!image) return false;
+    image.dispatchEvent(new Event("error"));
+    return true;
+  `);
+  const fallbackShown = await waitFor(
+    page,
+    `(() => {
+      const row = [...document.querySelectorAll(${q(SUGGESTION_OPTIONS)})]
+        .find((node) => node.querySelector(".search-suggestion-copy > span")?.textContent === "Polish Fixture Album");
+      const art = row?.querySelector(".search-suggestion-art");
+      return art?.getAttribute("role") === "img" &&
+        art.querySelector("img") === null &&
+        art.querySelector("span[aria-hidden='true']")?.textContent?.trim() === "PF";
+    })()`,
+    3000,
+  );
+  const fallback = await page.evaluate(`
+    const row = [...document.querySelectorAll(${q(SUGGESTION_OPTIONS)})]
+      .find((node) => node.querySelector(".search-suggestion-copy > span")?.textContent === "Polish Fixture Album");
+    const art = row?.querySelector(".search-suggestion-art");
+    return {
+      role: art?.getAttribute("role") ?? null,
+      hasImage: Boolean(art?.querySelector("img")),
+      initials: art?.querySelector("span[aria-hidden='true']")?.textContent?.trim() ?? null,
+    };
+  `);
+  check(
+    "a failed decorative suggestion cover falls back to initials",
+    dispatchedError &&
+      fallbackShown &&
+      fallback.role === "img" &&
+      fallback.hasImage === false &&
+      fallback.initials === "PF",
+    { dispatchedError, fallbackShown, fallback },
   );
   const openBefore = await page.evaluate(
     `return !document.querySelector(${q(SUGGESTION_POPUP)})?.hidden;`,

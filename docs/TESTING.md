@@ -115,7 +115,10 @@ marker, removes it only after the E2E app exits, and never kills another
 attempts cleanup. A hard kill can leave only that run's marked temp profile;
 it cannot move or alter the real Arlet profile.
 
-The account-session scenario separately rejects `library_cache_clear`,
+The account-session scenario verifies that an expired session keeps local data
+until reauthorization, then checks that both expired-session and healthy
+**Sign in again** popups clear pins and the saved queue before the selected
+account is loaded. It separately rejects `library_cache_clear`,
 `delete_pins`, and `delete_playback_session`, reloads the app, and verifies the
 previous library, pins, and queue remain hidden behind the durable account
 fence. In the marked test data directory, `e2e-account-clear-fault.json` holds
@@ -643,8 +646,9 @@ closing the window quits.
   positive.
 - Expiry verification hammers Apple: more than one probe per cooldown, or
   `/v1/me` requests keep going out while expired.
-- An expired sign-in deletes the library cache, pins, saved queue, or
-  recents.
+- Expiry itself deletes the library cache, pins, saved queue, or recents.
+- A successful Sign in again reuses old pins or the parked queue, whether the
+  popup starts from an expired or a healthy session.
 - "Sign in again" reuses the stale token and never opens the sign-in window.
   Or the `authorizationStatusDidChange` caused by its own `unauthorize()` is
   treated as a revocation.
@@ -1958,35 +1962,24 @@ theme transition before its dark screenshots.
 
 ## Explicit content
 
-The `explicit-content` scenario in `scripts/e2e-explicit-content.js` drives the
-explicit-content choice against the MusicKit fixture, including the sign-in and
-sign-out checks. The checks live in that scenario, not in `account-session`
-(`scripts/e2e-account-session.js`), which only exports the helpers it reuses.
-Run it with `node scripts/e2e-app.js --scenarios explicit-content` after a
-matching E2E-feature build is available.
+The `explicit-content` scenario in `scripts/e2e-explicit-content.js` covers the
+retired Allow setting and Arlet's local Clean queue filter. Run it with
+`node scripts/e2e-app.js --scenarios explicit-content` after a matching
+E2E-feature build is available.
 
-The fixture models MusicKit's latch: `snapshot().restrictionLatched` and
-`snapshot().storedRestriction` show whether the public setter has latched and
-what `itre` holds. The scenario checks:
+The scenario writes the legacy `explicitContent: "allow"` and
+`explicitFix: true` values through the native settings command, reloads the
+app, and verifies they normalize to Auto with no Allow option or consent
+control. It also checks that Clean filters explicit or unverified entries
+from an already-playing queue, preserves tracks rated clean, and never
+substitutes a different recording. The fixture trace confirms these paths never change
+MusicKit's account policy. In Auto, a `CONTENT_RESTRICTED` failure is described
+as a MusicKit restriction without guessing which account control caused it.
 
-- "startup without a token does not write MusicKit before sign-in".
-- "choosing Clean or Allow while signed out does not write MusicKit".
-- "a same-account sign-in keeps Apple's report and applies Allow after it"
-  (also checks the explicit-content log line when `arlet.log` exists).
-- "a CONTENT_RESTRICTED skip says Apple restricts the song, never can't be
-  played" (the auto-skip notice).
-- "a CONTENT_RESTRICTED failure on the last song shows the restricted text in
-  the player bar".
-- "sign-out after an override restarts Arlet and leaves no fix or old account
-  data".
-- "after the restart, another account Apple reports as restricted is restricted
-  under Auto".
-- "explicit content ends with no override latched and signed in" (cleanup
-  reloads the page, so Arlet's in-memory override and the fixture latch clear).
-
-Live MusicKit cannot be driven by the E2E. Run one manual check at the desktop:
-turn Allow on, sign out (Arlet restarts), sign in, and confirm the explicit-content
-log line shows Apple's stored report and the effective value.
+The legacy override helper remains unimported by production code. The scenario
+checks rendered options, persisted legacy settings, queue transitions, and the
+absence of account-policy writes; it does not claim that a fixture proves
+Apple's protected playback behavior.
 
 ## Release-only evidence
 

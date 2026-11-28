@@ -103,6 +103,9 @@ export function SongRow({
           .join(" ")}
         title={unavailable ? "Not available on Apple Music" : undefined}
         {...contextData}
+        data-context-explicit={
+          track.explicit === undefined ? undefined : String(track.explicit)
+        }
         data-context-album-ref={refs.album}
         data-context-artist-refs={refs.artists}
         data-context-catalog-url={track.catalogUrl}
